@@ -102,3 +102,51 @@ class AutomationEffectClaimBody(BodyBase):
     don't touch fields (BlockedOperationEffect / SideEffect).
     Marked :class:`ArraySemantics.SET` per D-059 §6.3.4 — order
     is incidental, identity is by the set of entity_id values."""
+
+
+@register_body("automation-effect-claim", 2)
+class AutomationAbsenceClaimBody(BodyBase):
+    """The automation-effect-claim body shape (v2) — the ABSENCE case
+    (D-307). "When the triggering action fires under this state, the
+    automation correctly produces NO correlated record."
+
+    Why a new version, not a v1 field (the D-306.1 B1 law):
+    canonicalization includes every model field, so adding a slot to v1
+    would re-key every existing automation-effect claim (dedup misses,
+    duplicate claims). v2's distinct key-set keeps absence and presence
+    claims hashing apart by construction.
+
+    v1 scope (deliberately narrow): absence of the CORRELATED RECORD as
+    a whole — the cross-object shape's mirror (TC-038/039: Medium/Low
+    band → NO follow-up Task). A field-conditional absence ("no record
+    WITH Level=ERROR") is not expressible and refuses at the stash gate.
+    """
+
+    model_config = ConfigDict(extra="forbid", frozen=False)
+
+    body_schema_version: Literal[2] = 2
+    kind: Literal["automation-effect-claim"] = "automation-effect-claim"
+
+    automation: IdentityBearingRef
+    """The automation asserted to stay silent. Pinned per D-058 §5."""
+
+    automation_primitive: Literal[
+        "validation_rule",
+        "flow",
+        "apex_trigger",
+        "process_builder",
+        "approval_process",
+        "formula",
+    ]
+    """Same sub-discriminator as v1 (D-053's guardrail)."""
+
+    triggering_action: EventDescriptor
+    """The causal action under which the automation must NOT produce
+    the record — the staged entry state rides its description (the
+    D-299 idiom), so 'no task at Medium' and 'no task at Low' are
+    distinct claims."""
+
+    expected_absence: Literal[True] = True
+    """The discriminating assertion: the correlated record must NOT
+    exist after the trigger. Literal[True] — an absence body IS the
+    assertion; a False would be a presence claim (v1's job)."""

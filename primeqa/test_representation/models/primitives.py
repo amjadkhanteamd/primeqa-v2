@@ -415,7 +415,7 @@ _ASSERTION_VALUE_BEARING_PREDICATES = {
     "equals", "not_equals", "matches_pattern",
 }
 # Predicates that require ``value`` to be absent.
-_ASSERTION_VALUE_FREE_PREDICATES = {"exists", "is_null", "not_null"}
+_ASSERTION_VALUE_FREE_PREDICATES = {"exists", "is_null", "not_null", "not_exists"}
 
 
 class AssertionPredicate(BaseModel):
@@ -447,6 +447,7 @@ class AssertionPredicate(BaseModel):
         "equals",
         "not_equals",
         "exists",
+        "not_exists",
         "is_null",
         "not_null",
         "matches_pattern",
@@ -454,7 +455,9 @@ class AssertionPredicate(BaseModel):
     """The assertion predicate. Closed taxonomy; ``not_null`` added by
     D-227 (an automation stamp like ``$Flow.CurrentDate`` has no stable
     literal to ``equals`` against — the claim asserts the org wrote
-    SOME value)."""
+    SOME value); ``not_exists`` added by D-307 (the automation-ABSENCE
+    claim asserts the correlated record does NOT exist — value-free,
+    exists' mirror)."""
 
     value: Optional[Any] = None
     """Comparison value. Required for the value-bearing

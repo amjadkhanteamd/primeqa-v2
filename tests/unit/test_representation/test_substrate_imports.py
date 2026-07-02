@@ -92,6 +92,7 @@ EXPECTED_REGISTRATIONS = (
     ("value-claim", 1),
     ("state-transition-claim", 1),
     ("automation-effect-claim", 1),
+    ("automation-effect-claim", 2),         # D-307 — the absence case
     ("prohibition-claim", 1),
     ("acceptance-claim", 1),                # D-305
     ("acceptance-claim", 2),                # D-306.1 — the update case (update_state)

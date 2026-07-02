@@ -758,3 +758,98 @@ def test_staged_cross_object_recipe_projects_through_the_s4_bridge(seeded):
         priority=0, status="approved", created_at=now, updated_at=now))
     assert [s.kind for s in plan.steps] == ["create", "read", "assert"]
     assert plan.steps[0].field_values == {"Order__c.Stage__c": "Submitted"}
+
+
+# ---------------------------------------------------------------------------
+# D-307: the automation-ABSENCE claim (not_exists) — TC-038/039's shape
+# ---------------------------------------------------------------------------
+
+def test_absence_authors_the_v2_body_and_not_exists(seeded):
+    r = _run(seeded, _intent("automation-effect-claim", "positive", "Order__c",
+                             excerpt="a Submitted order creates no log record",
+                             effect_object="Order_Log__c",
+                             effect_lookup_field="Order_Log__c.Order__c",
+                             expected_absence=True,
+                             trigger_fields=[{"field_name": "Order__c.Stage__c",
+                                              "value": "Submitted"}]))
+    assert r.outcome.outcome_kind == OutcomeKind.DRAFT
+    body = r.emission.asserted_truth
+    assert body.body_schema_version == 2
+    assert body.expected_absence is True
+    steps = r.emission.observation_realization.steps
+    assert [s.step_id for s in steps] == [
+        "create-record", "read-effect", "assert-effect"]
+    assert steps[0].field_values == {"Order__c.Stage__c": "Submitted"}
+    assert steps[2].predicate.predicate == "not_exists"
+    assert "NO correlated record" in \
+        r.emission.execution_environment.auth_assumptions[0].details
+
+
+def test_absence_and_presence_hash_apart(seeded):
+    # The v2 key-set IS the discriminator — the same staged state asserting
+    # presence vs absence must be two claims.
+    from primeqa.test_representation.identity_hash import compute_identity_hash
+    base = dict(effect_object="Order_Log__c",
+                effect_lookup_field="Order_Log__c.Order__c",
+                trigger_fields=[{"field_name": "Order__c.Stage__c",
+                                 "value": "Submitted"}])
+    r_p = _run(seeded, _intent("automation-effect-claim", "positive",
+                               "Order__c", **base))
+    r_a = _run(seeded, _intent("automation-effect-claim", "positive",
+                               "Order__c", expected_absence=True, **base))
+    h = lambda r: compute_identity_hash(
+        "data_behavior", "automation-effect-claim",
+        r.emission.asserted_truth, r.emission.semantic_conditions)
+    assert h(r_p) != h(r_a)
+
+
+def test_absence_on_same_record_shape_refuses(seeded):
+    # Fail-closed: silently authoring presence would INVERT the meaning.
+    r = _run(seeded, _intent("automation-effect-claim", "positive", "Order__c",
+                             field_name="Order__c.Status__c",
+                             expected_value="Activated",
+                             automation_name="Stamp_Order_Status",
+                             expected_absence=True),
+             expect_emit=False)
+    assert r.outcome.outcome_kind == OutcomeKind.REFUSAL
+    assert "cross-object" in r.outcome.refusals[0].payload["detail"]
+
+
+def test_absence_with_effect_field_refuses(seeded):
+    # v1 absence = NO correlated record at all; field-conditional absence
+    # is not expressible.
+    r = _run(seeded, _intent("automation-effect-claim", "positive", "Order__c",
+                             effect_object="Order_Log__c",
+                             effect_lookup_field="Order_Log__c.Order__c",
+                             effect_field="Order_Log__c.Level__c",
+                             effect_value="ERROR",
+                             expected_absence=True),
+             expect_emit=False)
+    assert r.outcome.outcome_kind == OutcomeKind.REFUSAL
+    assert "field-conditional" in r.outcome.refusals[0].payload["detail"]
+
+
+def test_absence_recipe_projects_through_the_s4_bridge(seeded):
+    from datetime import datetime, timezone
+    from uuid import uuid4 as _u
+    from primeqa.execution_engine import build_data_recipe_plan
+    from primeqa.test_representation.coordinator import RecipeRead
+
+    r = _run(seeded, _intent("automation-effect-claim", "positive", "Order__c",
+                             effect_object="Order_Log__c",
+                             effect_lookup_field="Order_Log__c.Order__c",
+                             expected_absence=True,
+                             trigger_fields=[{"field_name": "Order__c.Stage__c",
+                                              "value": "Submitted"}]))
+    e = r.emission
+    now = datetime(2026, 7, 3, tzinfo=timezone.utc)
+    plan = build_data_recipe_plan(RecipeRead(
+        recipe_id=_u(), version_seq=1, valid_from=now, valid_to=None,
+        claim_test_id=_u(), claim_version_seq=1,
+        trigger_kind=e.trigger_kind, recipe_kind=e.recipe_kind,
+        causal_initiation=e.causal_initiation,
+        observation_realization=e.observation_realization,
+        execution_environment=e.execution_environment,
+        priority=0, status="approved", created_at=now, updated_at=now))
+    assert [s.kind for s in plan.steps] == ["create", "read", "assert"]
+    assert plan.steps[2].predicate.predicate == "not_exists"

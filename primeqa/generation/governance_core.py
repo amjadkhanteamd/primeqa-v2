@@ -1506,6 +1506,37 @@ class GovernanceCore:
                                 "only — a cross-object/parent-stamp effect "
                                 "cannot observe a recompute on the changed "
                                 "record")))
+            # D-307: absence ("the automation correctly produces NO
+            # correlated record") is the CROSS-OBJECT shape only — refusing
+            # every other combination fail-closed, because silently authoring
+            # the presence shape would INVERT the claim's meaning. A
+            # field-conditional absence (effect_field/effect_value alongside)
+            # is not expressible in v1.
+            if hint.get("expected_absence"):
+                if not hint.get("effect_object") or hint.get(
+                        "effect_via_lookup_field"):
+                    return IntentResolution(
+                        grounded_candidates=[], next_action=NextAction.REFUSE,
+                        interpretation_delta=delta,
+                        refusal=self._router.emission_deferred(
+                            archetype, claim_kind,
+                            detail=("absence asserts NO correlated record — "
+                                    "it needs effect_object + "
+                                    "effect_lookup_field (the cross-object "
+                                    "shape); same-record/parent-stamp "
+                                    "absence is not expressible")))
+                if (hint.get("effect_field")
+                        or hint.get("effect_value") is not None):
+                    return IntentResolution(
+                        grounded_candidates=[], next_action=NextAction.REFUSE,
+                        interpretation_delta=delta,
+                        refusal=self._router.emission_deferred(
+                            archetype, claim_kind,
+                            detail=("absence asserts NO correlated record at "
+                                    "all — a field-conditional absence "
+                                    "(effect_field/effect_value) is not "
+                                    "expressible; drop them or assert "
+                                    "presence")))
             effect_object_api = hint.get("effect_object")
             if effect_object_api and hint.get("effect_via_lookup_field"):
                 # D-227 parent-stamp: the effect lands on a record the TRIGGER
@@ -1592,7 +1623,10 @@ class GovernanceCore:
                     # D-299 rail as above.
                     trigger_fields=_ground_trigger_fields(
                         hint.get("trigger_fields"), neighborhood,
-                        exclude_field=hint.get("effect_field"))))
+                        exclude_field=hint.get("effect_field")),
+                    # D-307: the absence mirror (gated fail-closed above —
+                    # cross-object, no effect_field/effect_value).
+                    expected_absence=bool(hint.get("expected_absence"))))
             else:
                 field_ent = next(
                     (r.entity for r in neighborhood

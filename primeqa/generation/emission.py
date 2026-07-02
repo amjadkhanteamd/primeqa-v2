@@ -72,6 +72,7 @@ from primeqa.test_representation.models.claims.data_behavior.acceptance_claim im
     AcceptanceClaimUpdateBody,
 )
 from primeqa.test_representation.models.claims.data_behavior.automation_effect_claim import (
+    AutomationAbsenceClaimBody,
     AutomationEffectClaimBody,
 )
 from primeqa.test_representation.models.claims.data_behavior.state_transition_claim import (
@@ -355,6 +356,14 @@ class GroundedAutomationEffect:
     # refuses it on non-same-record shapes). Empty () → the create-scoped
     # shape, byte-identical.
     update_trigger_fields: tuple = ()  # tuple[tuple[_Endpoint, Any], ...]
+    # D-307: the ABSENCE case — "under this staged state the automation
+    # correctly produces NO correlated record" (TC-038/039: Medium/Low band →
+    # no follow-up Task). Cross-object shape ONLY (effect_object +
+    # effect_lookup_field, no effect_field — the stash gate refuses every
+    # other combination: silently authoring presence would invert the claim's
+    # meaning). Authors the v2 body + a not_exists assert. False → presence,
+    # byte-identical.
+    expected_absence: bool = False
 
 
 @dataclass(frozen=True)
@@ -1743,7 +1752,30 @@ def _author_automation_effect(g: GroundedAutomationEffect) -> EmissionBundle:
                 trigger_kind="data-mutation-trigger",
                 description=(f"creating a {object_api} with {gate} — "
                              f"{g.requirement_excerpt}"))
-        if g.effect_field is not None:
+        if g.expected_absence:
+            # D-307: the ABSENCE mirror — same staged create, same correlate
+            # read, the assert INVERTS (no row may exist). The v2 body IS the
+            # identity discriminator (a distinct key-set — absence and
+            # presence claims can never collide). The stash gate guarantees
+            # effect_field is None here (construction-proofed below).
+            if g.effect_field is not None:
+                raise ValueError(
+                    "expected_absence with effect_field — v1 absence asserts "
+                    "NO correlated record at all (D-307); the stash gate "
+                    "refuses field-conditional absence upstream")
+            select = f"SELECT Id FROM {effect_api}"
+            assert_pred = AssertionPredicate(
+                subject_ref="read-effect.Id", predicate="not_exists",
+                value=None)
+            details = (f"create a {object_api} record{gated}, query "
+                       f"{effect_api} via {lookup_bare}, assert the Flow "
+                       f"correctly created NO correlated record")
+            claim = AutomationAbsenceClaimBody(
+                automation=automation_ref,
+                automation_primitive=g.automation_primitive,
+                triggering_action=xo_event,
+            )
+        elif g.effect_field is not None:
             field_api = g.effect_field.external_id
             field_bare = field_api.split(".", 1)[-1]
             field_ref = IdentityBearingRef(
@@ -1770,12 +1802,13 @@ def _author_automation_effect(g: GroundedAutomationEffect) -> EmissionBundle:
             details = (f"create a {object_api} record{gated}, query "
                        f"{effect_api} via {lookup_bare}, assert the Flow "
                        f"created a correlated record")
-        claim = AutomationEffectClaimBody(
-            automation=automation_ref,
-            automation_primitive=g.automation_primitive,
-            triggering_action=xo_event, expected_effect=effect,
-            affected_fields=affected,
-        )
+        if not g.expected_absence:
+            claim = AutomationEffectClaimBody(
+                automation=automation_ref,
+                automation_primitive=g.automation_primitive,
+                triggering_action=xo_event, expected_effect=effect,
+                affected_fields=affected,
+            )
         steps = [
             CreateStep(step_id="create-record", target_object=target,
                        field_values=dict(create_fields)),

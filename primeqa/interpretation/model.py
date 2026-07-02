@@ -40,6 +40,9 @@ Verdict = Literal[
     # record did not verify on read-back (e.g. an org automation removed it) —
     # never worded as a rejection (the review's fabricated-refusal fix)
     "acceptance_not_verified",
+    # automation-effect, the ABSENCE mirror (D-307)
+    "automation_absence_confirmed",  # passed: the automation correctly produced nothing
+    "automation_fired_unexpectedly", # failed: it produced a record it must not
     # inspection — presence (metadata-recipe, `exists` assert: existence + metadata-relationship)
     "asserted_metadata_present",     # passed: the asserted relationship/metadata is there
     "asserted_metadata_absent",      # failed: it is not

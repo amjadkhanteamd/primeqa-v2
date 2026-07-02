@@ -149,6 +149,10 @@ def claim_title(claim_kind: str, asserted_truth: Optional[dict],
             # triggering automation (a Flow/recipe API name) is traceability,
             # not the headline — it belongs in the technical details, never the
             # spine (so the title leads with the effect, not the flow name).
+            # D-307: the v2 ABSENCE body has no expected_effect — the
+            # assertion is that the automation stays silent.
+            if body.get("expected_absence"):
+                return "An automation correctly does nothing"
             effect = body.get("expected_effect") or {}
             ekind = effect.get("kind") if isinstance(effect, dict) else None
             if ekind == "field_change":
@@ -269,6 +273,10 @@ _VERDICT_PLAIN = {
     "change_rejected": "the org rejected a change that must succeed",
     "acceptance_not_verified":
         "the org accepted it, but the record could not be verified afterwards",
+    "automation_absence_confirmed":
+        "the automation correctly produced nothing",
+    "automation_fired_unexpectedly":
+        "the automation fired when it must not have",
     "asserted_metadata_present":
         "The configuration exists in the org (existence only — enforcement "
         "not exercised)",

@@ -454,7 +454,8 @@ def _mutation_evidence(mutation, sobject, record_id, changes, start, end, *,
 # Predicates the positive ground step can faithfully evaluate. Side A emits
 # `equals` (field == V) and `exists` (the read found a row — the cross-object
 # automation-effect assert, D-210); others are deferred (fail-loud until built).
-_SUPPORTED_DATA_PREDICATES = frozenset({"equals", "exists", "not_null"})
+_SUPPORTED_DATA_PREDICATES = frozenset(
+    {"equals", "exists", "not_null", "not_exists"})
 
 # D-210: a side-effect read may observe a record the org's automation creates
 # moments AFTER the trigger create commits (async Flow paths). An empty read
@@ -933,6 +934,13 @@ def _run_ground(assertion, read_ev, *, ordinal) -> AssertEvidence:
         # the side-effect record at all? No row indexing (0 rows is the honest
         # FAILED evaluation, not an error).
         held = read_ev.row_count > 0
+    elif pred.predicate == "not_exists":
+        # D-307: the automation-ABSENCE assert — the correlated record must
+        # NOT exist. The D-210 empty-read retry works FOR this direction
+        # (three attempts give the org every chance to prove presence before
+        # absence is asserted); any observed row is the honest FAILED
+        # evaluation (the automation fired when it must not).
+        held = read_ev.row_count == 0
     elif pred.predicate == "not_null":
         # D-227: the stamp assert — the automation wrote SOME value (e.g.
         # $Flow.CurrentDate has no stable literal to equals against). 0 rows

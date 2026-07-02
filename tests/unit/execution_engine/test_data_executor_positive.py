@@ -1340,3 +1340,46 @@ def test_override_naming_the_observed_field_is_stripped_k16():
     assert client.creates[0][1]["Name"] == "Steered"
     # ...so the run honestly FAILS (the org produced nothing).
     assert ev.outcome == "failed"
+
+
+def _absence_plan(object_api="Account"):
+    """The D-307 absence shape: staged create -> side-effect read -> not_exists."""
+    target = LogicalRef(entity_type="Object", external_id=object_api)
+    return DataRecipePlan(
+        recipe_id=uuid4(), recipe_version_seq=2, claim_test_id=uuid4(),
+        claim_version_seq=None, api_choice="rest",
+        steps=(
+            PlannedCreate(step_id="create-record", target_object=target,
+                          field_values={"Status__c": "Active"},
+                          expect_rejection=None),
+            PlannedDataRead(
+                step_id="read-effect",
+                target=LogicalRef(entity_type="Object", external_id="Case"),
+                soql="SELECT Id FROM Case WHERE Origin__c = '$create-record.id'",
+                fields_to_capture=("Id",)),
+            PlannedAssertion(
+                step_id="assert-effect",
+                predicate=AssertionPredicate(
+                    subject_ref="read-effect.Id", predicate="not_exists")),
+        ))
+
+
+def test_not_exists_passes_on_zero_rows():
+    # D-307: absence held — the automation correctly produced nothing. The
+    # empty SIDE-EFFECT read is evaluable (D-227.7), never errored.
+    client = _StubClient(create_result=_success("001Z"), query_result=[])
+    ev = _run(_absence_plan(), client, _s1())
+    assert ev.outcome == "passed"
+    assert ev.steps[-1].held is True
+    assert client.deletes == [("Account", "001Z")]        # k14
+
+
+def test_not_exists_fails_on_an_observed_row():
+    # The automation fired when it must not — the honest FAILED finding; the
+    # observed side-effect record is registered and torn down (D-210).
+    client = _StubClient(create_result=_success("001Z"),
+                         query_result=[{"Id": "00T9"}])
+    ev = _run(_absence_plan(), client, _s1())
+    assert ev.outcome == "failed"
+    assert ev.steps[-1].held is False
+    assert ("Case", "00T9") in client.deletes             # side-effect cleanup

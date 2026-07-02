@@ -50,6 +50,13 @@ def interpret_run(evidence: RunEvidence,
         vocab_kind = claim_kind
         if claim_kind == "acceptance-claim" and mutation is not None:
             vocab_kind = "acceptance-claim@update"
+        # D-307: the absence claim's direction is INVERTED — a held
+        # not_exists means the automation correctly produced NOTHING;
+        # "The automation fired" prose would be wrong on both sides. The
+        # assert predicate is the evidence-borne discriminator.
+        if (claim_kind == "automation-effect-claim"
+                and assertion.predicate == "not_exists"):
+            vocab_kind = "automation-effect-claim@absence"
         verdict, attribution, refs = _interpret_positive(
             evidence, create, assertion, claim_kind=vocab_kind)
     elif (mutation is not None and claim_kind == "acceptance-claim"
@@ -179,6 +186,15 @@ _POSITIVE_VOCAB = {
         "The automation fired.",
         "the asserted effect was not observed",
         "The automation did not produce its asserted effect."),
+    # D-307: the ABSENCE mirror — passed = the automation correctly produced
+    # nothing; failed = it fired when it must not (a synthetic vocab key;
+    # interpret() selects it on a not_exists assert).
+    "automation-effect-claim@absence": (
+        "automation_absence_confirmed", "automation_fired_unexpectedly",
+        "no correlated record was observed",
+        "The automation correctly produced nothing.",
+        "a correlated record WAS observed",
+        "The automation fired when the requirement says it must not."),
     # D-305: the acceptance archetype — passed = the org SAVED the case. The
     # FAIL slot here is the assert-failed shape only (the org ACCEPTED the
     # mutation but the read-back did not verify — a genuinely refused

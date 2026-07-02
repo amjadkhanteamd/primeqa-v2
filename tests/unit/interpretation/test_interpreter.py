@@ -452,3 +452,30 @@ def test_multi_create_failed_at_terminal_cites_the_failed_create():
     assert interp.verdict == "creation_rejected"
     assert interp.evidence_refs[0].step_id == "create-violating"
     assert "http 400" in interp.evidence_refs[0].detail
+
+
+def test_passed_absence_reads_correctly_silent_not_fired():
+    # D-307: a held not_exists must NEVER read "The automation fired."
+    ev = _run(outcome="passed", steps=[
+        _setup_create(), _read(0),
+        AssertEvidence(step_id="assert-effect", ordinal=2,
+                       predicate="not_exists", subject_ref="read-effect.Id",
+                       evaluated_row_count=0, held=True,
+                       started_at=_T, finished_at=_T, duration_ms=0)])
+    interp = interpret_run(ev, claim_kind="automation-effect-claim")
+    assert interp.verdict == "automation_absence_confirmed"
+    assert "fired" not in interp.attribution.split("must not")[0] \
+        or "correctly produced nothing" in interp.attribution
+    assert "correctly produced nothing" in interp.attribution
+
+
+def test_failed_absence_reads_fired_unexpectedly():
+    ev = _run(outcome="failed", steps=[
+        _setup_create(), _read(1),
+        AssertEvidence(step_id="assert-effect", ordinal=2,
+                       predicate="not_exists", subject_ref="read-effect.Id",
+                       evaluated_row_count=1, held=False,
+                       started_at=_T, finished_at=_T, duration_ms=0)])
+    interp = interpret_run(ev, claim_kind="automation-effect-claim")
+    assert interp.verdict == "automation_fired_unexpectedly"
+    assert "must not" in interp.attribution
