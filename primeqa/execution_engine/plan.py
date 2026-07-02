@@ -145,6 +145,7 @@ class PlannedCreate:
     target_object: LogicalRef
     field_values: dict
     expect_rejection: Optional[RejectionExpectation] = None
+    expect_acceptance: bool = False
     kind: Literal["create"] = "create"
 
 

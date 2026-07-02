@@ -262,6 +262,8 @@ _VERDICT_PLAIN = {
         "Triggered the automation — it produced the expected result",
     "automation_not_triggered":
         "Triggered the automation — but the expected result never appeared",
+    "creation_accepted": "the org accepted the creation",
+    "creation_rejected": "the org rejected a creation that must save",
     "asserted_metadata_present":
         "The configuration exists in the org (existence only — enforcement "
         "not exercised)",

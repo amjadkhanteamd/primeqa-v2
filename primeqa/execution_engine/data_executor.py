@@ -551,7 +551,15 @@ def _run_positive(plan: DataRecipePlan, *, client, environment_id: int, s1=None,
         # — negative recipes never reach here with overrides (their premise must
         # stay intact). Empty/None → today's behavior exactly.
         if field_overrides and ordinal == len(creates) - 1:
-            field_values = {**field_values, **_sf_fields(field_overrides, sobject)}
+            if getattr(create, "expect_acceptance", False):
+                # D-305.1 (review S1): the staged acceptance STATE defines the
+                # claim — a dispatch-time override may steer padding but never
+                # overwrite a staged field (the D-300 subordination, mirrored).
+                staged = _sf_fields(dict(create.field_values), sobject)
+                field_values = {**_sf_fields(field_overrides, sobject),
+                                **field_values, **staged}
+            else:
+                field_values = {**field_values, **_sf_fields(field_overrides, sobject)}
 
         # 3. Create — expect success.
         c_start = _now()

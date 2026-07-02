@@ -44,6 +44,7 @@ from pydantic import Field
 # on each of the four data-behavior claim bodies and exposes the
 # archetype-scoped union.
 from primeqa.test_representation.models.claims.data_behavior import (
+    AcceptanceClaimBody,
     AutomationEffectClaimBody,
     DataBehaviorClaimBody,
     ProhibitionClaimBody,
@@ -101,6 +102,7 @@ ClaimBody = Annotated[
         StateTransitionClaimBody,
         AutomationEffectClaimBody,
         ProhibitionClaimBody,
+        AcceptanceClaimBody,
         MetadataRelationshipClaimBody,
         ExistenceClaimBody,
         PropertyClaimBody,

@@ -51,6 +51,12 @@ def interpret_run(evidence: RunEvidence,
         # assert), so the presence of an assert alongside is the discriminator.
         verdict, attribution, refs = _interpret_positive(
             evidence, create, assertion, claim_kind=claim_kind)
+    elif create is not None and claim_kind == "acceptance-claim":
+        # D-305.1 (review B2): a FAILED-AT-CREATE acceptance run is create-only
+        # evidence too — but the claim direction is INVERTED vs the 1-step
+        # negative: here the org rejecting IS the finding against the org.
+        verdict, attribution, refs = _interpret_acceptance_rejected(
+            evidence, create)
     elif create is not None:
         # 1-step behavioral negative: a single create the org should reject.
         verdict, attribution, refs = _interpret_behavioral(evidence, create)
@@ -149,6 +155,30 @@ _POSITIVE_VOCAB = {
         "the org rejected a creation the requirement says must save",
         "The org refused the asserted case."),
 }
+
+
+def _interpret_acceptance_rejected(evidence: RunEvidence,
+                                   create: CreateAttemptEvidence):
+    """D-305.1: the acceptance archetype's failure shape — the org REFUSED a
+    creation the requirement says must save. ``failed`` is the graded business
+    finding (D-305's expect_acceptance grade); ``errored`` stays not-evaluated
+    (transport/ambiguous — the org did not business-evaluate the case)."""
+    if evidence.outcome == "errored":
+        return _not_evaluated(evidence, create.step_id)
+    codes = sorted({e.get("errorCode") for e in (create.rejection_body or ())
+                    if isinstance(e, dict) and e.get("errorCode")})
+    detail = ("the org rejected the creation (" + ", ".join(codes) + ")"
+              if codes else "the org rejected the creation")
+    refs = (EvidenceRef(create.step_id,
+                        "create rejected (http " + str(create.http_status) +
+                        "): " + detail),)
+    return (
+        "creation_rejected",
+        ("The org refused to create the " + create.sobject + " case the "
+         "requirement says must save" + " — " + detail +
+         ". The acceptance claim does not hold."),
+        refs,
+    )
 
 
 def _interpret_positive(evidence: RunEvidence, create: CreateAttemptEvidence,

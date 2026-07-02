@@ -14,12 +14,6 @@ from .test_automation_vertical import _intent, _run
 from primeqa.test_representation.identity_hash import compute_identity_hash
 
 
-def _acceptance(seeded, conditions, **extra):
-    return _run(seeded, _intent("acceptance-claim", "positive", "Order__c",
-                                acceptance_conditions=conditions, **extra),
-                expect_emit=extra.pop("expect_emit", True))
-
-
 def test_acceptance_authors_the_prohibition_mirror(seeded):
     r = _run(seeded, _intent("acceptance-claim", "positive", "Order__c",
                              acceptance_conditions=[
@@ -95,7 +89,7 @@ def test_nonwritable_condition_field_refuses(seeded):
                                   "predicate": "equals", "value": 110}]),
              expect_emit=False)
     assert r.outcome.outcome_kind == OutcomeKind.REFUSAL
-    assert "writable" in r.outcome.refusals[0].payload["detail"]
+    assert "createable" in r.outcome.refusals[0].payload["detail"]
 
 
 def test_empty_conditions_refuse(seeded):
@@ -104,3 +98,43 @@ def test_empty_conditions_refuse(seeded):
              expect_emit=False)
     assert r.outcome.outcome_kind == OutcomeKind.REFUSAL
     assert "at least one" in r.outcome.refusals[0].payload["detail"]
+
+
+def test_is_null_on_required_field_refuses(seeded):
+    # D-305.1 (review B3): padding fills required fields, so an is_null clause
+    # on one would be structurally contradicted at execution — fail closed.
+    # Order__c.Req_Code__c is seeded NOT-nillable in field_details.
+    r = _run(seeded, _intent("acceptance-claim", "positive", "Order__c",
+                             acceptance_conditions=[
+                                 {"field": "Order__c.Stage__c",
+                                  "predicate": "equals", "value": "Submitted"},
+                                 {"field": "Order__c.Req_Code__c",
+                                  "predicate": "is_null"}]),
+             expect_emit=False)
+    assert r.outcome.outcome_kind == OutcomeKind.REFUSAL
+    assert "REQUIRED" in r.outcome.refusals[0].payload["detail"]
+
+
+def test_is_null_only_set_refuses(seeded):
+    # D-305.1 (review S4): an is_null-only state would be proven by padding.
+    r = _run(seeded, _intent("acceptance-claim", "positive", "Order__c",
+                             acceptance_conditions=[
+                                 {"field": "Order__c.Priority__c",
+                                  "predicate": "is_null"}]),
+             expect_emit=False)
+    assert r.outcome.outcome_kind == OutcomeKind.REFUSAL
+    assert "equals" in r.outcome.refusals[0].payload["detail"]
+
+
+def test_same_conditions_same_hash(seeded):
+    # D-305.1 (review S7): regeneration/dedup depends on CONVERGENCE too.
+    def gen():
+        return _run(seeded, _intent("acceptance-claim", "positive", "Order__c",
+                                    acceptance_conditions=[
+                                        {"field": "Order__c.Subtotal__c",
+                                         "predicate": "equals", "value": 5000}]))
+    r1, r2 = gen(), gen()
+    h = lambda r: compute_identity_hash(
+        "data_behavior", "acceptance-claim",
+        r.emission.asserted_truth, r.emission.semantic_conditions)
+    assert h(r1) == h(r2)

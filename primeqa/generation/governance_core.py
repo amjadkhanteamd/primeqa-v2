@@ -498,6 +498,9 @@ def _grounding_field_metadata(neighborhood: list, s1, at_seq: int) -> dict:
             "field_type": (details.get("field_type") or "").lower(),
             "length": details.get("length"),
             "is_calculated": bool(details.get("is_calculated", False)),
+            # D-305.1 (review B3): required-ness — an is_null acceptance clause
+            # on a NON-nillable field is structurally defeated by k16 padding.
+            "is_nillable": bool(details.get("is_nillable", True)),
             # D-294: writability (D-160) — a violating payload can only SET a
             # writable field; defaults TRUE to match field_details' server_default.
             "is_createable": bool(details.get("is_createable", True)),
@@ -1182,19 +1185,57 @@ class GovernanceCore:
                         detail=(f"acceptance conditions must be stageable on "
                                 f"one create — equals/is_null only; got "
                                 f"{unstageable}")))
+            # D-305.1 (review S4): an is_null-ONLY set stages nothing — the
+            # "acceptance" would be proven by pure padding. Require >=1 equals.
+            if not any(c.predicate == "equals" for c in grounded_conds):
+                return IntentResolution(
+                    grounded_candidates=[], next_action=NextAction.REFUSE,
+                    interpretation_delta=delta,
+                    refusal=self._router.emission_deferred(
+                        archetype, claim_kind,
+                        detail=("an acceptance case needs at least one "
+                                "equals clause — an is_null-only state would "
+                                "be proven by padding, not by the case")))
             cond_meta = _grounding_field_metadata(neighborhood, self._s1, at)
+
+            def _bare(ext):
+                return ext.split(".", 1)[-1]
+
+            # D-305.1 (review S5): a create-only operation needs CREATEABLE
+            # specifically (not the createable-OR-updateable floor).
             nonwritable = sorted(
                 c.field.external_id for c in grounded_conds
-                if c.predicate == "equals" and not _writable(
-                    cond_meta.get(c.field.external_id.split(".", 1)[-1])))
+                if c.predicate == "equals" and (
+                    (m := cond_meta.get(_bare(c.field.external_id))) is None
+                    or m.get("is_calculated")
+                    or not m.get("is_createable", True)))
             if nonwritable:
                 return IntentResolution(
                     grounded_candidates=[], next_action=NextAction.REFUSE,
                     interpretation_delta=delta,
                     refusal=self._router.emission_deferred(
                         archetype, claim_kind,
-                        detail=(f"acceptance condition field(s) not writable "
-                                f"(calculated/read-only): {nonwritable}")))
+                        detail=(f"acceptance condition field(s) not "
+                                f"createable (calculated/read-only): "
+                                f"{nonwritable}")))
+            # D-305.1 (review B3): an is_null clause on a REQUIRED field is
+            # structurally defeated — k16 padding fills non-nillable fields,
+            # so the executed record would CONTRADICT the claimed state and
+            # green a case the org truthfully rejects. Fail closed.
+            required_nulls = sorted(
+                c.field.external_id for c in grounded_conds
+                if c.predicate == "is_null" and not (
+                    cond_meta.get(_bare(c.field.external_id)) or {}
+                ).get("is_nillable", True))
+            if required_nulls:
+                return IntentResolution(
+                    grounded_candidates=[], next_action=NextAction.REFUSE,
+                    interpretation_delta=delta,
+                    refusal=self._router.emission_deferred(
+                        archetype, claim_kind,
+                        detail=(f"is_null asserted on REQUIRED field(s) "
+                                f"{required_nulls} — required-field padding "
+                                f"would contradict the claimed state")))
             _stash_grounding(state, GroundedAcceptance(
                 archetype=archetype, claim_kind=claim_kind, version_seq=at,
                 subject=_Endpoint(

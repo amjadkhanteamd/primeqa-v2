@@ -422,3 +422,52 @@ def test_rejects_read_between_creates():
         observation_realization=_chain_body(insert_read_between=True))
     with pytest.raises(PlanTranslationError, match="ReadStep -> AssertStep"):
         build_data_recipe_plan(recipe)
+
+
+def test_positive_projection_carries_expect_acceptance():
+    # D-305.1 (review B1): the flag must SURVIVE recipe->plan projection —
+    # dropping it made the acceptance grade dead code on every real dispatch.
+    from primeqa.execution_engine.bridge import build_data_recipe_plan
+    from primeqa.test_representation.models.recipes.data_recipe import (
+        AssertStep, CreateStep, DataRecipeBody, ReadStep)
+    from primeqa.test_representation.models.primitives import AssertionPredicate
+    from primeqa.test_representation.models.references import LogicalRef
+    from primeqa.test_representation.models.triggers.data_mutation import (
+        DataMutationTriggerBody)
+    from primeqa.test_representation.models.environment import (
+        AuthAssumption, ExecutionEnvironmentBody)
+    from types import SimpleNamespace
+    from uuid import uuid4
+
+    body = DataRecipeBody(
+        api_choice="rest", identity_context="system",
+        execution_mechanism="direct_api",
+        steps=[
+            CreateStep(step_id="create-record",
+                       target_object=LogicalRef(entity_type="Object",
+                                                external_id="Opportunity"),
+                       field_values={"Opportunity.Amount": 1},
+                       expect_acceptance=True),
+            ReadStep(step_id="read-created",
+                     target=LogicalRef(entity_type="Object",
+                                       external_id="Opportunity"),
+                     soql="SELECT Id FROM Opportunity WHERE Id = '$create-record.id'",
+                     fields_to_capture=["Id"]),
+            AssertStep(step_id="assert-exists",
+                       predicate=AssertionPredicate(
+                           subject_ref="read-created.Id", predicate="exists")),
+        ])
+    recipe = SimpleNamespace(
+        recipe_id=uuid4(), version_seq=1, claim_test_id=uuid4(),
+        claim_version_seq=1, trigger_kind="data-mutation-trigger",
+        recipe_kind="data-recipe", observation_realization=body,
+        execution_environment=ExecutionEnvironmentBody(
+            auth_assumptions=[AuthAssumption(auth_kind="data_api_user",
+                                             details="x")]),
+        causal_initiation=DataMutationTriggerBody(
+            operation="create",
+            target=LogicalRef(entity_type="Object", external_id="Opportunity"),
+            identity_context="system", volume="single"),
+        api_choice="rest")
+    plan = build_data_recipe_plan(recipe)
+    assert plan.steps[0].expect_acceptance is True

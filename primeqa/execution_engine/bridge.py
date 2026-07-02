@@ -480,6 +480,9 @@ def _project_positive(steps, *, recipe_id) -> tuple:
             target_object=c.target_object,
             field_values=dict(c.field_values),
             expect_rejection=None,
+            # D-305.1 (review B1): the acceptance flag must SURVIVE projection —
+            # dropping it made the archetype's defining failure grade dead code.
+            expect_acceptance=getattr(c, "expect_acceptance", False),
         )
         for c in steps[:n]
     ) + (

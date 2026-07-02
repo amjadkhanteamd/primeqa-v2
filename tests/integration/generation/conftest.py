@@ -257,6 +257,15 @@ def seeded(db_setup) -> dict:
             "field_type, is_calculated) VALUES (CAST(:f AS uuid), "
             "CAST(:o AS uuid), 'currency', TRUE)"),
             {"f": order_total, "o": order})
+        # D-305.1 (B3): a REQUIRED (non-nillable) field — the is_null-over-
+        # required refusal's fixture.
+        order_req = _entity(conn, "Field", "Order__c.Req_Code__c", v1)
+        _edge(conn, order_req, order, "BELONGS_TO", "STRUCTURAL", v1)
+        conn.execute(text(
+            "INSERT INTO field_details (entity_id, object_entity_id, "
+            "field_type, is_nillable) VALUES (CAST(:f AS uuid), "
+            "CAST(:o AS uuid), 'string', FALSE)"),
+            {"f": order_req, "o": order})
         order_flow = _entity(conn, "Flow", "Stamp_Order_Status", v1)
         _edge(conn, order_flow, order, "TRIGGERS_ON", "BEHAVIOR", v1)
         # D-299: a SECOND Flow TRIGGERS_ON Order__c — the multi-flow fixture that

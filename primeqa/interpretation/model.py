@@ -30,7 +30,9 @@ Verdict = Literal[
     "state_not_transitioned",        # failed: the org did NOT produce the asserted to-state
     # positive automation-effect (data-recipe, observe-the-org — D-210)
     "automation_triggered",          # passed: the automation produced the asserted effect
-    "automation_not_triggered",      # failed: the asserted effect never materialized
+    "automation_not_triggered",
+    "creation_accepted",
+    "creation_rejected",      # failed: the asserted effect never materialized
     # inspection — presence (metadata-recipe, `exists` assert: existence + metadata-relationship)
     "asserted_metadata_present",     # passed: the asserted relationship/metadata is there
     "asserted_metadata_absent",      # failed: it is not
