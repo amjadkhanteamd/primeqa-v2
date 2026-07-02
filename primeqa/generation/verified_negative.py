@@ -83,6 +83,19 @@ class NotDerivable:
 
 
 @dataclass(frozen=True)
+class BoundaryMember:
+    """One member of the D-300 boundary set for a single-threshold-numeric
+    prohibition: the payload to create, whether the VR must REJECT it (the
+    firing probe) or ACCEPT it (the just-inside probe), and the human edge
+    label (rides the recipe body for diagnostics — the verdict never consumes
+    it; ``ProbeResult.boundary`` labelling stays deferred, D-300)."""
+
+    payload: dict[str, Any]     # {field_name: value}
+    expect_reject: bool         # True = firing; False = just-inside (accept)
+    edge: str                   # "firing" | "just-inside"
+
+
+@dataclass(frozen=True)
 class _SoftFill:
     """D-296 — a "soft" fill: an *any non-blank* value synthesized for a
     ``NOT(ISBLANK(f))`` conjunct, which a HARD assignment on the same field (e.g. a
@@ -135,6 +148,57 @@ def derive_update(ast, field_metadata=None) -> Union[VerifiedUpdateNegative, Not
     return VerifiedUpdateNegative(
         setup_payload=_unwrap_soft(setup),
         violating_changes=_unwrap_soft(violating))
+
+
+_BOUNDARY_OPS = frozenset({">", ">=", "<", "<="})  # threshold orderings only
+
+
+def derive_boundary_set(ast, field_metadata=None) -> tuple:
+    """D-300: the ordered boundary set for a SINGLE-THRESHOLD-NUMERIC
+    prohibition — the firing probe (the existing :func:`derive` payload; the VR
+    must reject it) + the just-inside probe (the boundary-adjacent non-firing
+    value; the create must SUCCEED). Both values come from the SHIPPED
+    derivation machinery — firing = ``_violating_value(op, lit)``, just-inside =
+    the ``_NEG[op]`` direction (exactly :func:`derive_update`'s setup direction)
+    — so no new value arithmetic exists here.
+
+    Certainty bar (refuse → ``()``, never a guessed set): the formula must be a
+    bare top-level ``Comparison`` of one FieldRef against one NUMERIC literal
+    with a threshold ordering (``>`` / ``>=`` / ``<`` / ``<=``). Equality ops are
+    point constraints (no threshold adjacency); compounds, cross-field,
+    string/boolean literals, org-state functions, and dotted refs all refuse —
+    the same :func:`_pre_scan` gates as :func:`derive`. ``field_metadata`` is
+    accepted for signature parity with the derive family; the literal shape
+    does not gate on it (matching :func:`derive`'s literal path — the primary
+    reject create carries the identical writability exposure).
+
+    Invariant (drift self-check, unit-pinned): ``member[0].payload`` equals
+    ``derive(ast).violating_payload`` — the firing probe IS the primary's
+    payload, never a divergent re-derivation.
+
+    Integer ±1 adjacency is SOUND (genuinely firing / non-firing) but not
+    scale-tight on decimal fields — tightening via field scale metadata is a
+    named D-300 deferral. DORMANT until D-300 S3 wires the flag-gated author."""
+    if _pre_scan(ast) is not None:
+        return ()
+    if not isinstance(ast, Comparison):
+        return ()                       # compound / function shapes: no single threshold
+    if isinstance(ast.left, FieldRef) and isinstance(ast.right, FieldRef):
+        return ()                       # cross-field: no literal to be adjacent to
+    try:
+        field, literal, op = _orient(ast)
+    except _Undecidable:
+        return ()
+    if literal.kind != "number" or op not in _BOUNDARY_OPS:
+        return ()
+    firing = _violating_value(op, literal)
+    just_inside = _violating_value(_NEG[op], literal)
+    return (
+        BoundaryMember(payload={field: firing}, expect_reject=True,
+                       edge="firing"),
+        BoundaryMember(payload={field: just_inside}, expect_reject=False,
+                       edge="just-inside"),
+    )
 
 
 def _unwrap_soft(payload: dict[str, Any]) -> dict[str, Any]:

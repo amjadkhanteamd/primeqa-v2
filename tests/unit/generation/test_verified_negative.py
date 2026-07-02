@@ -424,3 +424,81 @@ def test_shapes_refuse_field_neither_createable_nor_updateable():
     assert isinstance(derive(parse("NOT(ISBLANK(F__c))"),
         {"F__c": {"field_type": "text", "is_createable": True, "is_updateable": False}}),
         VerifiedNegative)
+
+
+# ---------------------------------------------------------------------------
+# D-300: derive_boundary_set — the single-threshold-numeric boundary pair
+# (firing + just-inside), DORMANT (no live call site until D-300 S3).
+# ---------------------------------------------------------------------------
+
+from primeqa.generation.verified_negative import (  # noqa: E402
+    BoundaryMember, derive_boundary_set,
+)
+
+
+def _bset(formula):
+    return derive_boundary_set(parse(formula))
+
+
+def test_boundary_set_threshold_op_value_table():
+    # (formula, firing value, just-inside value) for the four threshold ops.
+    table = [
+        ("Amount > 10000", 10001, 10000),
+        ("Amount >= 10000", 10000, 9999),
+        ("Amount < 10000", 9999, 10000),
+        ("Amount <= 10000", 10000, 10001),
+    ]
+    for formula, fire, inside in table:
+        members = _bset(formula)
+        assert len(members) == 2, formula
+        firing, just_inside = members
+        assert firing == BoundaryMember(
+            payload={"Amount": fire}, expect_reject=True, edge="firing"), formula
+        assert just_inside == BoundaryMember(
+            payload={"Amount": inside}, expect_reject=False,
+            edge="just-inside"), formula
+
+
+def test_boundary_set_literal_field_order_flips_op():
+    # 10000 < Amount  <=>  Amount > 10000 -> the same pair
+    assert _bset("10000 < Amount") == _bset("Amount > 10000")
+
+
+def test_boundary_firing_member_equals_derive_payload():
+    # The D-300 drift self-check: member[0] IS the primary's payload — the
+    # generator and the shipped primary derivation can never diverge silently.
+    for formula in ("Amount > 10000", "Amount >= 10000",
+                    "Amount < 10000", "Amount <= 10000"):
+        members = _bset(formula)
+        primary = derive(parse(formula))
+        assert isinstance(primary, VerifiedNegative), formula
+        assert members[0].payload == primary.violating_payload, formula
+
+
+def test_boundary_set_refuses_non_threshold_shapes():
+    # Equality ops are point constraints — no threshold adjacency.
+    assert _bset("Amount = 5") == ()
+    assert _bset("Amount <> 0") == ()
+    # String/boolean literals: no numeric adjacency.
+    assert _bset('Status__c = "Open"') == ()
+    # Compounds: no single threshold (derive() handles them; the boundary
+    # generator is deliberately stricter).
+    assert _bset("AND(Amount > 100, ISBLANK(Reason__c))") == ()
+    assert _bset("NOT(Amount > 100)") == ()
+    # Function shapes.
+    assert _bset("ISBLANK(Reason__c)") == ()
+    # Cross-field: no literal to be adjacent to (with or without metadata).
+    assert _bset("Loan__c > Property__c") == ()
+    assert derive_boundary_set(
+        parse("Loan__c > Property__c"),
+        {"Loan__c": {"field_type": "currency"},
+         "Property__c": {"field_type": "currency"}}) == ()
+
+
+def test_boundary_set_refuses_pre_scan_gates():
+    # The same _pre_scan gates as derive(): org-state funcs, dotted refs,
+    # unparsed formulas.
+    assert _bset("PRIORVALUE(Amount) > 100") == ()
+    assert _bset("Account.Amount__c > 100") == ()
+    assert derive_boundary_set(parse("REGEX(Phone, '[0-9]+')")) == ()
+    assert derive_boundary_set(None) == ()
