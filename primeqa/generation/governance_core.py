@@ -871,7 +871,11 @@ class GovernanceCore:
         re-indexed per intent (``c0..c{n-1}``), grounded candidates from every
         intent are presented together, failed intents stay recorded as
         dismissals in the merged delta, and the call refuses only when ZERO
-        intents ground (the first refusal directive routes). The legacy
+        intents ground (the first refusal directive routes). D-302: every
+        per-intent refusal directive — routed or not — is also recorded as a
+        ``partial_refusals`` entry in the merged delta, keyed by the intent's
+        re-indexed path slot, so a mixed batch says WHY each non-emitting
+        intent emitted nothing (D-247 refusal visibility). The legacy
         singular form resolves exactly as before."""
         per_intent = normalize_propose_input(intent_input)
         # D-247: a follow-up propose turn (the coverage enforcer's single
@@ -903,8 +907,18 @@ class GovernanceCore:
                 merged["dismissed_alternatives_by_reason"].setdefault(reason, []).extend(ids)
             merged["scoped_neighborhood"].extend(d.get("scoped_neighborhood") or [])
             grounded_all.extend(res.grounded_candidates)
-            if res.refusal is not None and first_refusal is None:
-                first_refusal = res.refusal
+            if res.refusal is not None:
+                if first_refusal is None:
+                    first_refusal = res.refusal
+                desc = pi.get("intent_descriptor") or {}
+                merged.setdefault("partial_refusals", []).append({
+                    "path_id": f"c{i + offset}",
+                    "ac_ref": desc.get("ac_ref"),
+                    "archetype": desc.get("archetype_hint"),
+                    "claim_kind": desc.get("claim_kind_hint"),
+                    "refusal_kind": res.refusal.refusal_kind.value,
+                    "payload": res.refusal.payload,
+                })
 
         if not grounded_all:
             return IntentResolution(grounded_candidates=[], next_action=NextAction.REFUSE,

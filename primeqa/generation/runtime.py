@@ -337,8 +337,13 @@ class RequirementState:
             ai["dismissed_alternatives_by_reason"].setdefault(reason, []).extend(ids)
         if delta.get("selected_path_id") is not None:
             ai["selected_path_id"] = delta["selected_path_id"]
+        # D-302: partial refusals accumulate across propose turns (the D-247
+        # re-prompt hop) — the catch-all overwrite below would drop turn 1's.
+        for pr in delta.get("partial_refusals", []) or []:
+            ai.setdefault("partial_refusals", []).append(pr)
         for k, v in delta.items():
-            if k not in ("candidate_paths", "dismissed_alternatives_by_reason", "selected_path_id"):
+            if k not in ("candidate_paths", "dismissed_alternatives_by_reason",
+                         "selected_path_id", "partial_refusals"):
                 ai[k] = v
 
 
@@ -488,6 +493,9 @@ class GenerationRuntime:
                 if (res.next_action != NextAction.AWAIT_SELECTION
                         and self._coverage_should_reprompt(state)):
                     state.coverage_reprompted = True
+                    # D-302: the re-prompt bypasses the route below — a wholly-
+                    # refused turn's directive must still leave a record.
+                    self._stash_partial_refusal(state, res, tu.input)
                     self._respond(state, tu, self._coverage_reprompt_text(state))
                     phase = Phase.PROPOSE
                     phase_attempt = 1
@@ -496,6 +504,9 @@ class GenerationRuntime:
                 # Refuse only when NOTHING grounded across all turns (cumulative).
                 if not state.presented_candidates:
                     return self._route(res.refusal, ctx, state, seam)
+                # D-302: prior turns grounded, so this turn's refusal (if any)
+                # will never route — record it instead of swallowing it.
+                self._stash_partial_refusal(state, res, tu.input)
                 self._respond(state, tu, _present_candidates(state.presented_candidates))
                 phase = Phase.SELECT if res.next_action == NextAction.AWAIT_SELECTION else Phase.EMIT
                 phase_attempt = 1
@@ -660,6 +671,30 @@ class GenerationRuntime:
         shortfall = _coverage.floor_shortfall(len(state.coverage_acs), state.coverage_floor)
         if shortfall > 0:
             state.attempted_interpretation["coverage_floor_shortfall"] = shortfall
+
+    def _stash_partial_refusal(self, state: RequirementState, res: Any,
+                               propose_input: dict) -> None:
+        """D-302: store a governance-authored refusal directive the loop
+        declines to route (a wholly-refused turn after a grounded one, or one
+        bypassed by the re-prompt hop) as a ``partial_refusals`` entry on
+        attempted_interpretation. The spine stores verbatim, never authors.
+        Multi-intent turns are already recorded per-intent by the governance
+        merge (their delta carries the key) — skip to avoid a double record."""
+        if res.refusal is None:
+            return
+        if (res.interpretation_delta or {}).get("partial_refusals"):
+            return
+        descs = self._descriptors(propose_input)
+        desc = descs[0] if len(descs) == 1 else {}
+        paths = (res.interpretation_delta or {}).get("candidate_paths") or []
+        state.attempted_interpretation.setdefault("partial_refusals", []).append({
+            "path_id": paths[0].get("path_id") if paths else None,
+            "ac_ref": desc.get("ac_ref"),
+            "archetype": desc.get("archetype_hint"),
+            "claim_kind": desc.get("claim_kind_hint"),
+            "refusal_kind": res.refusal.refusal_kind.value,
+            "payload": res.refusal.payload,
+        })
 
     def _route(self, directive: RefusalDirective, ctx: ConversationContext,
                state: RequirementState, seam: GovernanceProvider) -> RequirementResult:

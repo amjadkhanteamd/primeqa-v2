@@ -435,19 +435,23 @@ def list_claims(tenant_id: int, *, page: int = 1, per_page: int = 20, q=None,
 
 def read_latest_generation_note(tenant_id: int, requirement_key: str) -> dict:
     """Best-effort: what did the requirement's most recent generation actually
-    DO? Surfaces the two notes the page would otherwise hide (both read as
-    "Generate silently did nothing"): a DEDUP (matched an already-existing
-    equivalent test, minted nothing new) and a REFUSAL (the engine declined,
-    with its recorded reason — D-206.1, the SQ-205 confusion). Never raises.
-    Returns ``{available, deduped, outcome_kind, refusal_kind, refusal_plain}``."""
+    DO? Surfaces the notes the page would otherwise hide (all read as
+    "Generate silently did nothing/less"): a DEDUP (matched an already-existing
+    equivalent test, minted nothing new), a REFUSAL (the engine declined,
+    with its recorded reason — D-206.1, the SQ-205 confusion), and PARTIAL
+    refusals (D-302 — intents the engine declined inside an otherwise-drafting
+    batch, each with its recorded reason). Never raises.
+    Returns ``{available, deduped, outcome_kind, refusal_kind, refusal_plain,
+    partial_refusals}``."""
     out = {"available": True, "deduped": False, "outcome_kind": None,
-           "refusal_kind": None, "refusal_plain": None}
+           "refusal_kind": None, "refusal_plain": None, "partial_refusals": []}
     try:
         from primeqa.semantic.connection import get_tenant_connection
         with get_tenant_connection(tenant_id) as conn:
             row = conn.execute(text(
                 "SELECT outcome_kind::text AS outcome_kind, equivalent_existing, "
-                "       refusal_kind::text AS refusal_kind, refusals "
+                "       refusal_kind::text AS refusal_kind, refusals, "
+                "       attempted_interpretation->'partial_refusals' AS partial_refusals "
                 "FROM generation_outcomes "
                 "WHERE requirement_ref->>'key' = :rk "
                 "ORDER BY created_at DESC LIMIT 1"),
@@ -458,6 +462,13 @@ def read_latest_generation_note(tenant_id: int, requirement_key: str) -> dict:
         out["outcome_kind"] = row["outcome_kind"]
         out["refusal_kind"] = row["refusal_kind"]
         out["refusal_plain"] = refusal_plain(row["refusal_kind"], row["refusals"])
+        for entry in row["partial_refusals"] or ():
+            if isinstance(entry, dict):
+                out["partial_refusals"].append({
+                    "ac_ref": entry.get("ac_ref"),
+                    "refusal_kind": entry.get("refusal_kind"),
+                    "plain": refusal_plain(entry.get("refusal_kind"), [entry]),
+                })
         return out
     except Exception as exc:
         log.warning("read_latest_generation_note unavailable for tenant %s key %s: %s",
