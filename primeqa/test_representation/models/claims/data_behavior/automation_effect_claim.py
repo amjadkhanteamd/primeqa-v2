@@ -74,10 +74,15 @@ class AutomationEffectClaimBody(BodyBase):
         "apex_trigger",
         "process_builder",
         "approval_process",
+        "formula",
     ]
     """Sub-discriminator for the Salesforce mechanism. Per
     D-053's guardrail, mechanisms occupy a sub-discriminator slot
-    rather than spawning per-mechanism claim-kinds."""
+    rather than spawning per-mechanism claim-kinds. ``formula``
+    (D-304): the automation is a CALCULATED FIELD — the
+    ``automation`` ref is that Field, the org's formula engine is
+    the mechanism, and the D-299 ``trigger_fields`` carry the
+    formula's inputs."""
 
     triggering_action: EventDescriptor
     """The causal action that makes the automation fire (e.g., a

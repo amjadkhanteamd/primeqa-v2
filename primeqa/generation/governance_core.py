@@ -65,7 +65,7 @@ from primeqa.generation.protocol import (
 )
 from primeqa.semantic.edges import TIER_1_EDGES
 from primeqa.semantic.entity_attributes import (
-    vr_error_message, vr_formula_text, vr_is_active)
+    field_is_calculated, vr_error_message, vr_formula_text, vr_is_active)
 from primeqa.semantic.formula import Comparison, FieldRef, is_parsed, parse, walk
 from primeqa.semantic.query import Entity, SemanticOrgModel
 
@@ -621,8 +621,17 @@ class AdmissibilityEngine:
             # the wrong (first-encountered) flow would assert the wrong effect.
             # A named-but-absent flow is a genuine grounding miss (refuse). No
             # name -> the any-flow floor (backward-compat; safe with one flow).
+            # D-304: a named CALCULATED FIELD also grounds — the org's formula
+            # engine is the automation (the same character of dimension).
             if automation_hint:
                 grounds = any(r.entity.sf_api_name == automation_hint for r in flows)
+                if not grounds:
+                    grounds = any(
+                        r.edge_type == EDGE_BELONGS
+                        and r.entity.entity_type == "Field"
+                        and r.entity.sf_api_name == automation_hint
+                        and field_is_calculated(r.entity.attributes)
+                        for r in neighborhood)
             else:
                 grounds = bool(flows)
         else:
@@ -1214,22 +1223,38 @@ class GovernanceCore:
             # already dismisses it, this is the defence-in-depth twin). No name
             # -> first-encountered (backward-compat; the pre-D-299 behaviour).
             automation_name = hint.get("automation_name")
+            primitive = "flow"
+            formula_ent = None
             if automation_name:
                 flow_ent = next(
                     (f for f in flows if f.sf_api_name == automation_name), None)
                 if flow_ent is None:
+                    # D-304: the named automation may be a CALCULATED FIELD —
+                    # the org's formula engine is the mechanism, verified by
+                    # is_calculated on the BELONGS_TO field (the same character
+                    # of check as TRIGGERS_ON). Two-shape tolerant reader.
+                    formula_ent = next(
+                        (r.entity for r in neighborhood
+                         if r.edge_type == EDGE_BELONGS
+                         and r.entity.entity_type == "Field"
+                         and r.entity.sf_api_name == automation_name
+                         and field_is_calculated(r.entity.attributes)), None)
+                    if formula_ent is not None:
+                        primitive = "formula"
+                if flow_ent is None and formula_ent is None:
                     return IntentResolution(
                         grounded_candidates=[], next_action=NextAction.REFUSE,
                         interpretation_delta=delta,
                         refusal=self._router.emission_deferred(
                             archetype, claim_kind,
-                            detail=(f"the requirement-named Flow "
-                                    f"{automation_name!r} does not TRIGGERS_ON "
-                                    f"the subject (found "
-                                    f"{sorted(f.sf_api_name for f in flows)})")))
+                            detail=(f"the requirement-named automation "
+                                    f"{automation_name!r} is neither a Flow "
+                                    f"that TRIGGERS_ON the subject (found "
+                                    f"{sorted(f.sf_api_name for f in flows)}) "
+                                    f"nor a calculated field on it")))
             else:
                 flow_ent = flows[0] if flows else None
-            if flow_ent is None:
+            if flow_ent is None and formula_ent is None:
                 # defensive: positives admit on this edge; negatives may reach
                 # here without one
                 return IntentResolution(
@@ -1238,12 +1263,24 @@ class GovernanceCore:
                     refusal=self._router.emission_deferred(
                         archetype, claim_kind,
                         detail="no record-triggered Flow on the subject"))
+            automation_ent = formula_ent if formula_ent is not None else flow_ent
             subj_ep = _Endpoint(
                 entity_id=subject.id, entity_type=subject.entity_type,
                 external_id=subject.sf_api_name or str(subject.id))
             flow_ep = _Endpoint(
-                entity_id=flow_ent.id, entity_type=flow_ent.entity_type,
-                external_id=flow_ent.sf_api_name or str(flow_ent.id))
+                entity_id=automation_ent.id, entity_type=automation_ent.entity_type,
+                external_id=automation_ent.sf_api_name or str(automation_ent.id))
+            # D-304: the formula primitive is SAME-RECORD only (a formula field
+            # computes on its own record) — cross-object hints with it refuse.
+            if primitive == "formula" and hint.get("effect_object"):
+                return IntentResolution(
+                    grounded_candidates=[], next_action=NextAction.REFUSE,
+                    interpretation_delta=delta,
+                    refusal=self._router.emission_deferred(
+                        archetype, claim_kind,
+                        detail=("a formula automation computes on its own "
+                                "record — cross-object effect shapes do not "
+                                "apply to a calculated field")))
             effect_object_api = hint.get("effect_object")
             if effect_object_api and hint.get("effect_via_lookup_field"):
                 # D-227 parent-stamp: the effect lands on a record the TRIGGER
@@ -1340,6 +1377,12 @@ class GovernanceCore:
                 trigger_fields = _ground_trigger_fields(
                     hint.get("trigger_fields"), neighborhood,
                     exclude_field=field_ent.sf_api_name)
+                # D-304 (revised at impl): NO formula-input filter. The
+                # value-formula grammar is unparsed by the condition parser
+                # (both the fixture and the live LTV formula return NotParsed),
+                # and dropping non-input triggers would break legitimate
+                # VR-survival staging fields (the D-299 class). BELONGS_TO
+                # verification + the k16 exclude are the guards.
                 _stash_grounding(state, GroundedAutomationEffect(
                     archetype=archetype, claim_kind=claim_kind, version_seq=at,
                     subject=subj_ep, automation=flow_ep,
@@ -1348,7 +1391,8 @@ class GovernanceCore:
                         entity_id=field_ent.id, entity_type=field_ent.entity_type,
                         external_id=field_ent.sf_api_name or str(field_ent.id)),
                     effect_value=effect_value,
-                    trigger_fields=trigger_fields))
+                    trigger_fields=trigger_fields,
+                    automation_primitive=primitive))
 
         # grounded -> emit deferred (draft vertical). resolve_intent stays whole.
         presented = [PresentedCandidate(path_id=c.path_id,

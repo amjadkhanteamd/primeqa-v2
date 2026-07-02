@@ -67,3 +67,26 @@ def test_vr_is_active_missing_defaults_true():
     assert vr_is_active({}) is True
     assert vr_is_active(None) is True
     assert vr_is_active({"formula_text": "Amount > 0"}) is True
+
+
+# ---------------------------------------------------------------------------
+# D-304: field_is_calculated / field_formula_text — two-shape tolerance.
+# ---------------------------------------------------------------------------
+
+def test_field_is_calculated_shapes():
+    from primeqa.semantic.entity_attributes import field_is_calculated
+    assert field_is_calculated({"is_calculated": True}) is True       # designed
+    assert field_is_calculated({"calculated": True}) is True          # raw describe
+    assert field_is_calculated({"calculated": False}) is False
+    assert field_is_calculated({}) is False                           # plain field
+    assert field_is_calculated(None) is False
+
+
+def test_field_formula_text_shapes():
+    from primeqa.semantic.entity_attributes import field_formula_text
+    assert field_formula_text({"formula": "A + B"}) == "A + B"        # designed
+    # the live env-59 raw shape (probe-verified on Loan_to_Value__c)
+    assert field_formula_text(
+        {"calculatedFormula": "IF(P > 0, L / P, null)"}) == "IF(P > 0, L / P, null)"
+    assert field_formula_text({}) is None
+    assert field_formula_text(None) is None

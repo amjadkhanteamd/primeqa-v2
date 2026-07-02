@@ -371,3 +371,77 @@ def test_automation_effect_without_flow_is_ungrounded(seeded):
              expect_emit=False)
     assert r.outcome.outcome_kind == OutcomeKind.REFUSAL
     assert r.outcome.refusal_kind == RefusalKind.UNGROUNDED_CLAIM
+
+
+# ---------------------------------------------------------------------------
+# D-304: the formula automation primitive — a calculated field IS an automation.
+# ---------------------------------------------------------------------------
+
+def test_formula_primitive_grounds_on_a_calculated_field(seeded):
+    # automation_name resolves to a CALCULATED field (not a Flow): the claim
+    # binds it as the automation with primitive='formula'; trigger_fields carry
+    # the formula INPUTS (verified as parsed refs); the observed field stays
+    # org-produced (absent from the create — k16 via the existing exclude).
+    r = _run(seeded, _intent("automation-effect-claim", "positive", "Order__c",
+                             field_name="Order__c.Total_With_Tax__c",
+                             expected_value=110,
+                             automation_name="Order__c.Total_With_Tax__c",
+                             trigger_fields=[{"field_name": "Order__c.Subtotal__c",
+                                              "value": 100}]))
+    assert r.outcome.outcome_kind == OutcomeKind.DRAFT
+    body = r.emission.asserted_truth
+    assert body.automation_primitive == "formula"
+    assert body.automation.external_id == "Order__c.Total_With_Tax__c"
+    create = r.emission.observation_realization.steps[0]
+    assert create.field_values == {"Order__c.Subtotal__c": 100}
+    assert "Order__c.Total_With_Tax__c" not in create.field_values
+
+
+def test_formula_primitive_keeps_staging_triggers(seeded):
+    # D-304 (revised at impl): NON-input trigger fields are KEPT — they are
+    # legitimate VR-survival staging (the D-299 class), and the condition
+    # parser cannot parse value formulas anyway. BELONGS_TO + the k16 exclude
+    # (the observed field itself can never be a trigger) are the guards.
+    r = _run(seeded, _intent("automation-effect-claim", "positive", "Order__c",
+                             field_name="Order__c.Total_With_Tax__c",
+                             expected_value=110,
+                             automation_name="Order__c.Total_With_Tax__c",
+                             trigger_fields=[
+                                 {"field_name": "Order__c.Subtotal__c", "value": 100},
+                                 {"field_name": "Order__c.Stage__c", "value": "X"},
+                                 {"field_name": "Order__c.Total_With_Tax__c",
+                                  "value": 999}]))          # k16: dropped
+    assert r.outcome.outcome_kind == OutcomeKind.DRAFT
+    create = r.emission.observation_realization.steps[0]
+    assert create.field_values == {"Order__c.Subtotal__c": 100,
+                                   "Order__c.Stage__c": "X"}
+    assert "Order__c.Total_With_Tax__c" not in create.field_values
+
+
+def test_formula_primitive_refuses_cross_object_shape(seeded):
+    # A formula computes on its own record — cross-object hints refuse.
+    r = _run(seeded, _intent("automation-effect-claim", "positive", "Order__c",
+                             automation_name="Order__c.Total_With_Tax__c",
+                             effect_object="Order_Log__c",
+                             effect_lookup_field="Order_Log__c.Order__c"),
+             expect_emit=False)
+    assert r.outcome.outcome_kind == OutcomeKind.REFUSAL
+    assert "formula" in r.outcome.refusals[0].payload["detail"]
+
+
+def test_named_non_calculated_field_still_refuses(seeded):
+    # A named automation that is a PLAIN field (not calculated, not a Flow)
+    # remains a genuine grounding miss.
+    r = _run(seeded, _intent("automation-effect-claim", "positive", "Order__c",
+                             field_name="Order__c.Status__c", expected_value="X",
+                             automation_name="Order__c.Stage__c"),
+             expect_emit=False)
+    assert r.outcome.outcome_kind == OutcomeKind.REFUSAL
+
+
+def test_flow_primitive_stays_flow(seeded):
+    # The pre-D-304 flow path is byte-identical: primitive='flow' on the body.
+    r = _run(seeded, _intent("automation-effect-claim", "positive", "Order__c",
+                             field_name="Order__c.Status__c", expected_value="Activated",
+                             automation_name="Stamp_Order_Status"))
+    assert r.emission.asserted_truth.automation_primitive == "flow"

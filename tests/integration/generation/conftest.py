@@ -239,6 +239,14 @@ def seeded(db_setup) -> dict:
         # effect field Status__c staying org-produced.
         order_priority = _entity(conn, "Field", "Order__c.Priority__c", v1)
         _edge(conn, order_priority, order, "BELONGS_TO", "STRUCTURAL", v1)
+        # D-304: a CALCULATED field + its input — the formula automation
+        # primitive's grounding fixture (Total_With_Tax = Subtotal * 1.1).
+        order_subtotal = _entity(conn, "Field", "Order__c.Subtotal__c", v1)
+        _edge(conn, order_subtotal, order, "BELONGS_TO", "STRUCTURAL", v1)
+        order_total = _entity(conn, "Field", "Order__c.Total_With_Tax__c", v1,
+                              attrs={"is_calculated": True,
+                                     "formula": "Subtotal__c * 1.1"})
+        _edge(conn, order_total, order, "BELONGS_TO", "STRUCTURAL", v1)
         order_flow = _entity(conn, "Flow", "Stamp_Order_Status", v1)
         _edge(conn, order_flow, order, "TRIGGERS_ON", "BEHAVIOR", v1)
         # D-299: a SECOND Flow TRIGGERS_ON Order__c — the multi-flow fixture that

@@ -479,6 +479,29 @@ def vr_error_message(attributes: Optional[dict]) -> Optional[str]:
     return attrs.get("error_message") or attrs.get("ErrorMessage")
 
 
+def field_is_calculated(attributes: Optional[dict]) -> bool:
+    """Whether the Field is a CALCULATED (formula / rollup) field — two-shape
+    tolerant (D-203.1 idiom): designed ``is_calculated`` OR the raw describe
+    ``calculated``. Missing → False (a plain field). D-304: the formula
+    automation-primitive grounds on this."""
+    attrs = attributes or {}
+    for key in ("is_calculated", "calculated"):
+        v = attrs.get(key)
+        if v is not None:
+            return bool(v)
+    return False
+
+
+def field_formula_text(attributes: Optional[dict]) -> Optional[str]:
+    """The calculated field's formula source — two-shape tolerant: designed
+    ``formula`` OR the raw describe ``calculatedFormula`` (the live env-59
+    shape, probe-verified). ``None`` when absent/uncaptured. D-304: used to
+    verify proposed trigger fields are genuine formula INPUTS (best-effort —
+    an unparseable/absent formula falls back to BELONGS_TO verification)."""
+    attrs = attributes or {}
+    return attrs.get("formula") or attrs.get("calculatedFormula")
+
+
 def vr_is_active(attributes: Optional[dict]) -> bool:
     """Whether the ValidationRule is ACTIVE on the org — same shape tolerance
     as :func:`vr_formula_text` (D-203.1): designed ``is_active``; raw Tooling

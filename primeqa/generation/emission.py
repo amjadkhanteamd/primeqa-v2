@@ -336,6 +336,11 @@ class GroundedAutomationEffect:
     # exactly (the create sets nothing, so the flow never fires — observability,
     # not correctness). Multi-field because one entry gate is not enough.
     trigger_fields: tuple = ()  # tuple[tuple[_Endpoint, Any], ...]
+    # D-304: the Salesforce mechanism (the claim body's sub-discriminator).
+    # "flow" = the D-210 default (a Flow TRIGGERS_ON the subject); "formula" =
+    # the automation ref is a CALCULATED FIELD and trigger_fields carry the
+    # formula's inputs. Default keeps every pre-D-304 construction byte-identical.
+    automation_primitive: str = "flow"
 
 
 @dataclass(frozen=True)
@@ -1412,7 +1417,8 @@ def _author_automation_effect(g: GroundedAutomationEffect) -> EmissionBundle:
                 description=(f"creating a {object_api} with {gate} — "
                              f"{g.requirement_excerpt}"))
         claim = AutomationEffectClaimBody(
-            automation=automation_ref, automation_primitive="flow",
+            automation=automation_ref,
+            automation_primitive=g.automation_primitive,
             triggering_action=sr_event,
             expected_effect=FieldChangeEffect(changes=StateDescriptor(
                 field_values={field_api: LiteralValue(value=g.effect_value)})),
@@ -1457,7 +1463,8 @@ def _author_automation_effect(g: GroundedAutomationEffect) -> EmissionBundle:
                 predicate="not_null")
             stamp_desc = f"{field_bare} (some value — the stamp has no stable literal)"
         claim = AutomationEffectClaimBody(
-            automation=automation_ref, automation_primitive="flow",
+            automation=automation_ref,
+            automation_primitive=g.automation_primitive,
             triggering_action=event, expected_effect=effect,
             affected_fields=[field_ref],
         )
@@ -1511,7 +1518,8 @@ def _author_automation_effect(g: GroundedAutomationEffect) -> EmissionBundle:
             details = (f"create a {object_api} record, query {effect_api} via "
                        f"{lookup_bare}, assert the Flow created a correlated record")
         claim = AutomationEffectClaimBody(
-            automation=automation_ref, automation_primitive="flow",
+            automation=automation_ref,
+            automation_primitive=g.automation_primitive,
             triggering_action=event, expected_effect=effect,
             affected_fields=affected,
         )
