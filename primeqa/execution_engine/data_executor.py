@@ -496,6 +496,23 @@ def _run_positive(plan: DataRecipePlan, *, client, environment_id: int, s1=None,
     update = head[-1] if head and isinstance(head[-1], PlannedUpdate) else None
     creates = head[:-1] if update is not None else head
 
+    # D-306.1 (adversarial-review SF-4, the k16 chokepoint): a dispatch-time
+    # override must never PLANT an observed value. For observe-the-org shapes
+    # the read's captured fields are exactly what the ORG must produce — the
+    # create's semantic values deliberately omit them — so an override naming
+    # one is stripped here, substrate-enforced. Fields the recipe ITSELF
+    # stages (a value-claim's asserted field) stay overridable: D-235's
+    # documented operator power, and no wrong-green is possible there (the
+    # assert still expects the claim's value).
+    if field_overrides:
+        observed = {f.split(".", 1)[-1] for f in read.fields_to_capture}
+        recipe_staged = {
+            k.split(".", 1)[-1] for c in creates for k in c.field_values}
+        blocked = observed - recipe_staged
+        field_overrides = {
+            k: v for k, v in field_overrides.items()
+            if k.split(".", 1)[-1] not in blocked}
+
     # D-230.2: live S1 read (sync) or pre-resolved WorldPlans (async, world_plans).
     at_seq = s1.current_version_seq() if s1 is not None else None
     tracker = CreatedRecordTracker(run_id=run_id, sink=record_sink)
@@ -560,10 +577,15 @@ def _run_positive(plan: DataRecipePlan, *, client, environment_id: int, s1=None,
         # — negative recipes never reach here with overrides (their premise must
         # stay intact). Empty/None → today's behavior exactly.
         if field_overrides and ordinal == len(creates) - 1:
-            if getattr(create, "expect_acceptance", False):
-                # D-305.1 (review S1): the staged acceptance STATE defines the
+            if getattr(create, "expect_acceptance", False) or update is not None:
+                # D-305.1 (review S1): the staged claim STATE defines the
                 # claim — a dispatch-time override may steer padding but never
                 # overwrite a staged field (the D-300 subordination, mirrored).
+                # Keyed on the SHAPE, not just the grading flag (D-306.1,
+                # review SF-2): every create in an update-bearing chain stages
+                # identity-bearing state (the acceptance initial state / the
+                # narrated trigger state), whether or not it carries
+                # expect_acceptance.
                 # Merge order fixed at the D-306 live proof: padding < override
                 # < staged. The original {override, field_values, staged} put
                 # the override BELOW field_values — which already contains the

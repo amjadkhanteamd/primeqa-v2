@@ -36,6 +36,10 @@ Verdict = Literal[
     # acceptance, update-op (D-306) — the CHANGE, not the creation, is the case
     "change_accepted",               # passed: the org accepted the asserted update
     "change_rejected",               # failed: the org refused a change that must succeed
+    # acceptance, either op (D-306.1): the org ACCEPTED the mutation but the
+    # record did not verify on read-back (e.g. an org automation removed it) —
+    # never worded as a rejection (the review's fabricated-refusal fix)
+    "acceptance_not_verified",
     # inspection — presence (metadata-recipe, `exists` assert: existence + metadata-relationship)
     "asserted_metadata_present",     # passed: the asserted relationship/metadata is there
     "asserted_metadata_absent",      # failed: it is not

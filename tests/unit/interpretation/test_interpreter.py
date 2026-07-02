@@ -412,3 +412,43 @@ def test_failed_at_create_on_prohibition_claim_stays_behavioral():
         record_id="00Q1")])
     interp = interpret_run(ev, claim_kind="prohibition-claim")
     assert interp.verdict == "prohibition_not_enforced"
+
+
+def test_accepted_but_unverified_never_words_a_rejection():
+    # D-306.1 (review SF-1): the org ACCEPTED the update but the record did
+    # not verify on read-back — the old fail token (change_rejected) rendered
+    # "the org rejected a change that must succeed" over a 204.
+    ev = _run(outcome="failed", steps=[
+        _setup_create(),
+        _positive_update(success=True, http_status=204, body=[]),
+        _read(0), _assert(False)])
+    interp = interpret_run(ev, claim_kind="acceptance-claim")
+    assert interp.verdict == "acceptance_not_verified"
+    assert "rejected" not in interp.attribution
+    assert "refused" not in interp.attribution
+
+
+def test_mislabeled_passed_negative_stays_behavioral_on_the_update_branch():
+    # D-306.1 (review SF-3): a PASSED 2-step negative under a mislabeled
+    # acceptance kind must keep the behavioral verdict (the s4a.1 create-side
+    # guard, mirrored on the mutation branch).
+    ev = _run(outcome="passed", steps=[
+        _setup_create(),
+        _mutation("update", success=False, matched=True, http_status=400,
+                  body=[{"errorCode": _VR, "message": "no"}])])
+    interp = interpret_run(ev, claim_kind="acceptance-claim")
+    assert interp.verdict == "prohibition_enforced"
+
+
+def test_multi_create_failed_at_terminal_cites_the_failed_create():
+    # D-306.1 (review): on a chain the FIRST create is a successful parent —
+    # the refused-mutation branch must grade the create that actually failed.
+    parent = _setup_create(record_id="003P")     # succeeded (ordinal 0)
+    failed = _create(success=False, matched=None, http_status=400,
+                     body=[{"errorCode": _VR, "message": "no",
+                            "fields": ["Reason__c"]}])
+    ev = _run(outcome="failed", steps=[parent, failed])
+    interp = interpret_run(ev, claim_kind="automation-effect-claim")
+    assert interp.verdict == "creation_rejected"
+    assert interp.evidence_refs[0].step_id == "create-violating"
+    assert "http 400" in interp.evidence_refs[0].detail

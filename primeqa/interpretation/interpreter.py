@@ -52,10 +52,15 @@ def interpret_run(evidence: RunEvidence,
             vocab_kind = "acceptance-claim@update"
         verdict, attribution, refs = _interpret_positive(
             evidence, create, assertion, claim_kind=vocab_kind)
-    elif mutation is not None and claim_kind == "acceptance-claim":
+    elif (mutation is not None and claim_kind == "acceptance-claim"
+            and not mutation.success and evidence.outcome != "passed"):
         # D-306: the FAILED-AT-UPDATE acceptance shape (create + update
         # evidence, no assert) — the org refused the CHANGE the requirement
         # says must succeed; the claim direction is INVERTED vs D-203.
+        # Guarded like the create branch below (D-306.1, review SF-3): the
+        # legitimate shape always carries a FAILED mutation on a non-passed
+        # run — mislabeled-kind negative evidence keeps interpreting
+        # behaviorally.
         verdict, attribution, refs = _interpret_acceptance_rejected(
             evidence, mutation)
     elif mutation is not None:
@@ -75,8 +80,16 @@ def interpret_run(evidence: RunEvidence,
         # produced prohibition prose on positive claims. A PASSED create-only
         # run cannot be a positive shape (positives pass through their
         # assert), so it falls through to the behavioral branch unchanged.
+        # D-306.1 (review): grade the FAILED create, not the first — on a
+        # multi-create chain (D-227 parent-stamp) the first create is the
+        # successful parent, and citing it produced self-contradictory refs
+        # ("create rejected (http 201)") while dropping the real rejection.
+        failed_create = next(
+            (s for s in evidence.steps
+             if isinstance(s, CreateAttemptEvidence) and not s.success),
+            create)
         verdict, attribution, refs = _interpret_acceptance_rejected(
-            evidence, create, claim_kind=claim_kind)
+            evidence, failed_create, claim_kind=claim_kind)
     elif create is not None:
         # 1-step behavioral negative: a single create the org should reject.
         verdict, attribution, refs = _interpret_behavioral(evidence, create)
@@ -166,23 +179,29 @@ _POSITIVE_VOCAB = {
         "The automation fired.",
         "the asserted effect was not observed",
         "The automation did not produce its asserted effect."),
-    # D-305: the acceptance archetype — passed = the org SAVED the case;
-    # failed = the org rejected what the requirement says must save.
+    # D-305: the acceptance archetype — passed = the org SAVED the case. The
+    # FAIL slot here is the assert-failed shape only (the org ACCEPTED the
+    # mutation but the read-back did not verify — a genuinely refused
+    # creation/change never reaches the assert; it grades via
+    # _interpret_acceptance_rejected). D-306.1: wording it as a rejection
+    # fabricated a refusal the org never issued.
     "acceptance-claim": (
-        "creation_accepted", "creation_rejected",
+        "creation_accepted", "acceptance_not_verified",
         "the org accepted the creation (the record persisted)",
         "The case saves.",
-        "the org rejected a creation the requirement says must save",
-        "The org refused the asserted case."),
+        "the org accepted the creation but the record did not verify on "
+        "read-back",
+        "The accepted case could not be verified."),
     # D-306: the update-op acceptance — the CHANGE, not the creation, is the
     # case (a synthetic vocab key; interpret() selects it when acceptance
     # evidence carries a positive update).
     "acceptance-claim@update": (
-        "change_accepted", "change_rejected",
+        "change_accepted", "acceptance_not_verified",
         "the org accepted the change (the update persisted)",
         "The change succeeds.",
-        "the record did not verify after the accepted change",
-        "The accepted change did not verify."),
+        "the org accepted the change but the record did not verify on "
+        "read-back",
+        "The accepted change could not be verified."),
 }
 
 
@@ -200,7 +219,7 @@ def _interpret_acceptance_rejected(evidence: RunEvidence, step,
     if evidence.outcome == "errored":
         return _not_evaluated(evidence, step.step_id)
     is_update = step.kind == "update"
-    op = "update" if is_update else "creation"
+    op = {"update": "update", "delete": "deletion"}.get(step.kind, "creation")
     codes = sorted({e.get("errorCode") for e in (step.rejection_body or ())
                     if isinstance(e, dict) and e.get("errorCode")})
     detail = (f"the org rejected the {op} (" + ", ".join(codes) + ")"
@@ -244,19 +263,28 @@ def _interpret_positive(evidence: RunEvidence, create: CreateAttemptEvidence,
         claim_kind or "value-claim", _POSITIVE_VOCAB["value-claim"])
     refs = (
         EvidenceRef(create.step_id, f"create succeeded (http {create.http_status})"),
-        EvidenceRef(assertion.step_id,
-                    f"assert {assertion.predicate} held={assertion.held}"),
     )
+    # D-306: the update-then-observe chain's trigger event is the update — the
+    # causal step the claim is ABOUT rides the provenance refs + prose.
+    mutation = _mutation_step(evidence)
+    changed = ""
+    if mutation is not None and mutation.success:
+        refs += (EvidenceRef(
+            mutation.step_id,
+            f"update succeeded (http {mutation.http_status})"),)
+        changed = " then updated"
+    refs += (EvidenceRef(assertion.step_id,
+                         f"assert {assertion.predicate} held={assertion.held}"),)
     if evidence.outcome == "passed":
         return (
             pass_v,
-            (f"A record was created on {create.sobject} and {pass_why} "
+            (f"A record was created on {create.sobject}{changed} and {pass_why} "
              f"(assert {assertion.predicate} held). {pass_tail}"),
             refs,
         )
     return (
         fail_v,
-        (f"A record was created on {create.sobject}, but {fail_why} "
+        (f"A record was created on {create.sobject}{changed}, but {fail_why} "
          f"(assert {assertion.predicate} held=False). {fail_tail}"),
         refs,
     )

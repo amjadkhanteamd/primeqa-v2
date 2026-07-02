@@ -94,6 +94,7 @@ EXPECTED_REGISTRATIONS = (
     ("automation-effect-claim", 1),
     ("prohibition-claim", 1),
     ("acceptance-claim", 1),                # D-305
+    ("acceptance-claim", 2),                # D-306.1 — the update case (update_state)
     # Configuration claim bodies (D-098 — the C debut; existence + property D-122)
     ("metadata-relationship-claim", 1),
     ("existence-claim", 1),

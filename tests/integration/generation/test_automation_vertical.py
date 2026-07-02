@@ -533,8 +533,10 @@ def test_automation_effect_update_trigger_authors_update_observe(seeded):
         "create-record", "update-record", "read-created", "assert-value"]
     create, update = steps[0], steps[1]
     assert create.field_values == {"Order__c.Stage__c": "Draft"}
-    # the staging create must SAVE — a rejection is the D-305 graded finding
-    assert create.expect_acceptance is True
+    # D-306.1 (review B2): NO expectation flag on the staging create — it is
+    # PREMISE staging for a recalc claim, so a rejection grades by D-115.2
+    # attribution (padding-provoked -> errored, never a fabricated finding).
+    assert create.expect_acceptance is False
     assert update.field_changes == {"Order__c.Stage__c": "Submitted"}
     # the trigger update carries NO expectation flags (value-claim posture:
     # a rejected trigger update is staging failure -> errored)
@@ -656,4 +658,4 @@ def test_update_observe_recipe_projects_through_the_s4_bridge(seeded):
     assert upd.expect_rejection is None
     assert upd.setup_step_id == "create-record"
     assert upd.field_changes == {"Order__c.Stage__c": "Submitted"}
-    assert plan.steps[0].expect_acceptance is True
+    assert plan.steps[0].expect_acceptance is False   # D-306.1: premise create, unflagged

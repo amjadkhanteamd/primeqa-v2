@@ -267,6 +267,8 @@ _VERDICT_PLAIN = {
     "creation_rejected": "the org rejected a creation that must save",
     "change_accepted": "the org accepted the change",
     "change_rejected": "the org rejected a change that must succeed",
+    "acceptance_not_verified":
+        "the org accepted it, but the record could not be verified afterwards",
     "asserted_metadata_present":
         "The configuration exists in the org (existence only — enforcement "
         "not exercised)",

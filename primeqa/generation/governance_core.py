@@ -1246,6 +1246,18 @@ class GovernanceCore:
             # create-acceptance shape (a materially different claim).
             grounded_upd: tuple = ()
             proposed_upd = hint.get("update_conditions")
+            if proposed_upd is not None and not isinstance(proposed_upd, list):
+                # D-306.1 (review): a misshaped proposal refuses (the
+                # _ground_trigger_fields posture) instead of crashing the run
+                # inside the clause walker.
+                return IntentResolution(
+                    grounded_candidates=[], next_action=NextAction.REFUSE,
+                    interpretation_delta=delta,
+                    refusal=self._router.emission_deferred(
+                        archetype, claim_kind,
+                        detail=("update_conditions must be a list of clause "
+                                "objects; got "
+                                + type(proposed_upd).__name__)))
             if proposed_upd:
                 upd_conds, upd_invalid = _ground_rejection_conditions(
                     proposed_upd, neighborhood, at)
@@ -1281,6 +1293,37 @@ class GovernanceCore:
                             detail=(f"update clause field(s) not updateable "
                                     f"(calculated/read-only): "
                                     f"{nonupdatable}")))
+                # D-306.1 (review): two update clauses on one field would put
+                # BOTH values in the claim's identity while the PATCH stages
+                # last-wins — claim/recipe meaning drift; refuse.
+                seen_fields = [c.field.external_id for c in upd_conds]
+                dupes = sorted({f for f in seen_fields
+                                if seen_fields.count(f) > 1})
+                if dupes:
+                    return IntentResolution(
+                        grounded_candidates=[], next_action=NextAction.REFUSE,
+                        interpretation_delta=delta,
+                        refusal=self._router.emission_deferred(
+                            archetype, claim_kind,
+                            detail=(f"duplicate update clause field(s): "
+                                    f"{dupes} — one destination value per "
+                                    f"field")))
+                # D-306.1 (review): a change identical to the initial state is
+                # a no-op PATCH — trivially "accepted" without the transition
+                # ever being exercised; refuse.
+                initial_pairs = {(c.field.external_id, c.value)
+                                 for c in grounded_conds
+                                 if c.predicate == "equals"}
+                if all((c.field.external_id, c.value) in initial_pairs
+                       for c in upd_conds):
+                    return IntentResolution(
+                        grounded_candidates=[], next_action=NextAction.REFUSE,
+                        interpretation_delta=delta,
+                        refusal=self._router.emission_deferred(
+                            archetype, claim_kind,
+                            detail=("every update clause duplicates the "
+                                    "initial state — a no-op change cannot "
+                                    "witness an accepted transition")))
                 grounded_upd = tuple(upd_conds)
             _stash_grounding(state, GroundedAcceptance(
                 archetype=archetype, claim_kind=claim_kind, version_seq=at,
@@ -1628,6 +1671,45 @@ class GovernanceCore:
                                     "the recalculate-on-change premise needs "
                                     "at least one verified (field, value) "
                                     "pair that is not the observed field")))
+                if update_trigger_fields:
+                    # D-306.1 (review): the change must be REAL and STAGEABLE.
+                    # (a) A PATCH cannot stage a calculated/read-only field —
+                    # the recipe would 400 on every run (perma-errored).
+                    upd_meta = _grounding_field_metadata(
+                        neighborhood, self._s1, at)
+                    unpatchable = sorted(
+                        ep.external_id for ep, _ in update_trigger_fields
+                        if (m := upd_meta.get(
+                            ep.external_id.split(".", 1)[-1])) is None
+                        or m.get("is_calculated")
+                        or not m.get("is_updateable", True))
+                    if unpatchable:
+                        return IntentResolution(
+                            grounded_candidates=[],
+                            next_action=NextAction.REFUSE,
+                            interpretation_delta=delta,
+                            refusal=self._router.emission_deferred(
+                                archetype, claim_kind,
+                                detail=(f"update trigger field(s) not "
+                                        f"updateable (calculated/read-only): "
+                                        f"{unpatchable}")))
+                    # (b) A no-op PATCH (every update pair value-identical to
+                    # the staged initial pair) cannot witness a recompute —
+                    # ISCHANGED-gated automations never re-fire, so a green
+                    # would credit a change that was never exercised.
+                    initial = {(ep.external_id, v)
+                               for ep, v in trigger_fields}
+                    if all((ep.external_id, v) in initial
+                           for ep, v in update_trigger_fields):
+                        return IntentResolution(
+                            grounded_candidates=[],
+                            next_action=NextAction.REFUSE,
+                            interpretation_delta=delta,
+                            refusal=self._router.emission_deferred(
+                                archetype, claim_kind,
+                                detail=("every update trigger pair duplicates "
+                                        "the staged initial value — a no-op "
+                                        "change cannot witness a recompute")))
                 _stash_grounding(state, GroundedAutomationEffect(
                     archetype=archetype, claim_kind=claim_kind, version_seq=at,
                     subject=subj_ep, automation=flow_ep,

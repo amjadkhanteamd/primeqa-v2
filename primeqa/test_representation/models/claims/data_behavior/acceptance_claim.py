@@ -27,6 +27,7 @@ from typing import Literal
 from pydantic import ConfigDict
 
 from primeqa.test_representation.models.common import BodyBase
+from primeqa.test_representation.models.primitives import StateDescriptor
 from primeqa.test_representation.models.references import IdentityBearingRef
 from primeqa.test_representation.models.registry import register_body
 
@@ -53,10 +54,49 @@ class AcceptanceClaimBody(BodyBase):
     being created). Pinned per D-058 §5."""
 
     operation: Literal["create", "update"]
-    """What is being accepted. ``create`` (D-305) — the staged state
-    must save. ``update`` (D-306, the stage-progress case) — given the
-    staged initial state, the CHANGE must succeed; the recipe stages
-    the initial clauses on the create and the update clauses on a
-    positive UpdateStep carrying ``expect_acceptance``. Widened as an
-    additive Literal within body_schema v1 (D-306 — supersedes the
-    D-305 new-version reservation; old payloads validate unchanged)."""
+    """What is being accepted. New emissions are create-only on v1
+    (D-306.1): the update case authors the v2 shape below, whose
+    ``update_state`` makes the phase split identity-bearing.
+    ``update`` stays decodable here ONLY for the pre-D-306.1
+    persisted rows (the adversarial review found the v1 flat
+    conditions encoding erased the phase split — those claims were
+    deprecated, but history reads must not crash)."""
+
+
+@register_body("acceptance-claim", 2)
+class AcceptanceClaimUpdateBody(BodyBase):
+    """The acceptance-claim body shape (v2) — the UPDATE case
+    (D-306.1). "Given the initial state, the CHANGE to
+    ``update_state`` is accepted."
+
+    Why a new version, not a v1 field: canonicalization includes
+    every model field (None → null), so adding a slot to v1 would
+    re-key every existing create-acceptance claim (dedup misses,
+    duplicate claims). And why the destination rides the BODY, not
+    ``semantic_conditions``: the conditions layer is a commutative
+    AND-composed SET — the initial/update partition and the change
+    DIRECTION are erased by its sort (the adversarial review
+    reproduced progress/regress and split-shift collisions). Here
+    ``semantic_conditions`` carries ONLY the initial state (a
+    satisfiable conjunction again) and ``update_state`` carries the
+    destination — both identity-bearing, phase-distinct by
+    construction.
+    """
+
+    model_config = ConfigDict(extra="forbid", frozen=False)
+
+    body_schema_version: Literal[2] = 2
+    kind: Literal["acceptance-claim"] = "acceptance-claim"
+
+    target: IdentityBearingRef
+    """The S1 entity the accepted operation acts on. Pinned per
+    D-058 §5."""
+
+    operation: Literal["update"]
+    """v2 is the update case only; creates stay v1."""
+
+    update_state: StateDescriptor
+    """The destination state — the (field → value) changes the
+    update stages and the org must ACCEPT. Values are
+    ``LiteralValue``-wrapped, ``_identity_safe``-coerced at
+    grounding (no floats per SPEC §6.3.2)."""

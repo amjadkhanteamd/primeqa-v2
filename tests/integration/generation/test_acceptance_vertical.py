@@ -171,11 +171,16 @@ def test_update_acceptance_authors_the_update_shape(seeded):
     assert update.field_changes == {"Order__c.Stage__c": "Submitted"}
     assert update.expect_acceptance is True
     assert update.expect_rejection is None
-    # BOTH phases are identity-bearing, initial-then-update order
+    # D-306.1: the phases are identity-bearing SEPARATELY — the conditions
+    # layer carries ONLY the initial state (a satisfiable AND again); the
+    # destination rides the v2 body's update_state (phase- and
+    # direction-distinct by construction).
+    assert body.body_schema_version == 2
+    assert {(k, v.value) for k, v in body.update_state.field_values.items()} \
+        == {("Order__c.Stage__c", "Submitted")}
     conds = r.emission.semantic_conditions.conditions
     assert [(c.subject.external_id, c.value) for c in conds] == [
-        ("Order__c.Stage__c", "Draft"), ("Order__c.Subtotal__c", 5000),
-        ("Order__c.Stage__c", "Submitted")]
+        ("Order__c.Stage__c", "Draft"), ("Order__c.Subtotal__c", 5000)]
     assert r.emission.causal_initiation.operation == "update"
 
 
@@ -269,3 +274,118 @@ def test_update_acceptance_recipe_projects_through_the_s4_bridge(seeded):
     assert upd.expect_acceptance is True
     assert upd.expect_rejection is None
     assert upd.setup_step_id == "create-record"
+
+
+def test_progress_and_regress_hash_apart(seeded):
+    # D-306.1 (adversarial-review B1): the change DIRECTION is identity —
+    # "given Draft, updating to Submitted succeeds" and the REVERSE regress
+    # case swap the same two clauses across phases and MUST hash apart.
+    # (The v1 flat concat collided them: the conditions layer is a sorted
+    # SET, so the phase split was erased.)
+    r_fwd = _run(seeded, _intent("acceptance-claim", "positive", "Order__c",
+                                 acceptance_conditions=[
+                                     {"field": "Order__c.Stage__c",
+                                      "predicate": "equals", "value": "Draft"}],
+                                 update_conditions=[
+                                     {"field": "Order__c.Stage__c",
+                                      "predicate": "equals", "value": "Submitted"}]))
+    r_rev = _run(seeded, _intent("acceptance-claim", "positive", "Order__c",
+                                 acceptance_conditions=[
+                                     {"field": "Order__c.Stage__c",
+                                      "predicate": "equals", "value": "Submitted"}],
+                                 update_conditions=[
+                                     {"field": "Order__c.Stage__c",
+                                      "predicate": "equals", "value": "Draft"}]))
+    h = lambda r: compute_identity_hash(
+        "data_behavior", "acceptance-claim",
+        r.emission.asserted_truth, r.emission.semantic_conditions)
+    assert h(r_fwd) != h(r_rev)
+
+
+def test_split_shift_hashes_apart(seeded):
+    # D-306.1 (review B1): WHICH fields ride the change is identity — the
+    # same clause multiset split differently across phases is a different
+    # test (different PATCH → different VRs/automations fire).
+    r_a = _run(seeded, _intent("acceptance-claim", "positive", "Order__c",
+                               acceptance_conditions=[
+                                   {"field": "Order__c.Stage__c",
+                                    "predicate": "equals", "value": "Draft"},
+                                   {"field": "Order__c.Subtotal__c",
+                                    "predicate": "equals", "value": 5000}],
+                               update_conditions=[
+                                   {"field": "Order__c.Priority__c",
+                                    "predicate": "equals", "value": "High"}]))
+    r_b = _run(seeded, _intent("acceptance-claim", "positive", "Order__c",
+                               acceptance_conditions=[
+                                   {"field": "Order__c.Stage__c",
+                                    "predicate": "equals", "value": "Draft"}],
+                               update_conditions=[
+                                   {"field": "Order__c.Subtotal__c",
+                                    "predicate": "equals", "value": 5000},
+                                   {"field": "Order__c.Priority__c",
+                                    "predicate": "equals", "value": "High"}]))
+    h = lambda r: compute_identity_hash(
+        "data_behavior", "acceptance-claim",
+        r.emission.asserted_truth, r.emission.semantic_conditions)
+    assert h(r_a) != h(r_b)
+
+
+def test_update_acceptance_converges(seeded):
+    # Same intent twice -> same hash (dedup depends on convergence).
+    def gen():
+        return _run(seeded, _intent("acceptance-claim", "positive", "Order__c",
+                                    acceptance_conditions=[
+                                        {"field": "Order__c.Stage__c",
+                                         "predicate": "equals", "value": "Draft"}],
+                                    update_conditions=[
+                                        {"field": "Order__c.Stage__c",
+                                         "predicate": "equals", "value": "Submitted"}]))
+    r1, r2 = gen(), gen()
+    h = lambda r: compute_identity_hash(
+        "data_behavior", "acceptance-claim",
+        r.emission.asserted_truth, r.emission.semantic_conditions)
+    assert h(r1) == h(r2)
+
+
+def test_vacuous_update_refuses(seeded):
+    # D-306.1 (review SF-5): a change identical to the initial state is a
+    # no-op PATCH — trivially "accepted" without the transition exercised.
+    r = _run(seeded, _intent("acceptance-claim", "positive", "Order__c",
+                             acceptance_conditions=[
+                                 {"field": "Order__c.Stage__c",
+                                  "predicate": "equals", "value": "Draft"}],
+                             update_conditions=[
+                                 {"field": "Order__c.Stage__c",
+                                  "predicate": "equals", "value": "Draft"}]),
+             expect_emit=False)
+    assert r.outcome.outcome_kind == OutcomeKind.REFUSAL
+    assert "no-op" in r.outcome.refusals[0].payload["detail"]
+
+
+def test_duplicate_update_fields_refuse(seeded):
+    # D-306.1 (review N7): two destination values for one field — identity
+    # would carry both while the PATCH stages last-wins; refuse.
+    r = _run(seeded, _intent("acceptance-claim", "positive", "Order__c",
+                             acceptance_conditions=[
+                                 {"field": "Order__c.Subtotal__c",
+                                  "predicate": "equals", "value": 5000}],
+                             update_conditions=[
+                                 {"field": "Order__c.Stage__c",
+                                  "predicate": "equals", "value": "A"},
+                                 {"field": "Order__c.Stage__c",
+                                  "predicate": "equals", "value": "B"}]),
+             expect_emit=False)
+    assert r.outcome.outcome_kind == OutcomeKind.REFUSAL
+    assert "duplicate" in r.outcome.refusals[0].payload["detail"]
+
+
+def test_malformed_update_conditions_refuse_not_crash(seeded):
+    # D-306.1 (review N6): a misshaped proposal refuses cleanly.
+    r = _run(seeded, _intent("acceptance-claim", "positive", "Order__c",
+                             acceptance_conditions=[
+                                 {"field": "Order__c.Stage__c",
+                                  "predicate": "equals", "value": "Draft"}],
+                             update_conditions="Stage='Submitted'"),
+             expect_emit=False)
+    assert r.outcome.outcome_kind == OutcomeKind.REFUSAL
+    assert "list" in r.outcome.refusals[0].payload["detail"]

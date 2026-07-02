@@ -169,8 +169,15 @@ def _attribute_acceptance_rejected(evidence, s1) -> Optional[Cause]:
     a POSITIVE claim — the same VR-message matching as the negative's
     unasserted path names WHICH rule refused (high-value: it points a human
     straight at the gating rule), worded without the 'different rule'
-    presumption (no rule was asserted here)."""
-    step = _mutation_step(evidence) or _create_step(evidence)
+    presumption (no rule was asserted here). Attributes ONLY a step that
+    actually FAILED (D-306.1, review): selecting by kind alone picked a
+    SUCCEEDED mutation on other shapes and fabricated 'a platform constraint
+    rejected the update: []' over a 2xx — honest pass-through instead."""
+    step = next(
+        (s for s in evidence.steps
+         if isinstance(s, (UpdateAttemptEvidence, DeleteAttemptEvidence,
+                           CreateAttemptEvidence))
+         and not s.success), None)
     if step is None:
         return None
     vrs = s1.vrs_for_object(step.sobject)

@@ -1209,17 +1209,21 @@ def test_update_non_400_failure_grades_errored():
 
 
 def test_field_overrides_never_touch_the_update():
-    # D-306's k16 line: dispatch-time overrides steer the CREATE's padding;
-    # the update's field_changes ARE the semantic trigger — verbatim, always.
+    # D-306's k16 line: the update's field_changes ARE the semantic trigger —
+    # verbatim, always. And D-306.1 (review SF-2): every create in an
+    # update-bearing chain stages identity-bearing state, so the override is
+    # SUBORDINATED to it (staged wins; the pre-review behavior let the
+    # override silently rewrite the claim's staged initial state).
     client = _UpdClient(create_result=_success("001Z"),
                         update_result=_upd_env(204, None),
                         query_result=[{"Status__c": "Renewed"}])
     ev = execute_data_recipe(
         _update_plan(), client=client, environment_id=_ENV_ID, s1=_s1(),
-        field_overrides={"Status__c": "Hijacked"})
+        field_overrides={"Status__c": "Hijacked", "Name": "Steered"})
     assert ev.outcome == "passed"
-    # The override landed on the create (the subject create, D-235)...
-    assert client.creates[0][1]["Status__c"] == "Hijacked"
+    posted = client.creates[0][1]
+    assert posted["Status__c"] == "Active"       # staged initial state wins
+    assert posted["Name"] == "Steered"           # padding stays steerable
     # ...and the update payload is untouched.
     assert client.updates == [("Account", "001Z", {"Status__c": "Renewed"})]
 
@@ -1301,3 +1305,38 @@ def test_staged_refs_stay_resolved_under_override_merge():
     assert ev.outcome == "passed"
     # the terminal create posted the RESOLVED parent id, not the raw "$" ref
     assert client.creates[1][1]["Status__c"] == "001Z"
+
+
+def test_override_naming_the_observed_field_is_stripped_k16():
+    # D-306.1 (review SF-4, the k16 chokepoint): on an observe-the-org shape
+    # the read's captured field is what the ORG must produce — an override
+    # naming it would let the assert pass with the automation broken. The
+    # substrate strips it; overrides of recipe-staged fields stay (D-235).
+    target = LogicalRef(entity_type="Object", external_id="Account")
+    plan = DataRecipePlan(
+        recipe_id=uuid4(), recipe_version_seq=2, claim_test_id=uuid4(),
+        claim_version_seq=None, api_choice="rest",
+        steps=(
+            # observe-shape: the create does NOT set Status__c (the org must)
+            PlannedCreate(step_id="create-record", target_object=target,
+                          field_values={}, expect_rejection=None),
+            PlannedDataRead(
+                step_id="read-created", target=target,
+                soql="SELECT Status__c FROM Account WHERE Id = '$create-record.id'",
+                fields_to_capture=("Status__c",)),
+            PlannedAssertion(
+                step_id="assert-value",
+                predicate=AssertionPredicate(
+                    subject_ref="read-created.Status__c",
+                    predicate="equals", value="Activated")),
+        ))
+    client = _StubClient(create_result=_success("001Z"),
+                         query_result=[{"Status__c": None}])
+    ev = execute_data_recipe(
+        plan, client=client, environment_id=_ENV_ID, s1=_s1(),
+        field_overrides={"Status__c": "Activated", "Name": "Steered"})
+    # The plant was stripped: the create never posted Status__c...
+    assert "Status__c" not in client.creates[0][1]
+    assert client.creates[0][1]["Name"] == "Steered"
+    # ...so the run honestly FAILS (the org produced nothing).
+    assert ev.outcome == "failed"

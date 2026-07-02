@@ -69,6 +69,7 @@ from primeqa.test_representation.models.claims.data_behavior.prohibition_claim i
 )
 from primeqa.test_representation.models.claims.data_behavior.acceptance_claim import (
     AcceptanceClaimBody,
+    AcceptanceClaimUpdateBody,
 )
 from primeqa.test_representation.models.claims.data_behavior.automation_effect_claim import (
     AutomationEffectClaimBody,
@@ -374,10 +375,11 @@ class GroundedAcceptance:
     # D-306: the OPTIONAL update phase — grounded EQUALS clauses the recipe
     # stages on a positive UpdateStep AFTER the initial-state create (the
     # stage-progress case: "given KYC + score, progressing to Credit
-    # Assessment succeeds"). Non-empty → operation="update" and the update
-    # carries the expect_acceptance semantics; the initial `conditions` stage
-    # the create. BOTH sets are identity-bearing (initial-then-update order
-    # rides the conditions body). Empty () → the D-305 create shape verbatim.
+    # Assessment succeeds"). Non-empty → the v2 update body: the destination
+    # rides the BODY's update_state (identity-bearing, phase- and
+    # direction-distinct by construction — D-306.1) while `conditions`
+    # carries ONLY the initial state on the conditions layer. Empty () → the
+    # D-305 create shape verbatim.
     update_conditions: tuple = ()
 
 
@@ -1054,11 +1056,28 @@ def _author_acceptance(g: GroundedAcceptance) -> EmissionBundle:
     )
     object_api = g.subject.external_id
     operation = "update" if g.update_conditions else "create"
-    claim = AcceptanceClaimBody(target=subject_ref, operation=operation)
-    # D-306: BOTH phases are identity-bearing (the case IS "given state A,
-    # the change to B succeeds") — initial-then-update order in one body.
-    conditions = _conditions_body(
-        tuple(g.conditions) + tuple(g.update_conditions), g.version_seq)
+    if g.update_conditions:
+        # D-306.1 (adversarial-review B1): the phase split and the change
+        # DIRECTION must be identity-bearing, and the conditions layer cannot
+        # carry them (a commutative AND-composed SET — sorting erases both;
+        # progress/regress and split-shift claims collided). The destination
+        # rides the v2 BODY (update_state); semantic_conditions carries ONLY
+        # the initial state (a satisfiable conjunction again).
+        non_equals = [c.predicate for c in g.update_conditions
+                      if c.predicate != "equals"]
+        if non_equals:
+            # Construction-proof (the stash gate refuses upstream): a
+            # non-equals clause would enter identity yet never be staged.
+            raise ValueError(
+                f"update_conditions must be equals-only; got {non_equals}")
+        claim = AcceptanceClaimUpdateBody(
+            target=subject_ref, operation="update",
+            update_state=StateDescriptor(field_values={
+                c.field.external_id: LiteralValue(value=c.value)
+                for c in g.update_conditions}))
+    else:
+        claim = AcceptanceClaimBody(target=subject_ref, operation="create")
+    conditions = _conditions_body(tuple(g.conditions), g.version_seq)
 
     staged = {c.field.external_id: c.value for c in g.conditions
               if c.predicate == "equals"}
@@ -1404,12 +1423,17 @@ def _observe_steps(object_api: str, field_api: str, expected: Any,
 
     ``update_fields`` (D-306, update-then-observe): a positive UpdateStep
     between the create and the read — create the INITIAL state, CHANGE it, and
-    the read observes the org's RE-computed effect. The staging create then
-    carries ``expect_acceptance=True`` (it must save; a rejection is the D-305
-    graded finding, not an indeterminate). The update carries NO expectation
-    flags: a rejected trigger update is staging failure → ``errored`` (the
-    value-claim posture — nothing was observed). ``None``/empty → the
-    create-scoped shape, byte-identical."""
+    the read observes the org's RE-computed effect. NEITHER step carries an
+    expectation flag (D-306.1, overturning the D-306 entry's
+    expect_acceptance-on-the-create choice): this create is PREMISE staging
+    for a recalc claim, not the assertion, so a rejection grades by the
+    standard D-115.2 attribution — a staged trigger field named → ``failed``
+    (the premise state is refused, a real finding); padding-provoked or
+    unattributed → ``errored`` (S4's own operational gap). The adversarial
+    review showed the flag converted padding-provoked VR rejections into
+    false business findings on unattended runs. A rejected trigger UPDATE is
+    likewise staging failure → ``errored``. ``None``/empty → the create-scoped
+    shape, byte-identical."""
     target = LogicalRef(entity_type="Object", external_id=object_api)
     steps = [
         CreateStep(
@@ -1418,7 +1442,6 @@ def _observe_steps(object_api: str, field_api: str, expected: Any,
             # padding-only create (k16): the asserted field is deliberately
             # ABSENT — the org's automation is what must produce it.
             field_values=dict(create_fields or {}),
-            expect_acceptance=bool(update_fields),
         ),
     ]
     if update_fields:
