@@ -28,7 +28,7 @@ _VERSIONS_DIR = _DIR / "versions"
 
 # The default version new generations use (replay pins its own version on the
 # request's operational_context.prompt_template_version, per D-071).
-CURRENT = "generation@v14"
+CURRENT = "generation@v15"
 
 # version id -> frozen composed artifact (filesystem-safe slug).
 _FILES = {
@@ -46,6 +46,7 @@ _FILES = {
     "generation@v12": _VERSIONS_DIR / "generation_v12.md",
     "generation@v13": _VERSIONS_DIR / "generation_v13.md",
     "generation@v14": _VERSIONS_DIR / "generation_v14.md",
+    "generation@v15": _VERSIONS_DIR / "generation_v15.md",
 }
 
 # Recorded SHA-256 of each frozen version's composed content (D-103.1 drift
@@ -100,6 +101,10 @@ RECORDED_HASHES = {
     # CHANGE succeeds" → acceptance update_conditions (create-accepted and
     # update-accepted are distinct claims/intents).
     "generation@v14": "79b2ee9a703a8c6c2d8ca299ef9a7050e29f11b112939f974f7521aeeb503b6b",
+    # v15 (D-307): the automation-ABSENCE contract — expected_absence on the
+    # cross-object shape ("no correlated record for this case"); presence and
+    # each absence band are distinct intents; field-conditional absence refused.
+    "generation@v15": "3f2eab5cec8aee714cd63f06b7a17c8661aabd532a4dc646209ef5e89f56aa56",
 }
 
 # Working composition order — authors the NEXT frozen version (NOT runtime).
