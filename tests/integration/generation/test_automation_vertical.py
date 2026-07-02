@@ -659,3 +659,102 @@ def test_update_observe_recipe_projects_through_the_s4_bridge(seeded):
     assert upd.setup_step_id == "create-record"
     assert upd.field_changes == {"Order__c.Stage__c": "Submitted"}
     assert plan.steps[0].expect_acceptance is False   # D-306.1: premise create, unflagged
+
+
+# ---------------------------------------------------------------------------
+# D-307: trigger staging on the cross-object + parent-stamp shapes (lever 7e)
+# ---------------------------------------------------------------------------
+
+def test_cross_object_trigger_fields_stage_the_create(seeded):
+    # The L7e live recon: a padding-only create never provokes the correlated
+    # record — the staged entry gate must ride the trigger create and the
+    # identity-bearing description (the D-299 idiom, extended off same-record).
+    r = _run(seeded, _intent("automation-effect-claim", "positive", "Order__c",
+                             effect_object="Order_Log__c",
+                             effect_lookup_field="Order_Log__c.Order__c",
+                             trigger_fields=[
+                                 {"field_name": "Order__c.Stage__c",
+                                  "value": "Submitted"},
+                                 {"field_name": "Order__c.Priority__c",
+                                  "value": "High"}]))
+    assert r.outcome.outcome_kind == OutcomeKind.DRAFT
+    steps = r.emission.observation_realization.steps
+    assert [s.step_id for s in steps] == [
+        "create-record", "read-effect", "assert-effect"]
+    assert steps[0].field_values == {"Order__c.Stage__c": "Submitted",
+                                     "Order__c.Priority__c": "High"}
+    assert "with" in r.emission.asserted_truth.triggering_action.description
+    assert "Stage__c" in r.emission.asserted_truth.triggering_action.description
+
+
+def test_cross_object_staged_and_unstaged_hash_apart(seeded):
+    from primeqa.test_representation.identity_hash import compute_identity_hash
+    base = dict(effect_object="Order_Log__c",
+                effect_lookup_field="Order_Log__c.Order__c")
+    r1 = _run(seeded, _intent("automation-effect-claim", "positive", "Order__c",
+                              **base))
+    r2 = _run(seeded, _intent("automation-effect-claim", "positive", "Order__c",
+                              trigger_fields=[{"field_name": "Order__c.Stage__c",
+                                               "value": "Submitted"}], **base))
+    h = lambda r: compute_identity_hash(
+        "data_behavior", "automation-effect-claim",
+        r.emission.asserted_truth, r.emission.semantic_conditions)
+    assert h(r1) != h(r2)
+
+
+def test_cross_object_unverifiable_trigger_dropped_not_refused(seeded):
+    # The D-299 drop-never-refuse posture carries over: an unknown field is
+    # dropped; the claim still emits its (now padding-only) shape.
+    r = _run(seeded, _intent("automation-effect-claim", "positive", "Order__c",
+                             effect_object="Order_Log__c",
+                             effect_lookup_field="Order_Log__c.Order__c",
+                             trigger_fields=[{"field_name": "Order__c.Nope__c",
+                                              "value": "X"}]))
+    assert r.outcome.outcome_kind == OutcomeKind.DRAFT
+    assert r.emission.observation_realization.steps[0].field_values == {}
+
+
+def test_parent_stamp_trigger_fields_stage_the_trigger_create_only(seeded):
+    # The gate rides the TRIGGER create (Order_Log__c), never the parent
+    # (D-307) — the seeded parent-stamp fixture: the Flow on Order_Log__c
+    # stamps the parent Order__c via the trigger record's own lookup.
+    r = _run(seeded, _intent("automation-effect-claim", "positive", "Order_Log__c",
+                             effect_object="Order__c",
+                             effect_via_lookup_field="Order_Log__c.Order__c",
+                             effect_field="Order__c.Status__c",
+                             trigger_fields=[{"field_name": "Order_Log__c.Level__c",
+                                              "value": "INFO"}]))
+    assert r.outcome.outcome_kind == OutcomeKind.DRAFT
+    steps = r.emission.observation_realization.steps
+    parent, trigger = steps[0], steps[1]
+    assert parent.step_id == "create-parent" and parent.field_values == {}
+    assert trigger.field_values == {"Order_Log__c.Level__c": "INFO",
+                                    "Order_Log__c.Order__c": "$create-parent.id"}
+    assert "with" in r.emission.asserted_truth.triggering_action.description
+
+
+def test_staged_cross_object_recipe_projects_through_the_s4_bridge(seeded):
+    # The cross-boundary seam (the D-305.1 lesson): the staged cross-object
+    # recipe must satisfy the S4 positive projection.
+    from datetime import datetime, timezone
+    from uuid import uuid4 as _u
+    from primeqa.execution_engine import build_data_recipe_plan
+    from primeqa.test_representation.coordinator import RecipeRead
+
+    r = _run(seeded, _intent("automation-effect-claim", "positive", "Order__c",
+                             effect_object="Order_Log__c",
+                             effect_lookup_field="Order_Log__c.Order__c",
+                             trigger_fields=[{"field_name": "Order__c.Stage__c",
+                                              "value": "Submitted"}]))
+    e = r.emission
+    now = datetime(2026, 7, 3, tzinfo=timezone.utc)
+    plan = build_data_recipe_plan(RecipeRead(
+        recipe_id=_u(), version_seq=1, valid_from=now, valid_to=None,
+        claim_test_id=_u(), claim_version_seq=1,
+        trigger_kind=e.trigger_kind, recipe_kind=e.recipe_kind,
+        causal_initiation=e.causal_initiation,
+        observation_realization=e.observation_realization,
+        execution_environment=e.execution_environment,
+        priority=0, status="approved", created_at=now, updated_at=now))
+    assert [s.kind for s in plan.steps] == ["create", "read", "assert"]
+    assert plan.steps[0].field_values == {"Order__c.Stage__c": "Submitted"}

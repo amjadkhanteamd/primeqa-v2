@@ -1558,7 +1558,17 @@ class GovernanceCore:
                     effect_object=eff_ep,
                     effect_via_lookup_field=_Endpoint(
                         entity_id=via_ent.id, entity_type=via_ent.entity_type,
-                        external_id=via_ent.sf_api_name or str(via_ent.id))))
+                        external_id=via_ent.sf_api_name or str(via_ent.id)),
+                    # D-307: the entry gate is on the SUBJECT create in the
+                    # parent-stamp shape too — without it the flow never
+                    # stamps. Same D-299 rail (BELONGS_TO verify, drop-never-
+                    # refuse); the subject BELONGS_TO map is the k16 guard
+                    # (the stamped field lives on ANOTHER object, so it can
+                    # never verify as a subject trigger) — the explicit
+                    # exclude is defense-in-depth.
+                    trigger_fields=_ground_trigger_fields(
+                        hint.get("trigger_fields"), neighborhood,
+                        exclude_field=hint.get("effect_field"))))
             elif effect_object_api:
                 grounded_eff = self._ground_cross_object_effect(
                     hint, effect_object_api, at)
@@ -1575,7 +1585,14 @@ class GovernanceCore:
                     requirement_excerpt=excerpt,
                     effect_field=eff_field_ep,
                     effect_value=_identity_safe(hint.get("effect_value")),
-                    effect_object=eff_ep, effect_lookup_field=lookup_ep))
+                    effect_object=eff_ep, effect_lookup_field=lookup_ep,
+                    # D-307: the cross-object flow fires only when the SUBJECT
+                    # create reaches its entry gate (the L7e live recon: a
+                    # padding-only create never provokes the Task) — the same
+                    # D-299 rail as above.
+                    trigger_fields=_ground_trigger_fields(
+                        hint.get("trigger_fields"), neighborhood,
+                        exclude_field=hint.get("effect_field"))))
             else:
                 field_ent = next(
                     (r.entity for r in neighborhood

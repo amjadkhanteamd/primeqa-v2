@@ -1665,11 +1665,23 @@ def _author_automation_effect(g: GroundedAutomationEffect) -> EmissionBundle:
         # known — no relationship-traversal read), create the trigger with the
         # lookup set, read the PARENT back. Value-less stamps assert not_null
         # (e.g. $Flow.CurrentDate has no stable literal). Runs on the D-205
-        # N-create chain.
+        # N-create chain. D-307: the staged entry gate rides the TRIGGER
+        # create (never the parent) and narrates into the identity-bearing
+        # description — the same D-299 idiom as the same-record branch.
         effect_api = g.effect_object.external_id
         via_api = g.effect_via_lookup_field.external_id
         field_api = g.effect_field.external_id
         field_bare = field_api.split(".", 1)[-1]
+        create_fields = {ep.external_id: val for ep, val in g.trigger_fields}
+        gate = ", ".join(f"{k}={v!r}" for k, v in create_fields.items())
+        ps_event = event
+        gated = ""
+        if create_fields:
+            gated = f" with {gate}"
+            ps_event = EventDescriptor(
+                trigger_kind="data-mutation-trigger",
+                description=(f"creating a {object_api} with {gate} — "
+                             f"{g.requirement_excerpt}"))
         field_ref = IdentityBearingRef(
             entity_type=g.effect_field.entity_type,
             entity_id=g.effect_field.entity_id,
@@ -1690,7 +1702,7 @@ def _author_automation_effect(g: GroundedAutomationEffect) -> EmissionBundle:
         claim = AutomationEffectClaimBody(
             automation=automation_ref,
             automation_primitive=g.automation_primitive,
-            triggering_action=event, expected_effect=effect,
+            triggering_action=ps_event, expected_effect=effect,
             affected_fields=[field_ref],
         )
         steps = [
@@ -1699,7 +1711,8 @@ def _author_automation_effect(g: GroundedAutomationEffect) -> EmissionBundle:
                                                 external_id=effect_api),
                        field_values={}),
             CreateStep(step_id="create-record", target_object=target,
-                       field_values={via_api: "$create-parent.id"}),
+                       field_values={**create_fields,
+                                     via_api: "$create-parent.id"}),
             ReadStep(
                 step_id="read-effect",
                 target=LogicalRef(entity_type="Object", external_id=effect_api),
@@ -1708,15 +1721,28 @@ def _author_automation_effect(g: GroundedAutomationEffect) -> EmissionBundle:
                 fields_to_capture=[field_bare]),
             DataAssertStep(step_id="assert-effect", predicate=assert_pred),
         ]
-        details = (f"create a {effect_api} parent, create a {object_api} "
-                   f"linked to it, read the parent back, assert the Flow "
-                   f"stamped {stamp_desc}")
+        details = (f"create a {effect_api} parent, create a {object_api}"
+                   f"{gated} linked to it, read the parent back, assert the "
+                   f"Flow stamped {stamp_desc}")
     else:
-        # cross-object: the Flow creates a correlated effect record
+        # cross-object: the Flow creates a correlated effect record. D-307:
+        # the staged entry gate rides the trigger create + the identity-
+        # bearing description (the L7e live recon: a padding-only create
+        # never provokes the correlated record — the flow's gate never fires).
         effect_api = g.effect_object.external_id
         lookup_api = g.effect_lookup_field.external_id
         # the lookup is bare-keyed in SOQL on the effect object
         lookup_bare = lookup_api.split(".", 1)[-1]
+        create_fields = {ep.external_id: val for ep, val in g.trigger_fields}
+        gate = ", ".join(f"{k}={v!r}" for k, v in create_fields.items())
+        xo_event = event
+        gated = ""
+        if create_fields:
+            gated = f" with {gate}"
+            xo_event = EventDescriptor(
+                trigger_kind="data-mutation-trigger",
+                description=(f"creating a {object_api} with {gate} — "
+                             f"{g.requirement_excerpt}"))
         if g.effect_field is not None:
             field_api = g.effect_field.external_id
             field_bare = field_api.split(".", 1)[-1]
@@ -1731,8 +1757,9 @@ def _author_automation_effect(g: GroundedAutomationEffect) -> EmissionBundle:
             assert_pred = AssertionPredicate(
                 subject_ref=f"read-effect.{field_bare}",
                 predicate="equals", value=g.effect_value)
-            details = (f"create a {object_api} record, query {effect_api} via "
-                       f"{lookup_bare}, assert the Flow-created record carries "
+            details = (f"create a {object_api} record{gated}, query "
+                       f"{effect_api} via {lookup_bare}, assert the "
+                       f"Flow-created record carries "
                        f"{field_bare}={g.effect_value!r}")
         else:
             effect = FieldChangeEffect(changes=StateDescriptor(field_values={}))
@@ -1740,17 +1767,18 @@ def _author_automation_effect(g: GroundedAutomationEffect) -> EmissionBundle:
             select = f"SELECT Id FROM {effect_api}"
             assert_pred = AssertionPredicate(
                 subject_ref="read-effect.Id", predicate="exists", value=None)
-            details = (f"create a {object_api} record, query {effect_api} via "
-                       f"{lookup_bare}, assert the Flow created a correlated record")
+            details = (f"create a {object_api} record{gated}, query "
+                       f"{effect_api} via {lookup_bare}, assert the Flow "
+                       f"created a correlated record")
         claim = AutomationEffectClaimBody(
             automation=automation_ref,
             automation_primitive=g.automation_primitive,
-            triggering_action=event, expected_effect=effect,
+            triggering_action=xo_event, expected_effect=effect,
             affected_fields=affected,
         )
         steps = [
             CreateStep(step_id="create-record", target_object=target,
-                       field_values={}),
+                       field_values=dict(create_fields)),
             ReadStep(
                 step_id="read-effect",
                 target=LogicalRef(entity_type="Object", external_id=effect_api),
