@@ -91,9 +91,9 @@ _VALID_ARCHETYPES = frozenset({
 })
 
 _VALID_CLAIM_KINDS = frozenset({
-    # data-behavior (4)
+    # data-behavior (5)
     "value-claim", "state-transition-claim",
-    "automation-effect-claim", "prohibition-claim",
+    "automation-effect-claim", "prohibition-claim", "acceptance-claim",
     # configuration (3)
     "existence-claim", "property-claim", "metadata-relationship-claim",
     # permission (2)

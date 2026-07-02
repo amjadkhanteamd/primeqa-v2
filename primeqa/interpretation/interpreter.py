@@ -140,6 +140,14 @@ _POSITIVE_VOCAB = {
         "The automation fired.",
         "the asserted effect was not observed",
         "The automation did not produce its asserted effect."),
+    # D-305: the acceptance archetype — passed = the org SAVED the case;
+    # failed = the org rejected what the requirement says must save.
+    "acceptance-claim": (
+        "creation_accepted", "creation_rejected",
+        "the org accepted the creation (the record persisted)",
+        "The case saves.",
+        "the org rejected a creation the requirement says must save",
+        "The org refused the asserted case."),
 }
 
 

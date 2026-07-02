@@ -249,6 +249,14 @@ def seeded(db_setup) -> dict:
                               attrs={"is_calculated": True,
                                      "formula": "Subtotal__c * 1.1"})
         _edge(conn, order_total, order, "BELONGS_TO", "STRUCTURAL", v1)
+        # D-305: the D-294 metadata rail reads field_details (the hot table),
+        # not attributes — seed the calculated flag there so the acceptance
+        # writability gate is exercised through the REAL rail path.
+        conn.execute(text(
+            "INSERT INTO field_details (entity_id, object_entity_id, "
+            "field_type, is_calculated) VALUES (CAST(:f AS uuid), "
+            "CAST(:o AS uuid), 'currency', TRUE)"),
+            {"f": order_total, "o": order})
         order_flow = _entity(conn, "Flow", "Stamp_Order_Status", v1)
         _edge(conn, order_flow, order, "TRIGGERS_ON", "BEHAVIOR", v1)
         # D-299: a SECOND Flow TRIGGERS_ON Order__c — the multi-flow fixture that

@@ -50,6 +50,7 @@ _HAS_LAYER_2: dict[str, bool] = {
     "prohibition-claim": True,              # Layer 2 = formula confirms rejection (parser-deferred)
     "state-transition-claim": True,         # Layer 2 = formula (parser-deferred)
     "automation-effect-claim": True,        # Layer 2 = runtime-firing verification (unbuilt)
+    "acceptance-claim": False,              # D-305: the RUN is the verification (Layer-1)
 }
 
 

@@ -1,6 +1,6 @@
 """Data-behavior archetype claim bodies (Track B-β).
 
-Per SPEC §3 + D-053. Four claim-kinds:
+Per SPEC §3 + D-053 (+ D-305). Five claim-kinds:
 
   - :class:`ValueClaimBody` — "this field has this value"
   - :class:`StateTransitionClaimBody` — "this record moves from
@@ -9,6 +9,9 @@ Per SPEC §3 + D-053. Four claim-kinds:
     this effect when triggered"
   - :class:`ProhibitionClaimBody` — "the platform rejects this
     operation against this target"
+  - :class:`AcceptanceClaimBody` — "the platform ACCEPTS this
+    operation under this business state" (the prohibition's
+    mirror, D-305)
 
 Importing this package triggers ``@register_body`` decoration on
 each of the four body modules (the imports below). Consumers who
@@ -24,6 +27,9 @@ from typing import Annotated, Union
 
 from pydantic import Field
 
+from primeqa.test_representation.models.claims.data_behavior.acceptance_claim import (
+    AcceptanceClaimBody,
+)
 from primeqa.test_representation.models.claims.data_behavior.automation_effect_claim import (
     AutomationEffectClaimBody,
 )
@@ -39,6 +45,7 @@ from primeqa.test_representation.models.claims.data_behavior.value_claim import 
 
 
 __all__ = [
+    "AcceptanceClaimBody",
     "AutomationEffectClaimBody",
     "DataBehaviorClaimBody",
     "ProhibitionClaimBody",
@@ -53,6 +60,7 @@ DataBehaviorClaimBody = Annotated[
         StateTransitionClaimBody,
         AutomationEffectClaimBody,
         ProhibitionClaimBody,
+        AcceptanceClaimBody,
     ],
     Field(discriminator="kind"),
 ]
@@ -64,7 +72,8 @@ declared on :class:`BodyBase`. Pydantic dispatches on the literal
 value: ``"value-claim"`` → :class:`ValueClaimBody`,
 ``"state-transition-claim"`` → :class:`StateTransitionClaimBody`,
 ``"automation-effect-claim"`` → :class:`AutomationEffectClaimBody`,
-``"prohibition-claim"`` → :class:`ProhibitionClaimBody`.
+``"prohibition-claim"`` → :class:`ProhibitionClaimBody`,
+``"acceptance-claim"`` → :class:`AcceptanceClaimBody`.
 
 The five archetype-level unions (data_behavior, configuration,
 permission, ui, integration) are intentionally NOT combined into a

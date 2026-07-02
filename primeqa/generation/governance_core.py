@@ -33,6 +33,7 @@ from primeqa.generation.enums import AdmissibilityLayer, OutcomeKind, RefusalKin
 from primeqa.generation.explanation_hash import compute_explanation_hash
 from primeqa.generation.tools import normalize_propose_input
 from primeqa.generation.emission import (
+    GroundedAcceptance,
     GroundedAutomationEffect,
     GroundedCapability,
     GroundedEmission,
@@ -64,6 +65,7 @@ from primeqa.generation.protocol import (
     RefusalEntry,
 )
 from primeqa.semantic.edges import TIER_1_EDGES
+from primeqa.generation.verified_negative import _writable
 from primeqa.semantic.entity_attributes import (
     field_is_calculated, vr_error_message, vr_formula_text, vr_is_active)
 from primeqa.semantic.formula import Comparison, FieldRef, is_parsed, parse, walk
@@ -121,7 +123,7 @@ _INHERENTLY_NEGATIVE = {"prohibition-claim"}
 # meaningfulness floor; D-087 Guardrail 1 substantive).
 _DATA_BEHAVIOR_CLAIM_KINDS = {
     "value-claim", "state-transition-claim", "automation-effect-claim",
-    "prohibition-claim",
+    "prohibition-claim", "acceptance-claim",
 }
 
 # Dismissal reason -> reasoning phase (D-077d). Documentation of how the
@@ -1142,6 +1144,64 @@ class GovernanceCore:
                     entity_id=field_ent.id, entity_type=field_ent.entity_type,
                     external_id=field_ent.sf_api_name or str(field_ent.id)),
                 value=expected_value, requirement_excerpt=excerpt))
+
+        # D-305: the acceptance stash — every clause grounds like a D-293
+        # rejection condition (BELONGS_TO + predicate/value coupling), PLUS the
+        # stageability bar (equals stages a value; is_null stays absent; any
+        # other predicate cannot deterministically stage a create — refuse)
+        # and writability (an equals clause on a calculated/read-only field
+        # cannot be staged — refuse; the D-294 rail supplies the metadata).
+        if state is not None and claim_kind == "acceptance-claim":
+            proposed = hint.get("acceptance_conditions")
+            grounded_conds, invalid = _ground_rejection_conditions(
+                proposed, neighborhood, at)
+            if invalid:
+                return IntentResolution(
+                    grounded_candidates=[], next_action=NextAction.REFUSE,
+                    interpretation_delta=delta,
+                    refusal=self._router.emission_deferred(
+                        archetype, claim_kind,
+                        detail="; ".join(invalid)))
+            if not grounded_conds:
+                return IntentResolution(
+                    grounded_candidates=[], next_action=NextAction.REFUSE,
+                    interpretation_delta=delta,
+                    refusal=self._router.emission_deferred(
+                        archetype, claim_kind,
+                        detail=("an acceptance claim needs at least one "
+                                "grounded condition clause — the business "
+                                "state that DEFINES the accepted case")))
+            unstageable = sorted({c.predicate for c in grounded_conds
+                                  if c.predicate not in ("equals", "is_null")})
+            if unstageable:
+                return IntentResolution(
+                    grounded_candidates=[], next_action=NextAction.REFUSE,
+                    interpretation_delta=delta,
+                    refusal=self._router.emission_deferred(
+                        archetype, claim_kind,
+                        detail=(f"acceptance conditions must be stageable on "
+                                f"one create — equals/is_null only; got "
+                                f"{unstageable}")))
+            cond_meta = _grounding_field_metadata(neighborhood, self._s1, at)
+            nonwritable = sorted(
+                c.field.external_id for c in grounded_conds
+                if c.predicate == "equals" and not _writable(
+                    cond_meta.get(c.field.external_id.split(".", 1)[-1])))
+            if nonwritable:
+                return IntentResolution(
+                    grounded_candidates=[], next_action=NextAction.REFUSE,
+                    interpretation_delta=delta,
+                    refusal=self._router.emission_deferred(
+                        archetype, claim_kind,
+                        detail=(f"acceptance condition field(s) not writable "
+                                f"(calculated/read-only): {nonwritable}")))
+            _stash_grounding(state, GroundedAcceptance(
+                archetype=archetype, claim_kind=claim_kind, version_seq=at,
+                subject=_Endpoint(
+                    entity_id=subject.id, entity_type=subject.entity_type,
+                    external_id=subject.sf_api_name or str(subject.id)),
+                requirement_excerpt=excerpt,
+                conditions=tuple(grounded_conds)))
 
         # D-210.1 covers the POSITIVE shapes only; a NEGATIVE state-transition /
         # automation-effect (grounded via its VR/Flow dim) has no authored

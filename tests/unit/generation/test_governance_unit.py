@@ -90,6 +90,14 @@ _EMITTABLE_SHAPES = {
         archetype="ui", claim_kind="layout-claim", version_seq=1,
         layout=_ep("Layout", "Account-Account Layout"),
         field=_ep("Field", "Account.AnnualRevenue"), requirement_excerpt="x"),
+    ("data_behavior", "acceptance-claim"): lambda: __import__(
+        "primeqa.generation.emission", fromlist=["GroundedAcceptance"]
+    ).GroundedAcceptance(
+        archetype="data_behavior", claim_kind="acceptance-claim",
+        version_seq=1, subject=_ep("Object", "Case"), requirement_excerpt="x",
+        conditions=(SimpleNamespace(
+            field=_ep("Field", "Case.Amount"), predicate="equals",
+            value="100"),)),
     ("data_behavior", "prohibition-claim"): lambda: GroundedNegative(
         archetype="data_behavior", claim_kind="prohibition-claim",
         operation_hint=None, version_seq=1,

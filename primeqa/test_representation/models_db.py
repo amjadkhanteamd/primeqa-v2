@@ -86,6 +86,7 @@ CLAIM_KIND_ENUM = ENUM(
     "state-transition-claim",
     "automation-effect-claim",
     "prohibition-claim",
+    "acceptance-claim",
     # configuration archetype (3)
     "existence-claim",
     "property-claim",

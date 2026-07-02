@@ -17,10 +17,11 @@ from primeqa.test_representation.models_db import (
     TRIGGER_KIND_ENUM,
 )
 
-# The 16 claim-kinds S3 emits across all 5 archetypes (the Phase-2 breadth set).
+# The 17 claim-kinds S3 emits across all 5 archetypes (the Phase-2 breadth
+# set + the D-305 acceptance archetype).
 _CLAIM_KINDS = {
     "value-claim", "state-transition-claim", "automation-effect-claim",
-    "prohibition-claim", "existence-claim", "property-claim",
+    "prohibition-claim", "acceptance-claim", "existence-claim", "property-claim",
     "metadata-relationship-claim", "capability-claim", "sharing-rule-claim",
     "element-state-claim", "navigation-claim", "layout-claim",
     "platform-event-claim", "outbound-message-claim", "callout-claim",
@@ -39,7 +40,7 @@ _TRIGGER_KINDS = {
 
 
 def test_claim_kind_taxonomy_is_the_16_breadth_kinds():
-    assert len(_CLAIM_KINDS) == 16          # guard the expected set itself
+    assert len(_CLAIM_KINDS) == 17          # guard the expected set itself
     assert set(CLAIM_KIND_ENUM.enums) == _CLAIM_KINDS
 
 

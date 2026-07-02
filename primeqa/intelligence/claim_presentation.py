@@ -107,6 +107,9 @@ def claim_title(claim_kind: str, asserted_truth: Optional[dict],
             target = _ref_name(body.get("target"), labels) or "the object"
             op = _OPERATION_WORDS.get(body.get("operation"), "the operation")
             return f"Rejects {op} on {target}"
+        if claim_kind == "acceptance-claim":
+            target = _ref_name(body.get("target"), labels) or "the object"
+            return f"Accepts creating {target}"
         if claim_kind == "value-claim":
             field = _ref_name(body.get("subject"), labels) or "the field"
             return f"{field} saves as {_literal(body.get('expected_value'))}"

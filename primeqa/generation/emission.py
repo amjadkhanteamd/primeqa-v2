@@ -67,6 +67,9 @@ from primeqa.test_representation.models.claims.ui import (
 from primeqa.test_representation.models.claims.data_behavior.prohibition_claim import (
     ProhibitionClaimBody,
 )
+from primeqa.test_representation.models.claims.data_behavior.acceptance_claim import (
+    AcceptanceClaimBody,
+)
 from primeqa.test_representation.models.claims.data_behavior.automation_effect_claim import (
     AutomationEffectClaimBody,
 )
@@ -147,7 +150,8 @@ EMITTABLE: frozenset = frozenset({
     ("configuration", "property-claim"),                 # D-122 (GroundedProperty)
     ("permission", "capability-claim"),                  # D-123 (GroundedCapability)
     ("ui", "layout-claim"),                              # D-124 (GroundedLayout)
-    ("data_behavior", "prohibition-claim"),              # D-101 (GroundedNegative)
+    ("data_behavior", "prohibition-claim"),              # D-101
+    ("data_behavior", "acceptance-claim"),               # D-305 (GroundedNegative)
     ("data_behavior", "value-claim"),                    # D-115 (GroundedPositive)
     ("data_behavior", "state-transition-claim"),         # D-210 (GroundedStateTransition)
     ("data_behavior", "automation-effect-claim"),        # D-210 (GroundedAutomationEffect)
@@ -341,6 +345,23 @@ class GroundedAutomationEffect:
     # the automation ref is a CALCULATED FIELD and trigger_fields carry the
     # formula's inputs. Default keeps every pre-D-304 construction byte-identical.
     automation_primitive: str = "flow"
+
+
+@dataclass(frozen=True)
+class GroundedAcceptance:
+    """data_behavior acceptance-claim grounding (D-305): the subject Object +
+    the GROUNDED business-state clauses (each field verified BELONGS_TO the
+    subject + writable at the stash gate; equals/is_null predicates only —
+    the stageable set). The clauses are IDENTITY-BEARING (they ride
+    semantic_conditions): an acceptance case is DEFINED by its values, so
+    just-below and at-threshold are distinct claims."""
+
+    archetype: str              # "data_behavior"
+    claim_kind: str             # "acceptance-claim"
+    version_seq: int
+    subject: _Endpoint          # the Object being created
+    requirement_excerpt: str
+    conditions: tuple = ()      # grounded clauses (field ep, predicate, value)
 
 
 @dataclass(frozen=True)
@@ -997,6 +1018,74 @@ def author_boundary_recipes(
     return tuple(out)
 
 
+def _author_acceptance(g: GroundedAcceptance) -> EmissionBundle:
+    """Author the acceptance bundle (D-305): the claim asserts the org ACCEPTS
+    creating the subject under the grounded business state; the recipe stages
+    that state on ONE multi-field create (``expect_acceptance=True`` — the
+    create IS the assertion), reads the record back by id, and asserts it
+    exists. Object-qualified keys (the positive vertical's convention). Every
+    ``equals`` clause stages its value; ``is_null`` clauses stay ABSENT (the
+    case is partly defined by what is NOT set — the negative-scope shape)."""
+    subject_ref = IdentityBearingRef(
+        entity_type=g.subject.entity_type, entity_id=g.subject.entity_id,
+        version_seq=g.version_seq, external_id=g.subject.external_id,
+    )
+    object_api = g.subject.external_id
+    claim = AcceptanceClaimBody(target=subject_ref, operation="create")
+    conditions = _conditions_body(g.conditions, g.version_seq)
+
+    staged = {c.field.external_id: c.value for c in g.conditions
+              if c.predicate == "equals"}
+    target = LogicalRef(entity_type=g.subject.entity_type,
+                        external_id=object_api)
+    trigger = DataMutationTriggerBody(
+        operation="create", target=target,
+        identity_context="system", volume="single",
+    )
+    recipe = DataRecipeBody(
+        api_choice="rest", identity_context="system",
+        execution_mechanism="direct_api",
+        steps=[
+            CreateStep(
+                step_id="create-record",
+                target_object=target,
+                field_values=staged,
+                expect_acceptance=True,
+            ),
+            ReadStep(
+                step_id="read-created",
+                target=target,
+                soql=(f"SELECT Id FROM {object_api} "
+                      f"WHERE Id = '$create-record.id'"),
+                fields_to_capture=["Id"],
+            ),
+            DataAssertStep(
+                step_id="assert-exists",
+                predicate=AssertionPredicate(
+                    subject_ref="read-created.Id", predicate="exists"),
+            ),
+        ],
+    )
+    env = ExecutionEnvironmentBody(auth_assumptions=[AuthAssumption(
+        auth_kind="data_api_user",
+        details=(f"create a {object_api} record staging the asserted business "
+                 f"state ({', '.join(sorted(staged)) or 'no staged fields'}) "
+                 f"and expect the org to ACCEPT it (no validation rule fires)"),
+    )])
+    return EmissionBundle(
+        archetype=g.archetype, claim_kind=g.claim_kind,
+        asserted_truth=claim, semantic_conditions=conditions,
+        trigger_kind="data-mutation-trigger", recipe_kind="data-recipe",
+        causal_initiation=trigger, observation_realization=recipe,
+        execution_environment=env,
+        # Layer-1: acceptance cannot be pre-verified from metadata — the RUN
+        # is the verification (semantic_completeness: has_layer_2=False).
+        admissibility_layer=AdmissibilityLayer.LAYER_1,
+        caveat_required=requires_caveat(g.claim_kind),
+        caveat_kind=caveat_kind(g.claim_kind),
+    )
+
+
 def _conditions_body(grounded: tuple, version_seq: int) -> SemanticConditionsBody:
     """Build the identity-bearing ``SemanticConditionsBody`` from grounded
     business-state clauses (D-293). Each clause becomes one ``Condition`` over the
@@ -1575,6 +1664,8 @@ def author_emission(grounded: object, *,
         return _author_capability(grounded)
     if isinstance(grounded, GroundedLayout):
         return _author_layout(grounded)
+    if isinstance(grounded, GroundedAcceptance):
+        return _author_acceptance(grounded)
     if isinstance(grounded, GroundedNegative):
         return _author_negative(grounded,
                                 enable_bva_boundaries=enable_bva_boundaries)

@@ -66,9 +66,9 @@ _ADMISSIBILITY_LAYERS = [e.value for e in AdmissibilityLayer]  # layer_1 | layer
 # importing S2's SQLAlchemy models at tool-surface import time).
 _ARCHETYPES = ["data_behavior", "configuration", "permission", "ui", "integration"]
 _CLAIM_KINDS = [
-    # data_behavior (4)
+    # data_behavior (5)
     "value-claim", "state-transition-claim", "automation-effect-claim",
-    "prohibition-claim",
+    "prohibition-claim", "acceptance-claim",
     # configuration (3)
     "existence-claim", "property-claim", "metadata-relationship-claim",
     # permission (2)

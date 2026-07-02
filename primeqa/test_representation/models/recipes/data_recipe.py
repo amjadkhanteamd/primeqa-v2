@@ -67,6 +67,13 @@ class CreateStep(_StepBase):
     target_object: OperationalRef
     field_values: dict[str, Any]
     expect_rejection: Optional[RejectionExpectation] = None
+    expect_acceptance: bool = False
+    """D-305: ``expect_rejection``'s mirror — this create IS the assertion
+    (the acceptance archetype). When True, S4 grades a STRUCTURED business
+    rejection (HTTP 400 + a parseable error body) as ``failed`` with the
+    rejecting rule attributed — for an acceptance claim the rejection is the
+    FINDING, never an indeterminate staging error; transport/ambiguous stays
+    ``errored``. Default False = every pre-D-305 recipe byte-identical."""
 
 
 class ReadStep(_StepBase):
