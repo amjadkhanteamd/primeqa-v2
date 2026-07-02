@@ -582,7 +582,8 @@ def _run_positive(plan: DataRecipePlan, *, client, environment_id: int, s1=None,
             # (a latent D-115.2 gap surfaced by the D-205 chain tests).
             outcome, top_error = _grade_rejected_create(
                 http_status, rejection_body,
-                {_sf_field(k, sobject) for k in semantic_fields})
+                {_sf_field(k, sobject) for k in semantic_fields},
+                expect_acceptance=getattr(create, "expect_acceptance", False))
             create_evs.append(_evidence(
                 create, sobject, c_start, _now(), http_status=http_status,
                 success=False, rejection_body=rejection_body, matched=None,
@@ -659,17 +660,27 @@ def _run_positive(plan: DataRecipePlan, *, client, environment_id: int, s1=None,
         created_records=tracker.records)
 
 
-def _grade_rejected_create(http_status, rejection_body, semantic_fields):
+def _grade_rejected_create(http_status, rejection_body, semantic_fields,
+                           *, expect_acceptance: bool = False):
     """Grade a create the org refused. A 400 business rejection is disambiguated
     by offending field: the **semantic** field named → ``failed`` (the value is
     not achievable — the finding); only **padding** named → ``errored`` (S4's own
     operational gap); none named → ``errored`` (ambiguous). Any other non-2xx →
     ``errored`` (the org did not business-evaluate). Returns (outcome, top_error|
-    None — None only when the outcome is a clean ``failed``)."""
+    None — None only when the outcome is a clean ``failed``).
+
+    ``expect_acceptance`` (D-305): the create IS the assertion — ANY 400
+    business rejection is the FINDING (``failed``, the org refused a case the
+    requirement says must save), regardless of field attribution; padding
+    ambiguity does not apply because the staged state, not one field's value,
+    is what the org evaluated. Non-400 stays ``errored`` (transport/authz —
+    the org did not business-evaluate the case)."""
     if http_status != _BUSINESS_REJECTION_STATUS:
         return "errored", ErrorSurface(
             "create", "UnexpectedResponse",
             f"create returned HTTP {http_status} (not a business rejection)")
+    if expect_acceptance:
+        return "failed", None       # the org rejected what must save
     offending = _offending_fields(rejection_body)
     if offending & semantic_fields:
         return "failed", None       # the requirement's value is not achievable

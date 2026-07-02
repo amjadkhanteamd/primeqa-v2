@@ -523,3 +523,34 @@ def test_setup_override_never_beats_the_semantic_setup_field():
     assert ev.outcome == "passed"
     _, payload = client.creates[0]
     assert payload["Amount"] == 500                    # derived value wins
+
+
+# ---------------------------------------------------------------------------
+# D-305: expect_acceptance — the create IS the assertion.
+# ---------------------------------------------------------------------------
+
+def test_grade_rejected_create_acceptance_any_400_is_failed():
+    from primeqa.execution_engine.data_executor import _grade_rejected_create
+    # unattributed 400 (the AmbiguousRejection case) -> FAILED for acceptance
+    out, err = _grade_rejected_create(
+        400, [{"errorCode": "FIELD_CUSTOM_VALIDATION_EXCEPTION",
+               "message": "no", "fields": []}],
+        {"Amount"}, expect_acceptance=True)
+    assert out == "failed" and err is None
+    # padding-attributed 400 -> still FAILED (the staged STATE was evaluated)
+    out2, _ = _grade_rejected_create(
+        400, [{"errorCode": "X", "message": "no", "fields": ["Name"]}],
+        {"Amount"}, expect_acceptance=True)
+    assert out2 == "failed"
+    # non-400 stays errored (transport/authz — not business-evaluated)
+    out3, err3 = _grade_rejected_create(
+        503, [], {"Amount"}, expect_acceptance=True)
+    assert out3 == "errored" and err3 is not None
+
+
+def test_grade_rejected_create_default_path_byte_identical():
+    from primeqa.execution_engine.data_executor import _grade_rejected_create
+    # the pre-D-305 disambiguation is untouched without the flag
+    out, err = _grade_rejected_create(
+        400, [{"errorCode": "X", "message": "no", "fields": []}], {"Amount"})
+    assert out == "errored" and err.error_type == "AmbiguousRejection"
