@@ -380,8 +380,8 @@ def test_automation_effect_without_flow_is_ungrounded(seeded):
 def test_formula_primitive_grounds_on_a_calculated_field(seeded):
     # automation_name resolves to a CALCULATED field (not a Flow): the claim
     # binds it as the automation with primitive='formula'; trigger_fields carry
-    # the formula INPUTS (verified as parsed refs); the observed field stays
-    # org-produced (absent from the create — k16 via the existing exclude).
+    # the formula INPUTS (BELONGS_TO-verified; the k16 exclude keeps the
+    # observed field itself out of the create).
     r = _run(seeded, _intent("automation-effect-claim", "positive", "Order__c",
                              field_name="Order__c.Total_With_Tax__c",
                              expected_value=110,
@@ -445,3 +445,69 @@ def test_flow_primitive_stays_flow(seeded):
                              field_name="Order__c.Status__c", expected_value="Activated",
                              automation_name="Stamp_Order_Status"))
     assert r.emission.asserted_truth.automation_primitive == "flow"
+
+
+def test_formula_must_observe_itself(seeded):
+    # D-304.1 (i): a formula automation observes ITSELF — a different
+    # field_name is mechanism-false AND would slip the calc field past k16.
+    r = _run(seeded, _intent("automation-effect-claim", "positive", "Order__c",
+                             field_name="Order__c.Status__c", expected_value="X",
+                             automation_name="Order__c.Total_With_Tax__c"),
+             expect_emit=False)
+    assert r.outcome.outcome_kind == OutcomeKind.REFUSAL
+    assert "observes itself" in r.outcome.refusals[0].payload["detail"]
+
+
+def test_named_flow_with_calculated_observed_field_refuses(seeded):
+    # D-304.1 (ii): the deterministic wrong-green — the formula engine would
+    # compute the expectation from the create's own inputs while the claim
+    # credits a Flow that contributed nothing. Refuse.
+    r = _run(seeded, _intent("automation-effect-claim", "positive", "Order__c",
+                             field_name="Order__c.Total_With_Tax__c",
+                             expected_value=110,
+                             automation_name="Stamp_Order_Status"),
+             expect_emit=False)
+    assert r.outcome.outcome_kind == OutcomeKind.REFUSAL
+    assert "CALCULATED" in r.outcome.refusals[0].payload["detail"]
+
+
+def test_noname_with_calculated_observed_field_rebinds_formula(seeded):
+    # D-304.1 (iii): the no-name floor with a calculated observed field binds
+    # the HONEST mechanism — the formula field itself, never flows[0].
+    r = _run(seeded, _intent("automation-effect-claim", "positive", "Order__c",
+                             field_name="Order__c.Total_With_Tax__c",
+                             expected_value=110))
+    assert r.outcome.outcome_kind == OutcomeKind.DRAFT
+    body = r.emission.asserted_truth
+    assert body.automation_primitive == "formula"
+    assert body.automation.external_id == "Order__c.Total_With_Tax__c"
+
+
+def test_decimal_hints_coerce_across_families(seeded):
+    # D-304.1 (S2): decimal hints do not crash persistence — one probe per
+    # hint family through the real runtime (the canonicalization law holds
+    # via the substrate coercion, never LLM typing luck).
+    r1 = _run(seeded, _intent("automation-effect-claim", "positive", "Order__c",
+                              field_name="Order__c.Total_With_Tax__c",
+                              expected_value=110.25,
+                              automation_name="Order__c.Total_With_Tax__c"))
+    assert r1.outcome.outcome_kind == OutcomeKind.DRAFT
+    eff = r1.emission.asserted_truth.expected_effect.changes.field_values
+    assert eff["Order__c.Total_With_Tax__c"].value == "110.25"
+
+    r2 = _run(seeded, _intent("value-claim", "positive", "Order__c",
+                              field_name="Order__c.Subtotal__c",
+                              expected_value=99.5))
+    assert r2.outcome.outcome_kind == OutcomeKind.DRAFT
+    assert r2.emission.asserted_truth.expected_value.value == "99.5"
+
+    r3 = _run(seeded, _intent("prohibition-claim", "negative", "Quote",
+                              operation="modify_record",
+                              rejection_conditions=[
+                                  {"field": "Quote.Total__c", "predicate": "equals",
+                                   "value": 0.75}]))
+    # grounds on the derivable Quote VR + the clause value is the coerced
+    # string (no float crash through the D-293 identity-bearing conditions)
+    assert r3.outcome.outcome_kind == OutcomeKind.DRAFT
+    conds = r3.emission.semantic_conditions.conditions
+    assert conds and conds[0].value == "0.75"

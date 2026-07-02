@@ -20,7 +20,7 @@ import pytest
 from primeqa.generation.enums import OutcomeKind
 from primeqa.generation.routing import route_model
 from primeqa.generation.run import run_generation
-from primeqa.intelligence.llm.router import OPUS, SONNET, TenantPolicy
+from primeqa.intelligence.llm.router import OPUS, SONNET_5, TenantPolicy
 
 from .conftest import (
     FakeTurn, FakeToolTurn, TEST_ENV_ID, TEST_TENANT_ID, intent, make_request,
@@ -85,9 +85,13 @@ def test_run_generation_data_behavior_batch_persists_refusal(seeded):
 # Routing -> binding wiring (no seam): the routed model reaches the gateway
 # ---------------------------------------------------------------------------
 
+# The routing contract post-Sonnet-5 flip (main @7158ca8): archetype-BLIND —
+# explicit pin > tenant always_use_opus > Sonnet 5 default. (This param table
+# previously encoded the per-archetype opus/sonnet split; repaired here after
+# the flip shipped without updating this PG-gated integration file.)
 @pytest.mark.parametrize("archetype, policy, expected_model", [
-    ("configuration", None, SONNET),
-    ("data_behavior", None, OPUS),
+    ("configuration", None, SONNET_5),
+    ("data_behavior", None, SONNET_5),
     ("configuration", TenantPolicy(always_use_opus=True), OPUS),
 ])
 def test_run_generation_binds_routed_model_to_gateway(

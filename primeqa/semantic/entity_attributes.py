@@ -495,9 +495,10 @@ def field_is_calculated(attributes: Optional[dict]) -> bool:
 def field_formula_text(attributes: Optional[dict]) -> Optional[str]:
     """The calculated field's formula source — two-shape tolerant: designed
     ``formula`` OR the raw describe ``calculatedFormula`` (the live env-59
-    shape, probe-verified). ``None`` when absent/uncaptured. D-304: used to
-    verify proposed trigger fields are genuine formula INPUTS (best-effort —
-    an unparseable/absent formula falls back to BELONGS_TO verification)."""
+    shape, probe-verified). ``None`` when absent/uncaptured. D-304: retained
+    UNUSED by production — the input-verification filter was rejected at impl
+    (the condition parser cannot parse value formulas, and non-input triggers
+    are legitimate VR-survival staging); probes/diagnostics read it."""
     attrs = attributes or {}
     return attrs.get("formula") or attrs.get("calculatedFormula")
 

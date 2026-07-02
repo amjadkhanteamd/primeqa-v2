@@ -220,6 +220,8 @@ def seeded(db_setup) -> dict:
         # kind under one requirement; "Case" (the old non-derivable second member)
         # now refuses behaviour-incomplete, so a second derivable object is needed.
         quote = _entity(conn, "Object", "Quote", v1)
+        quote_total = _entity(conn, "Field", "Quote.Total__c", v1)
+        _edge(conn, quote_total, quote, "BELONGS_TO", "STRUCTURAL", v1)
         quote_vr = _entity(conn, "ValidationRule", "Quote.NonNegativeTotal", v1,
                            attrs={"formula_text": "Total__c < 0"})
         _edge(conn, quote_vr, quote, "APPLIES_TO", "BEHAVIOR", v1)

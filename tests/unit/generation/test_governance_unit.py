@@ -690,3 +690,17 @@ def test_grounding_messages_filter_inactive_vrs():
           _vr_rel("Amount <= 0", active=False, message="Dead rule message")]
     msgs = gc._grounding_vr_messages("prohibition-claim", nb)
     assert msgs == {"Amount > 10000": "Cap exceeded"}
+
+
+def test_identity_safe_floats_coerce_to_shortest_repr_strings():
+    # D-304: canonicalization v1 forbids floats in identity-bearing content —
+    # decimal hints coerce to strings at the hint->claim boundary (the S4
+    # typed-tolerant equals grades "0.63" == 0.63 identically).
+    assert gc._identity_safe(0.63) == "0.63"
+    assert gc._identity_safe(0.9) == "0.9"
+    assert gc._identity_safe(5.0) == "5.0"
+    # non-floats pass through verbatim (D-115 §2)
+    assert gc._identity_safe(720) == 720
+    assert gc._identity_safe("Medium") == "Medium"
+    assert gc._identity_safe(True) is True
+    assert gc._identity_safe(None) is None

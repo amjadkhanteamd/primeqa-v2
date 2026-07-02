@@ -173,6 +173,13 @@ def _ground_rejection_conditions(proposed, neighborhood: list, version_seq: int)
     for clause in (proposed or []):
         c = clause or {}
         fld, predicate, value = c.get("field"), c.get("predicate"), c.get("value")
+        # D-304.1 (review S1): the 7th hint->claim ingress — decimal clause
+        # values coerce like every other identity-bearing hint; element-wise
+        # for in_set lists.
+        if isinstance(value, list):
+            value = [_identity_safe(v) for v in value]
+        else:
+            value = _identity_safe(value)
         ent = fields_by_name.get(fld)
         if ent is None:
             invalid.append(f"field {fld!r} does not BELONG_TO the subject")
@@ -190,6 +197,18 @@ def _ground_rejection_conditions(proposed, neighborhood: list, version_seq: int)
                             external_id=ent.sf_api_name or str(ent.id)),
             predicate=predicate, value=value))
     return grounded, invalid
+
+
+def _identity_safe(value):
+    """D-304: canonicalization v1 FORBIDS floats in identity-bearing content
+    (SPEC §6.3.2) — an LLM proposing a decimal expected value (0.63) must not
+    crash persistence on typing luck. Floats coerce to their shortest-repr
+    STRING at the hint→claim boundary (the S4 typed-tolerant equals, D-211,
+    compares "0.63" == 0.63 numerically, so the recipe grades identically).
+    Everything else passes through verbatim (D-115 §2)."""
+    if isinstance(value, float) and not isinstance(value, bool):
+        return repr(value)
+    return value
 
 
 def _ground_trigger_fields(proposed, neighborhood: list,
@@ -1108,7 +1127,7 @@ class GovernanceCore:
                 (r.entity for r in neighborhood
                  if r.edge_type == EDGE_BELONGS and r.entity.entity_type == "Field"
                  and r.entity.sf_api_name == hint.get("field_name")), None)
-            expected_value = hint.get("expected_value")
+            expected_value = _identity_safe(hint.get("expected_value"))
             if field_ent is None or expected_value is None:
                 return IntentResolution(
                     grounded_candidates=[], next_action=NextAction.REFUSE,
@@ -1148,7 +1167,7 @@ class GovernanceCore:
                 (r.entity for r in neighborhood
                  if r.edge_type == EDGE_BELONGS and r.entity.entity_type == "Field"
                  and r.entity.sf_api_name == hint.get("field_name")), None)
-            to_value = hint.get("expected_value")
+            to_value = _identity_safe(hint.get("expected_value"))
             # D-227: a cross-object trigger (the transition is provoked by
             # creating a RELATED record) VERIFIES instead of deferring — the
             # trigger object must resolve uniquely and its lookup back to the
@@ -1193,7 +1212,7 @@ class GovernanceCore:
                         entity_id=trig_ent.id,
                         entity_type=trig_ent.entity_type,
                         external_id=trig_ent.sf_api_name or str(trig_ent.id))
-                    trig_value = hint.get("trigger_value")
+                    trig_value = _identity_safe(hint.get("trigger_value"))
             _stash_grounding(state, GroundedStateTransition(
                 archetype=archetype, claim_kind=claim_kind, version_seq=at,
                 subject=_Endpoint(
@@ -1329,7 +1348,7 @@ class GovernanceCore:
                     subject=subj_ep, automation=flow_ep,
                     requirement_excerpt=excerpt,
                     effect_field=eff_field_ep,
-                    effect_value=hint.get("effect_value"),
+                    effect_value=_identity_safe(hint.get("effect_value")),
                     effect_object=eff_ep,
                     effect_via_lookup_field=_Endpoint(
                         entity_id=via_ent.id, entity_type=via_ent.entity_type,
@@ -1349,14 +1368,14 @@ class GovernanceCore:
                     subject=subj_ep, automation=flow_ep,
                     requirement_excerpt=excerpt,
                     effect_field=eff_field_ep,
-                    effect_value=hint.get("effect_value"),
+                    effect_value=_identity_safe(hint.get("effect_value")),
                     effect_object=eff_ep, effect_lookup_field=lookup_ep))
             else:
                 field_ent = next(
                     (r.entity for r in neighborhood
                      if r.edge_type == EDGE_BELONGS and r.entity.entity_type == "Field"
                      and r.entity.sf_api_name == hint.get("field_name")), None)
-                effect_value = hint.get("expected_value")
+                effect_value = _identity_safe(hint.get("expected_value"))
                 if field_ent is None or effect_value is None:
                     return IntentResolution(
                         grounded_candidates=[], next_action=NextAction.REFUSE,
@@ -1367,6 +1386,47 @@ class GovernanceCore:
                                     "effect: field_name + expected_value on "
                                     "the subject, or effect_object + "
                                     "effect_lookup_field")))
+                # D-304.1 (review B2): the automation binding and the observed
+                # field must COHERE — three crossed bindings close here:
+                # (i) a formula automation observes ITSELF (field_name must be
+                # the named formula field — anything else is mechanism-false
+                # AND lets the calc field slip past the k16 exclude);
+                # (ii) a CALCULATED observed field under an explicitly-named
+                # Flow is a deterministic wrong-green (the formula engine
+                # computes the expectation from the create's own inputs; the
+                # claim would credit a Flow that contributed nothing and stay
+                # green if that Flow broke) — refuse;
+                # (iii) the no-name floor with a calculated observed field
+                # re-binds the HONEST mechanism: the formula field itself.
+                observed_is_calc = field_is_calculated(field_ent.attributes)
+                if primitive == "formula" and \
+                        field_ent.sf_api_name != automation_name:
+                    return IntentResolution(
+                        grounded_candidates=[], next_action=NextAction.REFUSE,
+                        interpretation_delta=delta,
+                        refusal=self._router.emission_deferred(
+                            archetype, claim_kind,
+                            detail=(f"a formula automation observes itself — "
+                                    f"field_name {field_ent.sf_api_name!r} "
+                                    f"must equal the calculated automation "
+                                    f"{automation_name!r}")))
+                if primitive == "flow" and observed_is_calc:
+                    if automation_name:
+                        return IntentResolution(
+                            grounded_candidates=[], next_action=NextAction.REFUSE,
+                            interpretation_delta=delta,
+                            refusal=self._router.emission_deferred(
+                                archetype, claim_kind,
+                                detail=(f"the observed field "
+                                        f"{field_ent.sf_api_name!r} is "
+                                        f"CALCULATED — a Flow cannot stamp a "
+                                        f"formula field; name the field "
+                                        f"itself as the automation")))
+                    primitive = "formula"
+                    flow_ep = _Endpoint(
+                        entity_id=field_ent.id,
+                        entity_type=field_ent.entity_type,
+                        external_id=field_ent.sf_api_name or str(field_ent.id))
                 # D-299: the OPTIONAL entry-condition trigger — the (field,
                 # value) pairs the create must SET so the Flow's entry gate
                 # fires. Same-record only (the gate is on the subject create);
