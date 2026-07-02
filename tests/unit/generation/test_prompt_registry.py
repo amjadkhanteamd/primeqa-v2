@@ -24,11 +24,11 @@ def test_frozen_content_hash_matches_recorded():
             f"{v}: frozen content drifted from its recorded hash")
 
 
-def test_current_resolves_to_v12():
-    # D-304: CURRENT bumped to v12 (the formula automation primitive). v1..v11
-    # stay frozen + pinned-resolvable (test_runtime_honors_pinned_prompt_version).
-    assert registry.CURRENT == "generation@v12"
-    assert registry.get() == registry.get("generation@v12")
+def test_current_resolves_to_v13():
+    # D-305: CURRENT bumped to v13 (the acceptance archetype). v1..v12 stay
+    # frozen + pinned-resolvable (test_runtime_honors_pinned_prompt_version).
+    assert registry.CURRENT == "generation@v13"
+    assert registry.get() == registry.get("generation@v13")
     sys = registry.get()
     assert len(sys) > 1000                                  # substantive, not a stub
     # the substance the schemas don't enforce (D-103.3) is present
@@ -67,6 +67,10 @@ def test_current_resolves_to_v12():
     # v12's formula-primitive contract (D-304)
     assert "CALCULATED (formula) field is also an automation" in sys
     assert "on the named field being calculated" in sys
+    # v13's acceptance-archetype contract (D-305)
+    assert "acceptance-claim" in sys
+    assert "acceptance_conditions" in sys
+    assert "DISTINCT claims" in sys
     # the honest-dismissals guard is preserved verbatim (not overturned)
     assert "honest" in sys and "forced breadth" in sys
 

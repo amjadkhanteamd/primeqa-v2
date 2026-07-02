@@ -28,7 +28,7 @@ _VERSIONS_DIR = _DIR / "versions"
 
 # The default version new generations use (replay pins its own version on the
 # request's operational_context.prompt_template_version, per D-071).
-CURRENT = "generation@v12"
+CURRENT = "generation@v13"
 
 # version id -> frozen composed artifact (filesystem-safe slug).
 _FILES = {
@@ -44,6 +44,7 @@ _FILES = {
     "generation@v10": _VERSIONS_DIR / "generation_v10.md",
     "generation@v11": _VERSIONS_DIR / "generation_v11.md",
     "generation@v12": _VERSIONS_DIR / "generation_v12.md",
+    "generation@v13": _VERSIONS_DIR / "generation_v13.md",
 }
 
 # Recorded SHA-256 of each frozen version's composed content (D-103.1 drift
@@ -90,6 +91,9 @@ RECORDED_HASHES = {
     # is an automation-effect (automation_name = the FIELD, trigger_fields = the
     # formula inputs + VR-survival staging, expected_value = the computed result).
     "generation@v12": "f36cd9609a5fb038be099e2a27228e3ee74520bbecae427ea8841681a608ba01",
+    # v13 (D-305): the acceptance archetype — "this case SAVES" is a claim
+    # (acceptance_conditions define the case; boundary values are identity).
+    "generation@v13": "1eb5c8ec81c95288d77960e9a855b213b905bd1919a2a40f25955abf004e695a",
 }
 
 # Working composition order — authors the NEXT frozen version (NOT runtime).
