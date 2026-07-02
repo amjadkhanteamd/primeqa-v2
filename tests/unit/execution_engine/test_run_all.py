@@ -67,14 +67,23 @@ class _FakeSession:
 
 class _FakeCoord:
     """Stands in for the coordinator: returns a fixed recipe set + a no-op posture
-    callback (so finalize_run's report_run_outcome doesn't need a DB)."""
+    callback (so finalize_run's report_run_outcome doesn't need a DB).
+    D-300 B2: ``authored`` (defaults to the data-recipe selection ids) is the
+    status-blind data-probe membership the manifest records."""
 
-    def __init__(self, recipes):
+    def __init__(self, recipes, authored=None):
         self._recipes = list(recipes)
+        self._authored = authored
         self.posture_calls = []
 
     def select_recipes_for_execution(self, session, test_id, **kwargs):
         return list(self._recipes)
+
+    def current_data_recipe_ids(self, session, test_id):
+        if self._authored is not None:
+            return list(self._authored)
+        return [r.recipe_id for r in self._recipes
+                if getattr(r, "recipe_kind", None) == "data-recipe"]
 
     def report_run_outcome(self, session, **kwargs):
         self.posture_calls.append(kwargs)
@@ -403,10 +412,14 @@ def test_async_runall_writes_manifest_with_expected_set(monkeypatch):
 
     run_all_recipes_execution_async(
         7, uuid4(), environment_id=7, client=object(),
-        coordinator=_FakeCoord(recipes), session_scope=fake_scope,
+        # D-300 B2: the manifest records the AUTHORED membership — declare it
+        # on the fake (these mechanics fakes are metadata-kind, so the default
+        # data-recipe derivation would be empty).
+        coordinator=_FakeCoord(recipes, authored=[r.recipe_id for r in recipes]),
+        session_scope=fake_scope,
         execute_fn=rec_execute, manifest_writer=rec_manifest)
 
-    # the manifest is recorded BEFORE any probe executes, carrying the applicable set.
+    # the manifest is recorded BEFORE any probe executes, carrying the AUTHORED set.
     assert events[0][0] == "manifest"
     assert events[0][1] == tuple(r.recipe_id for r in recipes)
 
@@ -484,3 +497,28 @@ def test_async_runall_filters_metadata_from_manifest(monkeypatch):
 
     assert manifests == [(data_probe.recipe_id,)]
     assert [p.recipe_id for p in result.probes] == [data_probe.recipe_id]
+
+
+def test_runall_manifest_records_authored_membership_not_approved_subset():
+    # D-300 review-fix B2 (the partial-approval wrong-green): the manifest
+    # records the claim's AUTHORED data-probe membership. When the approved/
+    # selectable subset is SMALLER (a member unapproved or deprecated), the
+    # batch runs the subset but the manifest expects the full membership —
+    # the completeness reader then marks the batch INCOMPLETE -> not-Verified.
+    approved_probe = _fake_recipe(recipe_kind="data-recipe")
+    unapproved_id = uuid4()                      # authored but never selectable
+    session = _FakeSession()
+    manifests = []
+
+    def rec_manifest(tenant_id, batch_id, test_id, recipe_ids, **k):
+        manifests.append(tuple(recipe_ids))
+
+    result = run_all_recipes_execution(
+        session, uuid4(), environment_id=7, client=object(),
+        coordinator=_FakeCoord([approved_probe],
+                               authored=[approved_probe.recipe_id, unapproved_id]),
+        tenant_id=1, manifest_writer=rec_manifest,
+        execute_fn=lambda recipe, *a, **k: _passed_evidence(recipe, 7))
+
+    assert result.ran is True and len(result.probes) == 1   # only the approved ran
+    assert manifests == [(approved_probe.recipe_id, unapproved_id)]  # both expected

@@ -764,12 +764,16 @@ def run_all_recipes_execution(
     if not recipes:
         return RunAllResult(batch_id=batch_id, ran=False, reason="no_eligible_recipes")
 
-    # Slice 4c.0 (C2/D-281): record the EXPECTED applicable set as the batch
-    # manifest, committed EARLY (own txn) BEFORE the probe loop — so a batch that
-    # crashes mid-loop is still readable as expected=N → incomplete (4c.1). Only
-    # when there IS an applicable set (N≥1) and a batch is about to run. DORMANT.
+    # Slice 4c.0 (C2/D-281) + D-300 review-fix B2: the manifest records the
+    # claim's AUTHORED data-probe membership (status- + env-blind), NOT the
+    # approval/env-filtered selection — an unapproved / deprecated / env-
+    # unsatisfiable member stays EXPECTED, never runs, and the completeness
+    # reader marks the batch incomplete → not-Verified. Partial approval can
+    # only produce an honest red, never a boundary verdict over a reduced set.
+    # Committed EARLY (own txn) BEFORE the probe loop — a batch that crashes
+    # mid-loop is still readable as incomplete (4c.1).
     write_manifest(tenant_id, batch_id, test_id,
-                   [r.recipe_id for r in recipes], env_key=None)
+                   coord.current_data_recipe_ids(session, test_id), env_key=None)
 
     probes = []
     for recipe in recipes:
@@ -840,6 +844,10 @@ def run_all_recipes_execution_async(
             session, test_id,
             available_environment=available_environment or _MIN_AVAILABLE_ENV,
             replay_mode="live"))
+        # D-300 review-fix B2: the AUTHORED data-probe membership for the
+        # manifest, read inside the same bracket (see the sync path's note).
+        authored_ids = (coord.current_data_recipe_ids(session, test_id)
+                        if recipes else [])
         # env_gate is resolved ONCE for the batch (assumed immutable for its
         # duration — the same as the singular async path, which resolves it once).
         env_gate = _resolve_env_gate(session, environment_id) if recipes else None
@@ -852,12 +860,13 @@ def run_all_recipes_execution_async(
     if not recipes:
         return RunAllResult(batch_id=batch_id, ran=False, reason="no_eligible_recipes")
 
-    # Slice 4c.0 (C2/D-281): the batch manifest — the EXPECTED applicable set,
-    # committed EARLY in its own txn BEFORE the probe loop (the select bracket
-    # above already closed), so a batch that crashes mid-loop is readable as
-    # incomplete (4c.1). Only when N≥1. DORMANT (nothing routes to run-all yet).
-    write_manifest(tenant_id, batch_id, test_id,
-                   [r.recipe_id for r in recipes], env_key=None)
+    # Slice 4c.0 (C2/D-281) + D-300 review-fix B2: the manifest records the
+    # AUTHORED membership (status- + env-blind data recipes), not the filtered
+    # selection — a member that never runs marks the batch incomplete →
+    # not-Verified (honest red, never a reduced-set boundary verdict).
+    # Committed EARLY in its own txn BEFORE the probe loop (the select bracket
+    # above already closed), so a mid-loop crash is readable as incomplete.
+    write_manifest(tenant_id, batch_id, test_id, authored_ids, env_key=None)
 
     sink = StrandedRecordSink(tenant_id, environment_id)
     probes = []

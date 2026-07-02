@@ -37,16 +37,61 @@ log = logging.getLogger(__name__)
 # version_seq; pass NULL to disable the filter (unapproved claim).
 _FLAKE_WINDOW = 5
 
+# D-300 review-fix B1: the raw window is WIDER than the flake window because a
+# bva batch's per-probe rows collapse to ONE logical outcome before counting —
+# 25 raw rows cover 5 logical entries even at a 5-probe batch size.
+_RAW_RUN_WINDOW = 25
+
 _COUNTED_RUNS_SQL = (
     "SELECT CAST(r.run_id AS text) AS run_id, r.outcome::text AS outcome, "
-    "r.finished_at, r.claim_version_seq, i.verdict::text AS verdict, "
-    "i.detail AS detail "
+    "r.finished_at, r.claim_version_seq, "
+    "CAST(r.batch_id AS text) AS batch_id, "
+    "i.verdict::text AS verdict, i.detail AS detail "
     "FROM s4_execution_runs r "
     "LEFT JOIN s6_interpretations i ON i.run_id = r.run_id "
     "WHERE r.claim_test_id = CAST(:tid AS uuid) "
     "AND (CAST(:seq AS int) IS NULL "
     "     OR r.claim_version_seq IS NULL OR r.claim_version_seq = :seq) "
-    f"ORDER BY r.finished_at DESC LIMIT {_FLAKE_WINDOW}")
+    f"ORDER BY r.finished_at DESC LIMIT {_RAW_RUN_WINDOW}")
+
+
+def _collapse_batches(rows) -> list:
+    """D-300 review-fix B1: collapse a run-all batch's per-probe rows into ONE
+    logical run entry so the flake window and the ``latest_run`` surface count
+    BATCHES, not probes. Without this, a bva claim whose accept probe
+    consistently fails reads as ``[failed, passed, failed, passed]`` — the
+    chronic-flip signature — and D-200 quarantine would NEUTRALIZE the honest
+    strict-AND red (a wrong-green at release grade).
+
+    Rows arrive newest-first. A ``batch_id IS NULL`` row (every single-mode run)
+    passes through unchanged — the single path is byte-identical. Rows sharing a
+    ``batch_id`` collapse to one entry whose outcome is 'passed' iff EVERY probe
+    passed, else the SINKING probe's outcome — and the representative row (its
+    run_id / verdict / detail, for the D-237 cause) is that sinking probe, so a
+    blocking bva claim renders the probe that sank it, never an arbitrary
+    passing accept probe (review finding #4)."""
+    logical: list = []
+    seen_batches: set = set()
+    by_batch: dict = {}
+    for r in rows:
+        b = r["batch_id"]
+        if b is None:
+            continue
+        by_batch.setdefault(b, []).append(r)
+    for r in rows:
+        b = r["batch_id"]
+        if b is None:
+            logical.append(dict(r))
+            continue
+        if b in seen_batches:
+            continue
+        seen_batches.add(b)
+        probes = by_batch[b]
+        sinking = next((p for p in probes if p["outcome"] != "passed"), None)
+        rep = dict(sinking if sinking is not None else probes[0])
+        rep["outcome"] = "passed" if sinking is None else sinking["outcome"]
+        logical.append(rep)
+    return logical[:_FLAKE_WINDOW]
 
 
 def _cause_phrase(detail, verdict, outcome) -> str | None:
@@ -241,9 +286,12 @@ def _assemble_claim_evidence(session, external_keys, *, tenant_id=None) -> list[
             grounding = {"overall": gv.overall, "stale": stale,
                          "evaluated_at_version_seq": gv.evaluated_at_version_seq}
 
-        rows = session.execute(text(_COUNTED_RUNS_SQL),
-                               {"tid": str(tid), "seq": approved_seq}
-                               ).mappings().all()
+        raw_rows = session.execute(text(_COUNTED_RUNS_SQL),
+                                   {"tid": str(tid), "seq": approved_seq}
+                                   ).mappings().all()
+        # D-300 review-fix B1: batches collapse to ONE logical run each (the
+        # single path passes through byte-identical — batch_id NULL).
+        rows = _collapse_batches(raw_rows)
         row = rows[0] if rows else None
         latest_run = None
         if row is not None:

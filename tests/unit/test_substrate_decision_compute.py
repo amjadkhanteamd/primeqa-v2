@@ -575,3 +575,76 @@ def test_assemble_shape_bva_WITHOUT_session_would_raise():
     shape = _assemble_shape(latest_run=None, strategy_kind="bva")
     with pytest.raises(ValueError):
         _claim_verified(shape)                                       # session=None
+
+
+# ---------------------------------------------------------------------------
+# D-300 review-fix B1: _collapse_batches — a run-all batch counts as ONE
+# logical run in the flake window / latest_run surface.
+# ---------------------------------------------------------------------------
+
+def _row(outcome, batch_id=None, run_id=None, verdict=None, detail=None):
+    return {"run_id": run_id or f"r-{outcome}-{id(object())}", "outcome": outcome,
+            "finished_at": None, "claim_version_seq": 1,
+            "batch_id": batch_id, "verdict": verdict, "detail": detail}
+
+
+def test_collapse_single_rows_pass_through_byte_identical():
+    from primeqa.intelligence.substrate_decision import _collapse_batches
+    rows = [_row("passed"), _row("failed"), _row("passed")]
+    out = _collapse_batches(rows)
+    assert [r["outcome"] for r in out] == ["passed", "failed", "passed"]
+    assert [r["run_id"] for r in out] == [r["run_id"] for r in rows]
+
+
+def test_collapse_batch_counts_once_and_kills_the_false_flake():
+    from primeqa.intelligence.substrate_decision import (
+        _collapse_batches, _is_flaky)
+    # The exact review scenario: two bva batches whose accept probe
+    # consistently FAILS. Raw rows interleave [failed, passed, failed, passed]
+    # -> the chronic-flip signature -> false quarantine. Collapsed: each batch
+    # is ONE failed entry -> [failed, failed] -> NOT flaky (a stable red).
+    raw = [_row("failed", batch_id="b2"), _row("passed", batch_id="b2"),
+           _row("failed", batch_id="b1"), _row("passed", batch_id="b1")]
+    assert _is_flaky([r["outcome"] for r in raw]) is True     # the bug, pinned
+    out = _collapse_batches(raw)
+    assert [r["outcome"] for r in out] == ["failed", "failed"]
+    assert _is_flaky([r["outcome"] for r in out]) is False    # the fix
+
+
+def test_collapse_all_passed_batch_is_one_passed():
+    from primeqa.intelligence.substrate_decision import _collapse_batches
+    out = _collapse_batches([_row("passed", batch_id="b1"),
+                             _row("passed", batch_id="b1")])
+    assert [r["outcome"] for r in out] == ["passed"]
+
+
+def test_collapse_representative_is_the_sinking_probe():
+    # Review finding #4: a blocking bva claim must render the probe that SANK
+    # it (its run_id/verdict/detail feed the D-237 cause), never an arbitrary
+    # newest passing accept probe.
+    from primeqa.intelligence.substrate_decision import _collapse_batches
+    sink = _row("failed", batch_id="b1", run_id="sinking",
+                verdict="org_rejected_boundary", detail="the accept probe failed")
+    out = _collapse_batches([_row("passed", batch_id="b1", run_id="newest-accept"),
+                             sink])
+    assert len(out) == 1
+    assert out[0]["run_id"] == "sinking"
+    assert out[0]["outcome"] == "failed"
+    assert out[0]["verdict"] == "org_rejected_boundary"
+
+
+def test_collapse_mixed_singles_and_batches_ordered_newest_first():
+    from primeqa.intelligence.substrate_decision import _collapse_batches
+    rows = [_row("passed"),                             # single (newest)
+            _row("passed", batch_id="b2"),
+            _row("errored", batch_id="b2"),
+            _row("failed")]                             # single (oldest)
+    out = _collapse_batches(rows)
+    assert [r["outcome"] for r in out] == ["passed", "errored", "failed"]
+
+
+def test_collapse_caps_at_the_flake_window():
+    from primeqa.intelligence.substrate_decision import (
+        _FLAKE_WINDOW, _collapse_batches)
+    rows = [_row("passed") for _ in range(12)]
+    assert len(_collapse_batches(rows)) == _FLAKE_WINDOW

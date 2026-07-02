@@ -53,7 +53,12 @@ def _bva_boundaries_enabled(tenant_id: int) -> bool:
             return bool(v)
         finally:
             db.close()
-    except Exception:
+    except Exception as exc:
+        # D-300 review nit: a transient read failure on an ARMED tenant
+        # silently (and stickily, via the same-hash no-op) downgrades the
+        # claim to single — leave a trace, never raise.
+        log.warning("bva flag read failed for tenant %s (reading False): %s",
+                    tenant_id, exc)
         return False
 
 

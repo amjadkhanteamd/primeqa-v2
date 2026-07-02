@@ -191,6 +191,13 @@ def derive_boundary_set(ast, field_metadata=None) -> tuple:
         return ()
     if literal.kind != "number" or op not in _BOUNDARY_OPS:
         return ()
+    if not isinstance(literal.value, int):
+        # D-300 review-fix: ±1 on a FRACTIONAL literal is unsound — float
+        # artifacts + field-scale rounding can make the "just-inside" value
+        # actually FIRE the VR (e.g. `> 10000.5` on a scale-0 field rounds
+        # 10000.5 up), silently minting a permanently-red probe. Scale-aware
+        # adjacency is a named deferral; until then, integers only.
+        return ()
     firing = _violating_value(op, literal)
     just_inside = _violating_value(_NEG[op], literal)
     return (

@@ -87,3 +87,103 @@ def test_bva_flag_read_is_best_effort_false_on_any_error(monkeypatch):
         raise RuntimeError("no db")
     monkeypatch.setattr("primeqa.db.get_db", _boom)
     assert C._bva_boundaries_enabled(1) is False
+
+
+def test_finalize_outcome_threads_the_bva_flag_to_the_author(monkeypatch):
+    # D-300 review-fix (governance seam): a typo'd getattr / dropped kwarg here
+    # kills the feature for flag-ON tenants with every suite green — this test
+    # pins the exact ctx -> author_emission threading (the mutant-killer).
+    from types import SimpleNamespace
+    import pytest as _pytest
+    from primeqa.generation import governance_core as gc
+
+    captured = {}
+
+    class _Sentinel(Exception):
+        pass
+
+    def fake_author(g, *, enable_bva_boundaries=False):
+        captured["flag"] = enable_bva_boundaries
+        raise _Sentinel()
+
+    monkeypatch.setattr(gc, "author_emission", fake_author)
+    core = gc.GovernanceCore(None)
+    state = SimpleNamespace(groundings=[object()],
+                            attempted_interpretation={},
+                            presented_candidates=None)
+
+    ctx_on = SimpleNamespace(operational_context=SimpleNamespace(
+        enable_bva_boundaries=True))
+    with _pytest.raises(_Sentinel):
+        core.finalize_outcome(outcome_input={}, ctx=ctx_on, state=state)
+    assert captured["flag"] is True
+
+    # a legacy/test ctx without the operational_context reads OFF, never raises
+    ctx_legacy = SimpleNamespace()
+    with _pytest.raises(_Sentinel):
+        core.finalize_outcome(outcome_input={}, ctx=ctx_legacy, state=state)
+    assert captured["flag"] is False
+
+
+def test_bva_flag_read_happy_path_true(monkeypatch):
+    # D-300 review-fix (consumer seam): the raw-SQL read returns the column
+    # value — a `return False` mutant dies here.
+    from types import SimpleNamespace
+    from primeqa.generation import consumer as C
+
+    class _FakeDb:
+        def execute(self, *a, **k):
+            return SimpleNamespace(scalar=lambda: True)
+
+        def close(self):
+            pass
+
+    def fake_get_db():
+        yield _FakeDb()
+
+    monkeypatch.setattr("primeqa.db.get_db", fake_get_db)
+    assert C._bva_boundaries_enabled(1) is True
+
+
+def test_process_job_threads_the_bva_flag_into_the_request(monkeypatch):
+    # D-300 review-fix (consumer seam): the flag reaches the request's
+    # operational context — a deleted-kwarg mutant dies here.
+    from types import SimpleNamespace
+    from uuid import uuid4 as _u
+    from primeqa.generation import consumer as C
+
+    job = SimpleNamespace(id=7, requirement_key="R1", requirement_text="x",
+                          s1_version_seq=1, s1_version_name=None,
+                          environment_id=59)
+
+    class _FakeStore:
+        def __init__(self, tenant_id):
+            pass
+
+        def claim_next_queued_job(self):
+            return job
+
+        def heartbeat(self, jid):
+            pass
+
+        def start_attempt(self, jid):
+            return SimpleNamespace(request_id=str(_u()))
+
+        def complete(self, jid):
+            pass
+
+        def fail(self, jid, **k):
+            pass
+
+    captured = {}
+
+    def fake_run_generation(request, **kwargs):
+        captured["request"] = request
+        return SimpleNamespace(results=[])
+
+    monkeypatch.setattr(C, "GenerationJobStore", _FakeStore)
+    monkeypatch.setattr(C, "run_generation", fake_run_generation)
+    monkeypatch.setattr(C, "_bva_boundaries_enabled", lambda tid: True)
+
+    C.process_job_for_tenant(1, api_key_resolver=lambda t, e: "k")
+    assert captured["request"].operational_context.enable_bva_boundaries is True

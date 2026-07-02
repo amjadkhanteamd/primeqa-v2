@@ -502,3 +502,13 @@ def test_boundary_set_refuses_pre_scan_gates():
     assert _bset("Account.Amount__c > 100") == ()
     assert derive_boundary_set(parse("REGEX(Phone, '[0-9]+')")) == ()
     assert derive_boundary_set(None) == ()
+
+
+def test_boundary_set_refuses_fractional_literals():
+    # D-300 review-fix: ±1 adjacency on a fractional literal is unsound
+    # (float artifacts + field-scale rounding can make the just-inside value
+    # actually fire the VR) — integers only until scale-aware adjacency.
+    assert _bset("Amount > 10000.5") == ()
+    assert _bset("Amount <= 99.99") == ()
+    # integers still arm
+    assert len(_bset("Amount > 10000")) == 2

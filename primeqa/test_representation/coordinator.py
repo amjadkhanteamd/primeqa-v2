@@ -1617,6 +1617,32 @@ class SemanticTransactionCoordinator:
         )
         return [self._hydrate_recipe_row(row) for row in matching]
 
+    def current_data_recipe_ids(
+        self,
+        session: Session,
+        test_id: UUID,
+    ) -> list[UUID]:
+        """The claim's AUTHORED data-probe membership — every CURRENT
+        (``valid_to IS NULL``) data-recipe id, **status-blind** and env-blind
+        (D-300 review-fix B2). The run-all batch manifest records THIS set, not
+        the approval/env-filtered selection: an unapproved or deprecated member
+        stays expected, never runs, and the completeness reader marks the batch
+        INCOMPLETE → not-Verified — so partial approval or per-recipe
+        deprecation can only ever produce an honest red, never a boundary
+        verdict folded over a reduced probe set (the wrong-green vector).
+        Deterministic order (recipe_id ASC)."""
+        rows = (
+            session.query(TestRecipe.recipe_id)
+            .filter(
+                TestRecipe.claim_test_id == test_id,
+                TestRecipe.valid_to.is_(None),
+                TestRecipe.recipe_kind == "data-recipe",
+            )
+            .order_by(TestRecipe.recipe_id)
+            .all()
+        )
+        return [r.recipe_id for r in rows]
+
     def _environment_satisfies(
         self,
         *,
