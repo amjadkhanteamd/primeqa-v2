@@ -477,3 +477,22 @@ def vr_error_message(attributes: Optional[dict]) -> Optional[str]:
     raw Tooling). D-203.1."""
     attrs = attributes or {}
     return attrs.get("error_message") or attrs.get("ErrorMessage")
+
+
+def vr_is_active(attributes: Optional[dict]) -> bool:
+    """Whether the ValidationRule is ACTIVE on the org — same shape tolerance
+    as :func:`vr_formula_text` (D-203.1): designed ``is_active``; raw Tooling
+    top-level ``Active``; ``Metadata.active``. **Missing → True** — an
+    attribute-less row must not silently demote every negative to caveated
+    (the presentation-layer default posture). D-301: an inactive rule cannot
+    fire, so it must never ground a prohibition, tie in VR-to-claim alignment,
+    or bind an error message."""
+    attrs = attributes or {}
+    for key in ("is_active", "Active"):
+        v = attrs.get(key)
+        if v is not None:
+            return bool(v)
+    metadata = attrs.get("Metadata")
+    if isinstance(metadata, dict) and metadata.get("active") is not None:
+        return bool(metadata["active"])
+    return True

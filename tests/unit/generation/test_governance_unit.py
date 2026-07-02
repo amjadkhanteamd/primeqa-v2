@@ -648,3 +648,45 @@ def test_hash_sensitive_to_typed_substance():
     # Changing a typed field (claim_kind) MUST change the hash.
     assert compute_explanation_hash(_ai(claim_kind="prohibition-claim")) != \
            compute_explanation_hash(_ai(claim_kind="value-claim"))
+
+
+# ---------------------------------------------------------------------------
+# D-301: inactive VRs never ground — the formula/message sets filter them.
+# ---------------------------------------------------------------------------
+
+def _vr_rel(formula, *, active=None, message=None):
+    attrs = {"formula_text": formula}
+    if active is not None:
+        attrs["is_active"] = active
+    if message is not None:
+        attrs["error_message"] = message
+    return SimpleNamespace(
+        edge_type="APPLIES_TO",
+        entity=SimpleNamespace(entity_type="ValidationRule",
+                               sf_api_name=f"VR_{id(attrs)}", id=uuid4(),
+                               attributes=attrs))
+
+
+def test_grounding_formulas_filter_inactive_vrs():
+    # The live D-300 finding: an INACTIVE VR sharing a field with the live one
+    # tied the D-295 alignment and vetoed grounding. Filtered, the live rule
+    # stands alone.
+    nb = [_vr_rel("Amount > 10000", active=True),
+          _vr_rel("AND(ISPICKVAL(StageName,'Closed Won'), Amount <= 0)",
+                  active=False)]
+    formulas = gc._grounding_vr_formulas("prohibition-claim", nb)
+    assert formulas == ("Amount > 10000",)
+
+
+def test_grounding_formulas_missing_active_defaults_included():
+    # seeds/pre-cutover rows carry no active flag -> assumed live (never
+    # silently demote to caveated)
+    nb = [_vr_rel("Amount > 10000")]
+    assert gc._grounding_vr_formulas("prohibition-claim", nb) == ("Amount > 10000",)
+
+
+def test_grounding_messages_filter_inactive_vrs():
+    nb = [_vr_rel("Amount > 10000", active=True, message="Cap exceeded"),
+          _vr_rel("Amount <= 0", active=False, message="Dead rule message")]
+    msgs = gc._grounding_vr_messages("prohibition-claim", nb)
+    assert msgs == {"Amount > 10000": "Cap exceeded"}

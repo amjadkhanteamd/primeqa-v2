@@ -40,3 +40,30 @@ def test_empty_and_none_safe():
     assert vr_formula_text({}) is None
     assert vr_formula_text({"Metadata": None}) is None
     assert vr_error_message({}) is None
+
+
+# ---------------------------------------------------------------------------
+# D-301: vr_is_active — shape-tolerant active flag.
+# ---------------------------------------------------------------------------
+
+def test_vr_is_active_designed_shape():
+    from primeqa.semantic.entity_attributes import vr_is_active
+    assert vr_is_active({"is_active": True}) is True
+    assert vr_is_active({"is_active": False}) is False
+
+
+def test_vr_is_active_raw_tooling_shape():
+    from primeqa.semantic.entity_attributes import vr_is_active
+    # the live env-59 shape: top-level Active + Metadata.active
+    assert vr_is_active({"Active": False, "Metadata": {"active": False}}) is False
+    assert vr_is_active({"Active": True, "Metadata": {"active": True}}) is True
+    # Metadata-only fallback
+    assert vr_is_active({"Metadata": {"active": False}}) is False
+
+
+def test_vr_is_active_missing_defaults_true():
+    from primeqa.semantic.entity_attributes import vr_is_active
+    # an attribute-less row must not silently demote negatives to caveated
+    assert vr_is_active({}) is True
+    assert vr_is_active(None) is True
+    assert vr_is_active({"formula_text": "Amount > 0"}) is True

@@ -64,7 +64,8 @@ from primeqa.generation.protocol import (
     RefusalEntry,
 )
 from primeqa.semantic.edges import TIER_1_EDGES
-from primeqa.semantic.entity_attributes import vr_error_message, vr_formula_text
+from primeqa.semantic.entity_attributes import (
+    vr_error_message, vr_formula_text, vr_is_active)
 from primeqa.semantic.formula import Comparison, FieldRef, is_parsed, parse, walk
 from primeqa.semantic.query import Entity, SemanticOrgModel
 
@@ -249,6 +250,11 @@ def _grounding_vr_formulas(claim_kind: str, neighborhood: list) -> tuple[str, ..
     formulas: list[str] = []
     for r in neighborhood:
         if r.edge_type == edge_type and r.entity.entity_type == far_type:
+            # D-301: an INACTIVE rule cannot fire — it must never ground a
+            # prohibition, seed derivation, tie in the D-295 alignment, or
+            # bind a D-297 message (all three consume THIS tuple).
+            if not vr_is_active(r.entity.attributes):
+                continue
             # Shape-tolerant (D-203.1): pre-cutover rows carry the designed
             # `formula_text`; post-cutover sync rows carry the raw Tooling
             # record (Metadata.errorConditionFormula). Reading only the
@@ -279,6 +285,8 @@ def _grounding_vr_messages(claim_kind: str, neighborhood: list) -> dict:
     for r in neighborhood:
         if r.edge_type != edge_type or r.entity.entity_type != far_type:
             continue
+        if not vr_is_active(r.entity.attributes):
+            continue                     # D-301: dead rules bind no message
         text = vr_formula_text(r.entity.attributes)
         if not text:
             continue
