@@ -1338,8 +1338,15 @@ class GovernanceCore:
         # automation-effect (grounded via its VR/Flow dim) has no authored
         # negative emission — defer it rather than mis-author the positive
         # recipe (prohibition-claim is the built rejection vertical).
+        # D-307: the ABSENCE intent is exempt — "the automation correctly
+        # does nothing" reads as negative to a proposer, but it IS the built
+        # artifact (the v2 absence claim, a positive assertion about correct
+        # non-action). Substrate-routed, not prompt-gated: whatever polarity
+        # label rides the hint, expected_absence selects the absence vertical.
         if (claim_kind in ("state-transition-claim", "automation-effect-claim")
-                and self._admit.is_negative(claim_kind, polarity)):
+                and self._admit.is_negative(claim_kind, polarity)
+                and not (claim_kind == "automation-effect-claim"
+                         and hint.get("expected_absence"))):
             return IntentResolution(
                 grounded_candidates=[], next_action=NextAction.REFUSE,
                 interpretation_delta=delta,

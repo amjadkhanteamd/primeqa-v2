@@ -853,3 +853,21 @@ def test_absence_recipe_projects_through_the_s4_bridge(seeded):
         priority=0, status="approved", created_at=now, updated_at=now))
     assert [s.kind for s in plan.steps] == ["create", "read", "assert"]
     assert plan.steps[2].predicate.predicate == "not_exists"
+
+
+def test_absence_routes_through_negative_polarity_label(seeded):
+    # D-307 (live finding): a proposer reasonably labels "creates no task"
+    # as negative polarity — the substrate routes expected_absence to the
+    # absence vertical regardless of the label (never the not-built refusal).
+    r = _run(seeded, _intent("automation-effect-claim", "negative", "Order__c",
+                             excerpt="a Submitted order creates no log record",
+                             effect_object="Order_Log__c",
+                             effect_lookup_field="Order_Log__c.Order__c",
+                             expected_absence=True,
+                             trigger_fields=[{"field_name": "Order__c.Stage__c",
+                                              "value": "Submitted"}]))
+    assert r.outcome.outcome_kind == OutcomeKind.DRAFT
+    body = r.emission.asserted_truth
+    assert body.body_schema_version == 2
+    assert r.emission.observation_realization.steps[2].predicate.predicate \
+        == "not_exists"
