@@ -391,3 +391,24 @@ def test_two_step_negative_dispatch_unchanged_by_d306():
                   body=[{"errorCode": _VR, "message": "no"}])])
     interp = interpret_run(ev, claim_kind="prohibition-claim")
     assert interp.verdict == "prohibition_enforced"
+
+
+def test_failed_at_create_on_automation_effect_is_creation_rejected():
+    # D-306 live-proof fix: a rejected staging create (graded failed under
+    # expect_acceptance) on an automation-effect claim must NOT read as the
+    # 1-step negative — "prohibition" prose on a positive claim misdirects.
+    ev = _run(outcome="failed", steps=[_create(
+        success=False, matched=None, http_status=400,
+        body=[{"errorCode": _VR, "message": "no"}])])
+    interp = interpret_run(ev, claim_kind="automation-effect-claim")
+    assert interp.verdict == "creation_rejected"
+    assert "prohibition" not in interp.attribution
+    assert "never provoked" in interp.attribution
+
+
+def test_failed_at_create_on_prohibition_claim_stays_behavioral():
+    ev = _run(outcome="failed", steps=[_create(
+        success=True, matched=None, http_status=201, body=[],
+        record_id="00Q1")])
+    interp = interpret_run(ev, claim_kind="prohibition-claim")
+    assert interp.verdict == "prohibition_not_enforced"

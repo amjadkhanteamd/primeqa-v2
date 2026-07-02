@@ -564,9 +564,18 @@ def _run_positive(plan: DataRecipePlan, *, client, environment_id: int, s1=None,
                 # D-305.1 (review S1): the staged acceptance STATE defines the
                 # claim — a dispatch-time override may steer padding but never
                 # overwrite a staged field (the D-300 subordination, mirrored).
-                staged = _sf_fields(dict(create.field_values), sobject)
-                field_values = {**_sf_fields(field_overrides, sobject),
-                                **field_values, **staged}
+                # Merge order fixed at the D-306 live proof: padding < override
+                # < staged. The original {override, field_values, staged} put
+                # the override BELOW field_values — which already contains the
+                # padding — so a VR-gated padding value (StageName='Credit
+                # Assessment') buried the very override meant to steer it, and
+                # the staging create was rejected by a padding-provoked VR.
+                # `staged` is the RESOLVED semantic set (not the raw recipe
+                # values, whose "$step.id" refs would re-clobber resolution).
+                staged = _sf_fields(semantic_resolved, sobject)
+                field_values = {**field_values,
+                                **_sf_fields(field_overrides, sobject),
+                                **staged}
             else:
                 field_values = {**field_values, **_sf_fields(field_overrides, sobject)}
 

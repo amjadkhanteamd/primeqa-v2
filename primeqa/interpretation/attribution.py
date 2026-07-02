@@ -58,6 +58,10 @@ _NEGATIVE_ENRICHED = ("prohibition_not_enforced", "rejected_unasserted_reason")
 # from S1 Flow metadata, value-claim from S1 field-CRUD metadata.
 _POSITIVE_ENRICHED = (
     "automation_not_triggered", "state_not_transitioned", "value_not_persisted")
+# D-306: the refused-mutation verdicts on POSITIVE claims (a rejected
+# acceptance create/update, or a rejected staging create under
+# expect_acceptance) — the same VR-message matching names WHICH rule refused.
+_ACCEPTANCE_ENRICHED = ("creation_rejected", "change_rejected")
 
 
 @dataclass(frozen=True)
@@ -132,6 +136,8 @@ def attribute_run(
         cause = _attribute_negative(interpretation.verdict, evidence, s1)
     elif interpretation.verdict in _POSITIVE_ENRICHED:
         cause = _attribute_positive(interpretation.verdict, evidence, s1)
+    elif interpretation.verdict in _ACCEPTANCE_ENRICHED:
+        cause = _attribute_acceptance_rejected(evidence, s1)
     else:
         return interpretation
     if cause is None:
@@ -156,6 +162,19 @@ def _attribute_negative(verdict, evidence, s1) -> Optional[Cause]:
     if verdict == "prohibition_not_enforced":
         return _attribute_not_enforced(step, vrs, evidence)
     return _attribute_unasserted(step, vrs)
+
+
+def _attribute_acceptance_rejected(evidence, s1) -> Optional[Cause]:
+    """`creation_rejected` / `change_rejected` (D-306): the refused mutation of
+    a POSITIVE claim — the same VR-message matching as the negative's
+    unasserted path names WHICH rule refused (high-value: it points a human
+    straight at the gating rule), worded without the 'different rule'
+    presumption (no rule was asserted here)."""
+    step = _mutation_step(evidence) or _create_step(evidence)
+    if step is None:
+        return None
+    vrs = s1.vrs_for_object(step.sobject)
+    return _attribute_unasserted(step, vrs, refused=True)
 
 
 # ---------------------------------------------------------------------------
@@ -333,14 +352,17 @@ _ACCESS_ERROR_CODES = frozenset({
 })
 
 
-def _attribute_unasserted(step, vrs) -> Cause:
+def _attribute_unasserted(step, vrs, *, refused: bool = False) -> Cause:
     op = step.kind
     errors = [e for e in step.rejection_body if isinstance(e, dict)]
     vr_msgs = [e.get("message") for e in errors if e.get("errorCode") == _VR_CODE]
     if vr_msgs:
         matched = _match_vr_by_message(vr_msgs, vrs)
+        # D-306 `refused`: on a positive claim no rule was asserted, so the
+        # "different rule" wording would be false — a rule simply refused it.
+        which = "a" if refused else "a different"
         return Cause("other_vr_fired", vr_name=(matched.name if matched else None),
-                     detail=f"a different validation rule rejected the {op}: {vr_msgs}")
+                     detail=f"{which} validation rule rejected the {op}: {vr_msgs}")
     codes = [e.get("errorCode") for e in errors]
     access = [c for c in codes if c in _ACCESS_ERROR_CODES]
     if access:

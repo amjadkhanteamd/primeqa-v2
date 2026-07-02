@@ -65,12 +65,15 @@ def interpret_run(evidence: RunEvidence,
         # positive update-observe run also lands here — behavioral grading of
         # an errored outcome is not_evaluated, the correct verdict for it.
         verdict, attribution, refs = _interpret_behavioral(evidence, mutation)
-    elif create is not None and claim_kind == "acceptance-claim":
-        # D-305.1 (review B2): a FAILED-AT-CREATE acceptance run is create-only
-        # evidence too — but the claim direction is INVERTED vs the 1-step
-        # negative: here the org rejecting IS the finding against the org.
+    elif create is not None and claim_kind in _POSITIVE_VOCAB:
+        # D-305.1 (review B2) / D-306 live-proof fix: create-only evidence on
+        # a POSITIVE claim kind is a FAILED-AT-CREATE run (an acceptance case
+        # the org refused, or a rejected staging create graded under
+        # expect_acceptance) — the direction is INVERTED vs the 1-step
+        # negative: the org rejecting IS the finding. Grading it behavioral
+        # produced prohibition prose on positive claims.
         verdict, attribution, refs = _interpret_acceptance_rejected(
-            evidence, create)
+            evidence, create, claim_kind=claim_kind)
     elif create is not None:
         # 1-step behavioral negative: a single create the org should reject.
         verdict, attribution, refs = _interpret_behavioral(evidence, create)
@@ -180,13 +183,17 @@ _POSITIVE_VOCAB = {
 }
 
 
-def _interpret_acceptance_rejected(evidence: RunEvidence, step):
-    """D-305.1 / D-306: the acceptance archetype's failure shapes — the org
-    REFUSED the creation (D-305, ``step`` is the create) or the CHANGE (D-306,
-    ``step`` is the positive update) the requirement says must succeed.
-    ``failed`` is the graded business finding (the expect_acceptance grade);
-    ``errored`` stays not-evaluated (transport/ambiguous — the org did not
-    business-evaluate the case)."""
+def _interpret_acceptance_rejected(evidence: RunEvidence, step,
+                                   claim_kind: str = "acceptance-claim"):
+    """D-305.1 / D-306: the failed-at-mutation shapes on POSITIVE claims — the
+    org REFUSED the creation (``step`` is the create) or the CHANGE (``step``
+    is the positive update) the claim's staged state needs. ``failed`` is the
+    graded business finding (the expect_acceptance grade); ``errored`` stays
+    not-evaluated (transport/ambiguous — the org did not business-evaluate the
+    case). For an acceptance claim the refusal IS the asserted case failing;
+    for the other positive kinds (D-306: a rejected staging create under
+    expect_acceptance) it means the claimed behavior was never provoked —
+    worded accordingly, same direction."""
     if evidence.outcome == "errored":
         return _not_evaluated(evidence, step.step_id)
     is_update = step.kind == "update"
@@ -198,19 +205,24 @@ def _interpret_acceptance_rejected(evidence: RunEvidence, step):
     refs = (EvidenceRef(step.step_id,
                         f"{step.kind} rejected (http " + str(step.http_status) +
                         "): " + detail),)
+    if claim_kind == "acceptance-claim":
+        tail = ". The acceptance claim does not hold."
+        need = "the requirement says must save"
+    else:
+        tail = (". The staged state was never established, so the claimed "
+                "behavior was never provoked.")
+        need = "the claim's staged state needs"
     if is_update:
         return (
             "change_rejected",
             ("The org refused to update the " + step.sobject + " case — the "
-             "change the requirement says must succeed — " + detail +
-             ". The acceptance claim does not hold."),
+             "change the requirement says must succeed — " + detail + tail),
             refs,
         )
     return (
         "creation_rejected",
-        ("The org refused to create the " + step.sobject + " case the "
-         "requirement says must save" + " — " + detail +
-         ". The acceptance claim does not hold."),
+        ("The org refused to create the " + step.sobject + " case " + need +
+         " — " + detail + tail),
         refs,
     )
 

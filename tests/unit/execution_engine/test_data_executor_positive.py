@@ -1240,3 +1240,64 @@ def test_update_evidence_persists_via_existing_store():
     json.dumps(row.evidence)                                # JSONB-safe
     assert [s["kind"] for s in row.evidence["steps"]] == [
         "create", "update", "read", "assert"]
+
+
+# ---------------------------------------------------------------------------
+# D-306 live-proof fixes: the override-steers-padding merge (executor) +
+# failed-at-create prose on positive claims (interpreter)
+# ---------------------------------------------------------------------------
+
+def test_override_steers_padding_on_expect_acceptance_create():
+    # The L7d live finding: for an expect_acceptance create, the merge buried
+    # the dispatch-time override UNDER the padding, so a VR-gated padding
+    # value (StageName='Credit Assessment') was sent despite the override
+    # meant to steer it. Correct order: padding < override < staged semantic.
+    client = _StubClient(create_result=_success("001Z"),
+                         query_result=[{"Status__c": "Active"}])
+    plan = _plan()                                   # stages Status__c=Active
+    # mark the subject create expect_acceptance (the update-observe shape)
+    from dataclasses import replace as _rp
+    steps = (_rp(plan.steps[0], expect_acceptance=True),) + plan.steps[1:]
+    plan = _rp(plan, steps=steps)
+    ev = execute_data_recipe(
+        plan, client=client, environment_id=_ENV_ID, s1=_s1(),
+        # Name is PADDING (required, non-staged) — the override must win it.
+        # Status__c is STAGED — the override must LOSE to it.
+        field_overrides={"Name": "Steered", "Status__c": "Hijacked"})
+    assert ev.outcome == "passed"
+    posted = client.creates[0][1]
+    assert posted["Name"] == "Steered"           # override steered the padding
+    assert posted["Status__c"] == "Active"       # staged state won
+
+
+def test_staged_refs_stay_resolved_under_override_merge():
+    # The staged-wins re-merge must use the RESOLVED semantic values — raw
+    # recipe values would re-clobber a "$step.id" ref after resolution.
+    from dataclasses import replace as _rp
+    target = LogicalRef(entity_type="Object", external_id="Account")
+    plan = DataRecipePlan(
+        recipe_id=uuid4(), recipe_version_seq=2, claim_test_id=uuid4(),
+        claim_version_seq=None, api_choice="rest",
+        steps=(
+            PlannedCreate(step_id="create-parent", target_object=target,
+                          field_values={"Status__c": "P"}, expect_rejection=None),
+            PlannedCreate(step_id="create-record", target_object=target,
+                          field_values={"Status__c": "$create-parent.id"},
+                          expect_rejection=None, expect_acceptance=True),
+            PlannedDataRead(
+                step_id="read-created", target=target,
+                soql="SELECT Status__c FROM Account WHERE Id = '$create-record.id'",
+                fields_to_capture=("Status__c",)),
+            PlannedAssertion(
+                step_id="assert-value",
+                predicate=AssertionPredicate(
+                    subject_ref="read-created.Status__c", predicate="exists")),
+        ))
+    client = _StubClient(create_result=_success("001Z"),
+                         query_result=[{"Status__c": "001Z"}])
+    ev = execute_data_recipe(
+        plan, client=client, environment_id=_ENV_ID, s1=_s1(),
+        field_overrides={"Name": "Steered"})
+    assert ev.outcome == "passed"
+    # the terminal create posted the RESOLVED parent id, not the raw "$" ref
+    assert client.creates[1][1]["Status__c"] == "001Z"
