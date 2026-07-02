@@ -419,6 +419,31 @@ class SecondaryRecipe:
     priority: int
 
 
+# D-300.1: boundary accept probes sit strictly BELOW the primary (single mode
+# deterministically prefers the reject primary — no recipe_id tie-break can
+# select an accept probe as a prohibition's single realization, the wrong-green
+# vector) and strictly ABOVE the -10 inspection fallback.
+_BOUNDARY_PROBE_PRIORITY = -1
+
+
+@dataclass(frozen=True)
+class BoundaryRecipe:
+    """One member of a D-300 bva boundary set — a PROBE the run-all batch
+    strict-ANDs into the claim's Verified verdict (contrast
+    :class:`SecondaryRecipe`, a weaker FALLBACK realization that must never
+    enter a boundary verdict). Same write_recipe fields; priority is
+    :data:`_BOUNDARY_PROBE_PRIORITY` by construction (D-300.1). The edge label
+    ("just-inside") rides the env detail text — diagnostics for humans; the
+    verdict never consumes it."""
+
+    trigger_kind: str
+    recipe_kind: str
+    causal_initiation: object
+    observation_realization: object
+    execution_environment: ExecutionEnvironmentBody
+    priority: int
+
+
 @dataclass
 class EmissionBundle:
     """The substrate-authored S2 bodies for one draft, the discriminator strings
@@ -451,10 +476,16 @@ class EmissionBundle:
     secondary_recipes: tuple = ()
     # D-288 (4f.2-prep): the claim's evaluation strategy, claim-DERIVED at authoring.
     # None today (every authoring path leaves it unset → write_claim persists NULL →
-    # the router/decision read None → single, byte-identical). The future bva-authoring
-    # helper (4f.2b, after the §4a claim-shape is settled in 4f.2a) stamps 'bva' here;
-    # persistence reads it through to write_claim. The wire is dormant until then.
+    # the router/decision read None → single, byte-identical). The D-300 S3 author
+    # stamps 'bva' here (flag-gated, §4a settled narrow in D-300); persistence reads
+    # it through to write_claim.
     strategy_kind: Optional[str] = None
+    # D-300: the bva boundary PROBES of this claim — each its own recipe row
+    # under the same claim (Option-C: recipes are outside the identity hash).
+    # A dedicated slot, NEVER secondary_recipes (the D-228 inspection fallback
+    # must not enter a boundary strict-AND). Empty () = no boundary set (every
+    # claim today); populated ONLY alongside strategy_kind='bva' (S3).
+    boundary_recipes: tuple = ()
 
 
 # ---------------------------------------------------------------------------
@@ -874,6 +905,90 @@ def _update_rejected_recipe(
         auth_kind="data_api_user", details=env_detail,
     )])
     return trigger, recipe, env
+
+
+def _boundary_accept_recipe(
+    *, subject_entity_type: str, subject_external_id: str,
+    payload: dict, edge: str,
+) -> tuple[DataMutationTriggerBody, DataRecipeBody, ExecutionEnvironmentBody]:
+    """Build the (trigger, recipe, env) triple for a D-300 **just-inside accept
+    probe**: create the subject AT the boundary-adjacent non-firing value and
+    expect the create to SUCCEED (no VR fires), then read the field back and
+    assert OUR OWN payload value round-trips (the shipped positive-vertical
+    shape — never a fabricated org value; D-115). Payload keys are qualified
+    ``{Object}.{field}`` (the positive vertical's convention) so S4's world
+    padding treats them as semantic fields and can never silently overwrite the
+    boundary value — a padding overwrite would be a wrong-green. The ``edge``
+    label rides the env detail (human diagnostics; the verdict never reads it)."""
+    target = LogicalRef(
+        entity_type=subject_entity_type, external_id=subject_external_id)
+    (field_bare, value), = payload.items()   # single-threshold: exactly one field
+    field_qualified = f"{subject_external_id}.{field_bare}"
+    trigger = DataMutationTriggerBody(
+        operation="create", target=target,
+        identity_context="system", volume="single",
+    )
+    recipe = DataRecipeBody(
+        api_choice="rest", identity_context="system",
+        execution_mechanism="direct_api",
+        steps=[
+            CreateStep(
+                step_id="create-record",
+                target_object=target,
+                # the boundary value only (k16): S4 pads required fields at run
+                field_values={field_qualified: value},
+            ),
+            ReadStep(
+                step_id="read-created",
+                target=target,
+                soql=(f"SELECT {field_qualified} FROM {subject_external_id} "
+                      f"WHERE Id = '$create-record.id'"),
+                fields_to_capture=[field_qualified],
+            ),
+            DataAssertStep(
+                step_id="assert-value",
+                predicate=AssertionPredicate(
+                    subject_ref=f"read-created.{field_qualified}",
+                    predicate="equals", value=value,
+                ),
+            ),
+        ],
+    )
+    env = ExecutionEnvironmentBody(auth_assumptions=[AuthAssumption(
+        auth_kind="data_api_user",
+        details=(f"bva boundary probe ({edge}): create a "
+                 f"{subject_external_id} record with {field_bare}={value!r} — "
+                 f"the boundary-adjacent NON-firing value — and expect the "
+                 f"create to SUCCEED (no validation rule fires)"),
+    )])
+    return trigger, recipe, env
+
+
+def author_boundary_recipes(
+    *, subject_entity_type: str, subject_external_id: str, members: tuple,
+) -> tuple:
+    """Map a D-300 boundary set (:class:`BoundaryMember` tuple from
+    ``derive_boundary_set``) to :class:`BoundaryRecipe` carriers. Only the
+    NON-firing (accept) members author here — the firing member IS the bundle's
+    primary reject recipe (its payload equals ``derive()``'s, the unit-pinned
+    invariant), so authoring it again would double-execute the same probe.
+    Empty in → empty out (the dormant default). DORMANT until D-300 S3 calls
+    this from the flag-gated ``_author_negative`` path."""
+    out = []
+    for m in members:
+        if m.expect_reject:
+            continue                        # the firing member is the primary
+        trigger, recipe, env = _boundary_accept_recipe(
+            subject_entity_type=subject_entity_type,
+            subject_external_id=subject_external_id,
+            payload=m.payload, edge=m.edge,
+        )
+        out.append(BoundaryRecipe(
+            trigger_kind="data-mutation-trigger", recipe_kind="data-recipe",
+            causal_initiation=trigger, observation_realization=recipe,
+            execution_environment=env, priority=_BOUNDARY_PROBE_PRIORITY,
+        ))
+    return tuple(out)
 
 
 def _conditions_body(grounded: tuple, version_seq: int) -> SemanticConditionsBody:

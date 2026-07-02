@@ -194,6 +194,24 @@ class LedgerPersister:
             outcome.recipes_written = (outcome.recipes_written or []) + [
                 RecipeRef(recipe_id=sr.recipe_id, version_seq=sr.version_seq)]
 
+        # D-300: bva boundary PROBES of the same claim — like secondaries, each
+        # its own recipe row (fresh recipe_id, same claim, same atomic tx,
+        # identity untouched per Option-C), but semantically a PROBE the run-all
+        # batch strict-ANDs, never a fallback (D-300.1: priority -1, dedicated
+        # slot). New-claim path only — the same-hash no-op returned above.
+        for bp in getattr(emission, "boundary_recipes", ()) or ():
+            br = self._coordinator.write_recipe(
+                session, actor="s3", recipe_id=None, claim_test_id=cr.test_id,
+                trigger_kind=bp.trigger_kind, recipe_kind=bp.recipe_kind,
+                causal_initiation=bp.causal_initiation,
+                observation_realization=bp.observation_realization,
+                execution_environment=bp.execution_environment,
+                claim_version_seq=cr.version_seq,
+                priority=bp.priority,
+            )
+            outcome.recipes_written = (outcome.recipes_written or []) + [
+                RecipeRef(recipe_id=br.recipe_id, version_seq=br.version_seq)]
+
     # -- ledger rows (same Session / same transaction) ----------------------
     def _insert_outcome(self, session: Session, outcome: GenerationOutcome) -> None:
         o = outcome.model_dump(mode="json")

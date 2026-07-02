@@ -89,3 +89,59 @@ def test_write_emission_noop_path_does_not_write_strategy_kind_recipe(monkeypatc
                               _emission(strategy_kind="bva"))
     assert coord.write_claim.call_args.kwargs["strategy_kind"] == "bva"
     coord.write_recipe.assert_not_called()
+
+
+# --- D-300: the boundary_recipes write loop ----------------------------------
+
+def _boundary(priority=-1):
+    return SimpleNamespace(
+        trigger_kind="data-mutation-trigger", recipe_kind="data-recipe",
+        causal_initiation=None, observation_realization=None,
+        execution_environment=None, priority=priority)
+
+
+def _secondary():
+    return SimpleNamespace(
+        trigger_kind="inspection-trigger", recipe_kind="metadata-recipe",
+        causal_initiation=None, observation_realization=None,
+        execution_environment=None, priority=-10)
+
+
+def test_write_emission_writes_boundary_recipes_after_secondaries(monkeypatch):
+    # primary + 1 secondary + 2 boundary probes -> 4 write_recipe calls; the
+    # boundary rows carry their own priority (-1) under the SAME claim.
+    monkeypatch.setattr(P, "compute_identity_hash", lambda *a, **k: "h")
+    persister, coord = _persister()
+    outcome = _outcome()
+    persister._write_emission(mock.MagicMock(), outcome, _emission(
+        strategy_kind="bva",
+        secondary_recipes=(_secondary(),),
+        boundary_recipes=(_boundary(), _boundary())))
+    assert coord.write_recipe.call_count == 4
+    priorities = [c.kwargs.get("priority") for c in coord.write_recipe.call_args_list]
+    assert priorities == [None, -10, -1, -1]       # primary passes no priority kwarg
+    claim_ids = {c.kwargs["claim_test_id"] for c in coord.write_recipe.call_args_list}
+    assert len(claim_ids) == 1                     # all rows under the one claim
+    assert len(outcome.recipes_written) == 4
+
+
+def test_write_emission_legacy_bundle_without_boundary_slot(monkeypatch):
+    # a hand-built bundle with NO boundary_recipes attr writes primary only.
+    monkeypatch.setattr(P, "compute_identity_hash", lambda *a, **k: "h")
+    persister, coord = _persister()
+    emission = _emission()
+    assert not hasattr(emission, "boundary_recipes")
+    persister._write_emission(mock.MagicMock(), _outcome(), emission)
+    assert coord.write_recipe.call_count == 1
+
+
+def test_write_emission_noop_path_writes_no_boundary_recipes(monkeypatch):
+    # same-hash regeneration returns BEFORE the boundary loop (the D-300
+    # new-claims-only limitation, explicit).
+    monkeypatch.setattr(P, "compute_identity_hash", lambda *a, **k: "h")
+    persister, coord = _persister()
+    coord.write_claim.return_value = SimpleNamespace(
+        test_id=uuid4(), version_seq=2, was_noop=True)
+    persister._write_emission(mock.MagicMock(), _outcome(), _emission(
+        strategy_kind="bva", boundary_recipes=(_boundary(),)))
+    coord.write_recipe.assert_not_called()

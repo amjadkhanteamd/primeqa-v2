@@ -192,6 +192,10 @@ def test_runall_batch_id_minted_once_per_invocation():
 def test_async_runall_persists_batch_stamped_rows(monkeypatch):
     monkeypatch.setattr("primeqa.execution_engine.run._resolve_env_gate",
                         lambda session, environment_id: ("full", False))
+    # D-300.1: these tests exercise loop MECHANICS with cheap metadata fakes
+    # (data-recipe prep needs real bodies); probe-set MEMBERSHIP has its own
+    # tests — bypass the filter here.
+    monkeypatch.setattr("primeqa.execution_engine.run._probe_recipes", lambda rs: rs)
     recipes = [_fake_recipe(recipe_kind="metadata-recipe") for _ in range(2)]
     captured = _FakeSession()
 
@@ -214,6 +218,10 @@ def test_async_runall_persists_batch_stamped_rows(monkeypatch):
 def test_async_runall_one_probe_raises_still_persists_errored(monkeypatch):
     monkeypatch.setattr("primeqa.execution_engine.run._resolve_env_gate",
                         lambda session, environment_id: ("full", False))
+    # D-300.1: these tests exercise loop MECHANICS with cheap metadata fakes
+    # (data-recipe prep needs real bodies); probe-set MEMBERSHIP has its own
+    # tests — bypass the filter here.
+    monkeypatch.setattr("primeqa.execution_engine.run._probe_recipes", lambda rs: rs)
     recipes = [_fake_recipe(recipe_kind="metadata-recipe") for _ in range(3)]
     erroring = recipes[2].recipe_id
     captured = _FakeSession()
@@ -267,7 +275,9 @@ def test_sync_runall_one_probe_persist_fails_others_still_persist():
     assert len({r.batch_id for r in rows}) == 1
 
 
-def test_async_runall_one_probe_persist_fails_others_still_persist():
+def test_async_runall_one_probe_persist_fails_others_still_persist(monkeypatch):
+    # D-300.1: mechanics-only — bypass the probe-set filter (see note above).
+    monkeypatch.setattr("primeqa.execution_engine.run._probe_recipes", lambda rs: rs)
     recipes = [_fake_recipe(recipe_kind="metadata-recipe") for _ in range(3)]
     captured = _FakeSession()
     captured.fail_flush_on = 2
@@ -371,6 +381,10 @@ def test_sync_runall_no_tenant_id_skips_manifest_default_writer():
 def test_async_runall_writes_manifest_with_expected_set(monkeypatch):
     monkeypatch.setattr("primeqa.execution_engine.run._resolve_env_gate",
                         lambda session, environment_id: ("full", False))
+    # D-300.1: these tests exercise loop MECHANICS with cheap metadata fakes
+    # (data-recipe prep needs real bodies); probe-set MEMBERSHIP has its own
+    # tests — bypass the filter here.
+    monkeypatch.setattr("primeqa.execution_engine.run._probe_recipes", lambda rs: rs)
     recipes = [_fake_recipe(recipe_kind="metadata-recipe") for _ in range(2)]
     captured = _FakeSession()
 
@@ -395,3 +409,78 @@ def test_async_runall_writes_manifest_with_expected_set(monkeypatch):
     # the manifest is recorded BEFORE any probe executes, carrying the applicable set.
     assert events[0][0] == "manifest"
     assert events[0][1] == tuple(r.recipe_id for r in recipes)
+
+
+# --- D-300.1: probe-set membership — data probes only ------------------------
+
+def test_runall_filters_metadata_recipes_from_batch_and_manifest():
+    # A mixed applicable set: the primary reject (data, 0), a boundary accept
+    # probe (data, -1), and the D-228 inspection fallback (metadata, -10). The
+    # batch AND the manifest must both carry ONLY the two data probes — a
+    # metadata read never enters a boundary strict-AND.
+    data_primary = _fake_recipe(recipe_kind="data-recipe")
+    data_boundary = _fake_recipe(recipe_kind="data-recipe")
+    inspection = _fake_recipe(recipe_kind="metadata-recipe")
+    session = _FakeSession()
+    manifests = []
+
+    def rec_manifest(tenant_id, batch_id, test_id, recipe_ids, **k):
+        manifests.append(tuple(recipe_ids))
+
+    result = run_all_recipes_execution(
+        session, uuid4(), environment_id=7, client=object(),
+        coordinator=_FakeCoord([data_primary, data_boundary, inspection]),
+        tenant_id=1, manifest_writer=rec_manifest,
+        execute_fn=lambda recipe, *a, **k: _passed_evidence(recipe, 7))
+
+    assert result.ran is True
+    assert {p.recipe_id for p in result.probes} == {
+        data_primary.recipe_id, data_boundary.recipe_id}
+    assert manifests == [(data_primary.recipe_id, data_boundary.recipe_id)]
+
+
+def test_runall_all_metadata_set_is_no_eligible_recipes():
+    # An applicable set with NO data probe runs nothing: no batch, no manifest —
+    # the honest not-Verified outcome for an env with no data-probe capability.
+    session = _FakeSession()
+    manifests = []
+
+    def rec_manifest(tenant_id, batch_id, test_id, recipe_ids, **k):
+        manifests.append(tuple(recipe_ids))
+
+    result = run_all_recipes_execution(
+        session, uuid4(), environment_id=7, client=object(),
+        coordinator=_FakeCoord([_fake_recipe(recipe_kind="metadata-recipe")]),
+        tenant_id=1, manifest_writer=rec_manifest,
+        execute_fn=lambda recipe, *a, **k: _passed_evidence(recipe, 7))
+
+    assert result.ran is False and result.reason == "no_eligible_recipes"
+    assert manifests == [] and _s4_rows(session) == []
+
+
+def test_async_runall_filters_metadata_from_manifest(monkeypatch):
+    # The async path applies the SAME filter between selection and manifest.
+    monkeypatch.setattr("primeqa.execution_engine.run._resolve_env_gate",
+                        lambda session, environment_id: ("full", False))
+    monkeypatch.setattr("primeqa.execution_engine.run._prepare_async_execute",
+                        lambda *a, **k: (object(), None))
+    data_probe = _fake_recipe(recipe_kind="data-recipe")
+    inspection = _fake_recipe(recipe_kind="metadata-recipe")
+    captured = _FakeSession()
+    manifests = []
+
+    @contextmanager
+    def fake_scope(tenant_id):
+        yield captured
+
+    def rec_manifest(tenant_id, batch_id, test_id, recipe_ids, **k):
+        manifests.append(tuple(recipe_ids))
+
+    result = run_all_recipes_execution_async(
+        1, uuid4(), environment_id=7, client=object(),
+        coordinator=_FakeCoord([data_probe, inspection]),
+        session_scope=fake_scope, manifest_writer=rec_manifest,
+        execute_fn=lambda recipe, *a, **k: _passed_evidence(recipe, 7))
+
+    assert manifests == [(data_probe.recipe_id,)]
+    assert [p.recipe_id for p in result.probes] == [data_probe.recipe_id]

@@ -698,6 +698,19 @@ def _write_batch_manifest(tenant_id, batch_id, claim_test_id, expected_recipe_id
     # before the first probe runs.
 
 
+def _probe_recipes(recipes: list) -> list:
+    """D-300.1: the bva PROBE set — data-recipes only. ADR-001 defines bva over
+    DATA probes; the D-228 inspection fallback is definitionally a metadata
+    read and must never be strict-ANDed into a boundary verdict (a metadata
+    read contributing a boundary Verified would be a wrong-green). Applied in
+    BOTH run-all paths BETWEEN selection and the D-281 manifest write, so the
+    batch and its manifest always agree on the probe set. The single path is
+    untouched (its fallback selection legitimately serves depth diversity).
+    A future data-shaped weaker-fallback would pass this filter — no such
+    shape exists today; that is the named re-decision trigger (D-300.1)."""
+    return [r for r in recipes if getattr(r, "recipe_kind", None) == "data-recipe"]
+
+
 def run_all_recipes_execution(
     session,
     test_id: UUID,
@@ -744,10 +757,10 @@ def run_all_recipes_execution(
     write_manifest = manifest_writer or _write_batch_manifest
     batch_id = uuid4()
 
-    recipes = coord.select_recipes_for_execution(
+    recipes = _probe_recipes(coord.select_recipes_for_execution(
         session, test_id,
         available_environment=available_environment or _MIN_AVAILABLE_ENV,
-        replay_mode="live")
+        replay_mode="live"))
     if not recipes:
         return RunAllResult(batch_id=batch_id, ran=False, reason="no_eligible_recipes")
 
@@ -823,10 +836,10 @@ def run_all_recipes_execution_async(
 
     # 1. select all + prep each — one brief read bracket.
     with scope(tenant_id) as session:
-        recipes = coord.select_recipes_for_execution(
+        recipes = _probe_recipes(coord.select_recipes_for_execution(
             session, test_id,
             available_environment=available_environment or _MIN_AVAILABLE_ENV,
-            replay_mode="live")
+            replay_mode="live"))
         # env_gate is resolved ONCE for the batch (assumed immutable for its
         # duration — the same as the singular async path, which resolves it once).
         env_gate = _resolve_env_gate(session, environment_id) if recipes else None
