@@ -372,6 +372,45 @@ def _invoke_and_record(
     return _InvokeResult(response=resp, cost_usd=cost, usage_log_id=usage_log_id, error=None)
 
 
+# ---- Prompt caching (cost lever) ------------------------------------------
+# The S3 generation path is gateway.tool_turn (99.7% of generation spend). It
+# re-sends a byte-identical prefix on EVERY turn, requirement, and batch — the
+# frozen system grammar (~4.4k tokens) plus the tool schemas (~2k tokens).
+# Unlike llm_call (whose spec.build inserts the cache blocks), tool_turn built
+# raw messages/tools/system with NO cache_control, so Anthropic never wrote or
+# read the prompt cache (cache_read/cache_write were 0 on every llm_usage_log
+# row). Marking the tail of the stable prefix with an ephemeral breakpoint lets
+# Anthropic serve tools+system at ~10% of input price on repeat calls inside
+# the 5-minute TTL. Below the model's minimum cacheable size (1024 tokens) the
+# breakpoint is a harmless no-op — the prefix here is well above it.
+_EPHEMERAL = {"type": "ephemeral"}
+
+
+def _system_with_cache(system):
+    """System prompt as content blocks carrying an ephemeral cache breakpoint.
+    A plain string becomes one text block; an existing block list gets the
+    breakpoint on its last block (non-mutating). None/empty passes through."""
+    if not system:
+        return system
+    if isinstance(system, str):
+        return [{"type": "text", "text": system, "cache_control": _EPHEMERAL}]
+    blocks = list(system)
+    blocks[-1] = {**blocks[-1], "cache_control": _EPHEMERAL}
+    return blocks
+
+
+def _tools_with_cache(tools):
+    """Tools list with an ephemeral cache breakpoint on the last tool schema
+    (caches the whole tool block; tools precede system in the request so the
+    system breakpoint already covers them — this also caches tools when a
+    caller sends tools but no system). Non-mutating."""
+    if not tools:
+        return tools
+    marked = list(tools)
+    marked[-1] = {**marked[-1], "cache_control": _EPHEMERAL}
+    return marked
+
+
 # ---- tool_turn — transport-thin single tool-use turn (D-095.2) ------------
 
 @dataclass
@@ -441,8 +480,9 @@ def tool_turn(
     )
 
     inv = _invoke_and_record(
-        api_key=api_key, model=model, messages=safe_messages, system=safe_system,
-        max_tokens=max_tokens, tools=tools, tool_choice=tool_choice,
+        api_key=api_key, model=model, messages=safe_messages,
+        system=_system_with_cache(safe_system),
+        max_tokens=max_tokens, tools=_tools_with_cache(tools), tool_choice=tool_choice,
         task=task, tenant_id=tenant_id, user_id=user_id, prompt_version=task,
         complexity=complexity, escalated=False,
         run_id=run_id, requirement_id=requirement_id, test_case_id=test_case_id,

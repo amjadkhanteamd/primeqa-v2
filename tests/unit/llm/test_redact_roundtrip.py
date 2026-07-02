@@ -238,7 +238,9 @@ def test_tool_turn_provider_sees_tokens_caller_sees_values(monkeypatch):
     )
 
     outbound_msg = seen[0]["messages"][0]["content"]
-    outbound_sys = seen[0]["system"]
+    # tool_turn now wraps system as cache-marked content blocks (prompt-cache
+    # cost lever); redaction runs first, so the token lives inside the block text.
+    outbound_sys = seen[0]["system"][-1]["text"]
     assert EMAIL not in outbound_msg and tok in outbound_msg
     assert EMAIL not in outbound_sys and tok in outbound_sys
     assert res.content_blocks[0]["input"]["expected_value"] == EMAIL

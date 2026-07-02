@@ -113,6 +113,42 @@ def test_tool_turn_returns_blocks_and_shares_internals(monkeypatch):
     assert calls["invoke"] == 1
 
 
+def test_tool_turn_marks_stable_prefix_cacheable(monkeypatch):
+    """The S3 cost lever: tool_turn must attach an ephemeral cache breakpoint to
+    the stable prefix (system grammar + tool schemas) so Anthropic caches it.
+    Without this, cache_read/cache_write are 0 on every call (the 0% hit-rate
+    bug). Capture what actually reaches _invoke_and_record."""
+    captured = {}
+
+    def fake_enforce(**kw):
+        return kw.get("tenant_policy") or TenantPolicy()
+
+    def fake_invoke(**kw):
+        captured.update(kw)
+        return _ok(_FakeResp(content=[], stop_reason="tool_use"))
+
+    monkeypatch.setattr(gateway, "_enforce_rate_limit", fake_enforce)
+    monkeypatch.setattr(gateway, "_invoke_and_record", fake_invoke)
+    monkeypatch.setattr(gateway, "select_chain", lambda *a, **k: ["claude-test"])
+
+    gateway.tool_turn(
+        task="generation_turn", tenant_id=1, api_key="k",
+        messages=[{"role": "user", "content": "go"}],
+        tools=[{"name": "propose_semantic_intent", "input_schema": {}}],
+        max_tokens=200, system="FROZEN GRAMMAR",
+        tool_choice={"type": "tool", "name": "propose_semantic_intent"},
+    )
+
+    # system: plain string -> a text block carrying the breakpoint
+    sys_blocks = captured["system"]
+    assert isinstance(sys_blocks, list)
+    assert sys_blocks[-1]["cache_control"] == {"type": "ephemeral"}
+    assert sys_blocks[-1]["text"] == "FROZEN GRAMMAR"
+    # tools: last schema carries the breakpoint (and the original TOOLS list is
+    # not mutated — a fresh dict was substituted)
+    assert captured["tools"][-1]["cache_control"] == {"type": "ephemeral"}
+
+
 def test_tool_turn_raises_on_provider_error(monkeypatch):
     from primeqa.intelligence.llm.provider import ProviderError
     err = gateway._InvokeResult(response=None, cost_usd=0.0, usage_log_id=2,
