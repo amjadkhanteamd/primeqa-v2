@@ -52,7 +52,11 @@ class AcceptanceClaimBody(BodyBase):
     """The S1 entity the accepted operation acts on (the Object
     being created). Pinned per D-058 §5."""
 
-    operation: Literal["create"]
-    """What is being accepted. v1 is create-only; update-acceptance
-    (the stage-progress case) lands via a new body_schema_version
-    alongside the update-then-observe executor arc."""
+    operation: Literal["create", "update"]
+    """What is being accepted. ``create`` (D-305) — the staged state
+    must save. ``update`` (D-306, the stage-progress case) — given the
+    staged initial state, the CHANGE must succeed; the recipe stages
+    the initial clauses on the create and the update clauses on a
+    positive UpdateStep carrying ``expect_acceptance``. Widened as an
+    additive Literal within body_schema v1 (D-306 — supersedes the
+    D-305 new-version reservation; old payloads validate unchanged)."""

@@ -511,3 +511,149 @@ def test_decimal_hints_coerce_across_families(seeded):
     assert r3.outcome.outcome_kind == OutcomeKind.DRAFT
     conds = r3.emission.semantic_conditions.conditions
     assert conds and conds[0].value == "0.75"
+
+
+# ---------------------------------------------------------------------------
+# D-306: the update-observe phase (lever 7d) — "recalculates when X changes"
+# ---------------------------------------------------------------------------
+
+def test_automation_effect_update_trigger_authors_update_observe(seeded):
+    # The grounded update phase authors create(initial state, must save) ->
+    # update(the change) -> read -> assert the RE-computed effect.
+    r = _run(seeded, _intent("automation-effect-claim", "positive", "Order__c",
+                             field_name="Order__c.Status__c", expected_value="Activated",
+                             automation_name="Stamp_Order_Status",
+                             trigger_fields=[{"field_name": "Order__c.Stage__c",
+                                              "value": "Draft"}],
+                             update_trigger_fields=[{"field_name": "Order__c.Stage__c",
+                                                     "value": "Submitted"}]))
+    assert r.outcome.outcome_kind == OutcomeKind.DRAFT
+    steps = r.emission.observation_realization.steps
+    assert [s.step_id for s in steps] == [
+        "create-record", "update-record", "read-created", "assert-value"]
+    create, update = steps[0], steps[1]
+    assert create.field_values == {"Order__c.Stage__c": "Draft"}
+    # the staging create must SAVE — a rejection is the D-305 graded finding
+    assert create.expect_acceptance is True
+    assert update.field_changes == {"Order__c.Stage__c": "Submitted"}
+    # the trigger update carries NO expectation flags (value-claim posture:
+    # a rejected trigger update is staging failure -> errored)
+    assert update.expect_rejection is None
+    assert update.expect_acceptance is False
+    # the effect field is in NEITHER trigger set (k16, both phases)
+    assert "Order__c.Status__c" not in create.field_values
+    assert "Order__c.Status__c" not in update.field_changes
+    # the causal event IS the update
+    assert r.emission.causal_initiation.operation == "update"
+    assert "then updating" in r.emission.asserted_truth.triggering_action.description
+
+
+def test_update_trigger_effect_field_only_refuses_not_create_scoped(seeded):
+    # k16 on the UPDATE phase + refuse-not-degrade as a SET: the observed field
+    # proposed as the only update trigger is dropped, and an update phase that
+    # grounds to NOTHING refuses — silently authoring the create-scoped shape
+    # would drop the requirement's recalculate-on-change premise.
+    r = _run(seeded, _intent("automation-effect-claim", "positive", "Order__c",
+                             field_name="Order__c.Status__c", expected_value="Activated",
+                             automation_name="Stamp_Order_Status",
+                             update_trigger_fields=[{"field_name": "Order__c.Status__c",
+                                                     "value": "Activated"}]),
+             expect_emit=False)
+    assert r.outcome.outcome_kind == OutcomeKind.REFUSAL
+    assert "did not ground" in r.outcome.refusals[0].payload["detail"]
+
+
+def test_update_trigger_unknown_field_only_refuses(seeded):
+    r = _run(seeded, _intent("automation-effect-claim", "positive", "Order__c",
+                             field_name="Order__c.Status__c", expected_value="Activated",
+                             automation_name="Stamp_Order_Status",
+                             update_trigger_fields=[{"field_name": "Order__c.Nope__c",
+                                                     "value": "X"}]),
+             expect_emit=False)
+    assert r.outcome.outcome_kind == OutcomeKind.REFUSAL
+    assert "did not ground" in r.outcome.refusals[0].payload["detail"]
+
+
+def test_update_trigger_partial_drop_keeps_the_verified_pair(seeded):
+    # Per-FIELD drops keep the D-299 posture — only the all-dropped SET refuses.
+    r = _run(seeded, _intent("automation-effect-claim", "positive", "Order__c",
+                             field_name="Order__c.Status__c", expected_value="Activated",
+                             automation_name="Stamp_Order_Status",
+                             update_trigger_fields=[
+                                 {"field_name": "Order__c.Nope__c", "value": "X"},
+                                 {"field_name": "Order__c.Stage__c", "value": "Submitted"}]))
+    assert r.outcome.outcome_kind == OutcomeKind.DRAFT
+    update = r.emission.observation_realization.steps[1]
+    assert update.field_changes == {"Order__c.Stage__c": "Submitted"}
+
+
+def test_update_trigger_on_cross_object_refuses(seeded):
+    # The update-observe phase is SAME-RECORD only — the recompute is observed
+    # on the record whose state changed.
+    r = _run(seeded, _intent("automation-effect-claim", "positive", "Order__c",
+                             effect_object="Order_Log__c",
+                             effect_lookup_field="Order_Log__c.Order__c",
+                             update_trigger_fields=[{"field_name": "Order__c.Stage__c",
+                                                     "value": "Submitted"}]),
+             expect_emit=False)
+    assert r.outcome.outcome_kind == OutcomeKind.REFUSAL
+    assert "same-record only" in r.outcome.refusals[0].payload["detail"]
+
+
+def test_update_scoped_and_create_scoped_hash_apart(seeded):
+    # "sets X when created" and "re-computes X when Stage changes" are
+    # DIFFERENT assertions — the narrated trigger phase keeps them apart.
+    from primeqa.test_representation.identity_hash import compute_identity_hash
+    r1 = _run(seeded, _intent("automation-effect-claim", "positive", "Order__c",
+                              field_name="Order__c.Status__c", expected_value="Activated",
+                              automation_name="Stamp_Order_Status",
+                              trigger_fields=[{"field_name": "Order__c.Stage__c",
+                                               "value": "Submitted"}]))
+    r2 = _run(seeded, _intent("automation-effect-claim", "positive", "Order__c",
+                              field_name="Order__c.Status__c", expected_value="Activated",
+                              automation_name="Stamp_Order_Status",
+                              trigger_fields=[{"field_name": "Order__c.Stage__c",
+                                               "value": "Submitted"}],
+                              update_trigger_fields=[{"field_name": "Order__c.Priority__c",
+                                                      "value": "High"}]))
+    h = lambda r: compute_identity_hash(
+        "data_behavior", "automation-effect-claim",
+        r.emission.asserted_truth, r.emission.semantic_conditions)
+    assert h(r1) != h(r2)
+
+
+def test_update_observe_recipe_projects_through_the_s4_bridge(seeded):
+    # The cross-boundary seam (the D-305.1 lesson): the S3-authored
+    # update-observe recipe must satisfy the S4 bridge shape end-to-end —
+    # a mid-chain positive PlannedUpdate bound to the terminal create.
+    from datetime import datetime, timezone
+    from uuid import uuid4 as _u
+    from primeqa.execution_engine import build_data_recipe_plan
+    from primeqa.execution_engine.plan import PlannedUpdate
+    from primeqa.test_representation.coordinator import RecipeRead
+
+    r = _run(seeded, _intent("automation-effect-claim", "positive", "Order__c",
+                             field_name="Order__c.Status__c", expected_value="Activated",
+                             automation_name="Stamp_Order_Status",
+                             trigger_fields=[{"field_name": "Order__c.Stage__c",
+                                              "value": "Draft"}],
+                             update_trigger_fields=[{"field_name": "Order__c.Stage__c",
+                                                     "value": "Submitted"}]))
+    e = r.emission
+    now = datetime(2026, 7, 2, tzinfo=timezone.utc)
+    plan = build_data_recipe_plan(RecipeRead(
+        recipe_id=_u(), version_seq=1, valid_from=now, valid_to=None,
+        claim_test_id=_u(), claim_version_seq=1,
+        trigger_kind=e.trigger_kind, recipe_kind=e.recipe_kind,
+        causal_initiation=e.causal_initiation,
+        observation_realization=e.observation_realization,
+        execution_environment=e.execution_environment,
+        priority=0, status="approved", created_at=now, updated_at=now))
+    kinds = [s.kind for s in plan.steps]
+    assert kinds == ["create", "update", "read", "assert"]
+    upd = plan.steps[1]
+    assert isinstance(upd, PlannedUpdate)
+    assert upd.expect_rejection is None
+    assert upd.setup_step_id == "create-record"
+    assert upd.field_changes == {"Order__c.Stage__c": "Submitted"}
+    assert plan.steps[0].expect_acceptance is True

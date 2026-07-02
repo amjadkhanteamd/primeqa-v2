@@ -1236,13 +1236,60 @@ class GovernanceCore:
                         detail=(f"is_null asserted on REQUIRED field(s) "
                                 f"{required_nulls} — required-field padding "
                                 f"would contradict the claimed state")))
+            # D-306: the OPTIONAL update phase — "the CHANGE succeeds" (the
+            # stage-progress case). Grounds through the same clause machinery
+            # as the initial conditions, PLUS: equals-only (the change is
+            # staged by one PATCH — nothing else stages deterministically)
+            # and UPDATEABLE specifically (not the createable bar the
+            # initial clauses use). Refuse-not-degrade throughout: a proposed
+            # update phase that cannot ground must never silently author the
+            # create-acceptance shape (a materially different claim).
+            grounded_upd: tuple = ()
+            proposed_upd = hint.get("update_conditions")
+            if proposed_upd:
+                upd_conds, upd_invalid = _ground_rejection_conditions(
+                    proposed_upd, neighborhood, at)
+                if upd_invalid:
+                    return IntentResolution(
+                        grounded_candidates=[], next_action=NextAction.REFUSE,
+                        interpretation_delta=delta,
+                        refusal=self._router.emission_deferred(
+                            archetype, claim_kind,
+                            detail="; ".join(upd_invalid)))
+                non_equals = sorted({c.predicate for c in upd_conds
+                                     if c.predicate != "equals"})
+                if non_equals or not upd_conds:
+                    return IntentResolution(
+                        grounded_candidates=[], next_action=NextAction.REFUSE,
+                        interpretation_delta=delta,
+                        refusal=self._router.emission_deferred(
+                            archetype, claim_kind,
+                            detail=(f"update clauses must be one or more "
+                                    f"equals (the change is staged by one "
+                                    f"PATCH); got {non_equals or 'none'}")))
+                nonupdatable = sorted(
+                    c.field.external_id for c in upd_conds
+                    if (m := cond_meta.get(_bare(c.field.external_id))) is None
+                    or m.get("is_calculated")
+                    or not m.get("is_updateable", True))
+                if nonupdatable:
+                    return IntentResolution(
+                        grounded_candidates=[], next_action=NextAction.REFUSE,
+                        interpretation_delta=delta,
+                        refusal=self._router.emission_deferred(
+                            archetype, claim_kind,
+                            detail=(f"update clause field(s) not updateable "
+                                    f"(calculated/read-only): "
+                                    f"{nonupdatable}")))
+                grounded_upd = tuple(upd_conds)
             _stash_grounding(state, GroundedAcceptance(
                 archetype=archetype, claim_kind=claim_kind, version_seq=at,
                 subject=_Endpoint(
                     entity_id=subject.id, entity_type=subject.entity_type,
                     external_id=subject.sf_api_name or str(subject.id)),
                 requirement_excerpt=excerpt,
-                conditions=tuple(grounded_conds)))
+                conditions=tuple(grounded_conds),
+                update_conditions=grounded_upd))
 
         # D-210.1 covers the POSITIVE shapes only; a NEGATIVE state-transition /
         # automation-effect (grounded via its VR/Flow dim) has no authored
@@ -1401,6 +1448,21 @@ class GovernanceCore:
                         detail=("a formula automation computes on its own "
                                 "record — cross-object effect shapes do not "
                                 "apply to a calculated field")))
+            # D-306: the update-observe phase is SAME-RECORD only — the
+            # recompute is observed on the record whose state changed. A
+            # cross-object/parent-stamp hint carrying update_trigger_fields
+            # refuses (authoring create-scoped instead would silently drop
+            # the requirement's recalculate-on-change premise).
+            if hint.get("update_trigger_fields") and hint.get("effect_object"):
+                return IntentResolution(
+                    grounded_candidates=[], next_action=NextAction.REFUSE,
+                    interpretation_delta=delta,
+                    refusal=self._router.emission_deferred(
+                        archetype, claim_kind,
+                        detail=("the update-observe phase is same-record "
+                                "only — a cross-object/parent-stamp effect "
+                                "cannot observe a recompute on the changed "
+                                "record")))
             effect_object_api = hint.get("effect_object")
             if effect_object_api and hint.get("effect_via_lookup_field"):
                 # D-227 parent-stamp: the effect lands on a record the TRIGGER
@@ -1544,6 +1606,28 @@ class GovernanceCore:
                 # and dropping non-input triggers would break legitimate
                 # VR-survival staging fields (the D-299 class). BELONGS_TO
                 # verification + the k16 exclude are the guards.
+                # D-306: the update-observe phase — "recalculates when X
+                # changes". Same rail as trigger_fields (BELONGS_TO verify,
+                # the k16 exclude on the observed field), but NOT
+                # drop-never-refuse as a SET: a proposed update phase that
+                # grounds to nothing would silently author the create-scoped
+                # shape — a materially different claim (meaning drift + an
+                # identity collision with the create-scoped case). Per-field
+                # drops within the set keep the D-299 posture.
+                proposed_upd = hint.get("update_trigger_fields")
+                update_trigger_fields = _ground_trigger_fields(
+                    proposed_upd, neighborhood,
+                    exclude_field=field_ent.sf_api_name)
+                if proposed_upd and not update_trigger_fields:
+                    return IntentResolution(
+                        grounded_candidates=[], next_action=NextAction.REFUSE,
+                        interpretation_delta=delta,
+                        refusal=self._router.emission_deferred(
+                            archetype, claim_kind,
+                            detail=("update_trigger_fields did not ground — "
+                                    "the recalculate-on-change premise needs "
+                                    "at least one verified (field, value) "
+                                    "pair that is not the observed field")))
                 _stash_grounding(state, GroundedAutomationEffect(
                     archetype=archetype, claim_kind=claim_kind, version_seq=at,
                     subject=subj_ep, automation=flow_ep,
@@ -1553,7 +1637,8 @@ class GovernanceCore:
                         external_id=field_ent.sf_api_name or str(field_ent.id)),
                     effect_value=effect_value,
                     trigger_fields=trigger_fields,
-                    automation_primitive=primitive))
+                    automation_primitive=primitive,
+                    update_trigger_fields=update_trigger_fields))
 
         # grounded -> emit deferred (draft vertical). resolve_intent stays whole.
         presented = [PresentedCandidate(path_id=c.path_id,

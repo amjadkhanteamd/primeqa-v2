@@ -138,3 +138,134 @@ def test_same_conditions_same_hash(seeded):
         "data_behavior", "acceptance-claim",
         r.emission.asserted_truth, r.emission.semantic_conditions)
     assert h(r1) == h(r2)
+
+
+# ---------------------------------------------------------------------------
+# D-306: update-acceptance — "the CHANGE succeeds" (the stage-progress case)
+# ---------------------------------------------------------------------------
+
+def test_update_acceptance_authors_the_update_shape(seeded):
+    # TC-020's shape: given the staged initial state (create), the update to
+    # the target state must be ACCEPTED — expect_acceptance rides the UPDATE.
+    r = _run(seeded, _intent("acceptance-claim", "positive", "Order__c",
+                             acceptance_conditions=[
+                                 {"field": "Order__c.Stage__c",
+                                  "predicate": "equals", "value": "Draft"},
+                                 {"field": "Order__c.Subtotal__c",
+                                  "predicate": "equals", "value": 5000}],
+                             update_conditions=[
+                                 {"field": "Order__c.Stage__c",
+                                  "predicate": "equals", "value": "Submitted"}]))
+    assert r.outcome.outcome_kind == OutcomeKind.DRAFT
+    body = r.emission.asserted_truth
+    assert body.operation == "update"
+    steps = r.emission.observation_realization.steps
+    assert [s.step_id for s in steps] == [
+        "create-record", "update-record", "read-created", "assert-exists"]
+    create, update = steps[0], steps[1]
+    # the create stages the INITIAL state, standard D-115.2 grading (no flag)
+    assert create.field_values == {"Order__c.Stage__c": "Draft",
+                                   "Order__c.Subtotal__c": 5000}
+    assert create.expect_acceptance is False
+    # the UPDATE carries the acceptance semantics — it IS the assertion
+    assert update.field_changes == {"Order__c.Stage__c": "Submitted"}
+    assert update.expect_acceptance is True
+    assert update.expect_rejection is None
+    # BOTH phases are identity-bearing, initial-then-update order
+    conds = r.emission.semantic_conditions.conditions
+    assert [(c.subject.external_id, c.value) for c in conds] == [
+        ("Order__c.Stage__c", "Draft"), ("Order__c.Subtotal__c", 5000),
+        ("Order__c.Stage__c", "Submitted")]
+    assert r.emission.causal_initiation.operation == "update"
+
+
+def test_update_acceptance_hashes_apart_from_create_acceptance(seeded):
+    # "this state saves" vs "given this state, the change succeeds" are
+    # different assertions — operation + the update clauses keep them apart.
+    base = [{"field": "Order__c.Stage__c", "predicate": "equals", "value": "Draft"}]
+    r1 = _run(seeded, _intent("acceptance-claim", "positive", "Order__c",
+                              acceptance_conditions=list(base)))
+    r2 = _run(seeded, _intent("acceptance-claim", "positive", "Order__c",
+                              acceptance_conditions=list(base),
+                              update_conditions=[
+                                  {"field": "Order__c.Stage__c",
+                                   "predicate": "equals", "value": "Submitted"}]))
+    h = lambda r: compute_identity_hash(
+        "data_behavior", "acceptance-claim",
+        r.emission.asserted_truth, r.emission.semantic_conditions)
+    assert h(r1) != h(r2)
+
+
+def test_update_condition_non_equals_refuses(seeded):
+    r = _run(seeded, _intent("acceptance-claim", "positive", "Order__c",
+                             acceptance_conditions=[
+                                 {"field": "Order__c.Stage__c",
+                                  "predicate": "equals", "value": "Draft"}],
+                             update_conditions=[
+                                 {"field": "Order__c.Priority__c",
+                                  "predicate": "is_null"}]),
+             expect_emit=False)
+    assert r.outcome.outcome_kind == OutcomeKind.REFUSAL
+    assert "equals" in r.outcome.refusals[0].payload["detail"]
+
+
+def test_update_condition_unknown_field_refuses(seeded):
+    r = _run(seeded, _intent("acceptance-claim", "positive", "Order__c",
+                             acceptance_conditions=[
+                                 {"field": "Order__c.Stage__c",
+                                  "predicate": "equals", "value": "Draft"}],
+                             update_conditions=[
+                                 {"field": "Order__c.Nope__c",
+                                  "predicate": "equals", "value": "X"}]),
+             expect_emit=False)
+    assert r.outcome.outcome_kind == OutcomeKind.REFUSAL
+    assert "BELONG_TO" in r.outcome.refusals[0].payload["detail"]
+
+
+def test_update_condition_non_updateable_refuses(seeded):
+    # Total_With_Tax__c is the seeded CALCULATED field — a PATCH cannot stage it.
+    r = _run(seeded, _intent("acceptance-claim", "positive", "Order__c",
+                             acceptance_conditions=[
+                                 {"field": "Order__c.Stage__c",
+                                  "predicate": "equals", "value": "Draft"}],
+                             update_conditions=[
+                                 {"field": "Order__c.Total_With_Tax__c",
+                                  "predicate": "equals", "value": 110}]),
+             expect_emit=False)
+    assert r.outcome.outcome_kind == OutcomeKind.REFUSAL
+    assert "updateable" in r.outcome.refusals[0].payload["detail"]
+
+
+def test_update_acceptance_recipe_projects_through_the_s4_bridge(seeded):
+    # The cross-boundary seam (the D-305.1 lesson): the authored
+    # update-acceptance recipe must satisfy the S4 bridge shape, with
+    # expect_acceptance SURVIVING projection onto the positive PlannedUpdate.
+    from datetime import datetime, timezone
+    from uuid import uuid4 as _u
+    from primeqa.execution_engine import build_data_recipe_plan
+    from primeqa.execution_engine.plan import PlannedUpdate
+    from primeqa.test_representation.coordinator import RecipeRead
+
+    r = _run(seeded, _intent("acceptance-claim", "positive", "Order__c",
+                             acceptance_conditions=[
+                                 {"field": "Order__c.Stage__c",
+                                  "predicate": "equals", "value": "Draft"}],
+                             update_conditions=[
+                                 {"field": "Order__c.Stage__c",
+                                  "predicate": "equals", "value": "Submitted"}]))
+    e = r.emission
+    now = datetime(2026, 7, 2, tzinfo=timezone.utc)
+    plan = build_data_recipe_plan(RecipeRead(
+        recipe_id=_u(), version_seq=1, valid_from=now, valid_to=None,
+        claim_test_id=_u(), claim_version_seq=1,
+        trigger_kind=e.trigger_kind, recipe_kind=e.recipe_kind,
+        causal_initiation=e.causal_initiation,
+        observation_realization=e.observation_realization,
+        execution_environment=e.execution_environment,
+        priority=0, status="approved", created_at=now, updated_at=now))
+    assert [s.kind for s in plan.steps] == ["create", "update", "read", "assert"]
+    upd = plan.steps[1]
+    assert isinstance(upd, PlannedUpdate)
+    assert upd.expect_acceptance is True
+    assert upd.expect_rejection is None
+    assert upd.setup_step_id == "create-record"

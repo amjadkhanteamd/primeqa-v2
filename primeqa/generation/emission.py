@@ -345,6 +345,15 @@ class GroundedAutomationEffect:
     # the automation ref is a CALCULATED FIELD and trigger_fields carry the
     # formula's inputs. Default keeps every pre-D-304 construction byte-identical.
     automation_primitive: str = "flow"
+    # D-306: the OPTIONAL update-observe phase — the (field, value) pairs an
+    # UPDATE stages AFTER the create, so the org RE-computes the effect (the
+    # recalculates-on-change half of automations/formulas: create at the
+    # initial trigger_fields state → change these → observe the new effect
+    # value). Same idiom as trigger_fields (BELONGS_TO-verified, k16 exclude —
+    # the observed field can never be in EITHER trigger set; the stash gate
+    # refuses it on non-same-record shapes). Empty () → the create-scoped
+    # shape, byte-identical.
+    update_trigger_fields: tuple = ()  # tuple[tuple[_Endpoint, Any], ...]
 
 
 @dataclass(frozen=True)
@@ -362,6 +371,14 @@ class GroundedAcceptance:
     subject: _Endpoint          # the Object being created
     requirement_excerpt: str
     conditions: tuple = ()      # grounded clauses (field ep, predicate, value)
+    # D-306: the OPTIONAL update phase — grounded EQUALS clauses the recipe
+    # stages on a positive UpdateStep AFTER the initial-state create (the
+    # stage-progress case: "given KYC + score, progressing to Credit
+    # Assessment succeeds"). Non-empty → operation="update" and the update
+    # carries the expect_acceptance semantics; the initial `conditions` stage
+    # the create. BOTH sets are identity-bearing (initial-then-update order
+    # rides the conditions body). Empty () → the D-305 create shape verbatim.
+    update_conditions: tuple = ()
 
 
 @dataclass(frozen=True)
@@ -1025,27 +1042,72 @@ def _author_acceptance(g: GroundedAcceptance) -> EmissionBundle:
     create IS the assertion), reads the record back by id, and asserts it
     exists. Object-qualified keys (the positive vertical's convention). Every
     ``equals`` clause stages its value; ``is_null`` clauses stay ABSENT (the
-    case is partly defined by what is NOT set — the negative-scope shape)."""
+    case is partly defined by what is NOT set — the negative-scope shape).
+
+    D-306 (``update_conditions`` non-empty → ``operation="update"``): the org
+    ACCEPTS the CHANGE — the create stages the initial state, a positive
+    UpdateStep stages the update clauses and carries the ``expect_acceptance``
+    semantics instead (the stage-progress case, TC-020)."""
     subject_ref = IdentityBearingRef(
         entity_type=g.subject.entity_type, entity_id=g.subject.entity_id,
         version_seq=g.version_seq, external_id=g.subject.external_id,
     )
     object_api = g.subject.external_id
-    claim = AcceptanceClaimBody(target=subject_ref, operation="create")
-    conditions = _conditions_body(g.conditions, g.version_seq)
+    operation = "update" if g.update_conditions else "create"
+    claim = AcceptanceClaimBody(target=subject_ref, operation=operation)
+    # D-306: BOTH phases are identity-bearing (the case IS "given state A,
+    # the change to B succeeds") — initial-then-update order in one body.
+    conditions = _conditions_body(
+        tuple(g.conditions) + tuple(g.update_conditions), g.version_seq)
 
     staged = {c.field.external_id: c.value for c in g.conditions
               if c.predicate == "equals"}
     target = LogicalRef(entity_type=g.subject.entity_type,
                         external_id=object_api)
     trigger = DataMutationTriggerBody(
-        operation="create", target=target,
+        operation=operation, target=target,
         identity_context="system", volume="single",
     )
-    recipe = DataRecipeBody(
-        api_choice="rest", identity_context="system",
-        execution_mechanism="direct_api",
-        steps=[
+    if g.update_conditions:
+        # D-306 update-acceptance: the initial-state create stages `conditions`
+        # (standard D-115.2 grading — a rejection of the PREMISE state surfaces
+        # by field attribution); the UPDATE stages the change and carries the
+        # expect_acceptance semantics (any business rejection of it = the
+        # finding: the org refused a change the requirement says must succeed).
+        update_staged = {c.field.external_id: c.value
+                         for c in g.update_conditions if c.predicate == "equals"}
+        steps = [
+            CreateStep(
+                step_id="create-record",
+                target_object=target,
+                field_values=staged,
+            ),
+            UpdateStep(
+                step_id="update-record",
+                target=target,
+                field_changes=update_staged,
+                expect_acceptance=True,
+            ),
+            ReadStep(
+                step_id="read-created",
+                target=target,
+                soql=(f"SELECT Id FROM {object_api} "
+                      f"WHERE Id = '$create-record.id'"),
+                fields_to_capture=["Id"],
+            ),
+            DataAssertStep(
+                step_id="assert-exists",
+                predicate=AssertionPredicate(
+                    subject_ref="read-created.Id", predicate="exists"),
+            ),
+        ]
+        details = (f"create a {object_api} record staging the initial state "
+                   f"({', '.join(sorted(staged)) or 'no staged fields'}), "
+                   f"update it to ({', '.join(sorted(update_staged))}) and "
+                   f"expect the org to ACCEPT the change (no validation rule "
+                   f"fires)")
+    else:
+        steps = [
             CreateStep(
                 step_id="create-record",
                 target_object=target,
@@ -1064,13 +1126,17 @@ def _author_acceptance(g: GroundedAcceptance) -> EmissionBundle:
                 predicate=AssertionPredicate(
                     subject_ref="read-created.Id", predicate="exists"),
             ),
-        ],
+        ]
+        details = (f"create a {object_api} record staging the asserted business "
+                   f"state ({', '.join(sorted(staged)) or 'no staged fields'}) "
+                   f"and expect the org to ACCEPT it (no validation rule fires)")
+    recipe = DataRecipeBody(
+        api_choice="rest", identity_context="system",
+        execution_mechanism="direct_api",
+        steps=steps,
     )
     env = ExecutionEnvironmentBody(auth_assumptions=[AuthAssumption(
-        auth_kind="data_api_user",
-        details=(f"create a {object_api} record staging the asserted business "
-                 f"state ({', '.join(sorted(staged)) or 'no staged fields'}) "
-                 f"and expect the org to ACCEPT it (no validation rule fires)"),
+        auth_kind="data_api_user", details=details,
     )])
     return EmissionBundle(
         archetype=g.archetype, claim_kind=g.claim_kind,
@@ -1329,20 +1395,39 @@ def _author_positive(g: GroundedPositive) -> EmissionBundle:
 
 
 def _observe_steps(object_api: str, field_api: str, expected: Any,
-                   *, create_fields: Optional[dict] = None) -> list:
+                   *, create_fields: Optional[dict] = None,
+                   update_fields: Optional[dict] = None) -> list:
     """The shared observe-the-org shape (D-210.1): create the subject WITHOUT
     the asserted field (the AUTOMATION must set it — contrast _author_positive,
     which sets the field directly), read it back, assert the org-produced
-    value."""
+    value.
+
+    ``update_fields`` (D-306, update-then-observe): a positive UpdateStep
+    between the create and the read — create the INITIAL state, CHANGE it, and
+    the read observes the org's RE-computed effect. The staging create then
+    carries ``expect_acceptance=True`` (it must save; a rejection is the D-305
+    graded finding, not an indeterminate). The update carries NO expectation
+    flags: a rejected trigger update is staging failure → ``errored`` (the
+    value-claim posture — nothing was observed). ``None``/empty → the
+    create-scoped shape, byte-identical."""
     target = LogicalRef(entity_type="Object", external_id=object_api)
-    return [
+    steps = [
         CreateStep(
             step_id="create-record",
             target_object=target,
             # padding-only create (k16): the asserted field is deliberately
             # ABSENT — the org's automation is what must produce it.
             field_values=dict(create_fields or {}),
+            expect_acceptance=bool(update_fields),
         ),
+    ]
+    if update_fields:
+        steps.append(UpdateStep(
+            step_id="update-record",
+            target=target,
+            field_changes=dict(update_fields),
+        ))
+    return steps + [
         ReadStep(
             step_id="read-created",
             target=target,
@@ -1483,6 +1568,15 @@ def _author_automation_effect(g: GroundedAutomationEffect) -> EmissionBundle:
     event = EventDescriptor(trigger_kind="data-mutation-trigger",
                             description=g.requirement_excerpt)
     target = LogicalRef(entity_type="Object", external_id=object_api)
+    trigger_op = "create"
+
+    # D-306: the update-observe phase is SAME-RECORD only (the recompute is
+    # observed on the record whose state changed). The stash gate refuses the
+    # cross-object/parent-stamp combinations upstream; construction-proof here.
+    if g.update_trigger_fields and g.effect_object is not None:
+        raise ValueError(
+            "update_trigger_fields on a cross-object/parent-stamp automation "
+            "effect — the update-observe shape is same-record only (D-306)")
 
     if g.effect_object is None:
         # same-record: the Flow sets effect_field on the subject itself
@@ -1498,9 +1592,23 @@ def _author_automation_effect(g: GroundedAutomationEffect) -> EmissionBundle:
         # carried raw (the recipe side; the claim wraps in LiteralValue). Empty
         # trigger_fields () -> today's padding-only shape, byte-identical.
         create_fields = {ep.external_id: val for ep, val in g.trigger_fields}
+        # D-306: the update-observe phase — the CHANGED state an UpdateStep
+        # stages after the create, so the read observes the RE-computed effect.
+        update_fields = {ep.external_id: val
+                         for ep, val in g.update_trigger_fields}
         sr_event = event
-        if create_fields:
-            gate = ", ".join(f"{k}={v!r}" for k, v in create_fields.items())
+        gate = ", ".join(f"{k}={v!r}" for k, v in create_fields.items())
+        upd_gate = ", ".join(f"{k}={v!r}" for k, v in update_fields.items())
+        if update_fields:
+            # The update IS the causal event — the description narrates the
+            # phase (create-scoped vs update-scoped claims hash apart on it).
+            trigger_op = "update"
+            initial = f" with {gate}" if create_fields else ""
+            sr_event = EventDescriptor(
+                trigger_kind="data-mutation-trigger",
+                description=(f"creating a {object_api}{initial} then updating "
+                             f"{upd_gate} — {g.requirement_excerpt}"))
+        elif create_fields:
             sr_event = EventDescriptor(
                 trigger_kind="data-mutation-trigger",
                 description=(f"creating a {object_api} with {gate} — "
@@ -1514,9 +1622,14 @@ def _author_automation_effect(g: GroundedAutomationEffect) -> EmissionBundle:
             affected_fields=[field_ref],
         )
         steps = _observe_steps(object_api, field_api, g.effect_value,
-                               create_fields=create_fields)
-        if create_fields:
-            gate = ", ".join(f"{k}={v!r}" for k, v in create_fields.items())
+                               create_fields=create_fields,
+                               update_fields=update_fields)
+        if update_fields:
+            initial = f" with {gate} (the initial state)" if create_fields else ""
+            details = (f"create a {object_api} record{initial}, update "
+                       f"{upd_gate} (the change), read it back, assert the "
+                       f"org re-computed {field_api}={g.effect_value!r}")
+        elif create_fields:
             details = (f"create a {object_api} record with {gate} (the Flow's "
                        f"entry condition), read it back, assert the Flow set "
                        f"{field_api}={g.effect_value!r}")
@@ -1627,7 +1740,7 @@ def _author_automation_effect(g: GroundedAutomationEffect) -> EmissionBundle:
 
     conditions = SemanticConditionsBody(conditions=[])
     trigger = DataMutationTriggerBody(
-        operation="create", target=target,
+        operation=trigger_op, target=target,
         identity_context="system", volume="single")
     recipe = DataRecipeBody(
         api_choice="rest", identity_context="system",
