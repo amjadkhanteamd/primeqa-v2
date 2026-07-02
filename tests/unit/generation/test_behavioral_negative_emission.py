@@ -519,3 +519,51 @@ def test_d297_1_html_entity_message_unescaped_before_escape():
     assert mutation.expect_rejection.error_message_pattern == re.escape(
         "Loans over ₹50,00,000 need approval.")   # ₹ = rendered rupee sign
     assert "&#8377;" not in mutation.expect_rejection.error_message_pattern
+
+
+# ---------------------------------------------------------------------------
+# D-300 (S3): flag-gated bva boundary authoring on the prohibition path.
+# ---------------------------------------------------------------------------
+
+_SINGLE_THRESHOLD = ("Amount__c > 10000",)
+
+
+def test_flag_off_is_byte_identical():
+    # The recon gate: flag OFF (default AND explicit) authors EXACTLY the
+    # pre-D-300 bundle — no boundary probes, NULL strategy.
+    g = _grounded(formulas=_SINGLE_THRESHOLD)
+    default = author_emission(g)
+    explicit_off = author_emission(g, enable_bva_boundaries=False)
+    assert default == explicit_off
+    assert default.boundary_recipes == () and default.strategy_kind is None
+
+
+def test_flag_on_single_threshold_stamps_bva_and_authors_the_pair():
+    g = _grounded(formulas=_SINGLE_THRESHOLD)
+    off = author_emission(g)
+    on = author_emission(g, enable_bva_boundaries=True)
+    # stamped + one just-inside accept probe
+    assert on.strategy_kind == "bva"
+    assert len(on.boundary_recipes) == 1
+    accept_create = on.boundary_recipes[0].observation_realization.steps[0]
+    assert accept_create.field_values == {"Lead.Amount__c": 10000}
+    assert accept_create.expect_rejection is None
+    # the PRIMARY (firing) recipe is byte-identical to the flag-OFF primary —
+    # the boundary set never perturbs the shipped reject shape
+    assert on.observation_realization == off.observation_realization
+    assert on.asserted_truth == off.asserted_truth              # identity untouched
+    assert on.semantic_conditions == off.semantic_conditions
+    # the firing probe IS the primary: the update's violating change == the
+    # derive_boundary_set firing member (the D-300 invariant, end-to-end)
+    update_step = on.observation_realization.steps[1]
+    assert update_step.field_changes == {"Lead.Amount__c": 10001}
+
+
+def test_flag_on_non_threshold_shape_does_not_stamp():
+    # ISBLANK derives a verified create-rejected primary, but the boundary
+    # generator refuses function shapes -> NO stamp, NO probes: a bva claim is
+    # minted ONLY with a non-empty boundary set (never single-with-extra-steps).
+    g = _grounded(formulas=("ISBLANK(Reason__c)",))
+    on = author_emission(g, enable_bva_boundaries=True)
+    assert on.strategy_kind is None and on.boundary_recipes == ()
+    assert on == author_emission(g)                             # fully byte-identical

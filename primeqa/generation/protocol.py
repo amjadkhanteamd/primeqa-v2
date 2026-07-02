@@ -159,6 +159,16 @@ class OperationalContext(_Base):
     budgets: BudgetSpec = Field(default_factory=BudgetSpec)
     """Token / time / tool-call caps (D-088)."""
 
+    enable_bva_boundaries: bool = False
+    """D-300: author a bva boundary probe set (firing + just-inside) for
+    single-threshold-numeric prohibitions and stamp ``strategy_kind='bva'``.
+    OPERATIONAL by construction — the boundary probes are recipes and the
+    strategy stamp is identity-external (D-285/D-300), so flipping this flag
+    preserves ``identity_hash`` (this axis's defining property; contrast
+    GovernanceContext, which is identity-bearing). Loaded from the per-tenant
+    ``tenant_agent_settings.llm_enable_bva_boundaries`` (migration 059) by the
+    S3 consumer; default OFF = byte-identical authoring."""
+
 
 # ---------------------------------------------------------------------------
 # Request (D-071)

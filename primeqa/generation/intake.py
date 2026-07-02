@@ -63,6 +63,7 @@ def build_generation_request(
     s1_version_seq: int,
     s1_version_name: Optional[str],
     request_id: RequestId,
+    enable_bva_boundaries: bool = False,
 ) -> GenerationRequest:
     """Pure assembly of a **fresh single-requirement** ``GenerationRequest`` in
     the shape ``run_generation`` accepts.
@@ -73,6 +74,8 @@ def build_generation_request(
     it is CHECK-valid against ``generation_requests``'s
     ``(prior_request_id IS NULL) = (deltas IS NULL)``. ``archetype_hint`` is left
     unset (the router defaults to Opus, D-106.2); a later slice may set it.
+    ``enable_bva_boundaries`` (D-300) rides the OPERATIONAL context — the
+    consumer loads it from the tenant flag; default OFF.
     """
     return GenerationRequest(
         request_id=request_id,
@@ -82,7 +85,8 @@ def build_generation_request(
             s1_version_name=s1_version_name,
         ),
         governance_context=GovernanceContext(),
-        operational_context=OperationalContext(),
+        operational_context=OperationalContext(
+            enable_bva_boundaries=enable_bva_boundaries),
     )
 
 

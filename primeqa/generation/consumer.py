@@ -35,6 +35,28 @@ def _classify_error(exc: Exception) -> str:
     return "generation_error"
 
 
+def _bva_boundaries_enabled(tenant_id: int) -> bool:
+    """Best-effort read of the D-300 per-tenant bva-boundary flag from the
+    PUBLIC ``tenant_agent_settings``. The column (migration 059) is
+    DELIBERATELY NOT ORM-mapped (deploy-safety — the repair_auto_apply /
+    migration-054 precedent): a missing column, missing row, or any read error
+    reads as ``False`` (the feature stays dormant), so this code deploys
+    safely BEFORE the migration runs."""
+    try:
+        from sqlalchemy import text
+        from primeqa.db import get_db
+        db = next(get_db())
+        try:
+            v = db.execute(text(
+                "SELECT llm_enable_bva_boundaries FROM tenant_agent_settings "
+                "WHERE tenant_id = :t"), {"t": tenant_id}).scalar()
+            return bool(v)
+        finally:
+            db.close()
+    except Exception:
+        return False
+
+
 def process_job_for_tenant(
     tenant_id: int, *, api_key_resolver: ApiKeyResolver, tool_turn_fn=None,
 ) -> Optional[int]:
@@ -61,6 +83,9 @@ def process_job_for_tenant(
             s1_version_seq=job.s1_version_seq,
             s1_version_name=job.s1_version_name,
             request_id=UUID(attempt.request_id),
+            # D-300: the per-tenant bva-boundary flag rides the operational
+            # context (identity-preserving); missing column/row -> False.
+            enable_bva_boundaries=_bva_boundaries_enabled(tenant_id),
         )
         api_key = api_key_resolver(tenant_id, job.environment_id)
         result = run_generation(

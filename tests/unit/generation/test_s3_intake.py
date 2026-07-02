@@ -51,3 +51,39 @@ def test_build_generation_request_does_not_mint_request_id():
         s1_version_name=None, request_id=rid)
     assert req.request_id == rid
     assert req.semantic_context.s1_version_name is None
+
+
+# ---------------------------------------------------------------------------
+# D-300 (S3): the bva-boundary flag rides the OPERATIONAL context.
+# ---------------------------------------------------------------------------
+
+def test_build_request_default_bva_off():
+    from primeqa.generation.intake import build_generation_request
+    from uuid import uuid4
+    req = build_generation_request(
+        requirement_ref={"key": "R1", "text": "x"},
+        s1_version_seq=1, s1_version_name=None, request_id=uuid4())
+    assert req.operational_context.enable_bva_boundaries is False
+
+
+def test_build_request_threads_bva_flag():
+    from primeqa.generation.intake import build_generation_request
+    from uuid import uuid4
+    req = build_generation_request(
+        requirement_ref={"key": "R1", "text": "x"},
+        s1_version_seq=1, s1_version_name=None, request_id=uuid4(),
+        enable_bva_boundaries=True)
+    assert req.operational_context.enable_bva_boundaries is True
+    # operational, never governance (GovernanceContext is identity-bearing)
+    assert not hasattr(req.governance_context, "enable_bva_boundaries")
+
+
+def test_bva_flag_read_is_best_effort_false_on_any_error(monkeypatch):
+    # missing column / missing row / broken DB all read False (the feature
+    # stays dormant) — the migration-054 deploy-safety precedent.
+    from primeqa.generation import consumer as C
+
+    def _boom():
+        raise RuntimeError("no db")
+    monkeypatch.setattr("primeqa.db.get_db", _boom)
+    assert C._bva_boundaries_enabled(1) is False

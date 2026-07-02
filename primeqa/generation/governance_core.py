@@ -1828,7 +1828,13 @@ class GovernanceCore:
             p = paths[0]
             return OutcomeVerdict(override=self._router.emission_deferred(
                 p.get("archetype", "(unknown)"), p.get("claim_kind", "(unknown)")))
-        bundles = [author_emission(g) for g in groundings]
+        # D-300: the per-tenant bva-boundary flag rides the request's
+        # OPERATIONAL context into authoring (identity-preserving by that
+        # axis's contract); a ctx without the field (tests, legacy) reads OFF.
+        enable_bva = getattr(getattr(ctx, "operational_context", None),
+                             "enable_bva_boundaries", False)
+        bundles = [author_emission(g, enable_bva_boundaries=enable_bva)
+                   for g in groundings]
 
         # Mark the canonical path(s) selected in the reasoning artifact. Single
         # intent keeps the pre-D-207 shape (selected_path_id="c0"); a multi-

@@ -49,6 +49,7 @@ from primeqa.generation.verified_negative import (
     VerifiedNegative,
     VerifiedUpdateNegative,
     derive,
+    derive_boundary_set,
     derive_update,
 )
 from primeqa.semantic.formula import parse
@@ -1006,7 +1007,8 @@ def _conditions_body(grounded: tuple, version_seq: int) -> SemanticConditionsBod
     ])
 
 
-def _author_negative(g: GroundedNegative) -> EmissionBundle:
+def _author_negative(g: GroundedNegative, *,
+                     enable_bva_boundaries: bool = False) -> EmissionBundle:
     subject_ref = IdentityBearingRef(
         entity_type=g.subject.entity_type, entity_id=g.subject.entity_id,
         version_seq=g.version_seq, external_id=g.subject.external_id,
@@ -1114,6 +1116,27 @@ def _author_negative(g: GroundedNegative) -> EmissionBundle:
             causal_initiation=s_trigger, observation_realization=s_recipe,
             execution_environment=s_env, priority=-10),)
 
+    # D-300 (flag-gated): a verified SINGLE-THRESHOLD-NUMERIC prohibition
+    # additionally authors its boundary probe set — the just-inside ACCEPT
+    # probe rides boundary_recipes and the claim is stamped strategy_kind='bva'
+    # (routes run-all; the firing probe IS the primary above, unchanged).
+    # The stamp is conditional on a NON-EMPTY authored set: a bva claim with
+    # no boundary probe would strict-AND over the primary alone — single with
+    # extra steps, never minted. derive_boundary_set refuses compounds /
+    # non-threshold shapes, so arming is exactly as narrow as D-300 scopes.
+    # Flag OFF (the default) -> byte-identical bundle.
+    boundary = ()
+    strategy = None
+    if enable_bva_boundaries and verified and source_formula:
+        members = derive_boundary_set(parse(source_formula), g.field_metadata)
+        if members:
+            boundary = author_boundary_recipes(
+                subject_entity_type=g.subject.entity_type,
+                subject_external_id=g.subject.external_id,
+                members=members)
+        if boundary:
+            strategy = "bva"
+
     return EmissionBundle(
         archetype=g.archetype, claim_kind=g.claim_kind,
         asserted_truth=claim, semantic_conditions=conditions,
@@ -1127,6 +1150,8 @@ def _author_negative(g: GroundedNegative) -> EmissionBundle:
         caveat_required=requires_caveat(g.claim_kind, verified=verified),
         caveat_kind=caveat_kind(g.claim_kind, verified=verified),
         secondary_recipes=secondaries,
+        strategy_kind=strategy,
+        boundary_recipes=boundary,
     )
 
 
@@ -1525,10 +1550,13 @@ def _author_automation_effect(g: GroundedAutomationEffect) -> EmissionBundle:
     )
 
 
-def author_emission(grounded: object) -> EmissionBundle:
+def author_emission(grounded: object, *,
+                    enable_bva_boundaries: bool = False) -> EmissionBundle:
     """Author the claim + recipe bodies for a grounded candidate. The single
     site that constructs S2 body models for generation (D-097.5); dispatches on
-    the grounding shape."""
+    the grounding shape. ``enable_bva_boundaries`` (D-300, the tenant flag via
+    the request's operational context) is consumed by the prohibition author
+    only; default OFF = byte-identical."""
     if isinstance(grounded, GroundedEmission):
         return _author_config(grounded)
     if isinstance(grounded, GroundedExistence):
@@ -1540,7 +1568,8 @@ def author_emission(grounded: object) -> EmissionBundle:
     if isinstance(grounded, GroundedLayout):
         return _author_layout(grounded)
     if isinstance(grounded, GroundedNegative):
-        return _author_negative(grounded)
+        return _author_negative(grounded,
+                                enable_bva_boundaries=enable_bva_boundaries)
     if isinstance(grounded, GroundedPositive):
         return _author_positive(grounded)
     if isinstance(grounded, GroundedStateTransition):
