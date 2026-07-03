@@ -1403,6 +1403,22 @@ class SalesforceClient:
             "permission_set_assignments": permission_set_assignments,
         }
 
+    def fetch_process_definitions(self) -> list[dict]:
+        """Regular SOQL: SELECT ... FROM ProcessDefinition WHERE Type='Approval'.
+
+        D-308: approval-process definitions. NOTE — the REGULAR /query/
+        endpoint, NOT Tooling (a Tooling query on ProcessDefinition
+        returns HTTP 400; verified live on env-59). Returns the rows the
+        ApprovalProcess phase materializes: Id, Name, DeveloperName,
+        Type, State, TableEnumOrId, Description.
+        """
+        soql = (
+            "SELECT Id, Name, DeveloperName, Type, State, TableEnumOrId, "
+            "Description FROM ProcessDefinition WHERE Type = 'Approval'"
+        )
+        path = f"/services/data/{self.api_version}/query/"
+        return self._query_all(path, soql)
+
     def fetch_flow_definitions(self) -> list[dict]:
         """Tooling SOQL: SELECT … FROM FlowDefinition, with FullName + Metadata.
 

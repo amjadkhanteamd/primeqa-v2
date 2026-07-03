@@ -211,7 +211,13 @@ class TriggersOnProperties(_EdgeProperties):
     def trigger_type_known(cls, v: str) -> str:
         # Sanity: known Salesforce trigger types. Reject typos at the
         # boundary. Add new values as Salesforce introduces them.
-        allowed = {"BeforeSave", "AfterSave", "BeforeDelete", "AfterDelete"}
+        # "ApprovalSubmission" (D-308): an ApprovalProcess TRIGGERS_ON its
+        # target Object via record submission — our own extension value, not
+        # a Salesforce flow trigger type. Consumers switching on the flow
+        # values (e.g. the D-241 BeforeSave overwrite heuristic) treat it as
+        # not-that, which is correct.
+        allowed = {"BeforeSave", "AfterSave", "BeforeDelete", "AfterDelete",
+                   "ApprovalSubmission"}
         if v not in allowed:
             raise ValueError(
                 f"trigger_type {v!r} not recognized. Known: {sorted(allowed)}"

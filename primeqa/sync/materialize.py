@@ -456,6 +456,16 @@ def _extract_external_id(entity_type: str, raw: dict[str, Any]) -> str:
                 f"{sorted(raw.keys())}"
             )
         return username
+    if entity_type == "ApprovalProcess":
+        # D-308: keyed by the stable DeveloperName (the Flow convention);
+        # phase_approval_process decorates the payload with the marker.
+        developer_name = raw.get("_developer_name")
+        if not developer_name:
+            raise ValueError(
+                f"ApprovalProcess requires '_developer_name' (injected by "
+                f"phase_approval_process); got raw keys {sorted(raw.keys())}"
+            )
+        return developer_name
     if entity_type == "Flow":
         # Flow's external_id is the parent FlowDefinition's
         # DeveloperName — the STABLE identity across versions

@@ -104,6 +104,10 @@ def _noop_phase(entity_type: str) -> PhaseFunction:
     return phase
 
 
+# D-308: the approval-runtime allowlist (queryable, not searchable).
+_APPROVAL_RUNTIME_OBJECTS = frozenset({"ProcessInstance"})
+
+
 def _is_syncable_object(raw: dict) -> bool:
     """Filter Salesforce sObjects to those representing user-facing
     data objects.
@@ -127,6 +131,14 @@ def _is_syncable_object(raw: dict) -> bool:
       Object entity captures the SCHEMA (table definition); User /
       Profile / PermissionSet entities capture the ROW-LEVEL data.
     """
+    # D-308: approval-runtime objects are queryable-but-NOT-searchable
+    # (the searchable heuristic targets user-facing data objects), yet the
+    # approval effect-reads need their schema (ProcessInstance.TargetObjectId
+    # is the correlate the D-307 presence/absence shapes query).
+    if (raw.get("name") in _APPROVAL_RUNTIME_OBJECTS
+            and bool(raw.get("queryable"))
+            and not bool(raw.get("deprecatedAndHidden"))):
+        return True
     return (
         bool(raw.get("queryable"))
         and bool(raw.get("searchable"))
@@ -2066,6 +2078,61 @@ def phase_flow(ctx: SyncContext, conn: Any) -> PhaseResult:
     return result
 
 
+def phase_approval_process(ctx: SyncContext, conn: Any) -> PhaseResult:
+    """ApprovalProcess phase (D-308) — row-level approval-process
+    definitions, the automation ref the approval-effect claims bind
+    (``automation_primitive="approval_process"``).
+
+    Fetched from the REGULAR SOQL ProcessDefinition table (a Tooling
+    query 400s — verified live). One entity per definition, keyed by
+    the stable DeveloperName (the Flow convention); ``_is_active``
+    derives from State. No detail table — the full row rides
+    entities.attributes (the PicklistValueSet precedent).
+
+    Edges: TRIGGERS_ON → the target Object (TableEnumOrId), with
+    ``trigger_type="ApprovalSubmission"`` — reusing the Flow's edge
+    keeps S3's automation-neighborhood read unchanged (semantics:
+    submission-triggered record automation).
+    """
+    result = PhaseResult(entity_type="ApprovalProcess")
+
+    definitions = ctx.sf_client.fetch_process_definitions()
+    payloads: list[dict[str, Any]] = []
+    for d in definitions:
+        if not isinstance(d, dict) or not d.get("DeveloperName"):
+            continue
+        rec = dict(d)
+        rec["_developer_name"] = d.get("DeveloperName")
+        rec["_is_active"] = (d.get("State") == "Active")
+        payloads.append(rec)
+
+    if not payloads:
+        return result
+
+    entity_id_map = batched_materialize(
+        ctx=ctx,
+        conn=conn,
+        entity_type="ApprovalProcess",
+        raw_payloads=payloads,
+        result=result,
+        return_id_map=True,
+    )
+
+    normalized_payloads = [
+        normalize("ApprovalProcess", p) for p in payloads
+    ]
+    materialize_edges_for_entities(
+        ctx=ctx,
+        conn=conn,
+        source_entity_type="ApprovalProcess",
+        entity_id_map=entity_id_map,
+        normalized_payloads=normalized_payloads,
+        result=result,
+    )
+
+    return result
+
+
 PHASE_REGISTRY["Object"] = phase_object
 PHASE_REGISTRY["PicklistValueSet"] = phase_picklist_value_set
 PHASE_REGISTRY["PicklistValue"] = phase_picklist_value
@@ -2077,6 +2144,7 @@ PHASE_REGISTRY["Profile"] = phase_profile
 PHASE_REGISTRY["PermissionSet"] = phase_permission_set
 PHASE_REGISTRY["User"] = phase_user
 PHASE_REGISTRY["Flow"] = phase_flow
+PHASE_REGISTRY["ApprovalProcess"] = phase_approval_process
 
 
 def get_phase_function(entity_type: str) -> PhaseFunction:

@@ -895,6 +895,25 @@ def _flow_triggers_on_properties(
     return result
 
 
+def _approval_triggers_on_targets(normalized: dict) -> list[str]:
+    """D-308: an ApprovalProcess targets the Object it runs on —
+    ProcessDefinition.TableEnumOrId carries the SObject api name (for
+    standard/custom objects; entity enums like 'Case' are api names too).
+    Defensive: no TableEnumOrId → no edge (the materialize layer's §19
+    counter also silently skips unsyncable targets)."""
+    target = normalized.get("TableEnumOrId")
+    return [target] if target else []
+
+
+def _approval_triggers_on_properties(
+    normalized: dict, target_external_id: str,
+) -> dict:
+    """The honest trigger label for an approval: submission-triggered
+    (a record enters the process on submit — env-59's HL flow
+    auto-submits; elsewhere a user submits)."""
+    return {"trigger_type": "ApprovalSubmission"}
+
+
 # ----------------------------------------------------------------------
 # Registry
 # ----------------------------------------------------------------------
@@ -1063,6 +1082,14 @@ _EDGE_SPECS: dict[str, list[EdgeSpec]] = {
         # substrate-1's TriggersOnProperties design (corrections-
         # log §21). Platform-event / scheduled / autolaunched /
         # screen flows produce no edge.
+    ],
+    "ApprovalProcess": [
+        EdgeSpec(
+            target_entity_type="Object",
+            edge_type="TRIGGERS_ON",
+            extract_target_external_ids=_approval_triggers_on_targets,
+            extract_properties=_approval_triggers_on_properties,
+        ),
     ],
     # Other entity types add their specs here as their phase cycles land.
 }

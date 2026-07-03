@@ -201,6 +201,12 @@ def _normalize_flow(raw: dict[str, Any]) -> dict[str, Any]:
     return n
 
 
+def _normalize_approval_process(raw: dict[str, Any]) -> dict[str, Any]:
+    """D-308: ProcessDefinition rows are flat (no nested Metadata) —
+    volatile-strip is the whole normalization."""
+    return _strip_volatile(raw)
+
+
 # ----------------------------------------------------------------------
 # Dispatcher
 # ----------------------------------------------------------------------
@@ -217,6 +223,7 @@ _NORMALIZERS: dict[str, Any] = {
     "User":             _normalize_user,
     "ValidationRule":   _normalize_validation_rule,
     "Flow":             _normalize_flow,
+    "ApprovalProcess":  _normalize_approval_process,
 }
 
 

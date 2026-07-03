@@ -63,6 +63,9 @@ ENTITY_ORDER: tuple[str, ...] = (
     "PermissionSet",
     "User",
     "Flow",
+    # D-308: approval-process definitions — after Object (its TRIGGERS_ON
+    # target); attributes-only like PicklistValueSet (no detail table).
+    "ApprovalProcess",
 )
 
 

@@ -55,7 +55,8 @@ class TestPhaseRegistry:
         real_phases = {"Object", "PicklistValueSet", "PicklistValue",
                        "Field", "RecordType", "Layout",
                        "ValidationRule", "Profile",
-                       "PermissionSet", "User", "Flow"}
+                       "PermissionSet", "User", "Flow",
+                       "ApprovalProcess"}          # D-308
         for entity_type, phase_fn in PHASE_REGISTRY.items():
             if entity_type in real_phases:
                 continue
@@ -3394,3 +3395,63 @@ class TestPhaseFlow:
             mock_bm.return_value = {}
             phase_flow(ctx, conn)
         mock_filter.assert_not_called()
+
+
+# ----------------------------------------------------------------------
+# phase_approval_process (D-308) — row-level approval-process
+# definitions on the TRIGGERS_ON rail.
+# ----------------------------------------------------------------------
+
+
+from primeqa.sync.phases import phase_approval_process
+
+
+class TestPhaseApprovalProcess:
+    def _pd(self, dev="HL_High_Value_Loan", state="Active",
+            table="Opportunity"):
+        return {"Id": "04a1", "Name": "HL High Value Loan",
+                "DeveloperName": dev, "Type": "Approval",
+                "State": state, "TableEnumOrId": table,
+                "Description": None}
+
+    def test_empty_definitions_returns_zero(self) -> None:
+        ctx = _stub_ctx_with_mock_sf()
+        ctx.sf_client.fetch_process_definitions.return_value = []
+        conn = MagicMock()
+        with patch("primeqa.sync.phases.batched_materialize") as mock_bm, \
+             patch("primeqa.sync.phases.materialize_edges_for_entities") as mock_edges:
+            result = phase_approval_process(ctx, conn)
+        mock_bm.assert_not_called()
+        mock_edges.assert_not_called()
+        assert result.entity_type == "ApprovalProcess"
+        assert result.succeeded is True
+
+    def test_materializes_with_identity_markers_and_edges(self) -> None:
+        ctx = _stub_ctx_with_mock_sf()
+        ctx.sf_client.fetch_process_definitions.return_value = [
+            self._pd(), self._pd(dev="Old_Process", state="Obsolete"),
+        ]
+        conn = MagicMock()
+        with patch("primeqa.sync.phases.batched_materialize") as mock_bm, \
+             patch("primeqa.sync.phases.materialize_edges_for_entities") as mock_edges:
+            mock_bm.return_value = {}
+            phase_approval_process(ctx, conn)
+        payloads = mock_bm.call_args.kwargs["raw_payloads"]
+        assert [p["_developer_name"] for p in payloads] == [
+            "HL_High_Value_Loan", "Old_Process"]
+        assert [p["_is_active"] for p in payloads] == [True, False]
+        assert mock_bm.call_args.kwargs["entity_type"] == "ApprovalProcess"
+        # the edge pipeline runs over the normalized payloads
+        normed = mock_edges.call_args.kwargs["normalized_payloads"]
+        assert normed[0]["TableEnumOrId"] == "Opportunity"
+
+    def test_rows_without_developer_name_are_skipped(self) -> None:
+        ctx = _stub_ctx_with_mock_sf()
+        ctx.sf_client.fetch_process_definitions.return_value = [
+            {"Id": "04a9", "Type": "Approval"},
+        ]
+        conn = MagicMock()
+        with patch("primeqa.sync.phases.batched_materialize") as mock_bm:
+            result = phase_approval_process(ctx, conn)
+        mock_bm.assert_not_called()
+        assert result.succeeded is True
