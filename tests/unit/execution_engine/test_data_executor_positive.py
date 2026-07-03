@@ -1383,3 +1383,30 @@ def test_not_exists_fails_on_an_observed_row():
     assert ev.outcome == "failed"
     assert ev.steps[-1].held is False
     assert ("Case", "00T9") in client.deletes             # side-effect cleanup
+
+
+def test_override_cannot_clobber_the_staged_gate_on_observe_shapes():
+    # D-307.1 (review B1, reproduced wrong-green): on an OBSERVE shape (staged
+    # fields disjoint from the captured fields) a dispatch override must steer
+    # padding only — clobbering the staged gate is self-concealing (a
+    # padding-only create trivially greens an absence claim).
+    client = _StubClient(create_result=_success("001Z"), query_result=[])
+    ev = execute_data_recipe(
+        _absence_plan(), client=client, environment_id=_ENV_ID, s1=_s1(),
+        field_overrides={"Status__c": "OVERRIDDEN", "Name": "Steered"})
+    posted = client.creates[0][1]
+    assert posted["Status__c"] == "Active"       # the staged gate survived
+    assert posted["Name"] == "Steered"           # padding stays steerable
+    assert ev.outcome == "passed"
+
+
+def test_override_still_wins_on_value_claims():
+    # D-235 preserved: a value-claim's staged field IS the captured field —
+    # the operator override keeps its documented power there (divergence
+    # self-reveals as an honest red, never a wrong-green).
+    client = _StubClient(create_result=_success("001Z"),
+                         query_result=[{"Status__c": "Hijacked"}])
+    ev = execute_data_recipe(
+        _plan(), client=client, environment_id=_ENV_ID, s1=_s1(),
+        field_overrides={"Status__c": "Hijacked"})
+    assert client.creates[0][1]["Status__c"] == "Hijacked"

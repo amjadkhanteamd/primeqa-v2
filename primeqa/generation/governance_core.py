@@ -1007,6 +1007,22 @@ class GovernanceCore:
                                     interpretation_delta=self._delta([], []),
                                     refusal=self._router.underspecified())
 
+        # D-307.1 (review SF): an expected_absence hint on any kind that has no
+        # absence vertical must REFUSE, never be silently ignored — ignoring it
+        # authors an artifact asserting the OPPOSITE of the intent (the
+        # meaning-inversion class). Only automation-effect consumes the flag.
+        if (hint.get("expected_absence") is not None
+                and claim_kind != "automation-effect-claim"):
+            return IntentResolution(
+                grounded_candidates=[], next_action=NextAction.REFUSE,
+                interpretation_delta=self._delta([], []),
+                refusal=self._router.emission_deferred(
+                    archetype, claim_kind,
+                    detail=("expected_absence rides the automation-effect "
+                            f"vertical only — on {claim_kind} the flag would "
+                            "be ignored and the authored artifact would "
+                            "assert the opposite of the intent")))
+
         # Layer B reject-only sanity floor (D-096.3) -> dismissal -> refusal
         lb_reason = self._layer_b.reject_reason(excerpt, subject)
         if lb_reason is not None:
@@ -1519,7 +1535,20 @@ class GovernanceCore:
             # the presence shape would INVERT the claim's meaning. A
             # field-conditional absence (effect_field/effect_value alongside)
             # is not expressible in v1.
-            if hint.get("expected_absence"):
+            raw_absence = hint.get("expected_absence")
+            if raw_absence is not None and not isinstance(raw_absence, bool):
+                # D-307.1 (review): the hint slot is un-schema'd — a string
+                # "false" is truthy and a coercion either way silently INVERTS
+                # meaning. Fail closed on any non-boolean.
+                return IntentResolution(
+                    grounded_candidates=[], next_action=NextAction.REFUSE,
+                    interpretation_delta=delta,
+                    refusal=self._router.emission_deferred(
+                        archetype, claim_kind,
+                        detail=("expected_absence must be a JSON boolean; got "
+                                + type(raw_absence).__name__)))
+            expected_absence = raw_absence is True
+            if expected_absence:
                 if not hint.get("effect_object") or hint.get(
                         "effect_via_lookup_field"):
                     return IntentResolution(
@@ -1617,6 +1646,31 @@ class GovernanceCore:
                         refusal=self._router.emission_deferred(
                             archetype, claim_kind, detail=grounded_eff))
                 eff_ep, lookup_ep, eff_field_ep = grounded_eff
+                # D-307: the cross-object flow fires only when the SUBJECT
+                # create reaches its entry gate (the L7e live recon: a
+                # padding-only create never provokes the Task) — the same
+                # D-299 rail as above.
+                xo_triggers = _ground_trigger_fields(
+                    hint.get("trigger_fields"), neighborhood,
+                    exclude_field=hint.get("effect_field"))
+                if expected_absence and not xo_triggers:
+                    # D-307.1 (review B2): drop-never-refuse INVERTS under
+                    # absence — for presence a padding-only create degrades to
+                    # a self-revealing honest red, but for absence it passes
+                    # green-by-construction against any gated automation
+                    # (0 rows regardless of org truth). An absence case needs
+                    # the staged state that DEFINES it; fail closed whether
+                    # the gate was dropped or never proposed.
+                    return IntentResolution(
+                        grounded_candidates=[], next_action=NextAction.REFUSE,
+                        interpretation_delta=delta,
+                        refusal=self._router.emission_deferred(
+                            archetype, claim_kind,
+                            detail=("an absence case needs at least one "
+                                    "verified trigger (field, value) pair — "
+                                    "a padding-only create would grade the "
+                                    "absence green regardless of the org's "
+                                    "actual behavior")))
                 _stash_grounding(state, GroundedAutomationEffect(
                     archetype=archetype, claim_kind=claim_kind, version_seq=at,
                     subject=subj_ep, automation=flow_ep,
@@ -1624,16 +1678,10 @@ class GovernanceCore:
                     effect_field=eff_field_ep,
                     effect_value=_identity_safe(hint.get("effect_value")),
                     effect_object=eff_ep, effect_lookup_field=lookup_ep,
-                    # D-307: the cross-object flow fires only when the SUBJECT
-                    # create reaches its entry gate (the L7e live recon: a
-                    # padding-only create never provokes the Task) — the same
-                    # D-299 rail as above.
-                    trigger_fields=_ground_trigger_fields(
-                        hint.get("trigger_fields"), neighborhood,
-                        exclude_field=hint.get("effect_field")),
+                    trigger_fields=xo_triggers,
                     # D-307: the absence mirror (gated fail-closed above —
-                    # cross-object, no effect_field/effect_value).
-                    expected_absence=bool(hint.get("expected_absence"))))
+                    # cross-object, no effect_field/effect_value, strict bool).
+                    expected_absence=expected_absence))
             else:
                 field_ent = next(
                     (r.entity for r in neighborhood

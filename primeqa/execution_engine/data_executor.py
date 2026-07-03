@@ -578,7 +578,20 @@ def _run_positive(plan: DataRecipePlan, *, client, environment_id: int, s1=None,
         # — negative recipes never reach here with overrides (their premise must
         # stay intact). Empty/None → today's behavior exactly.
         if field_overrides and ordinal == len(creates) - 1:
-            if getattr(create, "expect_acceptance", False) or update is not None:
+            # D-307.1 (adversarial-review B1): the subordination also keys on
+            # the OBSERVE shape — staged fields disjoint from the read's
+            # captured fields means the create stages a TRIGGER gate while the
+            # assert observes something else, so a clobbered gate is
+            # self-CONCEALING (a padding-only create trivially greens an
+            # absence claim; reproduced wrong-green). A value-claim's staged
+            # field IS captured (intersection non-empty), so D-235's
+            # override-wins power there is untouched — and there a divergent
+            # override self-reveals as an honest red.
+            staged_bare = {k.split(".", 1)[-1] for k in create.field_values}
+            observe_shape = staged_bare.isdisjoint(
+                {f.split(".", 1)[-1] for f in read.fields_to_capture})
+            if (getattr(create, "expect_acceptance", False)
+                    or update is not None or observe_shape):
                 # D-305.1 (review S1): the staged claim STATE defines the
                 # claim — a dispatch-time override may steer padding but never
                 # overwrite a staged field (the D-300 subordination, mirrored).

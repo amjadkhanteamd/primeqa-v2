@@ -871,3 +871,50 @@ def test_absence_routes_through_negative_polarity_label(seeded):
     assert body.body_schema_version == 2
     assert r.emission.observation_realization.steps[2].predicate.predicate \
         == "not_exists"
+
+
+def test_absence_with_dropped_or_missing_gate_refuses(seeded):
+    # D-307.1 (review B2): drop-never-refuse INVERTS under absence — a
+    # padding-only create grades green against any gated automation. Both the
+    # dropped-gate and the never-proposed-gate cases fail closed.
+    base = dict(effect_object="Order_Log__c",
+                effect_lookup_field="Order_Log__c.Order__c",
+                expected_absence=True)
+    r_dropped = _run(seeded, _intent("automation-effect-claim", "positive",
+                                     "Order__c",
+                                     trigger_fields=[
+                                         {"field_name": "Order__c.Nope__c",
+                                          "value": "X"}], **base),
+                     expect_emit=False)
+    assert r_dropped.outcome.outcome_kind == OutcomeKind.REFUSAL
+    assert "padding-only" in r_dropped.outcome.refusals[0].payload["detail"]
+    r_missing = _run(seeded, _intent("automation-effect-claim", "positive",
+                                     "Order__c", **base),
+                     expect_emit=False)
+    assert r_missing.outcome.outcome_kind == OutcomeKind.REFUSAL
+
+
+def test_non_boolean_expected_absence_refuses(seeded):
+    # D-307.1 (review SF): the hint slot is un-schema'd — a string "false" is
+    # truthy; coercion either way silently inverts meaning. Fail closed.
+    r = _run(seeded, _intent("automation-effect-claim", "positive", "Order__c",
+                             effect_object="Order_Log__c",
+                             effect_lookup_field="Order_Log__c.Order__c",
+                             expected_absence="false",
+                             trigger_fields=[{"field_name": "Order__c.Stage__c",
+                                              "value": "Submitted"}]),
+             expect_emit=False)
+    assert r.outcome.outcome_kind == OutcomeKind.REFUSAL
+    assert "boolean" in r.outcome.refusals[0].payload["detail"]
+
+
+def test_expected_absence_on_wrong_kind_refuses(seeded):
+    # D-307.1 (review SF): ignored-flag = meaning inversion — a prohibition
+    # authored for an absence intent asserts the opposite thing.
+    r = _run(seeded, _intent("state-transition-claim", "positive", "Order__c",
+                             field_name="Order__c.Status__c",
+                             expected_value="Activated",
+                             expected_absence=True),
+             expect_emit=False)
+    assert r.outcome.outcome_kind == OutcomeKind.REFUSAL
+    assert "automation-effect" in r.outcome.refusals[0].payload["detail"]
