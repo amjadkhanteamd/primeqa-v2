@@ -3455,3 +3455,19 @@ class TestPhaseApprovalProcess:
             result = phase_approval_process(ctx, conn)
         mock_bm.assert_not_called()
         assert result.succeeded is True
+
+
+def test_every_entity_order_type_has_full_pipeline_registration() -> None:
+    # D-308 (live-found): the ApprovalProcess phase failed ON THE LIVE SYNC
+    # because the presentation adapter was missing — the phase unit tests
+    # mock batched_materialize, so per-type registries can drift silently.
+    # This pins the LOCKSTEP: every ENTITY_ORDER type must be registered in
+    # the normalizer, the presentation adapter, AND the semantic templater.
+    from primeqa.sync.fk_assertion import ENTITY_ORDER
+    from primeqa.semantic.normalization import _NORMALIZERS
+    from primeqa.sync.presentation import _PRESENTATION_FUNCTIONS
+    from primeqa.semantic.semantic_text import _TEMPLATERS
+    for et in ENTITY_ORDER:
+        assert et in _NORMALIZERS, f"{et} missing a normalizer"
+        assert et in _PRESENTATION_FUNCTIONS, f"{et} missing a presentation adapter"
+        assert et in _TEMPLATERS, f"{et} missing a semantic templater"

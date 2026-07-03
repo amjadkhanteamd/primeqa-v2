@@ -499,6 +499,20 @@ def _to_presentation_flow(normalized: dict[str, Any]) -> dict[str, Any]:
     }
 
 
+def _to_presentation_approval_process(
+    normalized: dict[str, Any],
+) -> dict[str, Any]:
+    """Map a normalized ApprovalProcess (a phase-decorated
+    ProcessDefinition row, D-308) to the semantic_text input shape:
+    {name, is_active, target_object, description}."""
+    return {
+        "name": normalized.get("_developer_name"),
+        "is_active": normalized.get("_is_active"),
+        "target_object": normalized.get("TableEnumOrId"),
+        "description": normalized.get("Description"),
+    }
+
+
 _PRESENTATION_FUNCTIONS: dict[str, Callable[[dict[str, Any]], dict[str, Any]]] = {
     "Object": _to_presentation_object,
     "PicklistValueSet": _to_presentation_picklist_value_set,
@@ -511,6 +525,7 @@ _PRESENTATION_FUNCTIONS: dict[str, Callable[[dict[str, Any]], dict[str, Any]]] =
     "PermissionSet": _to_presentation_permission_set,
     "User": _to_presentation_user,
     "Flow": _to_presentation_flow,
+    "ApprovalProcess": _to_presentation_approval_process,   # D-308
     # Other entity types added by their respective phase cycles per
     # PHASE_2_PLAN_corrections.md §7.
 }

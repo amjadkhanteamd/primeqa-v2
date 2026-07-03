@@ -295,6 +295,21 @@ def _to_text_flow(d: dict[str, Any]) -> str:
     )
 
 
+def _to_text_approval_process(d: dict[str, Any]) -> str:
+    """D-308: the approval-process definition in plain words."""
+    name = _str_or_default(d.get("name"), "(unnamed)")
+    is_active_word = _yes_no(d.get("is_active"))
+    target = _str_or_default(d.get("target_object"), "(unknown object)")
+    description = _str_or_default_clean(
+        d.get("description"), "no description provided")
+    return (
+        f"Salesforce Approval Process '{name}'. "
+        f"Active: {is_active_word}. "
+        f"Runs on: {target}. "
+        f"Description: {description}."
+    )
+
+
 # ----------------------------------------------------------------------
 # Dispatcher
 # ----------------------------------------------------------------------
@@ -311,6 +326,7 @@ _TEMPLATERS: dict[str, Any] = {
     "User":             _to_text_user,
     "ValidationRule":   _to_text_validation_rule,
     "Flow":             _to_text_flow,
+    "ApprovalProcess":  _to_text_approval_process,   # D-308
 }
 
 
