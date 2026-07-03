@@ -200,7 +200,8 @@ _NEEDS_SYNC_SQL = (
     "      EXISTS (SELECT 1 FROM sync_runs sr "
     "              WHERE sr.source_org_id = co.id "
     "                AND sr.status NOT IN ('success', 'partial_success') "
-    "                AND sr.last_completed_phase IS DISTINCT FROM 'Flow') "
+    "                AND sr.last_completed_phase IS DISTINCT FROM "
+    "                    :final_phase) "
     "      OR NOT EXISTS (SELECT 1 FROM sync_runs sr "
     "                     WHERE sr.source_org_id = co.id "
     "                       AND sr.started_at > NOW() - make_interval(hours => :hrs))) "
@@ -216,8 +217,10 @@ def _enqueue_for_tenant(tenant_id: int, *, resync_interval_hours: int) -> int:
     state finds nothing)."""
     store = SyncJobStore(tenant_id)
     with get_tenant_connection(tenant_id) as conn:
+        from primeqa.sync.fk_assertion import FINAL_PHASE
         rows = conn.execute(text(_NEEDS_SYNC_SQL),
-                            {"hrs": resync_interval_hours}).mappings().all()
+                            {"hrs": resync_interval_hours,
+                             "final_phase": FINAL_PHASE}).mappings().all()
     for r in rows:
         store.create_or_get_job(connected_org_id=r["id"],
                                 environment_id=r["environment_id"])

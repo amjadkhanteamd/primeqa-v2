@@ -994,3 +994,16 @@ def test_approval_boundary_values_hash_apart(seeded):
         r.emission.asserted_truth, r.emission.semantic_conditions)
     hashes = {h(gen(4999999, True)), h(gen(5000000, True)), h(gen(5000001, False))}
     assert len(hashes) == 3
+
+
+def test_approval_observing_calculated_field_refuses(seeded):
+    # D-308.1 (review B1): the D-304.1 coherence guard fires for EVERY
+    # non-formula primitive — an approval-bound claim observing a CALCULATED
+    # field would stay green off the formula engine with the approval dead.
+    r = _run(seeded, _intent("automation-effect-claim", "positive", "Order__c",
+                             automation_name="Order_High_Value",
+                             field_name="Order__c.Total_With_Tax__c",
+                             expected_value=110),
+             expect_emit=False)
+    assert r.outcome.outcome_kind == OutcomeKind.REFUSAL
+    assert "CALCULATED" in r.outcome.refusals[0].payload["detail"]

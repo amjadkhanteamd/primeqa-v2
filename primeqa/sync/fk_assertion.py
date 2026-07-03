@@ -68,6 +68,13 @@ ENTITY_ORDER: tuple[str, ...] = (
     "ApprovalProcess",
 )
 
+# D-308.1 (review B2): the structural-completion sentinel — every SQL literal
+# that asks "did the run finish all phases?" must read THIS, never a
+# hardcoded phase name (two 'Flow' literals survived the 11→12 bump and made
+# a death in the new final phase an unresumable ghost + spawned per-minute
+# no-op resume jobs during enrichment drains).
+FINAL_PHASE: str = ENTITY_ORDER[-1]
+
 
 # Optional explicit mapping from entity types to per-type tables, used
 # only if a future schema introduces per-type tables. Empty for the

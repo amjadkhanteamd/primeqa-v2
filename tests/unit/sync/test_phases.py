@@ -3471,3 +3471,50 @@ def test_every_entity_order_type_has_full_pipeline_registration() -> None:
         assert et in _NORMALIZERS, f"{et} missing a normalizer"
         assert et in _PRESENTATION_FUNCTIONS, f"{et} missing a presentation adapter"
         assert et in _TEMPLATERS, f"{et} missing a semantic templater"
+
+
+def test_approval_phase_reconciles_deletions() -> None:
+    # D-308.1 (review SF-1): a deleted approval must supersede — otherwise it
+    # keeps grounding claims (and green-washes absence claims) forever.
+    ctx = _stub_ctx_with_mock_sf()
+    ctx.sf_client.fetch_process_definitions.return_value = [
+        {"Id": "04a1", "DeveloperName": "Live_One", "State": "Active",
+         "TableEnumOrId": "Opportunity", "Type": "Approval"},
+    ]
+    conn = MagicMock()
+    with patch("primeqa.sync.phases.batched_materialize", return_value={}), \
+         patch("primeqa.sync.phases.materialize_edges_for_entities"), \
+         patch("primeqa.sync.phases.reconcile_deletions_by_sf_id") as mock_rec:
+        phase_approval_process(ctx, conn)
+    args = mock_rec.call_args
+    assert args.args[2] == "ApprovalProcess"
+    assert args.args[3] == {"04a1"}
+
+
+def test_approval_phase_reconciles_even_when_org_has_none() -> None:
+    # Deleting the LAST approval must still close the modeled row — the
+    # raise-on-error fetcher makes [] a REAL empty set, so the reconcile runs
+    # before the no-payloads early return.
+    ctx = _stub_ctx_with_mock_sf()
+    ctx.sf_client.fetch_process_definitions.return_value = []
+    conn = MagicMock()
+    with patch("primeqa.sync.phases.reconcile_deletions_by_sf_id") as mock_rec:
+        result = phase_approval_process(ctx, conn)
+    assert mock_rec.call_args.args[3] == set()
+    assert result.succeeded is True
+
+
+def test_needs_sync_and_carry_forward_use_the_final_phase_sentinel() -> None:
+    # D-308.1 (review B2): no SQL literal may hardcode the final phase — two
+    # 'Flow' literals survived the 11->12 bump and made a death in the new
+    # final phase an unresumable ghost + per-minute no-op resume churn.
+    from primeqa.sync.consumer import _NEEDS_SYNC_SQL
+    from primeqa.sync.fk_assertion import ENTITY_ORDER, FINAL_PHASE
+    assert FINAL_PHASE == ENTITY_ORDER[-1]
+    assert ":final_phase" in _NEEDS_SYNC_SQL
+    assert "'Flow'" not in _NEEDS_SYNC_SQL
+    import inspect
+    from primeqa.sync import jobs
+    src = inspect.getsource(jobs)
+    assert "IS DISTINCT FROM :final_phase" in src
+    assert "IS DISTINCT FROM 'Flow'" not in src

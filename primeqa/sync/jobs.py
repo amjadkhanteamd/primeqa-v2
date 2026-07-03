@@ -24,6 +24,7 @@ from typing import Optional
 from sqlalchemy import text
 
 from primeqa.semantic.connection import get_tenant_connection
+from primeqa.sync.fk_assertion import FINAL_PHASE
 
 # Read-back column list for s1_sync_jobs (one source of truth).
 _JOB_COLS = (
@@ -93,7 +94,7 @@ class SyncJobStore:
         **Resume carry-forward (D-152).** A newly-created job's
         ``last_sync_run_id`` is seeded from the org's most-recent *incomplete*
         ``sync_run`` — ``status NOT IN ('success','partial_success') AND
-        last_completed_phase IS DISTINCT FROM 'Flow'`` — so the consumer resumes a
+        last_completed_phase IS DISTINCT FROM FINAL_PHASE`` — so the consumer resumes a
         reaped/failed sync from ``last_completed_phase`` (the engine's
         ``run_sync(resume_sync_run_id=…)``) instead of re-syncing from phase 1.
         There is at most one such row per org (resume continues the same
@@ -110,10 +111,11 @@ class SyncJobStore:
                 "  SELECT sr.id FROM sync_runs sr "
                 "  WHERE sr.source_org_id = CAST(:oid AS uuid) "
                 "    AND sr.status NOT IN ('success', 'partial_success') "
-                "    AND sr.last_completed_phase IS DISTINCT FROM 'Flow' "
+                "    AND sr.last_completed_phase IS DISTINCT FROM :final_phase "
                 "  ORDER BY sr.started_at DESC LIMIT 1) "
                 f"ON CONFLICT (connected_org_id) WHERE {_ACTIVE} DO NOTHING"
-            ), {"oid": str(connected_org_id), "eid": environment_id, "cb": created_by})
+            ), {"oid": str(connected_org_id), "eid": environment_id,
+                "cb": created_by, "final_phase": FINAL_PHASE})
             row = conn.execute(text(
                 f"SELECT {_JOB_COLS} FROM s1_sync_jobs "
                 f"WHERE connected_org_id = CAST(:oid AS uuid) AND {_ACTIVE} "

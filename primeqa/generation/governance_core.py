@@ -1755,7 +1755,11 @@ class GovernanceCore:
                                     f"field_name {field_ent.sf_api_name!r} "
                                     f"must equal the calculated automation "
                                     f"{automation_name!r}")))
-                if primitive == "flow" and observed_is_calc:
+                # D-308.1 (review B1): the guard fires for EVERY non-formula
+                # primitive — "flow"-only let an approval-bound claim observe
+                # a calculated field and stay green off the formula engine
+                # (the identical deterministic wrong-green D-304.1 refused).
+                if primitive != "formula" and observed_is_calc:
                     if automation_name:
                         return IntentResolution(
                             grounded_candidates=[], next_action=NextAction.REFUSE,
@@ -1764,9 +1768,9 @@ class GovernanceCore:
                                 archetype, claim_kind,
                                 detail=(f"the observed field "
                                         f"{field_ent.sf_api_name!r} is "
-                                        f"CALCULATED — a Flow cannot stamp a "
-                                        f"formula field; name the field "
-                                        f"itself as the automation")))
+                                        f"CALCULATED — a {primitive} cannot "
+                                        f"stamp a formula field; name the "
+                                        f"field itself as the automation")))
                     primitive = "formula"
                     flow_ep = _Endpoint(
                         entity_id=field_ent.id,

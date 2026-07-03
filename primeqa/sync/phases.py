@@ -2106,6 +2106,24 @@ def phase_approval_process(ctx: SyncContext, conn: Any) -> PhaseResult:
         rec["_is_active"] = (d.get("State") == "Active")
         payloads.append(rec)
 
+    # D-308.1 (review SF-1): DELETION RECONCILE — the fetch is always the
+    # full current set (no delta param), so any modeled ApprovalProcess whose
+    # Id is absent was deleted in SF. Without this a deleted approval stays
+    # active forever and keeps grounding claims — including green-washing the
+    # very ABSENCE claims this lever ships. The truthiness gate keeps the
+    # fail-safe posture (a failed/empty fetch never mass-closes) — BUT this
+    # runs BEFORE the not-payloads early return, so deleting the org's LAST
+    # approval still closes it (guarded by definitions being non-empty…
+    # a genuinely-zero-approvals org yields definitions == [] which is
+    # indistinguishable from a failed fetch payload-wise; the raise-on-error
+    # fetcher makes [] a REAL empty set, so reconcile on the raw fetch list).
+    present_ids = {d.get("Id") for d in definitions
+                   if isinstance(d, dict) and d.get("Id")}
+    if definitions is not None:
+        reconcile_deletions_by_sf_id(
+            conn, ctx, "ApprovalProcess", present_ids, result,
+        )
+
     if not payloads:
         return result
 
