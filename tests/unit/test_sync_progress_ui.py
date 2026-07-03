@@ -16,12 +16,13 @@ from primeqa.sync.readiness import count_enrichment_progress
 
 # --- phase_order: the single source for the bar's 11 phases ------------------
 
-def test_phase_order_is_entity_order_11():
+def test_phase_order_is_entity_order_12():
     po = phase_order()
     assert po == ["Object", "PicklistValueSet", "PicklistValue", "Field",
                   "RecordType", "Layout", "ValidationRule", "Profile",
-                  "PermissionSet", "User", "Flow"]
-    assert len(po) == 11
+                  "PermissionSet", "User", "Flow",
+                  "ApprovalProcess"]                     # D-308
+    assert len(po) == 12
 
 
 # --- count_enrichment_progress shaping (the enrichment lane) ------------------
@@ -64,14 +65,15 @@ _EXPR = ("{% set _np=(sync_phases|length) or 11 %}"
 
 
 @pytest.mark.parametrize("lcp,expected", [
-    ("Object", "1/11"),
-    ("Field", "4/11"),
-    ("ValidationRule", "7/11"),
-    ("Flow", "11/11"),     # last structural phase -> Structure complete
-    (None, "0/11"),        # not started / no recorded phase
-    ("", "0/11"),
-    ("bogus_phase", "0/11"),  # unknown phase name -> 0 (never crashes/guesses)
+    ("Object", "1/12"),
+    ("Field", "4/12"),
+    ("ValidationRule", "7/12"),
+    ("Flow", "11/12"),
+    ("ApprovalProcess", "12/12"),  # D-308: the new final structural phase
+    (None, "0/12"),        # not started / no recorded phase
+    ("", "0/12"),
+    ("bogus_phase", "0/12"),  # unknown phase name -> 0 (never crashes/guesses)
 ])
-def test_n_of_11_from_last_completed_phase(lcp, expected):
+def test_n_of_12_from_last_completed_phase(lcp, expected):
     tmpl = Environment().from_string(_EXPR)
     assert tmpl.render(sync_phases=phase_order(), _lcp=lcp) == expected

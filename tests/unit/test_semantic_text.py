@@ -336,7 +336,7 @@ class TestDispatcher:
         assert "NotARealType" in str(exc_info.value)
 
     def test_known_types_count(self) -> None:
-        assert len(_TEMPLATERS) == 11
+        assert len(_TEMPLATERS) == 12                 # D-308: + ApprovalProcess
 
     @pytest.mark.parametrize("entity_type", ALL_TYPES)
     def test_dispatches_each_known_type(self, entity_type: str) -> None:
@@ -544,3 +544,12 @@ class TestDoublePeriodRegression:
         out = to_semantic_text("PermissionSet", d)
         assert "Description: Read-only access to all data." in out
         assert ".." not in out
+
+
+def test_approval_process_renders():
+    # D-308: the new templater renders deterministically.
+    out = to_semantic_text("ApprovalProcess", {
+        "name": "HL_High_Value_Loan", "is_active": True,
+        "target_object": "Opportunity", "description": None})
+    assert "Approval Process 'HL_High_Value_Loan'" in out
+    assert "Runs on: Opportunity" in out
