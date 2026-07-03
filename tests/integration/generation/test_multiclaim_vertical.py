@@ -108,6 +108,10 @@ def _account_prohibition():   # bare Object, no VR -> never grounds
     return intent(claim_kind="prohibition-claim", polarity="negative", sf_api_name="Account")
 
 
+def _ghost_prohibition():   # D-311: object absent from S1 -> Layer-A ref MISS
+    return intent(claim_kind="prohibition-claim", polarity="negative", sf_api_name="Ghost__c")
+
+
 # ---------------------------------------------------------------------------
 # Two grounded intents -> two claims, one outcome
 # ---------------------------------------------------------------------------
@@ -202,6 +206,33 @@ def test_zero_grounded_refuses(seeded):
     rows = _query()
     assert len(rows["claims"]) == 0
     assert len(rows["outcomes"]) == 1
+
+
+def test_missing_ref_intent_does_not_sink_grounded_peers(seeded):
+    """D-311: a multi-intent propose where ONE intent references an object absent
+    from S1 (a Layer-A ref MISS, not a semantic dismissal) must NOT lose its
+    groundable peers. Pre-D-311, check_refs_exist rejected the whole call for
+    correction and — after DEFAULT_MAX_CORRECTIONS — collapsed to
+    structural-validation-failure, losing all intents. Now Layer A proceeds
+    (>=1 intent resolves), the missing-ref intent flows to resolve_intent's
+    "post-check_refs_exist this is defensive" branch, and its two peers emit.
+
+    The single scripted propose turn is itself the proof of the new posture: pre
+    fix, the whole-call rejection would drive a correction retry and over-call the
+    (non-repeating) FakeToolTurn."""
+    r = _run_one_requirement(
+        seeded, multi_propose([_rel(), _lead_prohibition(), _ghost_prohibition()]))
+    o = r.outcome
+    assert o.outcome_kind == OutcomeKind.DRAFT
+    # the two groundable peers emit; the ghost intent authors nothing
+    assert len(o.claims_written) == 2
+    rows = _query()
+    assert {c["claim_kind"] for c in rows["claims"]} == {
+        "metadata-relationship-claim", "prohibition-claim"}
+    # the missing-ref intent is RECORDED (D-302), not silently swallowed — under
+    # its own re-indexed slot (intent 2 -> c2)
+    prs = o.attempted_interpretation.model_dump().get("partial_refusals") or []
+    assert any(p.get("path_id") == "c2" for p in prs), prs
 
 
 # ---------------------------------------------------------------------------

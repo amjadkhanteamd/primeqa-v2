@@ -826,17 +826,29 @@ class GovernanceCore:
         at = ctx.semantic_context.s1_version_seq
         if at is None:
             return RefCheck(ok=False, feedback="no s1_version_seq pinned in semantic_context")
-        # D-207: one propose call may carry N intents; every intent's refs must
-        # resolve (any miss is one operational correction — the model fixes the
-        # offending descriptor and retries the whole call).
+        # D-207 + D-311: one propose call may carry N intents. Layer A mirrors the
+        # semantic seam's per-intent posture (resolve_intent refuses ONLY at zero
+        # grounded, governance_core.py resolve_intent): reject the whole call for
+        # correction ONLY when EVERY intent's refs miss. When at least one intent's
+        # refs resolve, proceed — the missing-ref intents flow to resolve_intent,
+        # which grounds the valid ones and records each miss as a D-302
+        # partial_refusal via its "post-check_refs_exist this is defensive" branch.
+        # This preserves partial coverage (the base-prompt contract, prompts/base.md
+        # "partial coverage with honest dismissals beats forced breadth"): one
+        # unfixable ref no longer sinks a whole multi-intent batch into
+        # structural-validation-failure (the L7g journey regression, D-310). The
+        # all-miss case still rejects for correction, so a fixable typo on a
+        # single-intent-equivalent batch keeps its correction hop; declared-AC
+        # requirements get a further shot at a dropped intent via the D-247
+        # coverage re-prompt.
         per_intent = normalize_propose_input(intent_input)
         if len(per_intent) == 1:
             return self._check_refs_one(per_intent[0], at)
         failures = [(i, rc) for i, rc in
                     ((i, self._check_refs_one(pi, at)) for i, pi in enumerate(per_intent))
                     if not rc.ok]
-        if not failures:
-            return RefCheck(ok=True)
+        if len(failures) < len(per_intent):
+            return RefCheck(ok=True)   # >=1 intent's refs resolve -> proceed (partial coverage)
         missing = [m for _, rc in failures for m in rc.missing_refs]
         feedback = "; ".join(f"intent[{i}]: {rc.feedback}" for i, rc in failures)
         return RefCheck(ok=False, missing_refs=missing, feedback=feedback)
