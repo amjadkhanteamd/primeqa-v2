@@ -24,11 +24,11 @@ def test_frozen_content_hash_matches_recorded():
             f"{v}: frozen content drifted from its recorded hash")
 
 
-def test_current_resolves_to_v15():
-    # D-307: CURRENT bumped to v15 (the automation-absence contract). v1..v14
-    # stay frozen + pinned-resolvable (test_runtime_honors_pinned_prompt_version).
-    assert registry.CURRENT == "generation@v15"
-    assert registry.get() == registry.get("generation@v15")
+def test_current_resolves_to_v16():
+    # D-308: CURRENT bumped to v16 (the approval contract). v1..v15 stay
+    # frozen + pinned-resolvable (test_runtime_honors_pinned_prompt_version).
+    assert registry.CURRENT == "generation@v16"
+    assert registry.get() == registry.get("generation@v16")
     sys = registry.get()
     assert len(sys) > 1000                                  # substantive, not a stub
     # the substance the schemas don't enforce (D-103.3) is present
@@ -71,6 +71,9 @@ def test_current_resolves_to_v15():
     assert "acceptance-claim" in sys
     assert "acceptance_conditions" in sys
     assert "DISTINCT claims" in sys
+    # v16's approval contract (D-308)
+    assert "APPROVAL PROCESS is also an automation" in sys
+    assert "ProcessInstance" in sys and "TargetObjectId" in sys
     # v15's automation-absence contract (D-307)
     assert "expected_absence" in sys
     assert "asserts NO correlated" in sys or "assert NO correlated" in sys
