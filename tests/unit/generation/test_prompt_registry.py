@@ -24,13 +24,16 @@ def test_frozen_content_hash_matches_recorded():
             f"{v}: frozen content drifted from its recorded hash")
 
 
-def test_current_resolves_to_v16():
-    # D-308: CURRENT bumped to v16 (the approval contract). v1..v15 stay
+def test_current_resolves_to_v17():
+    # D-313: CURRENT bumped to v17 (intent_descriptors mandatory). v1..v16 stay
     # frozen + pinned-resolvable (test_runtime_honors_pinned_prompt_version).
-    assert registry.CURRENT == "generation@v16"
-    assert registry.get() == registry.get("generation@v16")
+    assert registry.CURRENT == "generation@v17"
+    assert registry.get() == registry.get("generation@v17")
     sys = registry.get()
     assert len(sys) > 1000                                  # substantive, not a stub
+    # v17's mandatory-intent_descriptors contract (D-313) — the fix directive
+    assert "IS the proposal" in sys
+    assert "never call this tool with just `acceptance_criteria`" in sys
     # the substance the schemas don't enforce (D-103.3) is present
     assert "bounded cognition provider" in sys
     assert "Transcribe admissibility" in sys

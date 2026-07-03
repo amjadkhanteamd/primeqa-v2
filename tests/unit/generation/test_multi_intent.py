@@ -67,6 +67,45 @@ def test_array_over_cap_rejected():
     assert str(MAX_INTENTS) in res.feedback
 
 
+# ---------------------------------------------------------------------------
+# D-313 — intent_descriptors is mandatory; the AC-only shape is rejected with a
+# skeleton echo; a large multi-AC array (req-302's 10 ACs) fits under the cap.
+# ---------------------------------------------------------------------------
+
+def test_acceptance_criteria_only_rejected_with_skeleton():
+    # The exact req-302 failure shape: acceptance_criteria present, no
+    # intent_descriptors. Rejected, and the feedback echoes the required skeleton
+    # so the model can self-correct within the correction budget.
+    res = validate_layer_a(TOOL_PROPOSE, {"acceptance_criteria": [
+        {"index": i, "label": f"AC{i}"} for i in range(1, 11)]})
+    assert not res.ok
+    assert "intent_descriptors is required" in res.feedback      # lead phrase kept
+    assert "acceptance_criteria alone is NOT a proposal" in res.feedback
+    assert "intent_descriptors: [" in res.feedback               # the skeleton
+
+
+def test_large_multi_ac_array_valid():
+    # D-313: MAX_INTENTS raised so a 10-AC requirement (req-302) proposes one
+    # intent per AC in a single call rather than being capped mid-coverage.
+    assert MAX_INTENTS >= 10
+    res = validate_layer_a(TOOL_PROPOSE, {
+        "intent_descriptors": [_item() for _ in range(10)]})
+    assert res.ok, res.errors
+
+
+def test_propose_schema_mandates_via_description_not_top_level_combinator():
+    # D-313: the Anthropic tool API rejects a top-level oneOf/allOf/anyOf in
+    # input_schema (verified HTTP 400), so the mandatory-intent_descriptors contract
+    # is carried by the tool DESCRIPTION, not the schema. Guard both: no top-level
+    # combinator, and the description states the contract.
+    from primeqa.generation.tools import PROPOSE_SEMANTIC_INTENT_SCHEMA as S
+    isch = S["input_schema"]
+    assert not (set(isch) & {"anyOf", "oneOf", "allOf"})   # API-incompatible at top level
+    desc = S["description"]
+    assert "intent_descriptors" in desc
+    assert "never call this tool with only `acceptance_criteria`" in desc
+
+
 def test_array_empty_rejected():
     res = validate_layer_a(TOOL_PROPOSE, {"intent_descriptors": []})
     assert not res.ok

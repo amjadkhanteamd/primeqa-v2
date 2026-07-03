@@ -28,7 +28,7 @@ _VERSIONS_DIR = _DIR / "versions"
 
 # The default version new generations use (replay pins its own version on the
 # request's operational_context.prompt_template_version, per D-071).
-CURRENT = "generation@v16"
+CURRENT = "generation@v17"
 
 # version id -> frozen composed artifact (filesystem-safe slug).
 _FILES = {
@@ -48,6 +48,7 @@ _FILES = {
     "generation@v14": _VERSIONS_DIR / "generation_v14.md",
     "generation@v15": _VERSIONS_DIR / "generation_v15.md",
     "generation@v16": _VERSIONS_DIR / "generation_v16.md",
+    "generation@v17": _VERSIONS_DIR / "generation_v17.md",
 }
 
 # Recorded SHA-256 of each frozen version's composed content (D-103.1 drift
@@ -110,6 +111,10 @@ RECORDED_HASHES = {
     # (automation_name + ProcessInstance/TargetObjectId; absence for the
     # no-approval cases; every boundary a distinct intent; name required).
     "generation@v16": "46cbd544f9dbe680ba28d00ed9088389bd4a030711ed49aeeb06038ce25ea9ab",
+    # v17 (D-313): intent_descriptors is mandatory — acceptance_criteria alone is
+    # NEVER a proposal; emit one intent per AC in the same call (fixes the req-302
+    # "propose with only acceptance_criteria" persistent-Layer-A decline).
+    "generation@v17": "4a2077ed46fea3110ee29d8d5d3001da7ed4ef98124f8e2deb3fde32656fe374",
 }
 
 # Working composition order — authors the NEXT frozen version (NOT runtime).

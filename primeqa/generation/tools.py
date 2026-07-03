@@ -87,7 +87,9 @@ _RATIONALE_KINDS = ["highest_specificity", "only_admissible", "other_substrate_a
 # D-207: the multi-intent envelope cap. One propose call carries every distinct
 # testable intent the requirement implies; the cap bounds token spend per turn
 # (mirrors v1's 3-6 TCs-per-requirement envelope, with headroom).
-MAX_INTENTS = 6
+MAX_INTENTS = 12   # D-313: raised 6->12 so a large multi-AC requirement (e.g. a
+#                    10-acceptance-criteria requirement) can propose one intent per
+#                    AC in a single call rather than being capped mid-coverage.
 
 
 # ---------------------------------------------------------------------------
@@ -139,18 +141,28 @@ _DESCRIPTOR_FIELD_PROPS = {
 PROPOSE_SEMANTIC_INTENT_SCHEMA = {
     "name": TOOL_PROPOSE,
     "description": (
-        "Propose every distinct testable intent the requirement implies "
-        "(intent_descriptors — preferred). The substrate derives candidates, "
-        "computes admissibility per intent, and replies with admissibly-"
-        "grounded candidates (or routes to refusal). You do not author "
-        "admissibility."
+        "Propose EVERY distinct testable intent the requirement implies, as the "
+        "REQUIRED `intent_descriptors` array (one entry per intent). This array is "
+        "the proposal — a call is INVALID without it. `acceptance_criteria` is a "
+        "supplementary declaration of the requirement's criteria, NOT a proposal on "
+        "its own: never call this tool with only `acceptance_criteria`. For an "
+        "AC-structured requirement, emit one `intent_descriptors` entry per "
+        "acceptance criterion (or a `no_admissible_test` intent) in the SAME call. "
+        "The substrate derives candidates, computes admissibility per intent, and "
+        "replies with admissibly-grounded candidates (or routes to refusal). You do "
+        "not author admissibility."
     ),
     "input_schema": {
         "type": "object",
         "additionalProperties": False,
-        # D-207: exactly one of the two forms — enforced at Layer A (JSON
-        # Schema oneOf is not expressible in the flat tool surface). The array
-        # form is preferred; the singular form remains for pinned-prompt replay.
+        # D-207: exactly one of the two forms — the EITHER/OR is enforced at Layer A
+        # (`_validate_propose`), NOT in the JSON schema. D-313 VERIFIED the Anthropic
+        # tool API rejects a top-level oneOf/allOf/anyOf in input_schema (HTTP 400
+        # "does not support oneOf, allOf, or anyOf at the top level"), so the
+        # mandatory-`intent_descriptors` contract lives in the tool `description` +
+        # the prompt (which the model reads), and Layer A rejects an
+        # acceptance_criteria-only call at runtime. The array form is required for
+        # live generation; the singular form remains for pinned-prompt replay.
         "required": [],
         "properties": {
             # D-247: the AC list the model identified in the requirement (the
@@ -411,9 +423,18 @@ def _validate_propose(inp: dict) -> LayerAResult:
             "provide either intent_descriptors (array) or the legacy "
             "intent_descriptor (single) — not both"])
     if not has_array and not has_single:
+        # D-313: echo the concrete required skeleton (not just "it's required") so a
+        # model that called with only acceptance_criteria can self-correct within the
+        # correction budget. Keep the "intent_descriptors is required" lead phrase.
         return LayerAResult(False, [
             "intent_descriptors is required: one entry per distinct testable "
-            "intent the requirement implies"])
+            "intent the requirement implies (acceptance_criteria alone is NOT a "
+            "proposal). Re-call with the array, one entry per intent, e.g.: "
+            "intent_descriptors: [{\"requirement_excerpt\": \"<verbatim span>\", "
+            "\"archetype_hint\": \"<archetype>\", \"target_subject_hint\": {...}, "
+            "\"polarity_hint\": \"<positive|negative>\"}]. For an AC-structured "
+            "requirement, emit one entry per acceptance criterion (or a "
+            "no_admissible_test intent)."])
 
     # D-247: the optional declared AC list (the coverage denominator). Type-only;
     # accumulated into `errors` so it surfaces alongside whichever form is used.

@@ -344,8 +344,9 @@ _REFUSAL_PLAIN = {
         "The org has no rule or configuration backing this — there is "
         "nothing real to test against.",
     "structural-validation-failure":
-        "The AI could not produce a valid proposal for this requirement "
-        "(often: it names objects or fields that do not exist in the org).",
+        "The AI could not produce a well-formed set of test proposals for this "
+        "requirement after repeated attempts — its proposal was structurally "
+        "incomplete, or referenced things not in the synced org model.",
     "low-generation-confidence":
         "The engine was not confident enough in any interpretation to "
         "commit to a test.",
