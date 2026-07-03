@@ -66,6 +66,50 @@ def test_genuine_count_empty():
     assert genuine_gap_count([]) == 0
 
 
+# --- the benign overlay (D-309: expected catalog gaps never degrade the run) --
+
+def test_build_gap_benign_overlay_recorded_category_stays_honest():
+    # the SVS catalog-gap surface: deterministic 500/UNKNOWN_EXCEPTION — the
+    # taxonomy honestly says 'transient' (status refinement); the site's benign
+    # overlay says "expected catalog gap, nothing dropped"
+    g = build_gap("fetch_standard_value_sets",
+                  _req(status=500, code="UNKNOWN_EXCEPTION"),
+                  context={"value_set": "APTCategoryEnum"},
+                  benign="catalog_label_unqueryable")
+    assert g["category"] == FailureCategory.TRANSIENT
+    assert g["sf_error_code"] == "UNKNOWN_EXCEPTION"
+    assert g["benign"] == "catalog_label_unqueryable"
+
+
+def test_build_gap_without_benign_has_no_key():
+    # the overlay is opt-in — un-marked gaps keep the pre-D-309 record shape
+    g = build_gap("fetch_users", _req(status=503))
+    assert "benign" not in g
+
+
+def test_genuine_count_excludes_benign_whatever_the_category():
+    gaps = [
+        {"category": FailureCategory.TRANSIENT,
+         "benign": "catalog_label_unqueryable"},   # recorded, never counted
+        {"category": FailureCategory.TRANSIENT},   # a real hiccup still counts
+        {"category": FailureCategory.PERMISSION},  # denials always count
+    ]
+    assert genuine_gap_count(gaps) == 2
+
+
+def test_genuine_count_benign_only_run_stays_success():
+    # env-59's shape: 85 benign catalog gaps and nothing else → genuine count 0
+    # → maybe_finalize_run keeps 'success'
+    gaps = [{"category": FailureCategory.TRANSIENT,
+             "benign": "catalog_label_unqueryable"}] * 85
+    assert genuine_gap_count(gaps) == 0
+
+
+def test_genuine_count_rows_without_benign_key_count_as_before():
+    # back-compat with pre-D-309 gap_details rows (no 'benign' key ever written)
+    assert genuine_gap_count([{"category": FailureCategory.TRANSIENT}]) == 1
+
+
 # --- record_metadata_gap on a real client (the per-site mechanism) -----------
 
 def _client():

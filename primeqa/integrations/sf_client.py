@@ -189,13 +189,16 @@ class SalesforceClient:
         # same pattern as describe_calls. Per-run by construction (fresh client).
         self.metadata_gaps: list[dict] = []
 
-    def record_metadata_gap(self, site, exc, *, context=None):
+    def record_metadata_gap(self, site, exc, *, context=None, benign=None):
         """Phase 2 Slice B: surface a swallowed metadata-fetch failure — classify
         it through the shared taxonomy and accumulate it (the caller keeps its
         resilience: still continue / empty-fallback, just no longer SILENT). The
-        dropped subject travels in ``context``."""
+        dropped subject travels in ``context``. ``benign`` (a reason slug) marks
+        a known expected-catalog-gap surface — recorded for visibility, excluded
+        from the genuine count (see ``failure_taxonomy.build_gap``)."""
         from primeqa.integrations.failure_taxonomy import build_gap
-        self.metadata_gaps.append(build_gap(site, exc, context=context))
+        self.metadata_gaps.append(
+            build_gap(site, exc, context=context, benign=benign))
 
     # --------------------------------------------------------------
     # Lifecycle
@@ -974,6 +977,15 @@ class SalesforceClient:
         # SFAuthError + SFRateLimitError remain uncaught — those
         # signal infrastructure/quota issues that should still
         # abort the iteration.
+        #
+        # D-309: a label's HTTP 500 gets ONE immediate same-label
+        # retry (500 is deliberately outside _request's transient
+        # retry set). Recovery → the rows are used, no gap. A
+        # twice-confirmed 500 with errorCode UNKNOWN_EXCEPTION is
+        # the documented unqueryable-catalog-label surface and is
+        # recorded as a BENIGN gap (visible in gap_details, never
+        # counted toward partial_success). Every other failure
+        # shape stays a genuine gap — fail-closed.
         """
         path = f"/services/data/{self.api_version}/tooling/query/"
         target_labels: tuple[str, ...] | tuple[str, ...]
@@ -1001,13 +1013,43 @@ class SalesforceClient:
                 # Catalog gap for this org (industry-cloud SVS not
                 # enabled, or sandbox-specific runtime hiccup).
                 # Informational — corrections-log §6 category 3.
+                #
+                # HTTP 500 is deliberately not in TRANSIENT_STATUS_CODES, so it
+                # raises on the first response. At THIS site a 500 is ambiguous:
+                # the documented catalog-gap surface (edition-gated label →
+                # deterministic 500, errorCode UNKNOWN_EXCEPTION — env-59 shows
+                # the same 85 labels every full fetch) vs a genuine one-off
+                # server hiccup on a label the org DOES support. One immediate
+                # same-label retry separates them: a hiccup recovers (rows, no
+                # gap); the catalog gap fails identically twice.
+                if getattr(e, "status_code", None) == 500:
+                    try:
+                        recs = self._query_all(path, soql)
+                    except SFRequestError as retry_exc:
+                        e = retry_exc  # classify the confirmed failure
+                    else:
+                        if recs:
+                            results.append(recs[0])
+                        continue
                 skipped.append((label, e.status_code))
-                # Phase 2 Slice B: surface the dropped value-set. AMBIGUOUS — a
-                # 404 (SVS feature not enabled) classifies 'unknown' (benign, not
-                # counted); a 403 classifies 'permission' (counted).
+                # Phase 2 Slice B: surface the dropped value-set. A 404 (SVS
+                # feature not enabled) classifies 'unknown' (benign, not
+                # counted); a 403 classifies 'permission' (counted). The
+                # twice-confirmed 500/UNKNOWN_EXCEPTION shape is the known
+                # unqueryable-catalog-label surface (D-309): recorded but
+                # marked benign so it never degrades the run to
+                # partial_success. Any other shape stays counted (fail-closed).
+                benign = (
+                    "catalog_label_unqueryable"
+                    if (getattr(e, "status_code", None) == 500
+                        and getattr(e, "error_code", None)
+                        == "UNKNOWN_EXCEPTION")
+                    else None
+                )
                 self.record_metadata_gap(
                     "fetch_standard_value_sets", e,
-                    context={"value_set": label})
+                    context={"value_set": label},
+                    benign=benign)
                 continue
             if recs:
                 results.append(recs[0])

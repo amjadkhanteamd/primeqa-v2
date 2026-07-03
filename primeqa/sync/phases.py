@@ -221,9 +221,16 @@ def phase_picklist_value_set(
     Wall-clock dominated by SVS fetch (~6 min for full 616-entry
     iteration at ~0.6s/call).
 
-    SVS iteration uses labels=None (full canonical catalog). A
-    future cycle may switch to a discovered-label subset once
-    Field phase exposes which SVSes are actually referenced.
+    SVS iteration uses labels=None (full canonical catalog) — and
+    must stay that way (D-309 evaluated and REJECTED a referenced-
+    names filter): no API exposes a standard field's SVS name
+    (corrections-log §22), so the Field phase discovers the linkage
+    by CONTENT-matching field value sets against the fetched SVS
+    metadata (D-118). The reference direction only exists AFTER the
+    fetch; pre-filtering the catalog to "referenced" names would
+    require the very information the fetch is there to discover.
+    Labels the org's edition cannot query fail per-label as benign
+    gaps inside fetch_standard_value_sets (never degrading the run).
 
     Per corrections-log §9, this phase also POPULATES
     ctx.svs_metadata_cache as a side effect of its SVS fetch. The

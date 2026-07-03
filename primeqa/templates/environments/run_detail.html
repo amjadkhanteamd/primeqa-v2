@@ -62,11 +62,16 @@
     </div>
     {% endif %}
 
-    {% if run.permission_gaps %}
+    {% if run.permission_gaps or run.gap_details %}
     <div>
       <div class="flex items-center gap-2 mb-2">
+        {% if run.permission_gaps %}
         <span class="inline-flex items-center px-2 py-0.5 rounded text-xs font-medium bg-amber-100 text-amber-800">&#9888; {{ run.permission_gaps }} permission gap{{ '' if run.permission_gaps == 1 else 's' }}</span>
         <span class="text-xs text-gray-500">Metadata the integration user could not read — grant it access and re-sync.</span>
+        {% else %}
+        <span class="inline-flex items-center px-2 py-0.5 rounded text-xs font-medium bg-gray-100 text-gray-600">{{ run.gap_details | length }} benign catalog gap{{ '' if (run.gap_details | length) == 1 else 's' }}</span>
+        <span class="text-xs text-gray-500">Catalog entries this org's edition does not support — expected, not counted against the run.</span>
+        {% endif %}
       </div>
       {% if run.gap_details %}
       <div class="overflow-x-auto">
@@ -85,7 +90,7 @@
             <td class="px-3 py-2 font-mono text-xs text-gray-700">{{ g.site }}</td>
             <td class="px-3 py-2">
               <span class="inline-flex items-center px-2 py-0.5 rounded text-xs font-medium
-                {% if g.category == 'permission' %}bg-red-100 text-red-800{% elif g.category == 'unknown' %}bg-gray-100 text-gray-600{% else %}bg-amber-100 text-amber-800{% endif %}">{{ g.category }}</span>
+                {% if g.benign %}bg-gray-100 text-gray-500{% elif g.category == 'permission' %}bg-red-100 text-red-800{% elif g.category == 'unknown' %}bg-gray-100 text-gray-600{% else %}bg-amber-100 text-amber-800{% endif %}"{% if g.benign %} title="{{ g.benign }}"{% endif %}>{{ g.category }}{% if g.benign %} &middot; benign{% endif %}</span>
             </td>
             <td class="px-3 py-2 font-mono text-xs text-gray-600">{{ g.sf_error_code or '—' }}</td>
             <td class="px-3 py-2 text-xs text-gray-600">

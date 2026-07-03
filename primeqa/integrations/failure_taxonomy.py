@@ -168,17 +168,30 @@ def _safe_error_code(exc: BaseException) -> Optional[str]:
 # log-and-continued, hiding a permission/FLS denial behind a warning. Each gap is
 # classified through the SAME taxonomy; the dropped subject travels in ``context``.
 
-def build_gap(site: str, exc: BaseException, *, context: Optional[dict] = None) -> dict:
+def build_gap(site: str, exc: BaseException, *, context: Optional[dict] = None,
+              benign: Optional[str] = None) -> dict:
     """Classify a swallowed metadata-fetch failure into a serializable gap record.
     ``site`` names the swallow location; ``context`` carries WHAT was dropped (e.g.
-    ``{"field_id": ...}`` / ``{"query": "PermissionSetGroupComponent"}``)."""
+    ``{"field_id": ...}`` / ``{"query": "PermissionSetGroupComponent"}``).
+
+    ``benign`` is a site-supplied overlay, NOT a category: a short reason slug
+    the recording site sets when it KNOWS this failure surface is an expected,
+    no-data-dropped catalog gap (e.g. a StandardValueSet catalog label the org's
+    edition cannot query — deterministic 500/UNKNOWN_EXCEPTION). The taxonomy
+    category stays whatever ``classify_failure`` honestly said about the error
+    surface; the overlay only carries the site's knowledge that nothing real was
+    lost. Benign gaps are recorded in ``gap_details`` for visibility but excluded
+    from :func:`genuine_gap_count` (they never drive ``partial_success``)."""
     category, sf_error_code = classify_failure(exc)
-    return {
+    gap = {
         "site": site,
         "category": category,
         "sf_error_code": sf_error_code,
         "context": context or {},
     }
+    if benign:
+        gap["benign"] = benign
+    return gap
 
 
 def genuine_gap_count(gaps) -> int:
@@ -186,7 +199,12 @@ def genuine_gap_count(gaps) -> int:
     expected catalog gap). A gap classified ``unknown`` — e.g. a 404 because an
     org legitimately lacks a feature (PSG not enabled) — is recorded for
     visibility but does NOT count, so it never false-positives the run to
-    ``partial_success``. A typed failure (``permission`` / ``transient`` /
-    ``rate_limit`` / ``normalization``) is genuine and counts."""
+    ``partial_success``. A gap the recording site marked ``benign`` (a known
+    expected-catalog-gap surface — see :func:`build_gap`) likewise does not
+    count, whatever its taxonomy category. Any other typed failure
+    (``permission`` / ``transient`` / ``rate_limit`` / ``normalization``) is
+    genuine and counts. Rows without a ``benign`` key (all pre-overlay history)
+    count exactly as before."""
     return sum(1 for g in gaps
-               if g.get("category") and g["category"] != FailureCategory.UNKNOWN)
+               if g.get("category") and g["category"] != FailureCategory.UNKNOWN
+               and not g.get("benign"))

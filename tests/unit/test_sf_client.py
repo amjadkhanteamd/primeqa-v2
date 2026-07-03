@@ -1646,6 +1646,119 @@ class TestFetchStandardValueSets:
         }
         c.close()
 
+    def test_fetch_standard_value_sets_500_retries_once_then_benign_gap(
+        self,
+    ) -> None:
+        """D-309: a twice-confirmed 500/UNKNOWN_EXCEPTION per-label failure
+        is the documented unqueryable-catalog-label surface — retried once,
+        then recorded as a BENIGN gap (visible, never genuine → the run
+        stays 'success')."""
+        from primeqa.integrations.failure_taxonomy import genuine_gap_count
+        calls = {"n": 0}
+
+        def handler(request: httpx.Request) -> httpx.Response:
+            if request.url.path == "/services/oauth2/token":
+                return _token_response()
+            calls["n"] += 1
+            # real SF error shape: a LIST of error objects
+            return httpx.Response(500, json=[{
+                "errorCode": "UNKNOWN_EXCEPTION",
+                "message": "An unexpected error occurred.",
+            }])
+
+        c = _make_client(httpx.MockTransport(handler))
+        result = c.fetch_standard_value_sets(labels=["APTCategoryEnum"])
+        assert result == []
+        assert calls["n"] == 2                      # first attempt + one retry
+        assert len(c.metadata_gaps) == 1            # visible in gap_details
+        g = c.metadata_gaps[0]
+        assert g["benign"] == "catalog_label_unqueryable"
+        assert g["category"] == "transient"         # the honest surface class
+        assert g["sf_error_code"] == "UNKNOWN_EXCEPTION"
+        assert g["context"] == {"value_set": "APTCategoryEnum"}
+        assert genuine_gap_count(c.metadata_gaps) == 0   # never partial_success
+        c.close()
+
+    def test_fetch_standard_value_sets_one_off_500_recovers_no_gap(
+        self,
+    ) -> None:
+        """D-309: a genuine transient 500 on a supported label recovers on
+        the immediate retry — the rows are used and NO gap is recorded."""
+        calls = {"n": 0}
+
+        def handler(request: httpx.Request) -> httpx.Response:
+            if request.url.path == "/services/oauth2/token":
+                return _token_response()
+            calls["n"] += 1
+            if calls["n"] == 1:
+                return httpx.Response(500, json=[{
+                    "errorCode": "UNKNOWN_EXCEPTION", "message": "hiccup",
+                }])
+            return httpx.Response(200, json={
+                "records": [{
+                    "Id": "0VS000000000001",
+                    "MasterLabel": "CaseStatus",
+                    "FullName": "CaseStatus",
+                    "Metadata": {"standardValue": []},
+                }],
+            })
+
+        c = _make_client(httpx.MockTransport(handler))
+        result = c.fetch_standard_value_sets(labels=["CaseStatus"])
+        assert calls["n"] == 2
+        assert len(result) == 1
+        assert result[0]["MasterLabel"] == "CaseStatus"
+        assert c.metadata_gaps == []                # recovered — nothing dropped
+        c.close()
+
+    def test_fetch_standard_value_sets_500_other_code_stays_genuine(
+        self,
+    ) -> None:
+        """Fail-closed: a twice-confirmed 500 whose errorCode is NOT the
+        documented UNKNOWN_EXCEPTION shape is recorded WITHOUT the benign
+        overlay — it still counts (partial_success)."""
+        from primeqa.integrations.failure_taxonomy import genuine_gap_count
+
+        def handler(request: httpx.Request) -> httpx.Response:
+            if request.url.path == "/services/oauth2/token":
+                return _token_response()
+            return httpx.Response(500, json=[{
+                "errorCode": "APEX_ERROR", "message": "boom",
+            }])
+
+        c = _make_client(httpx.MockTransport(handler))
+        c.fetch_standard_value_sets(labels=["AccountType"])
+        assert len(c.metadata_gaps) == 1
+        assert "benign" not in c.metadata_gaps[0]
+        assert genuine_gap_count(c.metadata_gaps) == 1
+        c.close()
+
+    def test_fetch_standard_value_sets_403_not_retried_stays_genuine(
+        self,
+    ) -> None:
+        """Only the ambiguous 500 gets the site-level retry; a 403 access
+        denial is deterministic — one attempt, a genuine permission gap."""
+        from primeqa.integrations.failure_taxonomy import genuine_gap_count
+        calls = {"n": 0}
+
+        def handler(request: httpx.Request) -> httpx.Response:
+            if request.url.path == "/services/oauth2/token":
+                return _token_response()
+            calls["n"] += 1
+            return httpx.Response(403, json=[{
+                "errorCode": "INSUFFICIENT_ACCESS", "message": "denied",
+            }])
+
+        c = _make_client(httpx.MockTransport(handler))
+        c.fetch_standard_value_sets(labels=["AccountType"])
+        assert calls["n"] == 1                      # no retry for a 403
+        assert len(c.metadata_gaps) == 1
+        g = c.metadata_gaps[0]
+        assert g["category"] == "permission"
+        assert "benign" not in g
+        assert genuine_gap_count(c.metadata_gaps) == 1
+        c.close()
+
     def test_fetch_standard_value_sets_auth_error_still_aborts(
         self,
     ) -> None:
