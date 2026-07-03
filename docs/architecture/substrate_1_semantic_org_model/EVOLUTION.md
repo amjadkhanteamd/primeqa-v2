@@ -164,3 +164,18 @@ Sync **reliability** hardened: a typed failure taxonomy (`failure_category` /
 previously-swallowed metadata-fetch gaps (`permission_gaps` / `gap_details` →
 `partial_success`). DECISIONS_LOG D-261 / D-262. (FLS/CF-1 detection CUT to an
 admin-Run-As onboarding rule, D-266.)
+
+## 2026-07-03 — D-309: the SVS catalog-gap surface goes benign (full fetches report `success` again)
+
+D-262's gap surfacing made a **pre-existing, deterministic** condition visible: every full
+fetch since the instrumentation landed (2026-06-24) finalized `partial_success` with 85
+gaps from `fetch_standard_value_sets` — the same 85 edition-gated StandardValueSet catalog
+labels 500ing (`UNKNOWN_EXCEPTION`) on every run, miscategorized `transient` by the status
+refinement. Fix: a site-supplied **`benign` overlay** on the gap record (category untouched
+— no new D-261 vocabulary), excluded from `genuine_gap_count`, still visible in
+`gap_details`; plus a **grounded gate** — one immediate same-label retry, so a genuine
+one-off 500 on a supported label recovers (rows used, no gap) instead of hiding under the
+benign mark, and benign pins fail-closed to the twice-confirmed 500/`UNKNOWN_EXCEPTION`
+shape only. The "filter the catalog to referenced names" alternative was REJECTED: the
+field→SVS reference direction only exists *after* the fetch (§22 / D-118 content-match).
+DECISIONS_LOG D-309.

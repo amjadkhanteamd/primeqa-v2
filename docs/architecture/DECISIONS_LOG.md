@@ -16537,3 +16537,70 @@ See D-299 (the trigger idiom this extends) · D-306.1 (the body-versioning + exp
 **Named deferrals:** flow-name-shadowing (an inactive Flow sharing an sf_api_name with an active approval binds first — the pre-existing inactive-flow-binding class; rare, needs the flows-side D-301 slice) · custom-object approvals (TableEnumOrId may carry the 01I id, not the api name → the edge skips via the §19 counter → honest refusal, a coverage gap not a wrong-green) · the D-306 update-observe × approval composition (the B1 guard covers the calc case; the rest is the honest-red class) · the `_grade_rejected_create` premise-break→failed tension for observe-shape staging creates (a D-115.2-deep decision of its own) · deprecate-then-regenerate dedup semantics vs deprecated rows (a coordinator §7.7 decision; did NOT bite here — verified) · S6 attribution is approval-blind (`flows_for_object` filters Flow) · the 85 SVS-catalog gaps (pre-existing, chipped separately).
 
 **Scorecard: 37 → 39/55** (TC-032/033 covered_correct live-PASSED right-reason; TC-034 stays with the submission-action arc, not counted). See D-308 (the design) · D-307.1 (the absence laws + machinery) · D-304.1 (the coherence guard this generalizes) · D-299/D-301 (the binding laws).
+
+## D-309 — the SVS catalog-gap surface is BENIGN, not transient: an overlay on the D-262 genuine-count (full fetches report `success` again) + a grounded retry gate
+
+**Context.** Every env-59 full fetch since 2026-06-24 finalized `partial_success`
+with `permission_gaps=85` — all from `fetch_standard_value_sets`, category
+`transient`, `sf_error_code=UNKNOWN_EXCEPTION`. DB history proves the condition
+is **pre-existing and deterministic, not a regression**: the failing label set is
+byte-identical across every full fetch 2026-06-24 → 2026-07-03 (85 edition-gated
+catalog names — APT*/AccPlan*/Assessment*/CardType/Finance*/Fulfillment*/…); the
+gaps "started" exactly when D-262 Slice B instrumented the swallow site
+(2026-06-24); the pg=0 runs memory recalls were pre-instrumentation full fetches
+(06-20) or the skip-gate run `d7794b08` (skipped=t — never fetched). Mechanism:
+HTTP 500 is deliberately outside `TRANSIENT_STATUS_CODES`, so each unqueryable
+label raises `SFRequestError` immediately; `classify_failure`'s status
+refinement (unknown + 5xx → `transient`) then counts it genuine, and
+`maybe_finalize_run` degrades the run. A **persistent, expected** SF-side
+catalog behavior (docstring-documented since the probe: ~32% of the 616-entry
+catalog 500s on orgs without industry clouds) was riding a category that means
+"retryable hiccup" — making every full fetch of a normal-edition org read as
+degraded forever, drowning the signal `partial_success` exists to carry.
+
+**Decision — REJECT the referenced-names catalog filter.** Pre-filtering the
+catalog to "SVS names referenced by synced fields" is architecturally impossible
+in this direction: no API exposes a standard field's SVS name (corrections-log
+§22 — the reason D-118 exists), so the Field phase discovers the linkage by
+CONTENT-matching field value sets against the *fetched* SVS metadata. The
+reference only exists AFTER the fetch; filtering before it would require the
+very information the fetch discovers. The full-catalog iteration also feeds the
+PVS entity universe ("every record is worth materializing"), which a filter
+would shrink into supersession churn. Docstrings corrected (`phases.py` no
+longer suggests the inverted-direction "future cycle").
+
+**Decision — a site-supplied `benign` OVERLAY on the gap record, not a new
+taxonomy category.** `build_gap(..., benign=<reason-slug>)` /
+`record_metadata_gap(..., benign=...)` add an opt-in `"benign"` key to the gap
+dict; `genuine_gap_count` excludes benign gaps whatever their category. The
+D-261 category vocabulary is untouched (no migration, no S4 ripple, `unknown`
+keeps its "unclassified, never load-bearing" meaning); the category still
+honestly records what the classifier saw (`transient`), while the overlay
+carries what only the SITE knows: this failure surface is the documented
+expected-catalog-gap shape and dropped nothing the org has. Benign gaps stay in
+`gap_details` (visible, queryable — the cross-run persistence check above used
+exactly that record) and render gray-badged "· benign" in the run drilldown;
+rows without the key (all pre-D-309 history) count exactly as before.
+
+**Decision — absence of data loss requires a grounded gate: one immediate
+same-label retry before benign.** A one-shot 500 is ambiguous between the
+deterministic catalog gap and a genuine hiccup on a label the org DOES support —
+marking the latter benign would silently drop that SVS's rows under a `success`
+banner (the wrong-green class). `fetch_standard_value_sets` now retries a 500'd
+label once, immediately: recovery → the rows are used, NO gap at all; a
+twice-confirmed failure classifies. Benign is then pinned **fail-closed** to the
+exact observed surface — status 500 AND `errorCode=UNKNOWN_EXCEPTION`
+(`"catalog_label_unqueryable"`). Everything else stays genuine: 403 →
+`permission` (counted, not retried — deterministic denial), exhausted
+502/503/504 → `transient` (counted), any other 500 code → counted. Worst-case
+wall-clock cost: one extra ~0.6s call per failing label (~51s on env-59's 85),
+bounded and full-fetch-only.
+
+**Verification.** Unit: 3548 green (full suite), incl. new pins — twice-500
+UNKNOWN_EXCEPTION → benign + not genuine + exactly 2 calls; 500-then-recover →
+rows used, zero gaps; 500 with another code → genuine; 403 → single attempt,
+`permission`, genuine; benign-only run → `genuine_gap_count=0` (finalizes
+`success`); keyless history rows count unchanged. Live proof pending: the next
+env-59 full fetch should finalize `success` with 85 benign rows visible in
+`gap_details`. See D-261 (taxonomy) · D-262 (gap surfacing) · D-118 (content
+match, the filter rejection's ground) · corrections-log §6/§22.
