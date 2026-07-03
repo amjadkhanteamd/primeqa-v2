@@ -918,3 +918,79 @@ def test_expected_absence_on_wrong_kind_refuses(seeded):
              expect_emit=False)
     assert r.outcome.outcome_kind == OutcomeKind.REFUSAL
     assert "automation-effect" in r.outcome.refusals[0].payload["detail"]
+
+
+# ---------------------------------------------------------------------------
+# D-308: approvals — a named ApprovalProcess binds on the TRIGGERS_ON rail,
+# feeding the D-307 presence/absence shapes (lever 7f)
+# ---------------------------------------------------------------------------
+
+def test_named_approval_process_binds_presence(seeded):
+    # TC-034's shape: above threshold -> a ProcessInstance correlates via
+    # TargetObjectId; the automation ref is the approval process itself.
+    r = _run(seeded, _intent("automation-effect-claim", "positive", "Order__c",
+                             excerpt="above the threshold, approval initiates",
+                             automation_name="Order_High_Value",
+                             effect_object="ProcessInstance",
+                             effect_lookup_field="ProcessInstance.TargetObjectId",
+                             trigger_fields=[{"field_name": "Order__c.Subtotal__c",
+                                              "value": 5000001}]))
+    assert r.outcome.outcome_kind == OutcomeKind.DRAFT
+    body = r.emission.asserted_truth
+    assert body.automation.external_id == "Order_High_Value"
+    assert body.automation_primitive == "approval_process"
+    steps = r.emission.observation_realization.steps
+    assert steps[0].field_values == {"Order__c.Subtotal__c": 5000001}
+    assert "WHERE TargetObjectId = '$create-record.id'" in steps[1].soql
+    assert steps[2].predicate.predicate == "exists"
+
+
+def test_named_approval_process_binds_absence(seeded):
+    # TC-032/033's shape: at/below threshold -> NO ProcessInstance.
+    r = _run(seeded, _intent("automation-effect-claim", "positive", "Order__c",
+                             excerpt="at the threshold, no approval is required",
+                             automation_name="Order_High_Value",
+                             effect_object="ProcessInstance",
+                             effect_lookup_field="ProcessInstance.TargetObjectId",
+                             expected_absence=True,
+                             trigger_fields=[{"field_name": "Order__c.Subtotal__c",
+                                              "value": 5000000}]))
+    assert r.outcome.outcome_kind == OutcomeKind.DRAFT
+    body = r.emission.asserted_truth
+    assert body.body_schema_version == 2
+    assert body.automation_primitive == "approval_process"
+    assert r.emission.observation_realization.steps[2].predicate.predicate \
+        == "not_exists"
+
+
+def test_inactive_approval_process_never_grounds(seeded):
+    # The D-301 law on the new rail: an inactive approval cannot fire.
+    r = _run(seeded, _intent("automation-effect-claim", "positive", "Order__c",
+                             automation_name="Order_Old_Approval",
+                             effect_object="ProcessInstance",
+                             effect_lookup_field="ProcessInstance.TargetObjectId",
+                             trigger_fields=[{"field_name": "Order__c.Subtotal__c",
+                                              "value": 5000001}]),
+             expect_emit=False)
+    assert r.outcome.outcome_kind == OutcomeKind.REFUSAL
+
+
+def test_approval_boundary_values_hash_apart(seeded):
+    # The threshold triple (49,99,999 / 50,00,000 / 50,00,001) must be three
+    # distinct claims — the staged gate rides the identity-bearing description.
+    from primeqa.test_representation.identity_hash import compute_identity_hash
+    def gen(value, absent):
+        kw = dict(automation_name="Order_High_Value",
+                  effect_object="ProcessInstance",
+                  effect_lookup_field="ProcessInstance.TargetObjectId",
+                  trigger_fields=[{"field_name": "Order__c.Subtotal__c",
+                                   "value": value}])
+        if absent:
+            kw["expected_absence"] = True
+        return _run(seeded, _intent("automation-effect-claim", "positive",
+                                    "Order__c", **kw))
+    h = lambda r: compute_identity_hash(
+        "data_behavior", "automation-effect-claim",
+        r.emission.asserted_truth, r.emission.semantic_conditions)
+    hashes = {h(gen(4999999, True)), h(gen(5000000, True)), h(gen(5000001, False))}
+    assert len(hashes) == 3

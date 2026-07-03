@@ -283,6 +283,20 @@ def seeded(db_setup) -> dict:
         # effect parent Order__c).
         log_flow = _entity(conn, "Flow", "Log_Effects", v1)
         _edge(conn, log_flow, order_log, "TRIGGERS_ON", "BEHAVIOR", v1)
+        # D-308: an ACTIVE approval process on Order__c (the same TRIGGERS_ON
+        # rail) + an INACTIVE one (the D-301 law: never grounds) + the
+        # ProcessInstance effect object with its TargetObjectId correlate.
+        approval = _entity(conn, "ApprovalProcess", "Order_High_Value", v1,
+                           attrs={"_is_active": True,
+                                  "TableEnumOrId": "Order__c"})
+        _edge(conn, approval, order, "TRIGGERS_ON", "BEHAVIOR", v1)
+        approval_old = _entity(conn, "ApprovalProcess", "Order_Old_Approval",
+                               v1, attrs={"_is_active": False,
+                                          "TableEnumOrId": "Order__c"})
+        _edge(conn, approval_old, order, "TRIGGERS_ON", "BEHAVIOR", v1)
+        proc_inst = _entity(conn, "Object", "ProcessInstance", v1)
+        pi_target = _entity(conn, "Field", "ProcessInstance.TargetObjectId", v1)
+        _edge(conn, pi_target, proc_inst, "BELONGS_TO", "STRUCTURAL", v1)
 
     return {"v1": int(v1), "account": account, "case": case, "invoice": invoice,
             "org": str(org_id), "env": TEST_ENV_ID}    # D-286

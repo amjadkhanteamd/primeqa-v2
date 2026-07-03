@@ -650,6 +650,17 @@ class AdmissibilityEngine:
             if automation_hint:
                 grounds = any(r.entity.sf_api_name == automation_hint for r in flows)
                 if not grounds:
+                    # D-308: a named APPROVAL PROCESS also grounds — it rides
+                    # the same TRIGGERS_ON rail (submission-triggered record
+                    # automation). ACTIVE only (the D-301 law: an inactive
+                    # automation cannot fire, so it must never ground).
+                    grounds = any(
+                        r.edge_type == EDGE_FLOW
+                        and r.entity.entity_type == "ApprovalProcess"
+                        and r.entity.sf_api_name == automation_hint
+                        and (r.entity.attributes or {}).get("_is_active")
+                        for r in neighborhood)
+                if not grounds:
                     grounds = any(
                         r.edge_type == EDGE_BELONGS
                         and r.entity.entity_type == "Field"
@@ -1462,6 +1473,21 @@ class GovernanceCore:
                 flow_ent = next(
                     (f for f in flows if f.sf_api_name == automation_name), None)
                 if flow_ent is None:
+                    # D-308: the named automation may be an APPROVAL PROCESS —
+                    # it rides the same TRIGGERS_ON rail. NAME-ONLY binding
+                    # (a first-encountered approval would be the D-299
+                    # wrong-automation class) and ACTIVE-only (the D-301 law).
+                    approval_ent = next(
+                        (r.entity for r in neighborhood
+                         if r.edge_type == EDGE_FLOW
+                         and r.entity.entity_type == "ApprovalProcess"
+                         and r.entity.sf_api_name == automation_name
+                         and (r.entity.attributes or {}).get("_is_active")),
+                        None)
+                    if approval_ent is not None:
+                        flow_ent = approval_ent
+                        primitive = "approval_process"
+                if flow_ent is None:
                     # D-304: the named automation may be a CALCULATED FIELD —
                     # the org's formula engine is the mechanism, verified by
                     # is_calculated on the BELONGS_TO field (the same character
@@ -1484,6 +1510,7 @@ class GovernanceCore:
                                     f"{automation_name!r} is neither a Flow "
                                     f"that TRIGGERS_ON the subject (found "
                                     f"{sorted(f.sf_api_name for f in flows)}) "
+                                    f"nor an active approval process on it "
                                     f"nor a calculated field on it")))
             else:
                 flow_ent = flows[0] if flows else None
@@ -1635,7 +1662,12 @@ class GovernanceCore:
                     # exclude is defense-in-depth.
                     trigger_fields=_ground_trigger_fields(
                         hint.get("trigger_fields"), neighborhood,
-                        exclude_field=hint.get("effect_field"))))
+                        exclude_field=hint.get("effect_field")),
+                    # D-308: the bound primitive (the same-record stash always
+                    # passed it; the cross-object/parent-stamp stashes relied
+                    # on the "flow" default — wrong the moment an approval
+                    # binds).
+                    automation_primitive=primitive))
             elif effect_object_api:
                 grounded_eff = self._ground_cross_object_effect(
                     hint, effect_object_api, at)
@@ -1679,6 +1711,7 @@ class GovernanceCore:
                     effect_value=_identity_safe(hint.get("effect_value")),
                     effect_object=eff_ep, effect_lookup_field=lookup_ep,
                     trigger_fields=xo_triggers,
+                    automation_primitive=primitive,     # D-308 (see above)
                     # D-307: the absence mirror (gated fail-closed above —
                     # cross-object, no effect_field/effect_value, strict bool).
                     expected_absence=expected_absence))
