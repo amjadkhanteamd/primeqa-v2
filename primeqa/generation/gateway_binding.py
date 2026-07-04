@@ -16,7 +16,12 @@ importable without the gateway present).
 """
 from __future__ import annotations
 
-DEFAULT_MAX_TOKENS = 2048
+# D-313.1: the propose turn on a large multi-AC requirement (e.g. req-302, 10 ACs)
+# needs ~4200 output tokens to emit acceptance_criteria + ~22 intent_descriptors; at
+# 2048 the model was TRUNCATED mid-proposal (acceptance_criteria only) and Layer A
+# refused it. This is a ceiling — normal-size requirements finish well under it. A
+# per-complexity budget is the deferred [[model-efficiency-relook]] design task.
+DEFAULT_MAX_TOKENS = 8192
 
 
 def build_tool_turn_fn(*, tenant_id: int, api_key: str, model: str, task: str,

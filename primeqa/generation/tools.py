@@ -87,9 +87,11 @@ _RATIONALE_KINDS = ["highest_specificity", "only_admissible", "other_substrate_a
 # D-207: the multi-intent envelope cap. One propose call carries every distinct
 # testable intent the requirement implies; the cap bounds token spend per turn
 # (mirrors v1's 3-6 TCs-per-requirement envelope, with headroom).
-MAX_INTENTS = 12   # D-313: raised 6->12 so a large multi-AC requirement (e.g. a
-#                    10-acceptance-criteria requirement) can propose one intent per
-#                    AC in a single call rather than being capped mid-coverage.
+MAX_INTENTS = 30   # D-313 raised 6->12; D-313.1 raised 12->30 — a large multi-AC
+#                    requirement decomposes into MORE than one intent per AC (req-302,
+#                    10 ACs, live-produced 22 intents: positive + negative + config per
+#                    AC). At 12 the 22-intent array was rejected; 30 covers it with
+#                    headroom (a cap, not a target — watch for over-decomposition).
 
 
 # ---------------------------------------------------------------------------

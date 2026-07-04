@@ -85,12 +85,20 @@ def test_acceptance_criteria_only_rejected_with_skeleton():
 
 
 def test_large_multi_ac_array_valid():
-    # D-313: MAX_INTENTS raised so a 10-AC requirement (req-302) proposes one
-    # intent per AC in a single call rather than being capped mid-coverage.
-    assert MAX_INTENTS >= 10
+    # D-313.1: a 10-AC requirement (req-302) live-decomposes into 22 intents
+    # (positive + negative + config per AC); MAX_INTENTS must accept that, else the
+    # token fix alone would just move the failure to "22 > cap, rejected".
+    assert MAX_INTENTS >= 22
     res = validate_layer_a(TOOL_PROPOSE, {
-        "intent_descriptors": [_item() for _ in range(10)]})
+        "intent_descriptors": [_item() for _ in range(22)]})
     assert res.ok, res.errors
+
+
+def test_generation_output_ceiling_fits_a_large_proposal():
+    # D-313.1: the propose turn's output ceiling must fit acceptance_criteria +
+    # ~22 intent_descriptors (~4200 tokens observed on req-302). 2048 truncated it.
+    from primeqa.generation.gateway_binding import DEFAULT_MAX_TOKENS
+    assert DEFAULT_MAX_TOKENS >= 8192
 
 
 def test_propose_schema_mandates_via_description_not_top_level_combinator():
