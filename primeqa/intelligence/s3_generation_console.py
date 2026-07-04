@@ -177,30 +177,38 @@ def read_latest_s3_job(tenant_id: int, requirement_key: str) -> dict:
         return {"available": False, "job": None}
 
 
-# --- read: the generation run's status + stats + LLM model/cost (D-315) -------
-# The "Run status" panel under the requirement's Test plan. Combines three
-# sources: the job (s3_generation_jobs — status/attempts/timing), the outcome
-# (generation_outcomes — how many tests it produced), and the LLM cost
-# (public.llm_usage_log). The cost is attributed by (tenant, task='generation',
-# ts within the job's [claimed_at, completed_at] window): the worker runs one
-# generation per tenant sequentially, so within a job's window the 'generation'
-# LLM calls are that job's. generation's gateway calls are NOT tagged with a
-# requirement_id (build_tool_turn_fn passes only task+model), so the time window
-# is the available attribution — precise enough for the single-worker queue, and
-# a re-run (D-314) resets claimed_at so the window tracks the LATEST run.
+# --- read: the generation-run HISTORY table (D-315 panel → D-316 table) -------
+# The "Generation history" table under the requirement's Test plan — ALL runs,
+# newest first, each with status + tests produced + LLM model/cost + any error.
+# The unit of a "run" is an ATTEMPT (s3_generation_job_attempts): one row per
+# actual generation (each re-run/retry mints a fresh attempt with its own
+# request_id), across every job for the requirement (a job per S1 version). Three
+# joined sources per attempt: the ATTEMPT (status/timing/error_code) + its JOB
+# (s1_version_seq, error_message), the OUTCOME (generation_outcomes by request_id
+# — draft = tests produced, refusal = the declined reason), and the LLM COST
+# (public.llm_usage_log). Cost is attributed by (tenant, task='generation', ts
+# within the attempt's [started_at, finished_at] window): the worker runs one
+# generation per tenant sequentially, so attempt windows never overlap and the
+# 'generation' calls in a window are that attempt's. generation's gateway calls
+# are NOT tagged with a requirement_id (build_tool_turn_fn passes only task+model),
+# so the per-attempt time window is the available attribution — precise for the
+# single-worker queue. public.llm_usage_log is reachable because the tenant conn's
+# search_path includes public.
 
 # == GENERATION_TASK in primeqa/generation/run.py (drift-guarded in tests). Kept
 # as a literal so the requirement page doesn't import the generation runtime.
 _GENERATION_TASK = "generation"
 
+_RUN_HISTORY_LIMIT = 50
 
-def _shape_run_status(job, outcome, llm, *, now) -> dict:
-    """Pure: assemble the run-status panel dict from a job row, the latest
-    outcome row (or None), and the aggregated LLM row (or None). ``now`` (a
-    tz-aware datetime) closes the duration for an in-flight run. Directly
-    unit-testable — no DB."""
-    started = job.get("claimed_at") or job.get("started_at")
-    finished = job.get("completed_at")
+
+def _shape_run_row(row, *, now) -> dict:
+    """Pure: one generation-run (attempt) → the history-table row dict. Merges the
+    attempt status with the outcome into a single ``status_label``/``status_tone``
+    and a ``detail`` (the refusal reason or the failure error). ``now`` (tz-aware)
+    closes the duration for an in-flight run. Directly unit-testable — no DB."""
+    started = row.get("started_at")
+    finished = row.get("finished_at")
     duration_s = None
     if started is not None:
         end = finished or now
@@ -208,84 +216,110 @@ def _shape_run_status(job, outcome, llm, *, now) -> dict:
             duration_s = max(0.0, (end - started).total_seconds())
         except Exception:                      # naive/aware mismatch — skip
             duration_s = None
+
+    run_status = row.get("attempt_status") or "running"
+    outcome_kind = row.get("outcome_kind")
+    claims = row.get("claims_written")
+    tests_written = len(claims) if isinstance(claims, list) else None
+
+    # One merged status: the run's outcome is more informative than 'completed'.
+    if run_status in ("queued", "claimed", "running"):
+        label, tone = "running", "indigo"
+    elif run_status == "failed":
+        label, tone = "failed", "red"
+    elif run_status == "cancelled":
+        label, tone = "cancelled", "gray"
+    elif outcome_kind == "refusal":
+        label, tone = "refused", "amber"
+    elif outcome_kind == "draft":
+        if tests_written:
+            label, tone = "generated", "green"
+        elif row.get("equivalent_existing"):
+            label, tone = "matched existing", "gray"
+        else:
+            label, tone = "no new tests", "gray"
+    else:                                      # completed, but no outcome row
+        label, tone = "completed", "gray"
+
+    detail = None
+    if outcome_kind == "refusal":
+        detail = refusal_plain(row.get("refusal_kind"), row.get("refusals"))
+    elif run_status in ("failed", "cancelled"):
+        detail = row.get("attempt_error_code") or row.get("job_error_message")
+
+    llm = None
+    if row.get("calls"):
+        llm = {
+            "models": [m for m in (row.get("models") or []) if m],
+            "cost_usd": float(row.get("cost_usd") or 0),
+            "input_tokens": int(row.get("in_tok") or 0),
+            "output_tokens": int(row.get("out_tok") or 0),
+        }
     return {
-        "present": True,
-        "status": job["status"],
-        "active": job["status"] in _ACTIVE,
-        "attempts": job.get("attempt_count") or 0,
-        "created_at": _iso(job.get("created_at")),
-        "started_at": _iso(started),
-        "finished_at": _iso(finished),
+        "when": _iso(started),
+        "finished": _iso(finished),
+        "s1_version_seq": row.get("s1_version_seq"),
+        "attempt_no": row.get("attempt_no"),
+        "run_status": run_status,
+        "outcome_kind": outcome_kind,
+        "status_label": label,
+        "status_tone": tone,
+        "tests_written": tests_written,
         "duration_s": duration_s,
-        "error_code": job.get("error_code"),
-        "error_message": job.get("error_message"),
-        "outcome_kind": (outcome or {}).get("outcome_kind"),
-        "tests_written": (outcome or {}).get("n_tests"),
         "llm": llm,
+        "detail": detail,
     }
 
 
-def _read_generation_run_status(conn, tenant_id, requirement_key, *, now) -> dict | None:
-    """Pure-ish: the latest S3 generation run's status + stats + LLM cost on an
-    open tenant conn. Returns None when the requirement was never generated (no
-    job). ``public.llm_usage_log`` is reachable because the tenant conn's
-    search_path includes public."""
-    job = conn.execute(text(
-        "SELECT id, status, attempt_count, created_at, claimed_at, started_at, "
-        "completed_at, error_code, error_message "
-        "FROM s3_generation_jobs WHERE requirement_key = :rk "
-        "ORDER BY created_at DESC LIMIT 1"),
-        {"rk": requirement_key}).mappings().first()
-    if job is None:
-        return None
-    outcome = conn.execute(text(
-        "SELECT outcome_kind::text AS outcome_kind, "
-        "  jsonb_array_length(COALESCE(claims_written, '[]'::jsonb)) AS n_tests "
-        "FROM generation_outcomes WHERE requirement_ref->>'key' = :rk "
-        "ORDER BY created_at DESC LIMIT 1"),
-        {"rk": requirement_key}).mappings().first()
-    llm = None
-    start = job["claimed_at"]
-    if start is not None:                      # never-claimed queued job = no run yet
-        row = conn.execute(text(
-            "SELECT array_agg(DISTINCT model) AS models, COUNT(*) AS calls, "
-            "  COALESCE(SUM(input_tokens), 0) AS in_tok, "
-            "  COALESCE(SUM(output_tokens), 0) AS out_tok, "
-            "  COALESCE(SUM(cost_usd), 0) AS cost_usd, "
-            "  MAX(prompt_version) AS prompt_version "
-            "FROM public.llm_usage_log "
-            "WHERE tenant_id = :tid AND task = :task "
-            "  AND ts >= :start AND ts <= COALESCE(:end, NOW())"),
-            {"tid": tenant_id, "task": _GENERATION_TASK,
-             "start": start, "end": job["completed_at"]}).mappings().first()
-        if row and row["calls"]:
-            llm = {
-                "models": [m for m in (row["models"] or []) if m],
-                "calls": int(row["calls"]),
-                "input_tokens": int(row["in_tok"] or 0),
-                "output_tokens": int(row["out_tok"] or 0),
-                "cost_usd": float(row["cost_usd"] or 0),
-                "prompt_version": row["prompt_version"],
-            }
-    return _shape_run_status(dict(job), dict(outcome) if outcome else None, llm, now=now)
+def _read_generation_runs(conn, tenant_id, requirement_key, *, now, limit) -> list:
+    """Pure-ish: every generation run (attempt) for a requirement, newest first,
+    on an open tenant conn. One query joins each attempt to its job, its outcome
+    (by request_id), and a per-attempt LLM cost aggregate (time-window LATERAL)."""
+    rows = conn.execute(text(
+        "SELECT a.attempt_no, a.status AS attempt_status, "
+        "       a.error_code AS attempt_error_code, a.started_at, a.finished_at, "
+        "       j.s1_version_seq, j.error_message AS job_error_message, "
+        "       o.outcome_kind::text AS outcome_kind, o.claims_written, "
+        "       o.refusal_kind::text AS refusal_kind, o.refusals, "
+        "       o.equivalent_existing, "
+        "       llm.models, llm.calls, llm.cost_usd, llm.in_tok, llm.out_tok "
+        "FROM s3_generation_job_attempts a "
+        "JOIN s3_generation_jobs j ON j.id = a.job_id "
+        "LEFT JOIN generation_outcomes o ON o.request_id = a.request_id "
+        "LEFT JOIN LATERAL ("
+        "  SELECT array_agg(DISTINCT u.model) AS models, COUNT(*) AS calls, "
+        "         COALESCE(SUM(u.cost_usd), 0) AS cost_usd, "
+        "         COALESCE(SUM(u.input_tokens), 0) AS in_tok, "
+        "         COALESCE(SUM(u.output_tokens), 0) AS out_tok "
+        "  FROM public.llm_usage_log u "
+        "  WHERE u.tenant_id = :tid AND u.task = :task "
+        "    AND u.ts >= a.started_at AND u.ts <= COALESCE(a.finished_at, NOW())"
+        ") llm ON true "
+        "WHERE j.requirement_key = :rk "
+        "ORDER BY a.started_at DESC LIMIT :limit"),
+        {"tid": tenant_id, "task": _GENERATION_TASK, "rk": requirement_key,
+         "limit": limit}).mappings().all()
+    return [_shape_run_row(dict(r), now=now) for r in rows]
 
 
-def read_generation_run_status(tenant_id: int, requirement_key: str) -> dict:
-    """Best-effort read of the requirement's latest generation-run status + LLM
-    model/cost (the Test-plan "Run status" panel, D-315). Never raises. Returns
-    ``{available, run}`` — ``run=None`` when never generated; ``available=False``
+def read_generation_runs(tenant_id: int, requirement_key: str) -> dict:
+    """Best-effort read of the requirement's generation-run history — ALL runs,
+    newest first, each with status + tests-produced + LLM model/cost + any error
+    (the Test-plan "Generation history" table, D-316). Never raises. Returns
+    ``{available, runs}`` — ``runs=[]`` when never generated; ``available=False``
     on any read error."""
     from datetime import datetime, timezone
     try:
         from primeqa.semantic.connection import get_tenant_connection
         with get_tenant_connection(tenant_id) as conn:
-            run = _read_generation_run_status(
-                conn, tenant_id, requirement_key, now=datetime.now(timezone.utc))
-        return {"available": True, "run": run}
+            runs = _read_generation_runs(
+                conn, tenant_id, requirement_key,
+                now=datetime.now(timezone.utc), limit=_RUN_HISTORY_LIMIT)
+        return {"available": True, "runs": runs}
     except Exception as exc:
-        log.warning("read_generation_run_status unavailable for tenant %s key %s: %s",
+        log.warning("read_generation_runs unavailable for tenant %s key %s: %s",
                     tenant_id, requirement_key, exc)
-        return {"available": False, "run": None}
+        return {"available": False, "runs": []}
 
 
 

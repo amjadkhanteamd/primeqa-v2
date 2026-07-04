@@ -2290,16 +2290,16 @@ def requirements_detail(req_id):
         from primeqa.intelligence.s3_enqueue import _requirement_to_ref
         from primeqa.intelligence.s3_generation_console import (
             read_requirement_claims, read_latest_s3_job,
-            read_latest_generation_note, read_generation_run_status)
+            read_latest_generation_note, read_generation_runs)
         req_key = _requirement_to_ref(req)["key"]
         s2 = read_requirement_claims(tid, req_key)
         s3_job = read_latest_s3_job(tid, req_key)
         # D-206: surface a dedup honestly — "Generate matched an existing test"
         # instead of looking like it silently did nothing.
         gen_note = read_latest_generation_note(tid, req_key)
-        # D-315: the "Run status" panel under the Test plan — the latest
-        # generation run's status + tests-produced + LLM model/cost.
-        gen_run = read_generation_run_status(tid, req_key)
+        # D-315/D-316: the "Generation history" table under the Test plan — ALL
+        # runs newest-first with status + tests-produced + LLM model/cost + error.
+        gen_runs = read_generation_runs(tid, req_key)
 
         envs = EnvironmentRepository(db).list_environments(
             tid, request.user["id"], request.user["role"])
@@ -2328,7 +2328,7 @@ def requirements_detail(req_id):
         return render_template("requirements/detail.html", **ctx(
             active_page="requirements", req=req_data,
             environments=envs_data, req_key=req_key,
-            s2_claims=s2, s3_job=s3_job, gen_note=gen_note, gen_run=gen_run,
+            s2_claims=s2, s3_job=s3_job, gen_note=gen_note, gen_runs=gen_runs,
         ))
     finally:
         db.close()
