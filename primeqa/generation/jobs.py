@@ -105,19 +105,57 @@ class GenerationJobStore:
         self, *, requirement_key: str, s1_version_seq: int,
         s1_version_name: Optional[str] = None, created_by: Optional[int] = None,
         requirement_text: Optional[str] = None, environment_id: Optional[int] = None,
+        force_rerun: bool = False,
     ) -> GenerationJob:
         """Return the existing job for ``(requirement_key, s1_version_seq)`` or
         create a fresh ``queued`` one. Idempotent: the same key always maps to
         the same job row (D-106.4 .B layer 1). ``requirement_text`` +
         ``environment_id`` are the enqueue-pinned fields (slice 4); they are
-        optional so slice-1/3 callers are unaffected."""
+        optional so slice-1/3 callers are unaffected.
+
+        ``force_rerun`` (D-314) completes the migration's documented "retry in
+        place via start_attempt" model with the missing re-queue TRIGGER. When
+        True and the existing job is TERMINAL (``completed``/``failed``/
+        ``cancelled``), the job is reset to ``queued`` (run fields cleared; the
+        requirement text/env/version-name refreshed to this trigger; ``created_by``
+        ownership + ``attempt_count`` KEPT — the former so re-running never
+        transfers cancel rights, the latter so :meth:`start_attempt` bumps the
+        retry lineage) so the consumer runs it again on the SAME row. When the job is ACTIVE (``queued``/``claimed``/
+        ``running``) the ``WHERE status IN (terminal)`` guard makes it a no-op —
+        a double-click during an in-flight run never disturbs it, and the SELECT
+        still returns the in-flight job. ``force_rerun=False`` is the unchanged
+        ``DO NOTHING`` idempotent enqueue (the auto/scheduled/repair paths).
+        Without a re-run trigger a terminal job at the current S1 version is a
+        dead end: the UI "Generate" resolves to it and nothing new runs."""
+        if force_rerun:
+            conflict_action = (
+                "ON CONFLICT (requirement_key, s1_version_seq) DO UPDATE SET "
+                "status = 'queued', "
+                "requirement_text = EXCLUDED.requirement_text, "
+                "s1_version_name = EXCLUDED.s1_version_name, "
+                "environment_id = EXCLUDED.environment_id, "
+                # created_by is NOT refreshed: it is the job's OWNER, and the
+                # cancel endpoint gates on it (creator-or-admin). Overwriting it
+                # to the re-triggering user would silently transfer cancel rights
+                # and strip the original creator's. Ownership stays with the first
+                # creator across re-runs (admins can always cancel).
+                "current_request_id = NULL, progress_pct = 0, progress_msg = NULL, "
+                "claimed_at = NULL, started_at = NULL, completed_at = NULL, "
+                "heartbeat_at = NULL, error_code = NULL, error_message = NULL, "
+                "updated_at = NOW() "
+                "WHERE s3_generation_jobs.status IN ('completed', 'failed', 'cancelled')"
+            )
+        else:
+            conflict_action = (
+                "ON CONFLICT (requirement_key, s1_version_seq) DO NOTHING"
+            )
         with get_tenant_connection(self._tenant_id) as conn:
             conn.execute(text(
                 "INSERT INTO s3_generation_jobs "
                 "(requirement_key, requirement_text, s1_version_seq, "
                 " s1_version_name, environment_id, created_by) "
                 "VALUES (:rk, :rt, :sv, :svn, :eid, :cb) "
-                "ON CONFLICT (requirement_key, s1_version_seq) DO NOTHING"
+                + conflict_action
             ), {"rk": requirement_key, "rt": requirement_text, "sv": s1_version_seq,
                 "svn": s1_version_name, "eid": environment_id, "cb": created_by})
             row = conn.execute(text(

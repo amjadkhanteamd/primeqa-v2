@@ -62,6 +62,113 @@ def test_unique_constraint_is_a_real_db_constraint(seeded):
 
 
 # ---------------------------------------------------------------------------
+# D-314 — force_rerun: the re-queue TRIGGER completing the migration's
+# documented "retry in place via start_attempt" model. An explicit UI/API
+# "Generate" click re-runs a TERMINAL job on the same row; an ACTIVE job is
+# never disturbed (double-click safe); force_rerun=False is unchanged.
+# ---------------------------------------------------------------------------
+
+def _terminal_completed(store, key, seq, *, env=71, txt="orig"):
+    """A completed job at (key, seq): create -> attempt -> complete. Leaves
+    attempt_count=1, current_request_id + completed_at set."""
+    jid = store.create_or_get_job(
+        requirement_key=key, s1_version_seq=seq, environment_id=env,
+        requirement_text=txt, created_by=1).id
+    store.start_attempt(jid)
+    store.complete(jid)
+    return jid
+
+
+def test_force_rerun_requeues_a_terminal_job_in_place(seeded):
+    store = _store()
+    key, seq = _key(), seeded["v1"]
+    jid = _terminal_completed(store, key, seq)
+    done = store.get_job(jid)
+    assert done.status == "completed" and done.attempt_count == 1
+    assert done.current_request_id is not None and done.completed_at is not None
+
+    re = store.create_or_get_job(requirement_key=key, s1_version_seq=seq,
+                                 force_rerun=True)
+    assert re.id == jid                              # same row (retry in place)
+    assert re.status == "queued"                     # re-queued for the consumer
+    assert re.current_request_id is None             # run fields cleared
+    assert re.completed_at is None
+    assert re.error_code is None and re.error_message is None
+    assert re.attempt_count == 1                     # lineage PRESERVED (not reset)
+    # the next attempt bumps the retry lineage from where it left off
+    a = store.start_attempt(jid)
+    assert a.attempt_no == 2
+
+
+def test_force_rerun_requeues_a_failed_job_and_clears_the_error(seeded):
+    store = _store()
+    key, seq = _key(), seeded["v1"]
+    store.create_or_get_job(requirement_key=key, s1_version_seq=seq)
+    jid = store.create_or_get_job(requirement_key=key, s1_version_seq=seq).id
+    store.start_attempt(jid)
+    store.fail(jid, error_code="llm_error", error_message="provider 503")
+    assert store.get_job(jid).status == "failed"
+
+    re = store.create_or_get_job(requirement_key=key, s1_version_seq=seq,
+                                 force_rerun=True)
+    assert re.id == jid and re.status == "queued"
+    assert re.error_code is None and re.error_message is None
+
+
+def test_force_rerun_false_leaves_a_terminal_job_untouched(seeded):
+    # The default (auto/scheduled/repair paths): a finished job stays finished.
+    store = _store()
+    key, seq = _key(), seeded["v1"]
+    jid = _terminal_completed(store, key, seq)
+    same = store.create_or_get_job(requirement_key=key, s1_version_seq=seq)  # default False
+    assert same.id == jid and same.status == "completed"     # DO NOTHING, unchanged
+    assert same.completed_at is not None
+
+
+def test_force_rerun_does_not_disturb_an_active_job(seeded):
+    # Double-click during an in-flight run: the WHERE status IN (terminal) guard
+    # makes the DO UPDATE a no-op; the running job + its attempt are untouched.
+    store = _store()
+    key, seq = _key(), seeded["v1"]
+    store.create_or_get_job(requirement_key=key, s1_version_seq=seq)
+    jid = store.create_or_get_job(requirement_key=key, s1_version_seq=seq).id
+    a = store.start_attempt(jid)                     # -> running
+    assert store.get_job(jid).status == "running"
+
+    re = store.create_or_get_job(requirement_key=key, s1_version_seq=seq,
+                                 force_rerun=True)
+    assert re.id == jid
+    assert re.status == "running"                    # NOT re-queued
+    assert re.current_request_id == a.request_id     # in-flight attempt intact
+    assert re.attempt_count == 1
+
+
+def test_force_rerun_creates_a_fresh_job_when_none_exists(seeded):
+    # force_rerun on a never-generated requirement is a plain create (no conflict).
+    store = _store()
+    key, seq = _key(), seeded["v1"]
+    j = store.create_or_get_job(requirement_key=key, s1_version_seq=seq,
+                                force_rerun=True)
+    assert j.status == "queued" and j.attempt_count == 0
+
+
+def test_force_rerun_refreshes_inputs_but_preserves_ownership(seeded):
+    # A re-run uses THIS trigger's env/text (the requirement may have been edited,
+    # or the user picked another env in the same org == same seq) — but created_by
+    # is the job's OWNER (the cancel endpoint gates on it), so it is NOT
+    # transferred to the re-triggering user (D-314 review fix #3).
+    store = _store()
+    key, seq = _key(), seeded["v1"]
+    _terminal_completed(store, key, seq, env=71, txt="stale text")  # created_by=1
+    re = store.create_or_get_job(
+        requirement_key=key, s1_version_seq=seq, environment_id=72,
+        requirement_text="fresh text", created_by=42, force_rerun=True)
+    assert re.environment_id == 72                    # input refreshed
+    assert re.requirement_text == "fresh text"        # input refreshed
+    assert re.created_by == 1                          # ownership PRESERVED, not 42
+
+
+# ---------------------------------------------------------------------------
 # Idempotency layer 2 — fresh request_id per attempt (B-job)
 # ---------------------------------------------------------------------------
 

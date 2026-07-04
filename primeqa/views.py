@@ -2290,13 +2290,16 @@ def requirements_detail(req_id):
         from primeqa.intelligence.s3_enqueue import _requirement_to_ref
         from primeqa.intelligence.s3_generation_console import (
             read_requirement_claims, read_latest_s3_job,
-            read_latest_generation_note)
+            read_latest_generation_note, read_generation_run_status)
         req_key = _requirement_to_ref(req)["key"]
         s2 = read_requirement_claims(tid, req_key)
         s3_job = read_latest_s3_job(tid, req_key)
         # D-206: surface a dedup honestly — "Generate matched an existing test"
         # instead of looking like it silently did nothing.
         gen_note = read_latest_generation_note(tid, req_key)
+        # D-315: the "Run status" panel under the Test plan — the latest
+        # generation run's status + tests-produced + LLM model/cost.
+        gen_run = read_generation_run_status(tid, req_key)
 
         envs = EnvironmentRepository(db).list_environments(
             tid, request.user["id"], request.user["role"])
@@ -2325,7 +2328,7 @@ def requirements_detail(req_id):
         return render_template("requirements/detail.html", **ctx(
             active_page="requirements", req=req_data,
             environments=envs_data, req_key=req_key,
-            s2_claims=s2, s3_job=s3_job, gen_note=gen_note,
+            s2_claims=s2, s3_job=s3_job, gen_note=gen_note, gen_run=gen_run,
         ))
     finally:
         db.close()
@@ -2354,13 +2357,24 @@ def requirements_generate_substrate(req_id):
             flash("Pick an environment you have access to.", "error")
             return redirect(f"/requirements/{req_id}")
         from primeqa.intelligence.s3_generation_console import trigger_s3_generation
+        # D-314: an explicit click re-runs a terminal job in place — else a
+        # finished job at the current S1 version dead-ends the "Generate" button.
         res = trigger_s3_generation(
             db, tenant_id=request.user["tenant_id"], requirement_id=req_id,
-            environment_id=environment_id, created_by=request.user["id"])
+            environment_id=environment_id, created_by=request.user["id"],
+            force_rerun=True)
     finally:
         db.close()
     if res.get("ok"):
-        flash("Generating the test plan — this runs in the background.", "success")
+        # D-314: if a run was already in flight (claimed/running), force_rerun is
+        # a no-op — say so honestly rather than falsely claiming a fresh run
+        # started (a terminal or newly-queued job returns 'queued' → the run did
+        # start). Changes to the requirement apply on the next generate.
+        if res.get("status") in ("claimed", "running"):
+            flash("A generation run is already in progress — it'll finish shortly. "
+                  "Regenerate again afterward to pick up any changes.", "info")
+        else:
+            flash("Generating the test plan — this runs in the background.", "success")
     else:
         flash(f"Could not start generation: {res.get('error', 'unknown error')}", "error")
     return redirect(f"/requirements/{req_id}")
@@ -3127,19 +3141,33 @@ def api_s3_generation_enqueue():
     try:
         from primeqa.core.repository import EnvironmentRepository
         from primeqa.intelligence.s3_enqueue import resolve_requirement
+        repo = EnvironmentRepository(db)
         ref = resolve_requirement(db, requirement_id, tenant_id)
         if ref is None:
             return ({"error": {"code": "NOT_FOUND", "message": "Requirement not found."}}, 404)
-        if EnvironmentRepository(db).get_environment(environment_id, tenant_id) is None:
+        if repo.get_environment(environment_id, tenant_id) is None:
             return ({"error": {"code": "NOT_FOUND", "message": "Environment not found."}}, 404)
+        # D-245 group-scope parity with the UI generate route + the S4 async API
+        # (api_s4_execution_enqueue): a Member may only target envs their Groups
+        # grant (admin/superadmin see all). Without this the S3 generate API was
+        # the outlier that validated only tenant-scope — and D-314's force_rerun
+        # makes an unscoped call re-run LLM generation repeatedly against an env
+        # outside the caller's scope. Fail closed.
+        if not repo.is_environment_accessible(
+                tenant_id, request.user["id"], request.user.get("role"), environment_id):
+            return ({"error": {"code": "FORBIDDEN",
+                               "message": "You don't have access to this environment."}}, 403)
     finally:
         db.close()
 
     from primeqa.generation.intake import enqueue_s3_generation
     try:
+        # D-314: an explicit API enqueue re-runs a terminal job in place (the UI
+        # + this endpoint are the two user-driven "Generate" triggers).
         job = enqueue_s3_generation(
             tenant_id=tenant_id, requirement_ref=ref,
-            environment_id=environment_id, created_by=request.user["id"])
+            environment_id=environment_id, created_by=request.user["id"],
+            force_rerun=True)
     except Exception as e:
         # e.g. no S1 version pinned yet (VersionNotFoundError) — nothing to
         # generate against. Fail-loud, not a 500.

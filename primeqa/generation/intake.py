@@ -92,7 +92,7 @@ def build_generation_request(
 
 def enqueue_s3_generation(
     *, tenant_id: int, requirement_ref: dict[str, Any], environment_id: int,
-    created_by: Optional[int] = None,
+    created_by: Optional[int] = None, force_rerun: bool = False,
 ) -> GenerationJob:
     """Pin a **resolved** requirement + the tenant's current S1 snapshot into a
     queued job (D-106.4 slice 4, substrate side). **Caller-fed** (option B): takes
@@ -100,7 +100,11 @@ def enqueue_s3_generation(
     and a route-validated ``environment_id`` — no v1 read here. Resolves the
     current ``s1_version`` (``MAX(version_seq)``; fail-loud if the tenant has no
     S1 version) and get-or-creates the job. Idempotent on
-    ``(requirement_key, s1_version_seq)``."""
+    ``(requirement_key, s1_version_seq)``.
+
+    ``force_rerun`` (D-314): an EXPLICIT user "Generate/Regenerate" click re-runs
+    a terminal job in place (the auto/scheduled/repair callers leave it False so
+    they stay idempotent). See :meth:`GenerationJobStore.create_or_get_job`."""
     seq, name = resolve_current_s1_version(tenant_id, environment_id)  # D-286: org-scoped pin
     return GenerationJobStore(tenant_id).create_or_get_job(
         requirement_key=requirement_ref["key"],
@@ -109,4 +113,5 @@ def enqueue_s3_generation(
         created_by=created_by,
         requirement_text=requirement_ref.get("text"),
         environment_id=environment_id,
+        force_rerun=force_rerun,
     )

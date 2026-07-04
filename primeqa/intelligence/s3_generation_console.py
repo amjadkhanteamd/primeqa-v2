@@ -48,11 +48,16 @@ def _iso(v):
 # --- trigger (v1 read + substrate enqueue) -----------------------------------
 
 def trigger_s3_generation(db, *, tenant_id: int, requirement_id: int,
-                          environment_id: int, created_by=None) -> dict:
+                          environment_id: int, created_by=None,
+                          force_rerun: bool = False) -> dict:
     """Resolve the v1 requirement + validate the env, then enqueue an S3 job. The
     worker runs it async. Best-effort — returns ``{ok: False, error: ...}`` on any
-    failure (never raises). Idempotent on ``(requirement_key, s1_version_seq)``: a
-    re-trigger against the same S1 version returns the existing job."""
+    failure (never raises).
+
+    ``force_rerun`` (D-314): the UI "Generate/Regenerate" button passes True so an
+    explicit click re-runs a terminal job in place (else a finished job at the
+    current S1 version is a dead end — the click resolves to it and nothing runs).
+    Default False keeps the plain idempotent enqueue for any non-UI caller."""
     try:
         from primeqa.core.repository import EnvironmentRepository
         from primeqa.intelligence.s3_enqueue import resolve_requirement
@@ -65,7 +70,8 @@ def trigger_s3_generation(db, *, tenant_id: int, requirement_id: int,
             return {"ok": False, "error": "Environment not found."}
         job = enqueue_s3_generation(
             tenant_id=tenant_id, requirement_ref=ref,
-            environment_id=environment_id, created_by=created_by)
+            environment_id=environment_id, created_by=created_by,
+            force_rerun=force_rerun)
         return {"ok": True, "job_id": job.id, "status": job.status,
                 "requirement_key": ref["key"]}
     except Exception as exc:                          # e.g. no S1 version pinned yet
@@ -169,6 +175,118 @@ def read_latest_s3_job(tenant_id: int, requirement_key: str) -> dict:
         log.warning("read_latest_s3_job unavailable for tenant %s key %s: %s",
                     tenant_id, requirement_key, exc)
         return {"available": False, "job": None}
+
+
+# --- read: the generation run's status + stats + LLM model/cost (D-315) -------
+# The "Run status" panel under the requirement's Test plan. Combines three
+# sources: the job (s3_generation_jobs — status/attempts/timing), the outcome
+# (generation_outcomes — how many tests it produced), and the LLM cost
+# (public.llm_usage_log). The cost is attributed by (tenant, task='generation',
+# ts within the job's [claimed_at, completed_at] window): the worker runs one
+# generation per tenant sequentially, so within a job's window the 'generation'
+# LLM calls are that job's. generation's gateway calls are NOT tagged with a
+# requirement_id (build_tool_turn_fn passes only task+model), so the time window
+# is the available attribution — precise enough for the single-worker queue, and
+# a re-run (D-314) resets claimed_at so the window tracks the LATEST run.
+
+# == GENERATION_TASK in primeqa/generation/run.py (drift-guarded in tests). Kept
+# as a literal so the requirement page doesn't import the generation runtime.
+_GENERATION_TASK = "generation"
+
+
+def _shape_run_status(job, outcome, llm, *, now) -> dict:
+    """Pure: assemble the run-status panel dict from a job row, the latest
+    outcome row (or None), and the aggregated LLM row (or None). ``now`` (a
+    tz-aware datetime) closes the duration for an in-flight run. Directly
+    unit-testable — no DB."""
+    started = job.get("claimed_at") or job.get("started_at")
+    finished = job.get("completed_at")
+    duration_s = None
+    if started is not None:
+        end = finished or now
+        try:
+            duration_s = max(0.0, (end - started).total_seconds())
+        except Exception:                      # naive/aware mismatch — skip
+            duration_s = None
+    return {
+        "present": True,
+        "status": job["status"],
+        "active": job["status"] in _ACTIVE,
+        "attempts": job.get("attempt_count") or 0,
+        "created_at": _iso(job.get("created_at")),
+        "started_at": _iso(started),
+        "finished_at": _iso(finished),
+        "duration_s": duration_s,
+        "error_code": job.get("error_code"),
+        "error_message": job.get("error_message"),
+        "outcome_kind": (outcome or {}).get("outcome_kind"),
+        "tests_written": (outcome or {}).get("n_tests"),
+        "llm": llm,
+    }
+
+
+def _read_generation_run_status(conn, tenant_id, requirement_key, *, now) -> dict | None:
+    """Pure-ish: the latest S3 generation run's status + stats + LLM cost on an
+    open tenant conn. Returns None when the requirement was never generated (no
+    job). ``public.llm_usage_log`` is reachable because the tenant conn's
+    search_path includes public."""
+    job = conn.execute(text(
+        "SELECT id, status, attempt_count, created_at, claimed_at, started_at, "
+        "completed_at, error_code, error_message "
+        "FROM s3_generation_jobs WHERE requirement_key = :rk "
+        "ORDER BY created_at DESC LIMIT 1"),
+        {"rk": requirement_key}).mappings().first()
+    if job is None:
+        return None
+    outcome = conn.execute(text(
+        "SELECT outcome_kind::text AS outcome_kind, "
+        "  jsonb_array_length(COALESCE(claims_written, '[]'::jsonb)) AS n_tests "
+        "FROM generation_outcomes WHERE requirement_ref->>'key' = :rk "
+        "ORDER BY created_at DESC LIMIT 1"),
+        {"rk": requirement_key}).mappings().first()
+    llm = None
+    start = job["claimed_at"]
+    if start is not None:                      # never-claimed queued job = no run yet
+        row = conn.execute(text(
+            "SELECT array_agg(DISTINCT model) AS models, COUNT(*) AS calls, "
+            "  COALESCE(SUM(input_tokens), 0) AS in_tok, "
+            "  COALESCE(SUM(output_tokens), 0) AS out_tok, "
+            "  COALESCE(SUM(cost_usd), 0) AS cost_usd, "
+            "  MAX(prompt_version) AS prompt_version "
+            "FROM public.llm_usage_log "
+            "WHERE tenant_id = :tid AND task = :task "
+            "  AND ts >= :start AND ts <= COALESCE(:end, NOW())"),
+            {"tid": tenant_id, "task": _GENERATION_TASK,
+             "start": start, "end": job["completed_at"]}).mappings().first()
+        if row and row["calls"]:
+            llm = {
+                "models": [m for m in (row["models"] or []) if m],
+                "calls": int(row["calls"]),
+                "input_tokens": int(row["in_tok"] or 0),
+                "output_tokens": int(row["out_tok"] or 0),
+                "cost_usd": float(row["cost_usd"] or 0),
+                "prompt_version": row["prompt_version"],
+            }
+    return _shape_run_status(dict(job), dict(outcome) if outcome else None, llm, now=now)
+
+
+def read_generation_run_status(tenant_id: int, requirement_key: str) -> dict:
+    """Best-effort read of the requirement's latest generation-run status + LLM
+    model/cost (the Test-plan "Run status" panel, D-315). Never raises. Returns
+    ``{available, run}`` — ``run=None`` when never generated; ``available=False``
+    on any read error."""
+    from datetime import datetime, timezone
+    try:
+        from primeqa.semantic.connection import get_tenant_connection
+        with get_tenant_connection(tenant_id) as conn:
+            run = _read_generation_run_status(
+                conn, tenant_id, requirement_key, now=datetime.now(timezone.utc))
+        return {"available": True, "run": run}
+    except Exception as exc:
+        log.warning("read_generation_run_status unavailable for tenant %s key %s: %s",
+                    tenant_id, requirement_key, exc)
+        return {"available": False, "run": None}
+
 
 
 # --- read: a single claim's semantic detail + its recipes (2b) ---------------

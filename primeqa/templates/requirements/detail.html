@@ -235,6 +235,69 @@
     </div>
     {% endif %}
   </div>
+
+  {# D-315: Run status — the latest generation run's status, what it produced,
+     and the LLM model/cost that produced it. Rendered only once a run exists
+     (the Test-plan card above already covers the never-generated state). #}
+  {% if gen_run and gen_run.available and gen_run.run %}
+  {% set r = gen_run.run %}
+  <div class="mt-6 bg-white shadow rounded-lg">
+    <div class="px-4 py-3 border-b flex items-center justify-between">
+      <h3 class="text-sm font-semibold text-gray-700">Run status
+        <span class="text-gray-400 font-normal text-xs">· last generation</span>
+      </h3>
+      <span class="inline-flex items-center px-2 py-0.5 rounded-full text-xs font-medium
+        {% if r.status == 'completed' %}bg-emerald-100 text-emerald-800
+        {% elif r.status == 'failed' %}bg-red-100 text-red-800
+        {% elif r.status == 'cancelled' %}bg-gray-100 text-gray-600
+        {% else %}bg-indigo-100 text-indigo-800{% endif %}"
+        title="The last S3 generation job for this requirement">{{ r.status }}</span>
+    </div>
+    <dl class="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-4 gap-px bg-gray-100">
+      <div class="bg-white px-4 py-3">
+        <dt class="text-xs text-gray-500">Tests produced</dt>
+        <dd class="mt-0.5 text-sm font-semibold text-gray-900">{{ r.tests_written if r.tests_written is not none else '—' }}</dd>
+      </div>
+      <div class="bg-white px-4 py-3">
+        <dt class="text-xs text-gray-500">Model</dt>
+        <dd class="mt-0.5 text-sm font-medium text-gray-900 break-words">{{ r.llm.models | join(', ') if (r.llm and r.llm.models) else '—' }}</dd>
+      </div>
+      <div class="bg-white px-4 py-3">
+        <dt class="text-xs text-gray-500">Cost</dt>
+        <dd class="mt-0.5 text-sm font-semibold text-gray-900">{% if r.llm %}${{ '%.4f'|format(r.llm.cost_usd) }}{% else %}—{% endif %}</dd>
+      </div>
+      <div class="bg-white px-4 py-3">
+        <dt class="text-xs text-gray-500">Tokens (in / out)</dt>
+        <dd class="mt-0.5 text-sm font-medium text-gray-900">{% if r.llm %}{{ r.llm.input_tokens }} / {{ r.llm.output_tokens }}{% else %}—{% endif %}</dd>
+      </div>
+      <div class="bg-white px-4 py-3">
+        <dt class="text-xs text-gray-500">LLM calls</dt>
+        <dd class="mt-0.5 text-sm font-medium text-gray-900">{{ r.llm.calls if r.llm else '—' }}</dd>
+      </div>
+      <div class="bg-white px-4 py-3">
+        <dt class="text-xs text-gray-500">Attempts</dt>
+        <dd class="mt-0.5 text-sm font-medium text-gray-900">{{ r.attempts }}</dd>
+      </div>
+      <div class="bg-white px-4 py-3">
+        <dt class="text-xs text-gray-500">Duration</dt>
+        <dd class="mt-0.5 text-sm font-medium text-gray-900">
+          {%- if r.duration_s is not none -%}
+            {%- if r.duration_s >= 60 %}{{ '%.1f'|format(r.duration_s / 60) }} min{% else %}{{ '%.0f'|format(r.duration_s) }} s{% endif -%}
+          {%- else -%}—{%- endif -%}
+        </dd>
+      </div>
+      <div class="bg-white px-4 py-3">
+        <dt class="text-xs text-gray-500">{{ 'Finished' if r.finished_at else 'Started' }}</dt>
+        <dd class="mt-0.5 text-sm font-medium text-gray-900"
+            title="{% if r.llm and r.llm.prompt_version %}Prompt {{ r.llm.prompt_version }}{% endif %}">
+          {{ ((r.finished_at or r.started_at) or '—')[:16] | replace('T', ' ') }}</dd>
+      </div>
+    </dl>
+    {% if r.status == 'failed' and r.error_message %}
+    <div class="px-4 py-3 border-t bg-red-50 text-xs text-red-700">{{ r.error_message }}</div>
+    {% endif %}
+  </div>
+  {% endif %}
 </div>
 
 {# S3 async generation progress polling. Active only when the page rendered with
