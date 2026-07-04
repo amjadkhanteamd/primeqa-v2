@@ -24,11 +24,30 @@ def test_frozen_content_hash_matches_recorded():
             f"{v}: frozen content drifted from its recorded hash")
 
 
-def test_current_resolves_to_v17():
-    # D-313: CURRENT bumped to v17 (intent_descriptors mandatory). v1..v16 stay
-    # frozen + pinned-resolvable (test_runtime_honors_pinned_prompt_version).
-    assert registry.CURRENT == "generation@v17"
-    assert registry.get() == registry.get("generation@v17")
+def test_working_source_composes_to_current():
+    # The working source (base.md + fragments) must compose to EXACTLY the frozen
+    # CURRENT version. This is the drift the frozen-hash guard CANNOT catch:
+    # content_hash() only catches edits to an already-frozen file, so a passage
+    # that silently drifts OUT of the working source — as the D-313 intent-mandatory
+    # directive once did (present in frozen v17, absent from working base.md) — would
+    # ship DROPPED at the next freeze. Asserting compose_working() == the CURRENT
+    # frozen artifact makes that drift fail loudly here, and enforces the freeze
+    # ritual (edit fragment + re-freeze are one change). D-318.
+    import hashlib
+    composed = registry.compose_working()
+    assert composed == registry.get(), (
+        "working source (base.md + fragments) no longer composes to the frozen "
+        "CURRENT — either re-freeze (author the next version) or the working source "
+        "has drifted from what shipped")
+    assert hashlib.sha256(composed.encode("utf-8")).hexdigest() == registry.recorded_hash()
+
+
+def test_current_resolves_to_v18():
+    # D-318: CURRENT bumped to v18 (automation_name optional for record-triggered
+    # effects — bind by effect; + the object subject-key doc). v1..v17 stay frozen
+    # + pinned-resolvable (test_runtime_honors_pinned_prompt_version).
+    assert registry.CURRENT == "generation@v18"
+    assert registry.get() == registry.get("generation@v18")
     sys = registry.get()
     assert len(sys) > 1000                                  # substantive, not a stub
     # v17's mandatory-intent_descriptors contract (D-313) — the fix directive
@@ -85,6 +104,14 @@ def test_current_resolves_to_v17():
     assert "update_conditions" in sys                       # the change-accepted hint
     assert "RE-computed" in sys or "re-computed" in sys
     assert "Never list the observed field" in sys           # k16, both phases
+    # v18's automation_name-optional / bind-by-effect contract (D-318)
+    assert "You do NOT need to name the internal Flow" in sys
+    assert "actually PRODUCES" in sys                        # bind by the produced effect
+    assert "ONLY to break a tie" in sys                      # name only disambiguates same-effect
+    assert "Approval processes MUST be named" in sys         # D-308 name requirement preserved
+    assert "FORMULA FIELD's" in sys                          # D-304 calc-field naming preserved
+    # v18's object subject-key doc (closes the D-317 prompt-doc follow-up)
+    assert "`target_subject_hint.object`" in sys
     # the honest-dismissals guard is preserved verbatim (not overturned)
     assert "honest" in sys and "forced breadth" in sys
 

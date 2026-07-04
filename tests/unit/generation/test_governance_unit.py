@@ -712,3 +712,56 @@ def test_identity_safe_floats_coerce_to_shortest_repr_strings():
     assert gc._identity_safe("Medium") == "Medium"
     assert gc._identity_safe(True) is True
     assert gc._identity_safe(None) is None
+
+
+# ---------------------------------------------------------------------------
+# D-318: _flows_producing_effect — bind by the effect a Flow verifiably produces.
+# ---------------------------------------------------------------------------
+
+def _flow_ent(*, updates=None, creates=None):
+    md = {}
+    if updates is not None:
+        md["recordUpdates"] = [
+            {"inputAssignments": [{"field": f, "value": v}]} for (f, v) in updates]
+    if creates is not None:
+        md["recordCreates"] = [{"object": o} for o in creates]
+    return SimpleNamespace(attributes={"Metadata": md})
+
+
+def test_flows_producing_effect_same_record_string():
+    f = _flow_ent(updates=[("Risk_Rating__c", {"stringValue": "High"})])
+    assert gc._flows_producing_effect([f], "Loan__c.Risk_Rating__c", "High", None) == [f]
+    # a value the Flow does not stamp does not match (honest miss, never fake-green)
+    assert gc._flows_producing_effect([f], "Loan__c.Risk_Rating__c", "Low", None) == []
+
+
+def test_flows_producing_effect_numeric_shape_tolerant():
+    # The Flow's Tooling JSON numberValue deserializes as float 750000.0; the LLM
+    # commonly emits the effect value as an int or a string. All three must bind
+    # (typed-tolerant, mirrors D-211) — the pre-fix exact-compare silently missed.
+    f = _flow_ent(updates=[("Credit_Limit__c", {"numberValue": 750000.0})])
+    for claim_val in (750000, "750000", 750000.0, "750000.0"):
+        assert gc._flows_producing_effect([f], "Loan__c.Credit_Limit__c",
+                                          claim_val, None) == [f], claim_val
+    # a genuinely different number still misses
+    assert gc._flows_producing_effect([f], "Loan__c.Credit_Limit__c", 750001, None) == []
+
+
+def test_flows_producing_effect_bool_guard_no_leak():
+    # a checkbox-stamping Flow: True must not equal the number 1 (Python leak guard)
+    f = _flow_ent(updates=[("Is_Approved__c", {"booleanValue": True})])
+    assert gc._flows_producing_effect([f], "x.Is_Approved__c", "true", None) == [f]
+    assert gc._flows_producing_effect([f], "x.Is_Approved__c", True, None) == [f]
+    assert gc._flows_producing_effect([f], "x.Is_Approved__c", 1, None) == []
+
+
+def test_flows_producing_effect_cross_object_and_none_hint_floor():
+    f = _flow_ent(creates=["Loan_Task__c"])
+    assert gc._flows_producing_effect([f], None, None, "Loan_Task__c") == [f]
+    # no field + no effect_object -> produces nothing (no spurious same-record match
+    # on a None-valued reference assignment)
+    ref = _flow_ent(updates=[("Owner__c", {"elementReference": "SomeVar"})])
+    assert gc._flows_producing_effect([ref], "x.Owner__c", None, None) == []
+    # Metadata-less entity produces nothing (name-trust / flows[0] fallback intact)
+    assert gc._flows_producing_effect(
+        [SimpleNamespace(attributes=None)], "x.Risk_Rating__c", "High", None) == []

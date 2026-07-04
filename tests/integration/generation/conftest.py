@@ -298,6 +298,39 @@ def seeded(db_setup) -> dict:
         pi_target = _entity(conn, "Field", "ProcessInstance.TargetObjectId", v1)
         _edge(conn, pi_target, proc_inst, "BELONGS_TO", "STRUCTURAL", v1)
 
+        # D-318: an ISOLATED Loan__c island (no existing test touches it) whose Flow
+        # carries real env-59-shaped Metadata — the bind-by-EFFECT fixture. The Flow
+        # HL_Auto_Risk_Rating stamps Risk_Rating__c=High/Medium/Low (recordUpdates)
+        # AND creates a Loan_Task__c (recordCreates); binding it by the LLM-named
+        # internal Flow name is impossible, so the resolver binds it by the effect
+        # its Metadata actually produces.
+        loan = _entity(conn, "Object", "Loan__c", v1)
+        loan_risk = _entity(conn, "Field", "Loan__c.Risk_Rating__c", v1)
+        _edge(conn, loan_risk, loan, "BELONGS_TO", "STRUCTURAL", v1)
+        loan_score = _entity(conn, "Field", "Loan__c.Credit_Score__c", v1)
+        _edge(conn, loan_score, loan, "BELONGS_TO", "STRUCTURAL", v1)
+        loan_flow = _entity(conn, "Flow", "HL_Auto_Risk_Rating", v1, attrs={"Metadata": {
+            "recordUpdates": [
+                {"name": "Set_High", "inputAssignments": [
+                    {"field": "Risk_Rating__c", "value": {"stringValue": "High"}}]},
+                {"name": "Set_Medium", "inputAssignments": [
+                    {"field": "Risk_Rating__c", "value": {"stringValue": "Medium"}}]},
+                {"name": "Set_Low", "inputAssignments": [
+                    {"field": "Risk_Rating__c", "value": {"stringValue": "Low"}}]}],
+            "recordCreates": [{"name": "Create_Review_Task", "object": "Loan_Task__c"}]}})
+        _edge(conn, loan_flow, loan, "TRIGGERS_ON", "BEHAVIOR", v1)
+        loan_task = _entity(conn, "Object", "Loan_Task__c", v1)
+        loan_task_lookup = _entity(conn, "Field", "Loan_Task__c.Loan__c", v1)
+        _edge(conn, loan_task_lookup, loan_task, "BELONGS_TO", "STRUCTURAL", v1)
+        # D-318: a SECOND Flow that ALSO stamps Risk_Rating__c=Medium (only) — the
+        # ambiguity fixture: two Flows produce the same effect -> the effect no
+        # longer disambiguates, so the resolver must refuse-or-name. High/Low stay
+        # single-producer (HL_Auto_Risk_Rating only), Medium is ambiguous.
+        loan_flow2 = _entity(conn, "Flow", "HL_Risk_Override", v1, attrs={"Metadata": {
+            "recordUpdates": [{"name": "Force_Medium", "inputAssignments": [
+                {"field": "Risk_Rating__c", "value": {"stringValue": "Medium"}}]}]}})
+        _edge(conn, loan_flow2, loan, "TRIGGERS_ON", "BEHAVIOR", v1)
+
     return {"v1": int(v1), "account": account, "case": case, "invoice": invoice,
             "org": str(org_id), "env": TEST_ENV_ID}    # D-286
 

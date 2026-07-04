@@ -67,7 +67,7 @@ from primeqa.generation.protocol import (
 from primeqa.semantic.edges import TIER_1_EDGES
 from primeqa.generation.verified_negative import _writable
 from primeqa.semantic.entity_attributes import (
-    field_is_calculated, vr_error_message, vr_formula_text, vr_is_active)
+    field_is_calculated, flow_effects, vr_error_message, vr_formula_text, vr_is_active)
 from primeqa.semantic.formula import Comparison, FieldRef, is_parsed, parse, walk
 from primeqa.semantic.query import Entity, SemanticOrgModel
 
@@ -555,6 +555,58 @@ class LayerBFilter:
         return None
 
 
+def _effect_values_equal(flow_val, claim_val) -> bool:
+    """D-318: typed-tolerant equality between a Flow assignment's literal scalar
+    (parsed from Tooling Metadata JSON — Number → int/float, Checkbox → bool) and the
+    claim's ``expected_value`` (carried VERBATIM from the LLM — usually a string).
+    Exact-equality alone misses genuine numeric producers (Flow ``numberValue`` 110.0
+    vs an LLM ``expected_value`` of int 110 or str "110"). Mirrors the S4 read-back
+    comparator (``data_executor._values_equal``, D-211) so "binds the effect" and
+    "grades the effect" agree; kept LOCAL to respect the S3/S4 substrate boundary.
+    Bool-guarded (Python ``True == 1`` must not leak); numbers compare numerically
+    when both sides parse; strings stay strict (an effect value is never case-folded)."""
+    if isinstance(flow_val, bool) or isinstance(claim_val, bool):
+        if isinstance(flow_val, bool) and isinstance(claim_val, bool):
+            return flow_val is claim_val
+        if isinstance(flow_val, bool) and isinstance(claim_val, str):
+            return claim_val.strip().lower() == str(flow_val).lower()
+        if isinstance(claim_val, bool) and isinstance(flow_val, str):
+            return flow_val.strip().lower() == str(claim_val).lower()
+        return False
+    if flow_val == claim_val:
+        return True
+    try:
+        return float(flow_val) == float(claim_val)
+    except (TypeError, ValueError):
+        return False
+
+
+def _flows_producing_effect(flow_entities, field_hint, expected_value, effect_object):
+    """D-318: the subset of neighborhood Flow entities whose parsed Metadata effect
+    (``flow_effects``) ACTUALLY produces the claim's declared effect — same-record
+    (bare ``field_name`` + ``expected_value`` among the Flow's ``recordUpdates``
+    assignments) or cross-object (``effect_object`` among the Flow's
+    ``recordCreates``). This is how the automation-effect resolver binds the Flow
+    when the LLM cannot know the org's internal Flow API name — it finds the Flow
+    that verifiably produces the effect. Value equality is typed-tolerant
+    (``_effect_values_equal``) so a numeric effect binds despite int/float/str shape
+    drift between the LLM hint and the Tooling JSON. A Flow with empty/unparseable
+    Metadata produces nothing, so the name-trust / ``flows[0]`` fallbacks keep today's
+    behavior for pre-D-318 (Metadata-less) sync rows and the name-only fixtures."""
+    bare = (field_hint.rsplit(".", 1)[-1]
+            if isinstance(field_hint, str) and field_hint else None)
+    out = []
+    for ent in flow_entities:
+        eff = flow_effects(getattr(ent, "attributes", None))
+        same = bare is not None and expected_value is not None and any(
+            fld == bare and _effect_values_equal(val, expected_value)
+            for (fld, val) in eff["same_record"])
+        cross = bool(effect_object) and effect_object in eff["cross_object"]
+        if same or cross:
+            out.append(ent)
+    return out
+
+
 # ---------------------------------------------------------------------------
 # Admissibility engine (D-096.1 / D-078) — substrate-authored
 # ---------------------------------------------------------------------------
@@ -579,7 +631,9 @@ class AdmissibilityEngine:
     def evaluate(self, *, archetype: str, claim_kind: str, polarity_hint: str,
                  subject: Entity, neighborhood: list, excerpt: str,
                  path_id: str = "c0", field_hint: Optional[str] = None,
-                 automation_hint: Optional[str] = None) -> _Candidate:
+                 automation_hint: Optional[str] = None,
+                 effect_value_hint=None,
+                 effect_object_hint: Optional[str] = None) -> _Candidate:
         """Derive the requirement-anchored candidate and determine Layer-1
         admissibility. Substrate-authored; returns a single _Candidate."""
         cand = _Candidate(
@@ -602,7 +656,8 @@ class AdmissibilityEngine:
         if self.is_negative(claim_kind, polarity_hint):
             return self._evaluate_negative(cand, claim_kind, neighborhood)
         return self._evaluate_positive(cand, claim_kind, neighborhood, field_hint,
-                                       automation_hint)
+                                       automation_hint, effect_value_hint,
+                                       effect_object_hint)
 
     def _evaluate_negative(self, cand: _Candidate, claim_kind: str, neighborhood: list) -> _Candidate:
         dim = _NEGATIVE_LAYER1_DIM.get(claim_kind)
@@ -622,7 +677,9 @@ class AdmissibilityEngine:
 
     def _evaluate_positive(self, cand: _Candidate, claim_kind: str, neighborhood: list,
                            field_hint: Optional[str] = None,
-                           automation_hint: Optional[str] = None) -> _Candidate:
+                           automation_hint: Optional[str] = None,
+                           effect_value_hint=None,
+                           effect_object_hint: Optional[str] = None) -> _Candidate:
         # Positive grounding needs supporting structure (a Field BELONGS_TO the
         # subject Object). A **value-claim** asserts ``field == V``, so it grounds
         # only when the *named* field exists (verify-at-grounding, D-115.3): an
@@ -667,6 +724,14 @@ class AdmissibilityEngine:
                         and r.entity.sf_api_name == automation_hint
                         and field_is_calculated(r.entity.attributes)
                         for r in neighborhood)
+                if not grounds:
+                    # D-318: the LLM cannot know the org's internal Flow name — admit
+                    # when a Flow TRIGGERS_ON the subject actually PRODUCES the claimed
+                    # effect (its Metadata writes field=value or creates effect_object).
+                    # The binding block then binds THAT Flow by its effect.
+                    grounds = bool(_flows_producing_effect(
+                        [r.entity for r in flows], field_hint,
+                        effect_value_hint, effect_object_hint))
             else:
                 grounds = bool(flows)
         else:
@@ -1064,7 +1129,9 @@ class GovernanceCore:
                                     polarity_hint=polarity, subject=subject,
                                     neighborhood=neighborhood, excerpt=excerpt,
                                     field_hint=hint.get("field_name"),
-                                    automation_hint=hint.get("automation_name"))
+                                    automation_hint=hint.get("automation_name"),
+                                    effect_value_hint=hint.get("expected_value"),
+                                    effect_object_hint=hint.get("effect_object"))
         candidates = self._decomp.enumerate_candidates(base)
         grounded = [c for c in candidates if c.status == "admissibly_grounded"]
         delta = self._delta(neighborhood, candidates)
@@ -1513,19 +1580,62 @@ class GovernanceCore:
                     if formula_ent is not None:
                         primitive = "formula"
                 if flow_ent is None and formula_ent is None:
+                    # D-318: the requirement-named automation didn't resolve by name
+                    # (the LLM can't know internal Flow api-names) — bind the Flow
+                    # that ACTUALLY produces the claimed effect (its Metadata writes
+                    # field=value / creates effect_object). Deterministic disambiguation
+                    # by the effect itself (the D-299 concern), and SAFER than the
+                    # name-match (which never verified the named Flow's effect).
+                    producers = _flows_producing_effect(
+                        flows, hint.get("field_name"),
+                        hint.get("expected_value"), hint.get("effect_object"))
+                    if len(producers) == 1:
+                        flow_ent = producers[0]
+                    elif len(producers) > 1:
+                        return IntentResolution(
+                            grounded_candidates=[], next_action=NextAction.REFUSE,
+                            interpretation_delta=delta,
+                            refusal=self._router.emission_deferred(
+                                archetype, claim_kind,
+                                detail=(f"{len(producers)} Flows on the subject "
+                                        f"produce the claimed effect "
+                                        f"({sorted(p.sf_api_name for p in producers)}) "
+                                        f"— name the specific automation")))
+                    else:
+                        return IntentResolution(
+                            grounded_candidates=[], next_action=NextAction.REFUSE,
+                            interpretation_delta=delta,
+                            refusal=self._router.emission_deferred(
+                                archetype, claim_kind,
+                                detail=(f"the requirement-named automation "
+                                        f"{automation_name!r} is neither a Flow "
+                                        f"that TRIGGERS_ON the subject (found "
+                                        f"{sorted(f.sf_api_name for f in flows)}) "
+                                        f"nor an active approval process on it "
+                                        f"nor a calculated field on it, nor does "
+                                        f"any Flow on it produce the claimed effect")))
+            else:
+                # D-318: no name — prefer the Flow that PRODUCES the effect over the
+                # blind first-encountered one (a real disambiguation). Falls back to
+                # flows[0] when no Flow's Metadata produces it (thin/pre-D-318 rows;
+                # the downstream calc-field rebind still runs off flows[0]).
+                producers = _flows_producing_effect(
+                    flows, hint.get("field_name"),
+                    hint.get("expected_value"), hint.get("effect_object"))
+                if len(producers) == 1:
+                    flow_ent = producers[0]
+                elif len(producers) > 1:
                     return IntentResolution(
                         grounded_candidates=[], next_action=NextAction.REFUSE,
                         interpretation_delta=delta,
                         refusal=self._router.emission_deferred(
                             archetype, claim_kind,
-                            detail=(f"the requirement-named automation "
-                                    f"{automation_name!r} is neither a Flow "
-                                    f"that TRIGGERS_ON the subject (found "
-                                    f"{sorted(f.sf_api_name for f in flows)}) "
-                                    f"nor an active approval process on it "
-                                    f"nor a calculated field on it")))
-            else:
-                flow_ent = flows[0] if flows else None
+                            detail=(f"{len(producers)} Flows on the subject produce "
+                                    f"the claimed effect "
+                                    f"({sorted(p.sf_api_name for p in producers)}) — "
+                                    f"name the specific automation")))
+                else:
+                    flow_ent = flows[0] if flows else None
             if flow_ent is None and formula_ent is None:
                 # defensive: positives admit on this edge; negatives may reach
                 # here without one

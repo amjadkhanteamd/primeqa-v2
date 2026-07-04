@@ -520,3 +520,81 @@ def vr_is_active(attributes: Optional[dict]) -> bool:
     if isinstance(metadata, dict) and metadata.get("active") is not None:
         return bool(metadata["active"])
     return True
+
+
+def _flow_md_list(v):
+    """A Flow-Metadata list-or-single element → a list. Salesforce serializes a
+    one-element collection as a bare dict; ``None``/other → empty. (Non-raising.)"""
+    if isinstance(v, list):
+        return v
+    if isinstance(v, dict):
+        return [v]
+    return []
+
+
+_FLOW_VALUE_SCALARS = ("stringValue", "numberValue", "booleanValue",
+                       "dateValue", "dateTimeValue")
+
+
+def _flow_assignment_value(value):
+    """The literal scalar a Flow ``inputAssignment`` writes, out of the
+    ``{stringValue|numberValue|booleanValue|dateValue|dateTimeValue|...}`` wrapper.
+    An ``elementReference`` / formula assignment (no literal) → ``None`` (the caller
+    cannot confirm a literal-value match, so it is treated as no-value). Only a
+    hashable SCALAR is returned — a dict/list under a scalar key (malformed / future
+    API drift) is treated as no-literal, so the caller can put the pair in a set
+    without raising (the never-raises contract)."""
+    if not isinstance(value, dict):
+        return None
+    for k in _FLOW_VALUE_SCALARS:
+        v = value.get(k)
+        if isinstance(v, (str, int, float, bool)):
+            return v
+    return None
+
+
+def flow_effects(attributes: Optional[dict]) -> dict:
+    """Parse a record-triggered Flow's raw ``Metadata`` into its normalized EFFECT
+    set — what the Flow writes — so the automation-effect resolver can bind the Flow
+    by its EFFECT instead of the LLM naming the org's internal Flow (D-318). Two
+    effect shapes:
+
+      - **same-record**: ``Metadata.recordUpdates[].inputAssignments[]`` →
+        ``(field, value)`` where ``field`` is the BARE api-name (e.g.
+        ``Risk_Rating__c``) and ``value`` is the assignment's literal scalar
+        (``None`` for a formula/reference assignment with no literal).
+      - **cross-object**: ``Metadata.recordCreates[].object`` → the created object's
+        api-name (e.g. ``Task``).
+
+    Returns ``{"same_record": frozenset[(field, value|None)],
+               "cross_object": frozenset[object_api]}``. Absent / non-dict Metadata
+    or any odd nesting → both empty (never raises — the D-203.1 shape-tolerant
+    idiom). Values are returned UN-canonicalized: the caller applies the same
+    identity canonicalization it uses on the claim's ``expected_value`` so both
+    sides compare canonically (governance owns ``_identity_safe``; this stays
+    import-free)."""
+    attrs = attributes or {}
+    md = attrs.get("Metadata")
+    if not isinstance(md, dict):
+        return {"same_record": frozenset(), "cross_object": frozenset()}
+    same_record: set = set()
+    for upd in _flow_md_list(md.get("recordUpdates")):
+        if not isinstance(upd, dict):
+            continue
+        for assign in _flow_md_list(upd.get("inputAssignments")):
+            if not isinstance(assign, dict):
+                continue
+            field = assign.get("field")
+            if not isinstance(field, str) or not field:
+                continue
+            same_record.add((field.rsplit(".", 1)[-1],
+                             _flow_assignment_value(assign.get("value"))))
+    cross_object: set = set()
+    for create in _flow_md_list(md.get("recordCreates")):
+        if not isinstance(create, dict):
+            continue
+        obj = create.get("object")
+        if isinstance(obj, str) and obj:
+            cross_object.add(obj)
+    return {"same_record": frozenset(same_record),
+            "cross_object": frozenset(cross_object)}

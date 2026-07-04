@@ -28,7 +28,7 @@ _VERSIONS_DIR = _DIR / "versions"
 
 # The default version new generations use (replay pins its own version on the
 # request's operational_context.prompt_template_version, per D-071).
-CURRENT = "generation@v17"
+CURRENT = "generation@v18"
 
 # version id -> frozen composed artifact (filesystem-safe slug).
 _FILES = {
@@ -49,6 +49,7 @@ _FILES = {
     "generation@v15": _VERSIONS_DIR / "generation_v15.md",
     "generation@v16": _VERSIONS_DIR / "generation_v16.md",
     "generation@v17": _VERSIONS_DIR / "generation_v17.md",
+    "generation@v18": _VERSIONS_DIR / "generation_v18.md",
 }
 
 # Recorded SHA-256 of each frozen version's composed content (D-103.1 drift
@@ -115,6 +116,16 @@ RECORDED_HASHES = {
     # NEVER a proposal; emit one intent per AC in the same call (fixes the req-302
     # "propose with only acceptance_criteria" persistent-Layer-A decline).
     "generation@v17": "4a2077ed46fea3110ee29d8d5d3001da7ed4ef98124f8e2deb3fde32656fe374",
+    # v18 (D-318): automation_name is OPTIONAL for record-triggered Flow effects —
+    # the substrate binds the Flow by the EFFECT it produces (field/value or
+    # effect_object), so describe the effect and don't invent an internal Flow
+    # name (name only to break a same-effect tie); approvals + calculated fields
+    # stay named. Also documents the `target_subject_hint.object` subject-key the
+    # behavioral kinds use (closes the D-317 prompt-doc follow-up), and restores
+    # the D-313 intent-mandatory directive into working base.md — it had lived
+    # only in the frozen v17 file, so composing from the working source would
+    # otherwise have silently dropped it.
+    "generation@v18": "51783404eec407ae48852ad6362bdebe26302cf0a92ec29f7d4b6b41a2d1b70a",
 }
 
 # Working composition order — authors the NEXT frozen version (NOT runtime).

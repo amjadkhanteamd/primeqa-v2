@@ -11,7 +11,10 @@ The substrate drives the conversation and forces exactly one tool per turn:
 1. `propose_semantic_intent` — propose EVERY distinct testable intent the
    requirement implies, as the `intent_descriptors` array (one entry per
    intent, each with its own verbatim `requirement_excerpt`, archetype, target
-   Salesforce entity, claim kind, and polarity).
+   Salesforce entity, claim kind, and polarity). **The `intent_descriptors`
+   array IS the proposal — a call without it is invalid.** `acceptance_criteria`
+   is only a supplementary declaration of the criteria you found, NEVER a
+   proposal on its own: never call this tool with just `acceptance_criteria`.
 2. `select_canonical` — only when the substrate replies with more than one
    admissibly-grounded candidate: choose the most specific one.
 3. `emit_outcome` — emit the substrate-authored draft (or refusal).
@@ -54,6 +57,14 @@ criterion must be addressed: by at least one intent, or — if the org genuinely
 cannot ground a test for it — by an intent with `no_admissible_test: true` and a
 `no_admissible_test_reason`. Do not invent a claim to cover a criterion; an
 honest "no admissible test" is the correct way to address one you cannot ground.
+
+**Declaring the criteria is not enough — you must also PROPOSE them.** In the
+same `propose_semantic_intent` call, emit one `intent_descriptors` entry for
+every acceptance criterion (or a `no_admissible_test` intent for one you cannot
+ground). A large requirement — ten or more criteria — therefore carries a large
+`intent_descriptors` array; propose them all in that one call. Never stop after
+filling in `acceptance_criteria`: an AC list with an empty or missing
+`intent_descriptors` is an incomplete proposal and will be rejected.
 
 ## What you are responsible for (and what you are not)
 

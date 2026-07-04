@@ -90,3 +90,90 @@ def test_field_formula_text_shapes():
         {"calculatedFormula": "IF(P > 0, L / P, null)"}) == "IF(P > 0, L / P, null)"
     assert field_formula_text({}) is None
     assert field_formula_text(None) is None
+
+
+# ---------------------------------------------------------------------------
+# D-318: flow_effects — parse a Flow's raw Metadata into its EFFECT set so the
+# automation-effect resolver can bind by effect, not by the LLM naming the Flow.
+# ---------------------------------------------------------------------------
+
+def _md(**metadata):
+    return {"Metadata": metadata}
+
+
+def test_flow_effects_same_record_from_record_updates():
+    from primeqa.semantic.entity_attributes import flow_effects
+    # env-59 HL_Auto_Risk_Rating shape: 3 recordUpdates each stamping Risk_Rating__c
+    attrs = _md(recordUpdates=[
+        {"name": "Set_Risk_High",
+         "inputAssignments": [{"field": "Risk_Rating__c", "value": {"stringValue": "High"}}]},
+        {"name": "Set_Risk_Medium",
+         "inputAssignments": [{"field": "Risk_Rating__c", "value": {"stringValue": "Medium"}}]},
+        {"name": "Set_Risk_Low",
+         "inputAssignments": [{"field": "Risk_Rating__c", "value": {"stringValue": "Low"}}]},
+    ])
+    eff = flow_effects(attrs)
+    assert eff["same_record"] == frozenset({
+        ("Risk_Rating__c", "High"), ("Risk_Rating__c", "Medium"), ("Risk_Rating__c", "Low")})
+    assert eff["cross_object"] == frozenset()
+
+
+def test_flow_effects_cross_object_from_record_creates():
+    from primeqa.semantic.entity_attributes import flow_effects
+    # env-59 HL_High_Risk_Task shape: creates a Task
+    eff = flow_effects(_md(recordCreates=[{"name": "Create_Review_Task", "object": "Task"}]))
+    assert eff["cross_object"] == frozenset({"Task"})
+    assert eff["same_record"] == frozenset()
+
+
+def test_flow_effects_value_shapes_and_bare_field():
+    from primeqa.semantic.entity_attributes import flow_effects
+    eff = flow_effects(_md(recordUpdates=[{"inputAssignments": [
+        {"field": "Opportunity.Amount", "value": {"numberValue": 5000}},   # qualified -> bare tail
+        {"field": "IsWon__c", "value": {"booleanValue": True}},
+        {"field": "Close_Date__c", "value": {"dateValue": "2026-01-01"}},
+    ]}]))
+    assert eff["same_record"] == frozenset({
+        ("Amount", 5000), ("IsWon__c", True), ("Close_Date__c", "2026-01-01")})
+
+
+def test_flow_effects_reference_assignment_has_none_value():
+    from primeqa.semantic.entity_attributes import flow_effects
+    # a formula/elementReference assignment carries no literal -> value None
+    eff = flow_effects(_md(recordUpdates=[{"inputAssignments": [
+        {"field": "Owner__c", "value": {"elementReference": "SomeVar"}}]}]))
+    assert eff["same_record"] == frozenset({("Owner__c", None)})
+
+
+def test_flow_effects_single_dict_not_list_tolerated():
+    from primeqa.semantic.entity_attributes import flow_effects
+    # Salesforce serializes a one-element collection as a bare dict
+    eff = flow_effects(_md(
+        recordUpdates={"inputAssignments": {"field": "X__c", "value": {"stringValue": "y"}}},
+        recordCreates={"object": "Case"}))
+    assert eff["same_record"] == frozenset({("X__c", "y")})
+    assert eff["cross_object"] == frozenset({"Case"})
+
+
+def test_flow_effects_empty_and_odd_metadata_safe():
+    from primeqa.semantic.entity_attributes import flow_effects
+    empty = {"same_record": frozenset(), "cross_object": frozenset()}
+    assert flow_effects(None) == empty
+    assert flow_effects({}) == empty
+    assert flow_effects({"Metadata": None}) == empty
+    assert flow_effects({"Metadata": "not a dict"}) == empty
+    assert flow_effects(_md(recordUpdates="bad", recordCreates=123)) == empty
+    # missing inputAssignments / non-dict items are skipped, never raise
+    assert flow_effects(_md(recordUpdates=[{"name": "no-assigns"}, "junk", None])) == empty
+    assert flow_effects(_md(recordCreates=[{"name": "no-object"}, {"object": ""}])) == empty
+
+
+def test_flow_effects_nonscalar_value_is_no_literal_never_raises():
+    from primeqa.semantic.entity_attributes import flow_effects
+    # A dict/list under a scalar key (malformed / future API drift) must NOT crash
+    # the .add() into the set — the field is kept with value None (no literal).
+    eff = flow_effects(_md(recordUpdates=[{"inputAssignments": [
+        {"field": "A__c", "value": {"numberValue": [1, 2]}},    # list — unhashable
+        {"field": "B__c", "value": {"stringValue": {"nested": 1}}},  # dict — unhashable
+    ]}]))
+    assert eff["same_record"] == frozenset({("A__c", None), ("B__c", None)})
