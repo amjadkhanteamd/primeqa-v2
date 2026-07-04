@@ -354,19 +354,56 @@ def validate_layer_a(tool_name: str, tool_input: dict) -> LayerAResult:
     return _validate_emit(tool_input)
 
 
+def _inject_subject_entity_ref(desc: dict) -> None:
+    """D-317: the LLM names the subject object under ``object`` for the behavioral
+    claim kinds (prohibition / state-transition / automation-effect / acceptance),
+    matching how the rest of ``target_subject_hint`` is named (``rejection_conditions``,
+    ``trigger_fields``, ``effect_object``, …). Only ``existence-claim`` uses the
+    ``{entity_type, sf_api_name}`` entity-ref shape the subject-resolvers read
+    (governance_core ``resolve_subject`` / ``check_refs_exist``), so every
+    behavioral intent lands at ``subject None:None did not resolve`` even though the
+    object IS named. When the hint carries a plain ``object`` (an sObject API name)
+    and NO explicit entity ref, inject ``{entity_type:"Object", sf_api_name:<object>}``
+    so the single subject-resolution path grounds it — NON-destructively (``object``
+    and the claim-kind fields stay, the claim-kind resolvers still read them).
+    Existence-claims (explicit ``entity_type``/``sf_api_name``, or a Field subject)
+    are left untouched. Mutates a COPY of the hint, never the caller's dict."""
+    hint = desc.get("target_subject_hint")
+    if not isinstance(hint, dict):
+        return
+    if hint.get("entity_type") or hint.get("sf_api_name"):
+        return                                  # already an explicit entity ref
+    obj = hint.get("object")
+    if isinstance(obj, str) and obj:
+        hint = dict(hint)                       # copy — don't mutate the raw input
+        hint["entity_type"] = "Object"
+        hint["sf_api_name"] = obj
+        desc["target_subject_hint"] = hint
+
+
 def normalize_propose_input(inp: dict) -> list[dict]:
     """Normalize a (Layer-A-valid) propose input to a list of per-intent inputs
     in the legacy single shape ``{requirement_excerpt, intent_descriptor}`` —
     the shape every downstream resolver speaks (D-207). The singular legacy
-    form normalizes to a one-element list."""
+    form normalizes to a one-element list. Each per-intent descriptor's
+    ``target_subject_hint`` is subject-normalized (D-317: ``object`` → entity ref)
+    so behavioral claim kinds resolve their subject like existence-claims do."""
     arr = inp.get("intent_descriptors")
     if isinstance(arr, list) and arr:
         out: list[dict] = []
         for item in arr:
             item = dict(item or {})
             excerpt = item.pop("requirement_excerpt", None)
+            _inject_subject_entity_ref(item)
             out.append({"requirement_excerpt": excerpt, "intent_descriptor": item})
         return out
+    # legacy singular {requirement_excerpt, intent_descriptor:{…}} — copy the
+    # descriptor before normalizing so the caller's dict is never mutated.
+    desc = inp.get("intent_descriptor")
+    if isinstance(desc, dict):
+        desc = dict(desc)
+        _inject_subject_entity_ref(desc)
+        return [{**inp, "intent_descriptor": desc}]
     return [inp]
 
 

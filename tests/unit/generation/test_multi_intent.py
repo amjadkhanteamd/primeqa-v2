@@ -169,3 +169,72 @@ def test_normalize_legacy_passthrough():
     inp = _legacy()
     out = normalize_propose_input(inp)
     assert out == [inp]
+
+
+# ---------------------------------------------------------------------------
+# D-317 — subject-hint normalization: the LLM names the subject `object` for the
+# behavioral claim kinds (prohibition/state-transition/automation-effect/
+# acceptance), matching how the rest of target_subject_hint is named; only
+# existence-claims used the {entity_type, sf_api_name} entity-ref shape the
+# subject-resolvers read. Inject the entity ref from `object` so behavioral
+# claims resolve their subject instead of "subject None:None did not resolve".
+# ---------------------------------------------------------------------------
+
+def _behavioral_item(obj="Opportunity"):
+    # the exact shape the model sends for a prohibition-claim: the object under
+    # `object` + claim-kind fields, NO entity_type/sf_api_name.
+    return {
+        "requirement_excerpt": "Loan Amount is mandatory.",
+        "archetype_hint": "data_behavior",
+        "polarity_hint": "negative",
+        "claim_kind_hint": "prohibition-claim",
+        "target_subject_hint": {
+            "object": obj, "operation": "modify_record",
+            "rejection_conditions": [{"field": f"{obj}.Loan_Amount__c", "operator": "is_null"}],
+        },
+    }
+
+
+def test_object_shaped_hint_gets_entity_ref_injected():
+    out = normalize_propose_input({"intent_descriptors": [_behavioral_item()]})
+    h = out[0]["intent_descriptor"]["target_subject_hint"]
+    assert h["entity_type"] == "Object"
+    assert h["sf_api_name"] == "Opportunity"
+    # non-destructive: the claim-kind fields survive for the downstream resolvers
+    assert h["object"] == "Opportunity" and h["operation"] == "modify_record"
+    assert h["rejection_conditions"]
+
+
+def test_explicit_entity_ref_is_not_overwritten():
+    it = _item()
+    it["target_subject_hint"] = {"entity_type": "Field",
+                                 "sf_api_name": "Opportunity.X__c", "object": "IGNORED"}
+    out = normalize_propose_input({"intent_descriptors": [it]})
+    h = out[0]["intent_descriptor"]["target_subject_hint"]
+    assert h["entity_type"] == "Field"                 # explicit ref wins, not "Object"
+    assert h["sf_api_name"] == "Opportunity.X__c"
+
+
+def test_hint_without_object_or_ref_is_left_alone():
+    it = _item()
+    it["target_subject_hint"] = {"descriptive": "something vague"}
+    out = normalize_propose_input({"intent_descriptors": [it]})
+    h = out[0]["intent_descriptor"]["target_subject_hint"]
+    assert "entity_type" not in h and "sf_api_name" not in h
+
+
+def test_normalization_does_not_mutate_the_caller_input():
+    item = _behavioral_item()
+    normalize_propose_input({"intent_descriptors": [item]})
+    assert "entity_type" not in item["target_subject_hint"]   # copied before inject
+
+
+def test_legacy_form_object_hint_is_also_normalized():
+    legacy = {"requirement_excerpt": "x", "intent_descriptor": {
+        "archetype_hint": "data_behavior", "polarity_hint": "negative",
+        "claim_kind_hint": "prohibition-claim",
+        "target_subject_hint": {"object": "Lead", "operation": "modify_record"}}}
+    out = normalize_propose_input(legacy)
+    h = out[0]["intent_descriptor"]["target_subject_hint"]
+    assert h["entity_type"] == "Object" and h["sf_api_name"] == "Lead"
+    assert "entity_type" not in legacy["intent_descriptor"]["target_subject_hint"]

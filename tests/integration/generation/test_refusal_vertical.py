@@ -350,3 +350,57 @@ def test_config_metadata_relationship_bad_edge_type_refuses(seeded):
         source={"entity_type": "ValidationRule", "sf_api_name": "Case.RequireReason"},
         target={"entity_type": "Object", "sf_api_name": "Case"})])
     assert res.results[0].outcome.refusal_kind == RefusalKind.UNGROUNDED_CLAIM
+
+
+# ---------------------------------------------------------------------------
+# D-317 — the behavioral claim kinds name the subject object under `object`
+# (matching the rest of target_subject_hint), not {entity_type, sf_api_name}.
+# normalize_propose_input injects the entity ref so the subject resolves through
+# the REAL check_refs_exist. These drive the object-shaped hint end-to-end (the
+# adversarial-review durability gap: no other test exercises object->resolve —
+# they all feed pre-resolved {entity_type, sf_api_name}). If the injection is
+# removed or the resolver drifts, the first test FAILS LOUDLY instead of silently
+# regressing behavioral subjects to "subject None:None did not resolve".
+# ---------------------------------------------------------------------------
+
+def _check_refs_object_hint(seeded, obj: str):
+    """Drive an `object`-shaped prohibition hint (the shape the model emits) through
+    the real check_refs_exist against the seeded S1. Returns the RefCheck."""
+    from uuid import uuid4
+    from primeqa.semantic.connection import get_tenant_connection
+    from primeqa.semantic.query import SemanticOrgModel
+    from primeqa.generation.governance import ConversationContext
+    from primeqa.generation.protocol import (
+        GovernanceContext, OperationalContext, SemanticContext)
+
+    intent_input = {"intent_descriptors": [{
+        "requirement_excerpt": "Users must not save it without a reason.",
+        "archetype_hint": "data_behavior", "polarity_hint": "negative",
+        "claim_kind_hint": "prohibition-claim",
+        "target_subject_hint": {              # NO entity_type / sf_api_name — the model's shape
+            "object": obj, "operation": "modify_record",
+            "rejection_conditions": [{"field": f"{obj}.SomeField__c", "operator": "is_null"}],
+        }}]}
+    with get_tenant_connection(TEST_TENANT_ID) as conn:
+        gov = GovernanceCore(SemanticOrgModel(conn))
+        ctx = ConversationContext(
+            request_id=uuid4(), requirement_ref={}, requirement_text="x",
+            semantic_context=SemanticContext(s1_version_seq=seeded["v1"]),
+            governance_context=GovernanceContext(),
+            operational_context=OperationalContext(), shared_context={})
+        return gov.check_refs_exist(intent_input=intent_input, ctx=ctx)
+
+
+def test_d317_object_shaped_subject_resolves_via_check_refs(seeded):
+    # "Account" is a seeded Object; the object-shaped hint's subject must resolve
+    # (the D-317 injection turns {object:"Account"} into {entity_type:"Object",
+    # sf_api_name:"Account"} that check_refs_exist reads).
+    rc = _check_refs_object_hint(seeded, "Account")
+    assert rc.ok, rc.feedback
+
+
+def test_d317_object_shaped_absent_subject_still_refuses(seeded):
+    # The injection must NOT mask a genuinely-absent object: a bare object name
+    # with no matching S1 entity still fails ref-existence (no fake-green).
+    rc = _check_refs_object_hint(seeded, "NoSuchObject__x")
+    assert not rc.ok
