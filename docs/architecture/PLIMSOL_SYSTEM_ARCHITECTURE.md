@@ -11,6 +11,11 @@ This is a documentation-only artifact. It makes no implementation decisions,
 changes no schema, and resolves no open architectural questions — open seams are
 surfaced (§7), not closed.
 
+> **Companion:** LLM usage and cost-per-completed-activity economics — where the
+> product spends on LLM calls and what one completed activity costs — live in
+> [`PLIMSOL_LLM_ECONOMICS.md`](PLIMSOL_LLM_ECONOMICS.md) (§10 summarizes; the LLM
+> call boundaries are annotated on the diagrams below).
+
 ---
 
 ## 1. Architecture scope
@@ -446,6 +451,35 @@ from.
   (edge-close), D-293 (behaviour-instance / prohibition), D-299…308 (claim-kind
   archetypes), D-300/300.1/300.2/301 (BVA live-proof + disarm), D-310/311/312
   (journeys, per-intent Layer-A), D-313 (intent_descriptors shape fix).
+
+---
+
+## 10. LLM economics (companion summary)
+
+Full analysis in [`PLIMSOL_LLM_ECONOMICS.md`](PLIMSOL_LLM_ECONOMICS.md), grounded
+in live `llm_usage_log` telemetry (1 tenant, 3 weeks, 59 successful requirement
+generations). Headlines:
+
+- **One activity dominates.** Requirement→test generation (`task='generation'`,
+  Opus-4-7) is **98.5%** of all LLM spend. Everything else — entity summaries,
+  embeddings, eval — totals **1.5%**.
+- **Cost per completed activity ≠ cost per call.** One successful test-set
+  generation takes **~2.37 model turns** at ~$0.26 each → **≈ $0.4–0.6 per
+  successful requirement** (estimated by composition — see below), yielding
+  ~2.19 claims and ~1.61 recipes.
+- **Where the LLM is actually called** (annotate on the diagrams): S3 generation
+  tool loop (§4/§5), worker enrichment (entity summaries + Voyage embeddings), and
+  the *idle-but-wired* diagnosis / repair / `/ask` paths. **S6 interpretation and
+  the GO/NO-GO decision engine make no LLM calls** — diagnosis is deterministic,
+  $0 LLM.
+- **Refusal tax:** ~**19.5%** of generation calls end in a terminal ground-or-refuse
+  outcome that produces no test set — a real, designed part of unit economics.
+- **Telemetry gap (surfaced, not fixed):** the dominant `generation` task writes
+  usage rows with empty `context` and NULL correlation columns, so **98.5% of
+  spend cannot be joined to a requirement/job/outcome** except heuristically; the
+  cost-bearing table and the outcome-linked ledger disagree on totals. Only S1
+  sync cost is cleanly attributed (via `sync_run_id`). Absolute dollars depend on
+  `pricing.py` rates that are **unverified** for the 4.5+/5-era models.
 
 ---
 
