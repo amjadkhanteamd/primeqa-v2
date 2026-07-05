@@ -298,6 +298,18 @@ def seeded(db_setup) -> dict:
         pi_target = _entity(conn, "Field", "ProcessInstance.TargetObjectId", v1)
         _edge(conn, pi_target, proc_inst, "BELONGS_TO", "STRUCTURAL", v1)
 
+        # D-320: an ISOLATED Deal__c island with TWO active approval processes —
+        # the ambiguity fixture (a no-name approval effect must refuse and ask for
+        # the name). Order__c above keeps exactly ONE active approval, so the
+        # single-approval bind-by-effect path is unambiguous there.
+        deal = _entity(conn, "Object", "Deal__c", v1)
+        deal_amt = _entity(conn, "Field", "Deal__c.Amount__c", v1)
+        _edge(conn, deal_amt, deal, "BELONGS_TO", "STRUCTURAL", v1)
+        for _nm in ("Deal_Exec_Approval", "Deal_Finance_Approval"):
+            _appr = _entity(conn, "ApprovalProcess", _nm, v1,
+                            attrs={"_is_active": True, "TableEnumOrId": "Deal__c"})
+            _edge(conn, _appr, deal, "TRIGGERS_ON", "BEHAVIOR", v1)
+
         # D-318: an ISOLATED Loan__c island (no existing test touches it) whose Flow
         # carries real env-59-shaped Metadata — the bind-by-EFFECT fixture. The Flow
         # HL_Auto_Risk_Rating stamps Risk_Rating__c=High/Medium/Low (recordUpdates)

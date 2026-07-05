@@ -28,7 +28,7 @@ _VERSIONS_DIR = _DIR / "versions"
 
 # The default version new generations use (replay pins its own version on the
 # request's operational_context.prompt_template_version, per D-071).
-CURRENT = "generation@v18"
+CURRENT = "generation@v19"
 
 # version id -> frozen composed artifact (filesystem-safe slug).
 _FILES = {
@@ -50,6 +50,7 @@ _FILES = {
     "generation@v16": _VERSIONS_DIR / "generation_v16.md",
     "generation@v17": _VERSIONS_DIR / "generation_v17.md",
     "generation@v18": _VERSIONS_DIR / "generation_v18.md",
+    "generation@v19": _VERSIONS_DIR / "generation_v19.md",
 }
 
 # Recorded SHA-256 of each frozen version's composed content (D-103.1 drift
@@ -126,6 +127,11 @@ RECORDED_HASHES = {
     # only in the frozen v17 file, so composing from the working source would
     # otherwise have silently dropped it.
     "generation@v18": "51783404eec407ae48852ad6362bdebe26302cf0a92ec29f7d4b6b41a2d1b70a",
+    # v19 (D-320): approval-process name is OPTIONAL — the substrate binds the
+    # single approval process on the object (like D-318 does for Flows); name it
+    # only to break a tie when the object has >1 approval. Calculated fields stay
+    # named (D-304).
+    "generation@v19": "2132270d98f07eedbc534399978e343733f9fa66df9e5bdf5f515c53a71cfdfb",
 }
 
 # Working composition order — authors the NEXT frozen version (NOT runtime).

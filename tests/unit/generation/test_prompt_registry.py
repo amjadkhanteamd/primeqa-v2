@@ -42,12 +42,12 @@ def test_working_source_composes_to_current():
     assert hashlib.sha256(composed.encode("utf-8")).hexdigest() == registry.recorded_hash()
 
 
-def test_current_resolves_to_v18():
-    # D-318: CURRENT bumped to v18 (automation_name optional for record-triggered
-    # effects — bind by effect; + the object subject-key doc). v1..v17 stay frozen
-    # + pinned-resolvable (test_runtime_honors_pinned_prompt_version).
-    assert registry.CURRENT == "generation@v18"
-    assert registry.get() == registry.get("generation@v18")
+def test_current_resolves_to_v19():
+    # D-320: CURRENT bumped to v19 (approval-process name optional — bind the single
+    # approval on the object; name only to break a tie). v1..v18 stay frozen +
+    # pinned-resolvable (test_runtime_honors_pinned_prompt_version).
+    assert registry.CURRENT == "generation@v19"
+    assert registry.get() == registry.get("generation@v19")
     sys = registry.get()
     assert len(sys) > 1000                                  # substantive, not a stub
     # v17's mandatory-intent_descriptors contract (D-313) — the fix directive
@@ -108,8 +108,12 @@ def test_current_resolves_to_v18():
     assert "You do NOT need to name the internal Flow" in sys
     assert "actually PRODUCES" in sys                        # bind by the produced effect
     assert "ONLY to break a tie" in sys                      # name only disambiguates same-effect
-    assert "Approval processes MUST be named" in sys         # D-308 name requirement preserved
     assert "FORMULA FIELD's" in sys                          # D-304 calc-field naming preserved
+    # v19's approval-name-optional contract (D-320) — replaces v18's "MUST be named"
+    assert "You do NOT need to name the approval process" in sys
+    assert "MORE than one approval process" in sys           # name only to break the tie
+    assert "Approval processes MUST be named" not in sys     # the v18 requirement is lifted
+    assert "APPROVAL PROCESS is also an automation" in sys   # D-308 block otherwise carried
     # v18's object subject-key doc (closes the D-317 prompt-doc follow-up)
     assert "`target_subject_hint.object`" in sys
     # the honest-dismissals guard is preserved verbatim (not overturned)

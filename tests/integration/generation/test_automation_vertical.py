@@ -1007,3 +1007,92 @@ def test_approval_observing_calculated_field_refuses(seeded):
              expect_emit=False)
     assert r.outcome.outcome_kind == OutcomeKind.REFUSAL
     assert "CALCULATED" in r.outcome.refusals[0].payload["detail"]
+
+
+# ---------------------------------------------------------------------------
+# D-319: cross-object effect_field / effect_lookup_field tolerate a BARE name —
+# the LLM sends "Subject"; the resolver keys the effect object's fields qualified
+# ("Task.Subject"). The req-302 AC10 decline was this bare-vs-qualified mismatch.
+# ---------------------------------------------------------------------------
+
+def test_cross_object_bare_effect_field_resolves(seeded):
+    # effect_field sent BARE ("Level__c"), not "Order_Log__c.Level__c".
+    r = _run(seeded, _intent("automation-effect-claim", "positive", "Order__c",
+                             effect_object="Order_Log__c",
+                             effect_lookup_field="Order_Log__c.Order__c",
+                             effect_field="Level__c",          # BARE
+                             effect_value="INFO"))
+    assert r.outcome.outcome_kind == OutcomeKind.DRAFT
+    steps = r.emission.observation_realization.steps
+    assert steps[2].predicate.predicate == "equals"
+    assert steps[2].predicate.value == "INFO"
+    assert "Level__c" in steps[1].soql
+
+
+def test_cross_object_bare_lookup_field_resolves(seeded):
+    # effect_lookup_field sent BARE ("Order__c"), not "Order_Log__c.Order__c".
+    r = _run(seeded, _intent("automation-effect-claim", "positive", "Order__c",
+                             effect_object="Order_Log__c",
+                             effect_lookup_field="Order__c"))  # BARE tail
+    assert r.outcome.outcome_kind == OutcomeKind.DRAFT
+    read = r.emission.observation_realization.steps[1]
+    assert "WHERE Order__c = '$create-record.id'" in read.soql
+
+
+# ---------------------------------------------------------------------------
+# D-320: bind the single approval process by its ProcessInstance effect when the
+# LLM cannot name it (req-302 AC9 sent automation_name="<UNKNOWN>"). Mirrors D-318
+# (Flows) but by ENUMERATION — approvals carry no Flow Metadata.
+# ---------------------------------------------------------------------------
+
+def test_nameless_approval_binds_the_single_active_approval(seeded):
+    # No automation_name — Order__c has exactly ONE active approval, so the effect
+    # (ProcessInstance) binds it without a name.
+    r = _run(seeded, _intent("automation-effect-claim", "positive", "Order__c",
+                             effect_object="ProcessInstance",
+                             effect_lookup_field="ProcessInstance.TargetObjectId",
+                             trigger_fields=[{"field_name": "Order__c.Subtotal__c",
+                                              "value": 5000001}]))
+    assert r.outcome.outcome_kind == OutcomeKind.DRAFT
+    body = r.emission.asserted_truth
+    assert body.automation.external_id == "Order_High_Value"
+    assert body.automation_primitive == "approval_process"
+
+
+def test_invented_approval_name_binds_by_effect(seeded):
+    # The req-302 AC9 case: the LLM sent "<UNKNOWN>" (no such approval) — bind the
+    # single active approval on the subject, don't refuse.
+    r = _run(seeded, _intent("automation-effect-claim", "positive", "Order__c",
+                             automation_name="<UNKNOWN>",
+                             effect_object="ProcessInstance",
+                             effect_lookup_field="ProcessInstance.TargetObjectId",
+                             trigger_fields=[{"field_name": "Order__c.Subtotal__c",
+                                              "value": 5000001}]))
+    assert r.outcome.outcome_kind == OutcomeKind.DRAFT
+    assert r.emission.asserted_truth.automation.external_id == "Order_High_Value"
+
+
+def test_ambiguous_approvals_refuse_and_ask_for_name(seeded):
+    # Deal__c has TWO active approvals — the effect no longer disambiguates; refuse
+    # (never bind the wrong approval).
+    r = _run(seeded, _intent("automation-effect-claim", "positive", "Deal__c",
+                             effect_object="ProcessInstance",
+                             effect_lookup_field="ProcessInstance.TargetObjectId",
+                             trigger_fields=[{"field_name": "Deal__c.Amount__c",
+                                              "value": 5000001}]),
+             expect_emit=False)
+    assert r.outcome.outcome_kind == OutcomeKind.REFUSAL
+    assert "approval process" in r.outcome.refusals[0].payload["detail"]
+
+
+def test_naming_one_of_the_ambiguous_approvals_binds_it(seeded):
+    # When the model DOES name one of the two active approvals, the name binds it
+    # (the D-308 fast path) — no ambiguity refusal.
+    r = _run(seeded, _intent("automation-effect-claim", "positive", "Deal__c",
+                             automation_name="Deal_Finance_Approval",
+                             effect_object="ProcessInstance",
+                             effect_lookup_field="ProcessInstance.TargetObjectId",
+                             trigger_fields=[{"field_name": "Deal__c.Amount__c",
+                                              "value": 5000001}]))
+    assert r.outcome.outcome_kind == OutcomeKind.DRAFT
+    assert r.emission.asserted_truth.automation.external_id == "Deal_Finance_Approval"

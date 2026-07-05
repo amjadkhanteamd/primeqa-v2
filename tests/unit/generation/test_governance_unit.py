@@ -765,3 +765,30 @@ def test_flows_producing_effect_cross_object_and_none_hint_floor():
     # Metadata-less entity produces nothing (name-trust / flows[0] fallback intact)
     assert gc._flows_producing_effect(
         [SimpleNamespace(attributes=None)], "x.Risk_Rating__c", "High", None) == []
+
+
+# ---------------------------------------------------------------------------
+# D-320: _active_approvals / _names_a_subject_approval — approval bind-by-effect.
+# ---------------------------------------------------------------------------
+
+def _appr_rel(name, active, *, edge_type="TRIGGERS_ON", etype="ApprovalProcess"):
+    return SimpleNamespace(edge_type=edge_type, entity=SimpleNamespace(
+        entity_type=etype, sf_api_name=name, attributes={"_is_active": active}))
+
+
+def test_active_approvals_filters_inactive_flow_and_wrong_edge():
+    nb = [_appr_rel("A", True), _appr_rel("B", False),            # inactive dropped
+          _appr_rel("Flow1", True, etype="Flow"),                  # not an approval
+          _appr_rel("C", True, edge_type="BELONGS_TO")]            # wrong rail
+    assert [a.sf_api_name for a in gc._active_approvals(nb)] == ["A"]
+
+
+def test_names_a_subject_approval_active_or_inactive_but_not_unknown():
+    nb = [_appr_rel("A", True), _appr_rel("B", False)]
+    assert gc._names_a_subject_approval(nb, "A") is True          # active named
+    assert gc._names_a_subject_approval(nb, "B") is True          # inactive still "named"
+    assert gc._names_a_subject_approval(nb, "<UNKNOWN>") is False  # invented → enumerate
+    assert gc._names_a_subject_approval(nb, None) is False
+    # a Flow of the same name is NOT a subject approval
+    assert gc._names_a_subject_approval(
+        [_appr_rel("A", True, etype="Flow")], "A") is False

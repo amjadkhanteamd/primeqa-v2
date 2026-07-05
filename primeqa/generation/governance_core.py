@@ -607,6 +607,31 @@ def _flows_producing_effect(flow_entities, field_hint, expected_value, effect_ob
     return out
 
 
+def _active_approvals(neighborhood) -> list:
+    """D-320: the ACTIVE ApprovalProcess entities that TRIGGERS_ON the subject —
+    the approval twin of the ``flows`` list. An approval process is the org's
+    internal automation the LLM cannot name (like a Flow), but it carries no Flow
+    Metadata, so it binds by ENUMERATION (the single approval on the subject) not
+    by ``flow_effects``. ACTIVE only (the D-301 law: an inactive automation cannot
+    fire, so it must never ground)."""
+    return [r.entity for r in neighborhood
+            if r.edge_type == EDGE_FLOW
+            and r.entity.entity_type == "ApprovalProcess"
+            and (r.entity.attributes or {}).get("_is_active")]
+
+
+def _names_a_subject_approval(neighborhood, name) -> bool:
+    """D-320: True when ``name`` matches an ApprovalProcess (active OR inactive)
+    that TRIGGERS_ON the subject — a deliberate reference to a SPECIFIC approval.
+    The single-approval enumeration must NOT override it: an active match already
+    binds by name (D-308); an inactive match must refuse (D-301, "never grounds"),
+    never silently rebind to a different active approval (the D-299 class)."""
+    return bool(name) and any(
+        r.edge_type == EDGE_FLOW and r.entity.entity_type == "ApprovalProcess"
+        and r.entity.sf_api_name == name
+        for r in neighborhood)
+
+
 # ---------------------------------------------------------------------------
 # Admissibility engine (D-096.1 / D-078) — substrate-authored
 # ---------------------------------------------------------------------------
@@ -734,6 +759,17 @@ class AdmissibilityEngine:
                         effect_value_hint, effect_object_hint))
             else:
                 grounds = bool(flows)
+            if (not grounds and effect_object_hint == "ProcessInstance"
+                    and not _names_a_subject_approval(neighborhood, automation_hint)):
+                # D-320: an approval-process effect (ProcessInstance) is the org's
+                # internal automation the LLM cannot name (it sends "<UNKNOWN>" /
+                # an invented name / none) — admit when a single active approval
+                # TRIGGERS_ON the subject. The binding block binds it by ENUMERATION
+                # (approvals carry no Flow Metadata, so _flows_producing_effect never
+                # matches them). A named real approval is left to the paths above
+                # (active bound by name; inactive dismissed) — kept consistent with
+                # the binding block so the gate never admits what binding refuses.
+                grounds = bool(_active_approvals(neighborhood))
         else:
             grounds = bool(fields)
         if grounds:
@@ -1548,6 +1584,36 @@ class GovernanceCore:
             automation_name = hint.get("automation_name")
             primitive = "flow"
             formula_ent = None
+
+            def _approval_binding():
+                # D-320: an approval-process effect (effect_object=ProcessInstance)
+                # is the org's internal automation the LLM cannot name — bind the
+                # SINGLE active approval that TRIGGERS_ON the subject. Approvals
+                # carry no Flow Metadata, so this is ENUMERATION, not
+                # _flows_producing_effect. Returns ("bind", approval_ent) /
+                # ("refuse", IntentResolution) / ("skip", None): >1 needs a name
+                # (the D-299/D-318 law), 0 has no approval to bind.
+                if hint.get("effect_object") != "ProcessInstance":
+                    return ("skip", None)
+                # A named reference to a real approval on the subject is respected,
+                # not overridden (D-320): active binds by name above (D-308);
+                # inactive refuses (D-301). Enumeration is only the can't-name case.
+                if _names_a_subject_approval(neighborhood, automation_name):
+                    return ("skip", None)
+                appr = _active_approvals(neighborhood)
+                if len(appr) == 1:
+                    return ("bind", appr[0])
+                detail = (
+                    f"{len(appr)} active approval processes on the subject "
+                    f"({sorted(a.sf_api_name for a in appr)}) — name the specific "
+                    f"approval process") if appr else (
+                    "no active approval process TRIGGERS_ON the subject")
+                return ("refuse", IntentResolution(
+                    grounded_candidates=[], next_action=NextAction.REFUSE,
+                    interpretation_delta=delta,
+                    refusal=self._router.emission_deferred(
+                        archetype, claim_kind, detail=detail)))
+
             if automation_name:
                 flow_ent = next(
                     (f for f in flows if f.sf_api_name == automation_name), None)
@@ -1579,6 +1645,16 @@ class GovernanceCore:
                          and field_is_calculated(r.entity.attributes)), None)
                     if formula_ent is not None:
                         primitive = "formula"
+                if flow_ent is None and formula_ent is None:
+                    # D-320: the named automation may be an approval process the LLM
+                    # couldn't name (it sent "<UNKNOWN>" / an invented name) — bind
+                    # the single active approval on the subject (effect=ProcessInstance).
+                    ab_status, ab_val = _approval_binding()
+                    if ab_status == "refuse":
+                        return ab_val
+                    if ab_status == "bind":
+                        flow_ent = ab_val
+                        primitive = "approval_process"
                 if flow_ent is None and formula_ent is None:
                     # D-318: the requirement-named automation didn't resolve by name
                     # (the LLM can't know internal Flow api-names) — bind the Flow
@@ -1615,27 +1691,38 @@ class GovernanceCore:
                                         f"nor a calculated field on it, nor does "
                                         f"any Flow on it produce the claimed effect")))
             else:
-                # D-318: no name — prefer the Flow that PRODUCES the effect over the
-                # blind first-encountered one (a real disambiguation). Falls back to
-                # flows[0] when no Flow's Metadata produces it (thin/pre-D-318 rows;
-                # the downstream calc-field rebind still runs off flows[0]).
-                producers = _flows_producing_effect(
-                    flows, hint.get("field_name"),
-                    hint.get("expected_value"), hint.get("effect_object"))
-                if len(producers) == 1:
-                    flow_ent = producers[0]
-                elif len(producers) > 1:
-                    return IntentResolution(
-                        grounded_candidates=[], next_action=NextAction.REFUSE,
-                        interpretation_delta=delta,
-                        refusal=self._router.emission_deferred(
-                            archetype, claim_kind,
-                            detail=(f"{len(producers)} Flows on the subject produce "
-                                    f"the claimed effect "
-                                    f"({sorted(p.sf_api_name for p in producers)}) — "
-                                    f"name the specific automation")))
+                # D-320: no name — an approval-process effect (ProcessInstance) binds
+                # the single active approval on the subject (the model omitted the
+                # name entirely). Only when it is NOT an approval shape do we fall to
+                # the D-318 Flow effect-resolver.
+                ab_status, ab_val = _approval_binding()
+                if ab_status == "refuse":
+                    return ab_val
+                if ab_status == "bind":
+                    flow_ent = ab_val
+                    primitive = "approval_process"
                 else:
-                    flow_ent = flows[0] if flows else None
+                    # D-318: no name — prefer the Flow that PRODUCES the effect over the
+                    # blind first-encountered one (a real disambiguation). Falls back to
+                    # flows[0] when no Flow's Metadata produces it (thin/pre-D-318 rows;
+                    # the downstream calc-field rebind still runs off flows[0]).
+                    producers = _flows_producing_effect(
+                        flows, hint.get("field_name"),
+                        hint.get("expected_value"), hint.get("effect_object"))
+                    if len(producers) == 1:
+                        flow_ent = producers[0]
+                    elif len(producers) > 1:
+                        return IntentResolution(
+                            grounded_candidates=[], next_action=NextAction.REFUSE,
+                            interpretation_delta=delta,
+                            refusal=self._router.emission_deferred(
+                                archetype, claim_kind,
+                                detail=(f"{len(producers)} Flows on the subject produce "
+                                        f"the claimed effect "
+                                        f"({sorted(p.sf_api_name for p in producers)}) — "
+                                        f"name the specific automation")))
+                    else:
+                        flow_ent = flows[0] if flows else None
             if flow_ent is None and formula_ent is None:
                 # defensive: positives admit on this edge; negatives may reach
                 # here without one
@@ -2044,11 +2131,20 @@ class GovernanceCore:
                     f"uniquely in the org model ({len(matches)} matches)")
         eff = matches[0]
         eff_neigh = self._admit.scoped_neighborhood(eff, at)
-        eff_fields = {r.entity.sf_api_name: r.entity for r in eff_neigh
+        # Key by the BARE field tail so a bare hint ("Subject") resolves the same
+        # as a qualified one ("Task.Subject") — the LLM sends either (it qualifies
+        # effect_lookup_field but often not effect_field). Field api-names are
+        # unique per Object, so the tail is unambiguous (mirrors the bare-keyed
+        # _grounding_field_metadata). The bound entity keeps its qualified
+        # sf_api_name, so emission output is unchanged.
+        eff_fields = {r.entity.sf_api_name.rsplit(".", 1)[-1]: r.entity
+                      for r in eff_neigh
                       if r.edge_type == EDGE_BELONGS
-                      and r.entity.entity_type == "Field"}
+                      and r.entity.entity_type == "Field"
+                      and r.entity.sf_api_name}
         lookup_name = hint.get("effect_lookup_field")
-        lookup_ent = eff_fields.get(lookup_name) if lookup_name else None
+        lookup_ent = (eff_fields.get(lookup_name.rsplit(".", 1)[-1])
+                      if isinstance(lookup_name, str) and lookup_name else None)
         if lookup_ent is None and lookup_required:
             return (f"effect lookup field {lookup_name!r} does not exist on "
                     f"{effect_object_api} — cannot correlate the effect record "
@@ -2056,7 +2152,9 @@ class GovernanceCore:
         eff_field_name = hint.get("effect_field")
         eff_field_ep = None
         if eff_field_name is not None:
-            eff_field_ent = eff_fields.get(eff_field_name)
+            eff_field_ent = (eff_fields.get(eff_field_name.rsplit(".", 1)[-1])
+                             if isinstance(eff_field_name, str) and eff_field_name
+                             else None)
             if eff_field_ent is None:
                 return (f"effect field {eff_field_name!r} does not exist on "
                         f"{effect_object_api}")
