@@ -20,6 +20,7 @@ from primeqa.intelligence.llm.prompts import (
     entity_summary_validation_rule,
     grounded_answer,
     repair_proposal,
+    readable_body_phrasing,
 )
 
 
@@ -44,6 +45,10 @@ _REGISTRY: Dict[str, object] = {
     # D-236 (theme #6) — the auto-fix agent's LLM layer: propose a recipe_edit
     # for the recipe-owner failure classes. tool_use, Sonnet->Opus, best-effort.
     "repair_proposal":                 repair_proposal,
+    # Readable-body phrasing — restate the deterministic Stage-1 readable-body
+    # skeleton into BA/QA prose. Haiku, best-effort, invent-nothing; a
+    # grounding validator rejects any ungrounded output → Stage-1 fallback.
+    "readable_body_phrasing_generation":  readable_body_phrasing,
 }
 
 

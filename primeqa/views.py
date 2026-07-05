@@ -315,6 +315,21 @@ def _resolve_env_llm(db, tenant_id, environment_id):
     return None, None
 
 
+def _resolve_any_llm_key(db, tenant_id, environment_ids):
+    """Best-effort: the first accessible env's LLM api_key, or None. Used by the
+    (flag-gated, default-off) readable-body phrasing — the prose restates
+    env-independent claim facts, so any tenant LLM connection serves. None →
+    phrasing stays off and the deterministic Stage-1 baseline renders."""
+    for env_id in environment_ids or ():
+        try:
+            api_key, _model = _resolve_env_llm(db, tenant_id, env_id)
+        except Exception:
+            api_key = None
+        if api_key:
+            return api_key
+    return None
+
+
 @views_bp.route("/ask", methods=["GET", "POST"])
 @require_tier(Tier.VIEWER)
 @login_required
@@ -2452,6 +2467,8 @@ def claims_detail(test_id):
     via the s3_generation_console bridge; renders an empty state when the claim is
     gone or the substrate is unavailable."""
     from primeqa.intelligence.claim_presentation import verdict_plain
+    from primeqa.intelligence.readable_body_phrasing import (
+        readable_body_phrasing_enabled)
     from primeqa.intelligence.s3_generation_console import (
         read_claim_detail, read_claim_requirement, read_claim_siblings)
     from primeqa.intelligence.s4_execution_console import read_claim_runs
@@ -2470,6 +2487,10 @@ def claims_detail(test_id):
     # Environments for the Run picker (tester+; gated in the template). is_production
     # drives the dynamic prod-confirm gate; has_connection flags runnable envs.
     requirement = None
+    # Optional Stage-2 readable-body phrasing (flag-gated, default OFF). The
+    # deterministic Stage-1 readable body is already attached by read_claim_detail;
+    # this only replaces its prose when a grounded phrasing is available.
+    readable_phrasing = None
     db = next(get_db())
     try:
         envs = EnvironmentRepository(db).list_environments(
@@ -2478,6 +2499,15 @@ def claims_detail(test_id):
                       "is_production": bool(getattr(e, "is_production", False)),
                       "has_connection": bool(getattr(e, "connection_id", None))}
                      for e in envs]
+        _skel = (detail.get("claim") or {}).get("_readable_skeleton") if detail else None
+        if _skel is not None and readable_body_phrasing_enabled(db, tid):
+            from primeqa.intelligence.readable_body_phrasing import get_or_phrase
+            _key = _resolve_any_llm_key(db, tid, [e["id"] for e in envs_data])
+            if _key:
+                try:
+                    readable_phrasing = get_or_phrase(_skel, tenant_id=tid, api_key=_key)
+                except Exception:
+                    readable_phrasing = None
         if req_key:
             from primeqa.intelligence.substrate_dashboard import (
                 _requirement_rows, _requirement_summaries)
@@ -2504,7 +2534,7 @@ def claims_detail(test_id):
     return render_template("claims/detail.html", **ctx(
         active_page="test_library", detail=detail, siblings=siblings,
         runs=runs, environments=envs_data, quarantine=quarantine_state,
-        requirement=requirement))
+        requirement=requirement, readable_phrasing=readable_phrasing))
 
 
 _MAX_FIELD_OVERRIDES = 50

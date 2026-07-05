@@ -345,7 +345,19 @@ def _read_claim_detail(session, test_id, labels=None) -> dict | None:
         return None
     recipes = coord.list_active_recipes(session, test_id)
     asserted = _dump(claim.asserted_truth)
-    return {
+    conditions = _dump(claim.semantic_conditions)
+    recipe_dicts = [{
+        "recipe_id": str(r.recipe_id),
+        "trigger_kind": r.trigger_kind,
+        "recipe_kind": r.recipe_kind,
+        "priority": r.priority,
+        "status": r.status,
+        "version_seq": r.version_seq,
+        "causal_initiation": _dump(r.causal_initiation),
+        "observation_realization": _dump(r.observation_realization),
+        "execution_environment": _dump(r.execution_environment),
+    } for r in recipes]
+    result = {
         "test_id": str(test_id),
         "archetype": claim.archetype,
         "claim_kind": claim.claim_kind,
@@ -357,19 +369,35 @@ def _read_claim_detail(session, test_id, labels=None) -> dict | None:
         "title": claim_title(claim.claim_kind, asserted, labels),
         "depth": claim_depth([r.recipe_kind for r in recipes]),
         "asserted_truth": asserted,
-        "semantic_conditions": _dump(claim.semantic_conditions),
-        "recipes": [{
-            "recipe_id": str(r.recipe_id),
-            "trigger_kind": r.trigger_kind,
-            "recipe_kind": r.recipe_kind,
-            "priority": r.priority,
-            "status": r.status,
-            "version_seq": r.version_seq,
-            "causal_initiation": _dump(r.causal_initiation),
-            "observation_realization": _dump(r.observation_realization),
-            "execution_environment": _dump(r.execution_environment),
-        } for r in recipes],
+        "semantic_conditions": conditions,
+        "recipes": recipe_dicts,
     }
+    # Readable-body projection (Stage 1, deterministic): the plain-language test
+    # case, derived at read time from the claim + its recipes + the same label
+    # map the title uses. Best-effort — a projection failure must never break the
+    # detail read, so it degrades to no readable body (the raw drawer still
+    # renders). ``_readable_skeleton`` is the object handed to the optional
+    # Stage-2 phrasing (the view resolves the api_key + flag); the template
+    # renders ``readable_body`` only.
+    try:
+        from primeqa.intelligence.readable_body import (
+            build_readable_body, to_display_dict)
+        skeleton = build_readable_body(
+            claim_kind=claim.claim_kind, archetype=claim.archetype,
+            asserted_truth=asserted, semantic_conditions=conditions,
+            recipes=recipe_dicts,
+            strategy_kind=getattr(claim, "strategy_kind", None),
+            data_recipe_ids=[str(x) for x in
+                             coord.current_data_recipe_ids(session, test_id)],
+            labels=labels)
+        result["readable_body"] = to_display_dict(skeleton)
+        result["_readable_skeleton"] = skeleton
+    except Exception as exc:      # pragma: no cover — belt-and-suspenders
+        log.warning("readable_body projection failed for test %s: %s",
+                    test_id, exc)
+        result["readable_body"] = None
+        result["_readable_skeleton"] = None
+    return result
 
 
 def read_claim_detail(tenant_id: int, test_id) -> dict:

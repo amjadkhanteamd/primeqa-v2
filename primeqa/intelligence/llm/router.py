@@ -213,6 +213,14 @@ _CHAINS: Dict[str, Dict[str, List[str]]] = {
         COMPLEXITY_LOW: [HAIKU],
         "default":      [HAIKU],
     },
+
+    # Readable-body phrasing — restate the deterministic Stage-1 readable-body
+    # skeleton into BA/QA prose. Haiku-class, NO fallback: an ungrounded or
+    # failed phrasing falls back to the deterministic Stage-1 baseline.
+    "readable_body_phrasing_generation": {
+        COMPLEXITY_LOW: [HAIKU],
+        "default":      [HAIKU],
+    },
 }
 
 
