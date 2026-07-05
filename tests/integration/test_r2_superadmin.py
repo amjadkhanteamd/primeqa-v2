@@ -3,7 +3,8 @@
 import sys
 import os
 
-sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+# wave-0 TEST-2: moved under tests/integration/ so pytest collects it (testpaths).
+sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))))
 
 from dotenv import load_dotenv
 load_dotenv()
@@ -14,7 +15,7 @@ client = app.test_client()
 TENANT_ID = 1
 
 
-def test(name, fn):
+def _run(name, fn):
     try:
         fn(); print(f"  PASS  {name}"); return True
     except AssertionError as e:
@@ -53,7 +54,7 @@ def run_tests():
                 f"cap count {count} should exclude {superadmins} superadmin(s) from total {total_active}"
         finally:
             db.close()
-    results.append(test("R2-1. count_active_users excludes superadmin", t_superadmin_cap_exclusion))
+    results.append(_run("R2-1. count_active_users excludes superadmin", t_superadmin_cap_exclusion))
 
     def t_agent_settings_get():
         client.set_cookie("access_token", admin_token)
@@ -62,7 +63,7 @@ def run_tests():
         body = r.data.decode()
         assert "Agent autonomy" in body
         assert "trust_threshold_high" in body
-    results.append(test("R2-2. /settings/agent renders for superadmin", t_agent_settings_get))
+    results.append(_run("R2-2. /settings/agent renders for superadmin", t_agent_settings_get))
 
     def t_agent_settings_update():
         client.set_cookie("access_token", admin_token)
@@ -84,7 +85,7 @@ def run_tests():
             assert s.max_fix_attempts_per_run == 2
         finally:
             db.close()
-    results.append(test("R2-3. Superadmin updates agent trust bands + attempts", t_agent_settings_update))
+    results.append(_run("R2-3. Superadmin updates agent trust bands + attempts", t_agent_settings_update))
 
     def t_agent_settings_bad_bands_rejected():
         from primeqa.db import SessionLocal
@@ -100,7 +101,7 @@ def run_tests():
                 db.rollback()
         finally:
             db.close()
-    results.append(test("R2-4. Inverted thresholds rejected", t_agent_settings_bad_bands_rejected))
+    results.append(_run("R2-4. Inverted thresholds rejected", t_agent_settings_bad_bands_rejected))
 
     def t_cost_forecast_executor_only():
         from primeqa.runs.cost import estimate_run_cost
@@ -108,7 +109,7 @@ def run_tests():
         assert r["usd_estimate"] == 0.0
         assert r["tokens_in"] == 0
         assert r["sf_api_calls_estimate"] == 400
-    results.append(test("R2-5. Cost forecast returns 0 for execute_only runs", t_cost_forecast_executor_only))
+    results.append(_run("R2-5. Cost forecast returns 0 for execute_only runs", t_cost_forecast_executor_only))
 
     def t_cost_forecast_full_run():
         from primeqa.runs.cost import estimate_run_cost
@@ -116,7 +117,7 @@ def run_tests():
         # 10 tests \xd7 2000 tokens in at $3/M = $0.06; 10 \xd7 1000 out at $15/M = $0.15 \u2192 $0.21
         assert 0.19 <= r["usd_estimate"] <= 0.23, f"unexpected {r['usd_estimate']}"
         assert r["model"] == "claude-sonnet-4-20250514"
-    results.append(test("R2-6. Cost forecast matches Sonnet pricing math", t_cost_forecast_full_run))
+    results.append(_run("R2-6. Cost forecast matches Sonnet pricing math", t_cost_forecast_full_run))
 
     def t_release_decision_flag_exists():
         from primeqa.db import SessionLocal
@@ -130,12 +131,20 @@ def run_tests():
             assert rows, "agent_verdict_counts column missing"
         finally:
             db.close()
-    results.append(test("R2-7. release_decisions.agent_verdict_counts exists", t_release_decision_flag_exists))
+    results.append(_run("R2-7. release_decisions.agent_verdict_counts exists", t_release_decision_flag_exists))
 
     passed = sum(results); total = len(results)
     print(f"\n{'='*40}\nResults: {passed}/{total} passed")
     print("ALL R2 TESTS PASSED" if passed == total else f"{total - passed} FAILED")
     return passed == total
+
+
+def test_r2_superadmin_suite():
+    # wave-0 TEST-2: pytest entry point for the R2 authz invariant suite
+    # (superadmin cap exclusion, agent-settings gating, cost forecast). The
+    # sub-checks are nested inside run_tests(), so this single collected test
+    # is how the suite executes + fails under pytest. Assertions unchanged.
+    assert run_tests()
 
 
 if __name__ == "__main__":

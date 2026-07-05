@@ -28,7 +28,9 @@ import os
 import sys
 import uuid
 
-sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+# wave-0 TEST-2: moved under tests/integration/ so pytest collects it (testpaths).
+# One extra dirname keeps the repo root on sys.path for `python tests/integration/…` too.
+sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))))
 
 from dotenv import load_dotenv
 load_dotenv()
@@ -45,7 +47,7 @@ client = app.test_client()
 results = []
 
 
-def test(name, fn):
+def _run(name, fn):
     try:
         fn()
         print(f"  PASS  {name}")
@@ -69,7 +71,7 @@ def _a_user_id(db):
 # --------------------------------------------------------------------------
 # 1. finalize_decision must match the URL release_id
 # --------------------------------------------------------------------------
-def t_finalize_matches_release():
+def test_finalize_matches_release():
     db = SessionLocal()
     repo = ReleaseRepository(db)
     uid = _a_user_id(db)
@@ -95,7 +97,7 @@ def t_finalize_matches_release():
 # --------------------------------------------------------------------------
 # 2. public /status requires a per-release token (the unauth leak fix)
 # --------------------------------------------------------------------------
-def t_status_requires_token():
+def test_status_requires_token():
     # NOTE: each DB mutation uses its own short-lived session that is closed
     # before the next client.get(). The route's `finally: db.close()` closes the
     # thread-scoped session, so holding one open across an in-process client call
@@ -154,7 +156,7 @@ def t_status_requires_token():
 # --------------------------------------------------------------------------
 # 3. update_status honours tenant_id (defense-in-depth)
 # --------------------------------------------------------------------------
-def t_update_status_tenant_scoped():
+def test_update_status_tenant_scoped():
     db = SessionLocal()
     uid = _a_user_id(db)
     sfx = uuid.uuid4().hex[:8]
@@ -192,7 +194,7 @@ def t_update_status_tenant_scoped():
 #    requirement (release in tenant 1, requirement in tenant 2) is required to
 #    exercise the new guard.
 # --------------------------------------------------------------------------
-def t_add_requirement_tenant_scoped():
+def test_add_requirement_tenant_scoped():
     from primeqa.release.service import ReleaseService
     from primeqa.release.models import ReleaseRequirement
     from primeqa.test_management.models import Requirement, Section
@@ -260,7 +262,7 @@ def t_add_requirement_tenant_scoped():
 #    regression). Stands up a throwaway tenant + env and asserts a tenant-1 caller
 #    cannot reach it.
 # --------------------------------------------------------------------------
-def t_env_access_tenant_scoped():
+def test_env_access_tenant_scoped():
     from primeqa.core.models import Tenant, Environment
     from primeqa.core.repository import EnvironmentRepository
     sfx = uuid.uuid4().hex[:8]
@@ -307,16 +309,16 @@ def t_env_access_tenant_scoped():
 
 if __name__ == "__main__":
     print("\n=== Multi-tenant isolation tests ===\n")
-    results.append(test("1. finalize_decision must match the URL release_id",
-                        t_finalize_matches_release))
-    results.append(test("2. public /status requires a per-release token",
-                        t_status_requires_token))
-    results.append(test("3. update_status honours tenant_id",
-                        t_update_status_tenant_scoped))
-    results.append(test("4. add_requirement rejects a foreign-tenant requirement",
-                        t_add_requirement_tenant_scoped))
-    results.append(test("5. is_environment_accessible is tenant-scoped",
-                        t_env_access_tenant_scoped))
+    results.append(_run("1. finalize_decision must match the URL release_id",
+                        test_finalize_matches_release))
+    results.append(_run("2. public /status requires a per-release token",
+                        test_status_requires_token))
+    results.append(_run("3. update_status honours tenant_id",
+                        test_update_status_tenant_scoped))
+    results.append(_run("4. add_requirement rejects a foreign-tenant requirement",
+                        test_add_requirement_tenant_scoped))
+    results.append(_run("5. is_environment_accessible is tenant-scoped",
+                        test_env_access_tenant_scoped))
 
     passed = sum(1 for r in results if r)
     total = len(results)
