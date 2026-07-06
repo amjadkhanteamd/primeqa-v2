@@ -137,53 +137,14 @@ SIDEBAR_ITEMS: list[dict] = [
         "section": "testing",
         "enabled": False,
     },
-    {
-        # Cutover Step 2 (D-155): the additive substrate-insights read surface
-        # (S6 interpretation + clustering, S8 grounding-validity). Renders an
-        # empty-state until the live-SF sync populates S1.
-        "id": "substrate_insights",
-        "label": "Substrate Insights",
-        "icon": "brain",
-        "url": "/substrate-insights",
-        "permission": "view_intelligence_report",
-        "section": "testing",
-    },
-    {
-        # UI Area 6 (D-174): surface the S7 grounded-answering page in nav.
-        # Same gate + section as substrate_insights (its read-only sibling) so
-        # the audience matches the route's @require_page_permission. Renders an
-        # empty-state (every answer a grounded refusal) until the live-SF sync
-        # populates the S6/S8 answer stores.
-        "id": "ask",
-        "label": "Ask",
-        "icon": "chat",
-        "url": "/ask",
-        "permission": "view_intelligence_report",
-        "section": "testing",
-    },
+    # Substrate Insights / Ask / Org Model / Knowledge moved OUT of the top
+    # bar into the Settings sidebar's "Tools" section (AK 2026-07-07 — the bar
+    # was 12 items wide). Routes + gates unchanged; the pages stay reachable at
+    # their URLs and via templates/settings/base.html. Note the tradeoff: the
+    # Settings gear is admin-only, so BA/tester lose nav DISCOVERABILITY of
+    # Ask/Insights — the contextual "Ask about this" buttons remain for them.
 
     # Admin — tenant-wide config
-    {
-        # D-218: the S1 semantic org-model browser was reachable only via
-        # an environment detail link despite being a core substrate surface.
-        "id": "org_model",
-        "label": "Org Model",
-        "icon": "map",
-        "url": "/org-model",
-        "permission": "manage_environments",
-        "section": "admin",
-    },
-    {
-        "id": "knowledge",
-        "label": "Knowledge",
-        "icon": "brain",
-        "url": "/knowledge",
-        "permission": "manage_knowledge",
-        "section": "admin",
-        # UI Area 7 (D-176): the read-only knowledge admin now exists at
-        # /knowledge, so the reserved slot is live (gate manage_knowledge).
-        "enabled": True,
-    },
     {
         "id": "audit_log",
         "label": "Audit Log",

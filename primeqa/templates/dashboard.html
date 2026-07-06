@@ -14,80 +14,93 @@
     </div>
     {% endif %}
 
+    {# Each KPI is a door, not a poster — the card links to the surface
+       where you act on the number. #}
     <div class="grid grid-cols-1 gap-5 sm:grid-cols-2 lg:grid-cols-4">
-        <div class="overflow-hidden rounded-lg bg-white px-4 py-5 shadow sm:p-6">
+        <a href="/claims" class="block overflow-hidden rounded-lg bg-white px-4 py-5 shadow sm:p-6 hover:ring-2 hover:ring-indigo-200">
             <dt class="truncate text-sm font-medium text-gray-500">Total Test Cases</dt>
             <dd class="mt-1 text-3xl font-semibold text-gray-900">{{ stats.total_test_cases }}</dd>
-        </div>
-        <div class="overflow-hidden rounded-lg bg-white px-4 py-5 shadow sm:p-6">
+            <p class="mt-1 text-xs text-gray-400">approved &middot; open the Test Library &rarr;</p>
+        </a>
+        <a href="/runs/substrate" class="block overflow-hidden rounded-lg bg-white px-4 py-5 shadow sm:p-6 hover:ring-2 hover:ring-indigo-200">
             <dt class="truncate text-sm font-medium text-gray-500">Runs Today</dt>
             <dd class="mt-1 text-3xl font-semibold text-gray-900">{{ stats.runs_today }}</dd>
-        </div>
-        <div class="overflow-hidden rounded-lg bg-white px-4 py-5 shadow sm:p-6">
+            <p class="mt-1 text-xs text-gray-400">see all results &rarr;</p>
+        </a>
+        <a href="/runs/substrate" class="block overflow-hidden rounded-lg bg-white px-4 py-5 shadow sm:p-6 hover:ring-2 hover:ring-indigo-200">
             <dt class="truncate text-sm font-medium text-gray-500">Pass Rate</dt>
             <dd class="mt-1 text-3xl font-semibold {% if stats.pass_rate >= 80 %}text-green-600{% elif stats.pass_rate >= 50 %}text-yellow-600{% else %}text-red-600{% endif %}">{{ stats.pass_rate }}%</dd>
-        </div>
-        <div class="overflow-hidden rounded-lg bg-white px-4 py-5 shadow sm:p-6">
+            <p class="mt-1 text-xs text-gray-400">latest run per test</p>
+        </a>
+        <a href="/claims/inbox" class="block overflow-hidden rounded-lg bg-white px-4 py-5 shadow sm:p-6 hover:ring-2 hover:ring-indigo-200">
             <dt class="truncate text-sm font-medium text-gray-500">Pending Reviews</dt>
             <dd class="mt-1 text-3xl font-semibold text-orange-600">{{ stats.pending_reviews }}</dd>
-        </div>
+            <p class="mt-1 text-xs text-gray-400">open your review inbox &rarr;</p>
+        </a>
     </div>
 
     {% if user.role in ['ba', 'admin', 'superadmin'] and stats.pending_reviews > 0 %}
     <div class="rounded-md bg-orange-50 border border-orange-200 p-4">
         <p class="text-sm text-orange-800">You have <strong>{{ stats.pending_reviews }}</strong> pending reviews.
-            <a href="/reviews" class="font-medium underline">Review now</a></p>
+            <a href="/claims/inbox" class="font-medium underline">Review now</a></p>
     </div>
     {% endif %}
 
     {% if user.role in ['admin', 'superadmin'] %}
     <div class="grid grid-cols-1 gap-5 sm:grid-cols-2">
-        <div class="rounded-lg bg-white px-4 py-5 shadow sm:p-6">
+        <a href="/settings/users" class="block rounded-lg bg-white px-4 py-5 shadow sm:p-6 hover:ring-2 hover:ring-indigo-200">
             <h3 class="text-sm font-medium text-gray-500">Users</h3>
             <p class="mt-1 text-2xl font-semibold text-gray-900">{{ stats.user_count }} active</p>
-        </div>
-        <div class="rounded-lg bg-white px-4 py-5 shadow sm:p-6">
+            <p class="mt-1 text-xs text-gray-400">manage users &rarr;</p>
+        </a>
+        <a href="/environments" class="block rounded-lg bg-white px-4 py-5 shadow sm:p-6 hover:ring-2 hover:ring-indigo-200">
             <h3 class="text-sm font-medium text-gray-500">Environments</h3>
             <p class="mt-1 text-2xl font-semibold text-gray-900">{{ stats.env_count }} configured</p>
-        </div>
+            <p class="mt-1 text-xs text-gray-400">manage environments &rarr;</p>
+        </a>
     </div>
     {% endif %}
 
+    {# Recent Runs speaks human: the test's name, the outcome + its plain-
+       English reading, the requirement, and a relative time — not raw UUIDs
+       (the run id rides each row's link/title attribute). #}
     <div class="bg-white shadow rounded-lg">
-        <div class="px-4 py-5 sm:px-6 border-b border-gray-200">
+        <div class="px-4 py-5 sm:px-6 border-b border-gray-200 flex items-center justify-between">
             <h3 class="text-lg font-medium text-gray-900">Recent Runs</h3>
+            <a href="/runs/substrate" class="text-sm text-indigo-600 hover:text-indigo-800">All runs &rarr;</a>
         </div>
         <div class="overflow-x-auto">
             <table class="min-w-full divide-y divide-gray-200">
                 <thead class="bg-gray-50">
                     <tr>
-                        <th class="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase">ID</th>
-                        <th class="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase">Status</th>
-                        <th class="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase">Type</th>
-                        <th class="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase">Priority</th>
-                        <th class="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase">Queued</th>
+                        <th class="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase">Test</th>
+                        <th class="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase">Result</th>
+                        <th class="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase">Requirement</th>
+                        <th class="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase">When</th>
                     </tr>
                 </thead>
                 <tbody class="bg-white divide-y divide-gray-200">
                     {% for run in recent_runs %}
-                    <tr class="hover:bg-gray-50 cursor-pointer" onclick="window.location='/runs/{{ run.id }}'">
-                        <td class="px-6 py-4 text-sm font-medium text-indigo-600">#{{ run.id }}</td>
-                        <td class="px-6 py-4">
-                            <span class="inline-flex items-center px-2.5 py-0.5 rounded-full text-xs font-medium
-                                {% if run.status == 'completed' %}bg-green-100 text-green-800
-                                {% elif run.status == 'failed' %}bg-red-100 text-red-800
-                                {% elif run.status == 'running' %}bg-blue-100 text-blue-800
-                                {% elif run.status == 'queued' %}bg-yellow-100 text-yellow-800
-                                {% elif run.status == 'cancelled' %}bg-gray-100 text-gray-800
-                                {% endif %}">{{ run.status }}</span>
+                    <tr class="hover:bg-gray-50 cursor-pointer" onclick="window.location='/runs/{{ run.run_id }}'">
+                        <td class="px-6 py-4 text-sm font-medium text-indigo-600 max-w-md">
+                            <a href="/runs/{{ run.run_id }}" class="hover:underline" title="run {{ run.run_id }}">{{ run.title or 'Run ' ~ run.run_id[:8] }}</a>
                         </td>
-                        <td class="px-6 py-4 text-sm text-gray-500">{{ run.run_type }}</td>
-                        <td class="px-6 py-4 text-sm text-gray-500">{{ run.priority }}</td>
-                        <td class="px-6 py-4 text-sm text-gray-500">{{ run.queued_at[:19] if run.queued_at else '' }}</td>
+                        <td class="px-6 py-4">
+                            <div class="flex items-center gap-2 flex-wrap">
+                                <span class="inline-flex items-center px-2.5 py-0.5 rounded-full text-xs font-medium
+                                    {% if run.outcome == 'passed' %}bg-green-100 text-green-800
+                                    {% elif run.outcome == 'failed' %}bg-red-100 text-red-800
+                                    {% elif run.outcome == 'errored' %}bg-amber-100 text-amber-800
+                                    {% else %}bg-gray-100 text-gray-700{% endif %}">{{ run.outcome }}</span>
+                                {% if run.verdict_plain %}<span class="text-xs text-gray-500">{{ run.verdict_plain }}</span>{% endif %}
+                            </div>
+                        </td>
+                        <td class="px-6 py-4 text-sm text-gray-500 whitespace-nowrap">{{ run.requirement_key or '—' }}</td>
+                        <td class="px-6 py-4 text-sm text-gray-500 whitespace-nowrap" title="{{ run.finished_at }}">{{ run.finished_ago or (run.finished_at[:19] if run.finished_at else '—') }}</td>
                     </tr>
                     {% endfor %}
                     {% if not recent_runs %}
-                    <tr><td colspan="5" class="px-6 py-8 text-center text-sm text-gray-500">No runs yet</td></tr>
+                    <tr><td colspan="4" class="px-6 py-8 text-center text-sm text-gray-500">No runs yet</td></tr>
                     {% endif %}
                 </tbody>
             </table>

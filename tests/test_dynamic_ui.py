@@ -93,8 +93,6 @@ def run_tests():
         assert "dashboard" in ids, ids
         assert "test_library" in ids, ids
         assert "releases" in ids, ids          # via view_dashboard
-        assert "substrate_insights" in ids, ids
-        assert "ask" in ids, ids               # view_intelligence_report (Viewer)
         # No run / triage / admin items.
         assert "my_tickets" not in ids, ids
         assert "run_tests" not in ids, ids
@@ -112,9 +110,8 @@ def run_tests():
         assert "results" in ids, ids
         assert "my_reviews" in ids, ids
         assert "test_library" in ids, ids
-        # Member holds manage_knowledge + manage_test_suites -> Settings + Knowledge.
+        # Member holds manage_knowledge + manage_test_suites -> Settings.
         assert "settings" in ids, ids
-        assert "knowledge" in ids, ids
         # But NOT the admin-tier Org Model (needs manage_environments).
         assert "org_model" not in ids, ids
     results.append(test("2. member sidebar = run/triage + testing + settings",
@@ -126,29 +123,25 @@ def run_tests():
         assert "primary" in sections
         assert "testing" in sections
         assert "admin" in sections, sections
-        assert "org_model" in ids, ids          # manage_environments (Admin)
         assert "settings" in ids, ids
         assert "releases" in ids, ids
         # Disabled-page items stay hidden until their pages ship.
         assert "audit_log" not in ids, ids
         assert "coverage" not in ids, ids
-    results.append(test("3. admin sidebar = every section incl. Org Model",
+    results.append(test("3. admin sidebar = primary/testing/admin sections",
                         test_admin_sidebar))
 
-    def test_ask_and_knowledge_gates():
-        viewer = _nav_ids("viewer", "/dashboard")
-        member = _nav_ids("tester", "/run")
-        admin = _nav_ids("admin", "/settings")
-        # Ask (view_intelligence_report, Viewer) -> visible to every tier.
-        assert "ask" in viewer and "ask" in member and "ask" in admin
-        # Ask sits next to its read-only sibling substrate_insights.
-        assert viewer.index("ask") == viewer.index("substrate_insights") + 1, viewer
-        # Knowledge (manage_knowledge, Member) -> hidden from viewer, shown member+.
-        assert "knowledge" not in viewer, viewer
-        assert "knowledge" in member, member
-        assert "knowledge" in admin, admin
-    results.append(test("4. Ask (Viewer) + Knowledge (Member) nav gates",
-                        test_ask_and_knowledge_gates))
+    def test_tools_moved_out_of_nav():
+        # AK 2026-07-07: Substrate Insights / Ask / Org Model / Knowledge moved
+        # from the top bar to the Settings sidebar's Tools section — they must
+        # not appear in nav for ANY tier (routes + gates unchanged).
+        for role, path in (("viewer", "/dashboard"), ("tester", "/run"),
+                           ("admin", "/settings"), ("superadmin", "/settings")):
+            ids = _nav_ids(role, path)
+            for moved in ("ask", "substrate_insights", "org_model", "knowledge"):
+                assert moved not in ids, (role, moved, ids)
+    results.append(test("4. Ask/Insights/Org Model/Knowledge moved to Settings",
+                        test_tools_moved_out_of_nav))
 
     def test_active_highlights_prefix_match():
         # /runs/42 highlights Results (url=/runs/substrate, active_also_for /runs).

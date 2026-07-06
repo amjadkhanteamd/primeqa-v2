@@ -200,9 +200,16 @@ def dashboard():
             "user_count": row["user_count"],
             "env_count": row["env_count"],
         }
+        # Recent Runs speaks human: the runs-index read already carries the
+        # test's business title, the plain-English verdict, and a relative
+        # time — the dashboard table renders those instead of raw UUIDs
+        # (the old sub["recent_runs"] shape carried id/outcome/verdict only,
+        # plus a dead hard-coded priority).
+        from primeqa.intelligence.s4_execution_console import list_runs
+        recent = list_runs(tid, page=1, per_page=10)
         return render_template("dashboard.html", **ctx(
             active_page="dashboard", stats=stats,
-            recent_runs=sub["recent_runs"],
+            recent_runs=recent.get("runs") or [],
             setup_complete=setup_complete,
             env_pass_rates=[], flaky_tests=[],
             flaky_claims=sub["flaky_claims"], releases_health=[],
