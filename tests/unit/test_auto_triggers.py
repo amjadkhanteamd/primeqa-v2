@@ -3,11 +3,9 @@ stubbed via monkeypatch; asserts the orchestration of each trigger."""
 from __future__ import annotations
 
 import types
-from uuid import uuid4
 
 import pytest
 
-import primeqa.db as db_mod
 import primeqa.execution_engine.intake as intake
 import primeqa.intelligence.s4_execution_console as console
 
@@ -28,42 +26,14 @@ def recorded(monkeypatch):
     return calls
 
 
-# --- trigger 1: auto-enqueue on approval -------------------------------------
+# --- trigger 1: auto-enqueue on approval — REMOVED (AK 2026-07-07) ------------
+# Approval is decision-only: the fan-out ran every approval on every
+# sandbox-flagged env (including a mis-flagged real production org). This test
+# pins the removal so the trigger cannot silently return.
 
-def test_auto_enqueue_fans_out_to_all_auto_verify_envs(monkeypatch, recorded):
-    monkeypatch.setattr(db_mod, "get_db", lambda: iter([types.SimpleNamespace(
-        close=lambda: None)]))
-    monkeypatch.setattr(console, "auto_verify_environment_ids",
-                        lambda db, tid: [7, 9])
-    tid = uuid4()
-    out = console.auto_enqueue_on_approval(1, tid)
-    assert out["environments"] == [7, 9]
-    assert len(out["enqueued"]) == 2
-    assert [c["environment_id"] for c in recorded] == [7, 9]
-    assert all(c["test_id"] == tid for c in recorded)
-
-
-def test_auto_enqueue_one_env_failure_never_blocks_the_rest(monkeypatch, recorded):
-    monkeypatch.setattr(db_mod, "get_db", lambda: iter([types.SimpleNamespace(
-        close=lambda: None)]))
-    monkeypatch.setattr(console, "auto_verify_environment_ids",
-                        lambda db, tid: [7, 9])
-    real = intake.enqueue_s4_execution
-
-    def _flaky(**kw):
-        if kw["environment_id"] == 7:
-            raise RuntimeError("boom")
-        return real(**kw)
-    monkeypatch.setattr(intake, "enqueue_s4_execution", _flaky)
-    out = console.auto_enqueue_on_approval(1, uuid4())
-    assert len(out["enqueued"]) == 1                       # env 9 still enqueued
-
-
-def test_auto_enqueue_never_raises(monkeypatch):
-    monkeypatch.setattr(db_mod, "get_db",
-                        lambda: (_ for _ in ()).throw(RuntimeError("db down")))
-    out = console.auto_enqueue_on_approval(1, uuid4())
-    assert out == {"enqueued": [], "environments": []}
+def test_approval_no_longer_auto_enqueues():
+    assert not hasattr(console, "auto_enqueue_on_approval")
+    assert not hasattr(console, "auto_verify_environment_ids")
 
 
 # --- trigger 2: scheduled re-verification ------------------------------------

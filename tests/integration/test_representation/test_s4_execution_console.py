@@ -122,12 +122,15 @@ def test_read_claim_runs_best_effort_bad_tenant():
 # --- approve a claim (draft -> runnable) -------------------------------------
 
 def test_approve_claim_makes_draft_runnable(session):
+    from sqlalchemy import text
     coord = SemanticTransactionCoordinator()
     test_id = _seed_draft_claim_with_recipe(session, coord)
     # not runnable: draft claim (no approved version) + generated_unapproved recipe
     assert coord.get_current_approved_claim(session, test_id) is None
     assert coord.select_recipe_for_execution(
         session, test_id, available_environment=_MIN_AVAILABLE_ENV) is None
+    jobs_before = session.execute(
+        text("SELECT COUNT(*) FROM s4_execution_jobs")).scalar()
 
     out = _approve_claim(session, test_id)
     assert out["ok"] is True and out["recipes_approved"] >= 1
@@ -136,6 +139,11 @@ def test_approve_claim_makes_draft_runnable(session):
     assert coord.get_current_approved_claim(session, test_id) is not None
     assert coord.select_recipe_for_execution(
         session, test_id, available_environment=_MIN_AVAILABLE_ENV) is not None
+    # approval is DECISION-ONLY: no run gets queued (the D-199 approve-time
+    # auto-verify trigger was removed 2026-07-07)
+    jobs_after = session.execute(
+        text("SELECT COUNT(*) FROM s4_execution_jobs")).scalar()
+    assert jobs_after == jobs_before
 
 
 def test_approve_claim_best_effort_bad_tenant():

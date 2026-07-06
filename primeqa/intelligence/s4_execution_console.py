@@ -603,12 +603,15 @@ def approve_claim(tenant_id: int, test_id) -> dict:
                 session.flush()
             finally:
                 session.close()
-        # D-199 trigger 1: the approval transaction has committed (the context
-        # exit above) — best-effort auto-enqueue on the auto-verify envs. An
-        # enqueue failure never un-approves.
-        if out.get("ok"):
-            auto = auto_enqueue_on_approval(tenant_id, test_id)
-            out["auto_enqueued"] = len(auto["enqueued"])
+        # Approval is DECISION-ONLY. D-199's trigger 1 (auto-enqueue the
+        # approved claim on every "safe" environment) was REVERSED by AK
+        # 2026-07-07: the env fan-out ran each approval on every connected
+        # sandbox-flagged env — including a mis-flagged real production org —
+        # and cross-org runs of single-org-grounded claims are noise anyway.
+        # Runs are explicit: the requirement page's Run button, /run, the
+        # schedules, and the CI webhook. If a run-on-approval trigger ever
+        # returns, it must be org-scoped (the claim's own grounding org) and
+        # opt-in per tenant.
         return out
     except Exception as exc:
         log.warning("approve_claim failed for tenant %s test %s: %s",
@@ -659,61 +662,8 @@ def deprecate_claim(tenant_id: int, test_id, reason: str) -> dict:
         return {"ok": False, "error": str(exc)}
 
 
-# --- D-199 trigger 1: auto-enqueue on approval --------------------------------
-
-def auto_verify_environment_ids(db, tenant_id: int) -> list:
-    """The D-199 env-selection policy: every ACTIVE, NON-PRODUCTION environment
-    with a Salesforce connection — "verify everywhere it is safe." Production is
-    structurally excluded (prod runs keep the human confirm_production path)."""
-    from primeqa.core.models import Environment
-    rows = (db.query(Environment.id)
-            .filter(Environment.tenant_id == tenant_id,
-                    Environment.is_active.is_(True),
-                    Environment.is_production.is_(False),
-                    Environment.connection_id.isnot(None))
-            .all())
-    return [r[0] for r in rows]
-
-
-def auto_enqueue_on_approval(tenant_id: int, test_id, *, created_by=None) -> dict:
-    """D-199 trigger 1: after a claim is approved, queue its execution on every
-    auto-verify environment. Best-effort — never raises, never blocks the
-    approval. Idempotent per env (the queue's active-set dedup). Returns
-    ``{enqueued: [...job ids...], environments: [...ids...]}``."""
-    try:
-        from primeqa.db import get_db
-        from primeqa.execution_engine.intake import enqueue_s4_execution
-        db = next(get_db())
-        try:
-            env_ids = auto_verify_environment_ids(db, tenant_id)
-        finally:
-            db.close()
-        jobs = []
-        unexecutable = None
-        for eid in env_ids:
-            try:
-                job = enqueue_s4_execution(
-                    tenant_id=tenant_id, test_id=test_id,
-                    environment_id=eid, created_by=created_by)
-                jobs.append(job.id)
-            except UnexecutableClaimError as exc:
-                # D-223: a shape refusal is env-independent — record once,
-                # stop trying (the caller surfaces it; approval stands).
-                log.info("auto-enqueue gated (unexecutable) tenant %s test %s: %s",
-                         tenant_id, test_id, exc)
-                unexecutable = str(exc)
-                break
-            except Exception as exc:                       # one env never blocks the rest
-                log.warning("auto-enqueue failed for tenant %s test %s env %s: %s",
-                            tenant_id, test_id, eid, exc)
-        out = {"enqueued": jobs, "environments": env_ids}
-        if unexecutable is not None:
-            out["unexecutable"] = unexecutable
-        return out
-    except Exception as exc:
-        log.warning("auto-enqueue skipped for tenant %s test %s: %s",
-                    tenant_id, test_id, exc)
-        return {"enqueued": [], "environments": []}
+# (D-199 trigger 1 — auto-enqueue on approval — REMOVED 2026-07-07 per AK:
+# approval is decision-only; see the note in approve_claim.)
 
 
 # --- D-199 trigger 3: bulk-enqueue a release's claims (the CI gate re-verify) --

@@ -2821,18 +2821,10 @@ def claims_approve(test_id):
     from primeqa.intelligence.s4_execution_console import approve_claim
     res = approve_claim(request.user["tenant_id"], str(test_id))
     if res.get("ok"):
-        # D-226 (the 0.4-audit F2 fix): say what actually got queued — the old
-        # flash claimed runnability even when zero runs were enqueued.
-        queued = res.get("auto_enqueued") or 0
-        if res.get("unexecutable"):
-            flash(f"Test case approved, but no run was queued: {res['unexecutable']}",
-                  "warning")
-        elif queued:
-            flash(f"Test case approved — {queued} verification run"
-                  f"{'s' if queued != 1 else ''} queued.", "success")
-        else:
-            flash("Test case approved. No run was queued (no auto-verify sandbox "
-                  "environment is connected).", "warning")
+        # Approval is decision-only (the D-199 auto-verify trigger was removed
+        # 2026-07-07) — say so, and point at the explicit run paths.
+        flash("Test case approved. Run it from its requirement page or Run "
+              "Tests when you're ready.", "success")
     else:
         flash(f"Could not approve: {res.get('error', 'unknown error')}", "error")
     # D-206: the inbox approves in place — return there when asked. Same-page
