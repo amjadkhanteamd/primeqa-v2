@@ -4,12 +4,15 @@ Business logic: user management, auth, tenant operations, environment management
 """
 
 import hashlib
+import logging
 import os
 import secrets
 from datetime import datetime, timedelta, timezone
 
 import bcrypt
 import jwt
+
+logger = logging.getLogger(__name__)
 
 from primeqa.core.authz import (
     ROLE_TO_TIER,
@@ -358,9 +361,17 @@ class EnvironmentService:
             }, timeout=15)
             if resp.status_code == 200:
                 return {"status": "connected", "sf_version": env.sf_api_version}
-            return {"status": "failed", "status_code": resp.status_code, "detail": resp.text[:500]}
+            # SEC-9: log the raw upstream body server-side only; return a generic,
+            # category-keyed message (the caller places this into a redirect URL
+            # that lands in history/Referer/proxy logs).
+            logger.warning("env %s SF connection test failed: HTTP %s body=%r",
+                           environment_id, resp.status_code, resp.text[:500])
+            return {"status": "failed", "status_code": resp.status_code,
+                    "detail": f"Salesforce returned HTTP {resp.status_code}."}
         except http_requests.RequestException as e:
-            return {"status": "failed", "detail": str(e)}
+            logger.warning("env %s SF connection test network error: %s", environment_id, e)
+            return {"status": "failed",
+                    "detail": "Could not reach the Salesforce instance (network error)."}
 
     def refresh_sf_token(self, environment_id, tenant_id):
         pass
@@ -479,7 +490,12 @@ class ConnectionService:
                 )
                 if token_resp.status_code != 200:
                     self.conn_repo.update_status(connection_id, "error", tenant_id)
-                    return {"status": "failed", "detail": token_resp.text[:500]}
+                    # SEC-9: log the raw OAuth error body server-side; return a
+                    # generic message (never echoed into a redirect URL).
+                    logger.warning("connection %s SF OAuth failed: HTTP %s body=%r",
+                                   connection_id, token_resp.status_code, token_resp.text[:500])
+                    return {"status": "failed",
+                            "detail": f"Salesforce authentication failed (HTTP {token_resp.status_code})."}
                 token_data = token_resp.json()
                 access_token = token_data.get("access_token", "")
                 instance_url = token_data.get("instance_url", cfg.get("instance_url", ""))
@@ -519,10 +535,16 @@ class ConnectionService:
             self.conn_repo.update_status(connection_id, "active" if ok else "error", tenant_id)
             if ok:
                 return {"status": "connected"}
-            return {"status": "failed", "detail": resp.text[:500]}
+            # SEC-9: log the raw upstream body server-side; return a generic message.
+            logger.warning("connection %s test failed: HTTP %s body=%r",
+                           connection_id, resp.status_code, resp.text[:500])
+            return {"status": "failed",
+                    "detail": f"Connection test failed (HTTP {resp.status_code})."}
         except Exception as e:
             self.conn_repo.update_status(connection_id, "error", tenant_id)
-            return {"status": "failed", "detail": str(e)}
+            # SEC-9: log the exception server-side; never echo it to the client.
+            logger.warning("connection %s test error: %s", connection_id, e)
+            return {"status": "failed", "detail": "Connection test failed. See server logs for details."}
 
     @staticmethod
     def _conn_dict(c):

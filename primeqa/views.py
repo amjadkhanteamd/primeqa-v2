@@ -1517,14 +1517,21 @@ def connections_detail(conn_id):
 @views_bp.route("/connections/<int:conn_id>/test", methods=["POST"])
 @role_required("admin")
 def connections_test(conn_id):
+    from urllib.parse import quote
     db = next(get_db())
     try:
         svc = ConnectionService(ConnectionRepository(db))
         result = svc.test_connection(conn_id, request.user["tenant_id"])
-        msg = "Connected successfully!" if result.get("status") == "connected" else f"Failed: {result.get('detail', 'Unknown error')}"
-        return redirect(f"/connections/{conn_id}?message={msg}")
+        # SEC-9: `detail` is now a generic, server-sanitised message (the service
+        # logs any raw upstream body); still URL-encode it before the redirect.
+        msg = ("Connected successfully!" if result.get("status") == "connected"
+               else f"Failed: {result.get('detail', 'Unknown error')}")
+        return redirect(f"/connections/{conn_id}?message={quote(msg)}")
     except Exception as e:
-        return redirect(f"/connections/{conn_id}?message=Error: {e}")
+        # SEC-9: log the exception server-side; never echo it into the redirect URL.
+        import logging
+        logging.getLogger(__name__).warning("connection %s test view error: %s", conn_id, e)
+        return redirect(f"/connections/{conn_id}?message={quote('Connection test failed.')}")
     finally:
         db.close()
 
