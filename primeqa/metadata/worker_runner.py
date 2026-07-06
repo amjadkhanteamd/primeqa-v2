@@ -165,6 +165,14 @@ def _oauth_token(env, cfg) -> str:
         login_url = ("https://test.salesforce.com" if org_type == "sandbox"
                      else "https://login.salesforce.com")
 
+    # SEC-5: never POST the org's client_secret (+ username/password in the
+    # password flow) to a non-Salesforce / private login host. This is the shared
+    # credential chokepoint for S1 sync + S4 execution, so the guard protects both
+    # live paths. Raises SalesforceUrlError — fail loud (the job fails) rather than
+    # leaking the secrets to an attacker-chosen host.
+    from primeqa.integrations.sf_url import validate_sf_instance_url
+    validate_sf_instance_url(login_url)
+
     body = {
         "client_id": cfg.get("client_id", ""),
         "client_secret": cfg.get("client_secret", ""),

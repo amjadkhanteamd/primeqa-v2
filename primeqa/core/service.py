@@ -282,6 +282,12 @@ class EnvironmentService:
 
         if not sf_instance_url:
             raise ValueError("Salesforce Instance URL is required (provide directly or via a Connection)")
+        # SEC-3: reject a non-Salesforce / private-IP / non-https instance URL at
+        # write time so the server can never later be pointed at an internal host
+        # with the org's access-token. Raises SalesforceUrlError (a ValueError) ->
+        # 400 at the route.
+        from primeqa.integrations.sf_url import validate_sf_instance_url
+        validate_sf_instance_url(sf_instance_url)
         sf_api_version = sf_api_version or "59.0"
 
         if env_type == "production":
@@ -333,6 +339,14 @@ class EnvironmentService:
         if not creds or not creds.get("access_token"):
             raise ValueError("No credentials or access token stored for this environment")
 
+        # SEC-3: re-validate before the outbound call (defense-in-depth — the env
+        # may predate the write-time guard). Never send the access-token to a
+        # non-Salesforce / private host.
+        from primeqa.integrations.sf_url import validate_sf_instance_url, SalesforceUrlError
+        try:
+            validate_sf_instance_url(env.sf_instance_url)
+        except SalesforceUrlError as e:
+            return {"status": "failed", "detail": str(e)}
         url = f"{env.sf_instance_url.rstrip('/')}/services/data/v{env.sf_api_version}/"
         try:
             resp = http_requests.get(url, headers={
@@ -434,10 +448,15 @@ class ConnectionService:
         ctype = data["connection_type"]
         try:
             if ctype == "salesforce":
+                from primeqa.integrations.sf_url import validate_sf_instance_url
                 login_url = cfg.get("instance_url", "").rstrip("/")
                 if not login_url:
                     org_type = cfg.get("org_type", "sandbox")
                     login_url = "https://test.salesforce.com" if org_type == "sandbox" else "https://login.salesforce.com"
+                # SEC-5: never POST the org's client_secret (+ password in the
+                # password flow) to a non-Salesforce / private login host. Raises
+                # SalesforceUrlError -> caught by this method's except -> failed.
+                validate_sf_instance_url(login_url)
                 auth_flow = cfg.get("auth_flow", "client_credentials")
                 token_data_body = {
                     "client_id": cfg.get("client_id", ""),
@@ -460,6 +479,9 @@ class ConnectionService:
                 token_data = token_resp.json()
                 access_token = token_data.get("access_token", "")
                 instance_url = token_data.get("instance_url", cfg.get("instance_url", ""))
+                # SEC-3: validate the returned instance_url before sending the
+                # access-token to it (defense-in-depth over the OAuth response).
+                validate_sf_instance_url(instance_url)
                 api_url = f"{instance_url.rstrip('/')}/services/data/v{cfg.get('api_version', '59.0')}/"
                 resp = http_requests.get(api_url, headers={
                     "Authorization": f"Bearer {access_token}",
