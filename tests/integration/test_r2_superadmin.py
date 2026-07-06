@@ -67,13 +67,23 @@ def run_tests():
 
     def t_agent_settings_update():
         client.set_cookie("access_token", admin_token)
-        r = client.post("/settings/agent", data={
+        payload = {
             "agent_enabled": "1",
             "trust_threshold_high": "0.90",
             "trust_threshold_medium": "0.55",
             "max_fix_attempts_per_run": "2",
-        })
-        assert r.status_code in (200, 302)
+        }
+        # CSRF enforcement is correct: a state-changing POST with NO token is
+        # rejected 403 (a web form route, not /api/* Bearer). The prior test
+        # sent no token and asserted 200/302 — it was stale, not the route.
+        assert client.post("/settings/agent", data=payload).status_code == 403, \
+            "CSRF should reject the agent-settings POST when no token is supplied"
+        # The legit path supplies the double-submit token (cookie == form field).
+        csrf = "sec-wave1-csrf-token"
+        client.set_cookie("csrf_token", csrf)
+        r = client.post("/settings/agent", data={**payload, "csrf_token": csrf})
+        assert r.status_code in (200, 302), \
+            f"expected 200/302 with a valid CSRF token, got {r.status_code}"
         # Verify via repo
         from primeqa.db import SessionLocal
         from primeqa.core.agent_settings import AgentSettingsRepository
