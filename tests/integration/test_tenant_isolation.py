@@ -307,6 +307,91 @@ def test_env_access_tenant_scoped():
             db.close()
 
 
+# --------------------------------------------------------------------------
+# 6. add_member / add_environment tenant-scope the client-supplied id (SEC-2).
+#    The group is tenant-checked, but the linked user_id / environment_id was
+#    written straight through; group_members / group_environments carry no tenant
+#    column, so a foreign id would link in and leak the user's PII / the env's
+#    sf_instance_url via get_group_detail. Mirrors test #4 (add_requirement).
+# --------------------------------------------------------------------------
+def test_add_member_environment_tenant_scoped():
+    from primeqa.core.models import (
+        Tenant, User, Environment, GroupMember, GroupEnvironment,
+    )
+    from primeqa.core.repository import GroupRepository
+    from primeqa.core.service import GroupService
+    sfx = uuid.uuid4().hex[:8]
+    db = SessionLocal()
+    uid = _a_user_id(db)
+    grepo = GroupRepository(db)
+    svc = GroupService(grepo)
+    group = grepo.create_group(TENANT_ID, f"ISO Group {sfx}", uid)
+
+    # Foreign-tenant fixtures (throwaway tenant 2 + its user + env).
+    t2 = Tenant(name=f"ISO Grp Tenant {sfx}", slug=f"isogrp-{sfx}")
+    db.add(t2); db.commit(); db.refresh(t2)
+    foreign_user = User(tenant_id=t2.id, email=f"iso-{sfx}@example.invalid",
+                        password_hash="x", full_name="Foreign User", role="viewer")
+    db.add(foreign_user); db.commit(); db.refresh(foreign_user)
+    foreign_env = Environment(tenant_id=t2.id, name=f"ISO GrpEnv {sfx}",
+                              env_type="sandbox", sf_instance_url="https://example.invalid",
+                              sf_api_version="60.0", created_by=uid)
+    db.add(foreign_env); db.commit(); db.refresh(foreign_env)
+    own_user = db.query(User).filter(User.tenant_id == TENANT_ID).first()
+    own_env = db.query(Environment).filter(Environment.tenant_id == TENANT_ID).first()
+    try:
+        # NEGATIVE: a foreign-tenant user_id must be rejected, no member row.
+        rejected = False
+        try:
+            svc.add_member(group.id, TENANT_ID, foreign_user.id, uid)
+        except ValueError as e:
+            rejected = "not found" in str(e).lower()
+        assert rejected, "cross-tenant user_id was NOT rejected by add_member"
+        assert db.query(GroupMember).filter(
+            GroupMember.group_id == group.id,
+            GroupMember.user_id == foreign_user.id).first() is None, \
+            "a cross-tenant group_members row was created"
+
+        # NEGATIVE: a foreign-tenant environment_id must be rejected.
+        rejected_env = False
+        try:
+            svc.add_environment(group.id, TENANT_ID, foreign_env.id, uid)
+        except ValueError as e:
+            rejected_env = "not found" in str(e).lower()
+        assert rejected_env, "cross-tenant environment_id was NOT rejected by add_environment"
+        assert db.query(GroupEnvironment).filter(
+            GroupEnvironment.group_id == group.id,
+            GroupEnvironment.environment_id == foreign_env.id).first() is None, \
+            "a cross-tenant group_environments row was created"
+
+        # POSITIVE: same-tenant links still work (no happy-path regression).
+        if own_user is not None:
+            svc.add_member(group.id, TENANT_ID, own_user.id, uid)
+            assert db.query(GroupMember).filter(
+                GroupMember.group_id == group.id,
+                GroupMember.user_id == own_user.id).first() is not None, \
+                "same-tenant add_member failed to link"
+        if own_env is not None:
+            svc.add_environment(group.id, TENANT_ID, own_env.id, uid)
+            assert db.query(GroupEnvironment).filter(
+                GroupEnvironment.group_id == group.id,
+                GroupEnvironment.environment_id == own_env.id).first() is not None, \
+                "same-tenant add_environment failed to link"
+    finally:
+        try:
+            db.query(GroupMember).filter(GroupMember.group_id == group.id).delete()
+            db.query(GroupEnvironment).filter(GroupEnvironment.group_id == group.id).delete()
+            db.delete(group)
+            db.delete(foreign_env)
+            db.delete(foreign_user)
+            db.delete(t2)
+            db.commit()
+        except Exception:
+            db.rollback()
+        finally:
+            db.close()
+
+
 if __name__ == "__main__":
     print("\n=== Multi-tenant isolation tests ===\n")
     results.append(_run("1. finalize_decision must match the URL release_id",
@@ -319,6 +404,8 @@ if __name__ == "__main__":
                         test_add_requirement_tenant_scoped))
     results.append(_run("5. is_environment_accessible is tenant-scoped",
                         test_env_access_tenant_scoped))
+    results.append(_run("6. add_member/add_environment tenant-scope the linked id",
+                        test_add_member_environment_tenant_scoped))
 
     passed = sum(1 for r in results if r)
     total = len(results)

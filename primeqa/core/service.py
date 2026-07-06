@@ -547,9 +547,20 @@ class GroupService:
             raise ValueError("Group not found")
 
     def add_member(self, group_id, tenant_id, user_id, added_by):
+        from primeqa.core.models import User
         group = self.group_repo.get_group(group_id, tenant_id)
         if not group:
             raise ValueError("Group not found")
+        # Tenant isolation (SEC-2): the user must belong to the caller's tenant
+        # before it can be linked. group_members has no tenant column, so — like
+        # release/service.py add_requirement — the guard must live here; without
+        # it a foreign user_id links into the group and leaks the user's
+        # email/full_name back through get_group_detail.
+        own = self.group_repo.db.query(User.id).filter(
+            User.id == user_id, User.tenant_id == tenant_id,
+        ).first()
+        if not own:
+            raise ValueError("User not found")
         self.group_repo.add_member(group_id, user_id, added_by)
 
     def remove_member(self, group_id, tenant_id, user_id):
@@ -559,9 +570,19 @@ class GroupService:
         self.group_repo.remove_member(group_id, user_id)
 
     def add_environment(self, group_id, tenant_id, environment_id, added_by):
+        from primeqa.core.models import Environment
         group = self.group_repo.get_group(group_id, tenant_id)
         if not group:
             raise ValueError("Group not found")
+        # Tenant isolation (SEC-2): the environment must belong to the caller's
+        # tenant before linking (group_environments has no tenant column). Without
+        # it a foreign environment_id links in and leaks its sf_instance_url back
+        # through get_group_detail.
+        own = self.group_repo.db.query(Environment.id).filter(
+            Environment.id == environment_id, Environment.tenant_id == tenant_id,
+        ).first()
+        if not own:
+            raise ValueError("Environment not found")
         self.group_repo.add_environment(group_id, environment_id, added_by)
 
     def remove_environment(self, group_id, tenant_id, environment_id):
