@@ -413,6 +413,18 @@ class ConnectionService:
     def get_connection(self, connection_id, tenant_id):
         return self.conn_repo.get_connection_decrypted(connection_id, tenant_id)
 
+    def get_connection_display(self, connection_id, tenant_id):
+        """SEC-1: redacted connection detail for API/UI display — NO decrypted
+        secrets. Returns the same shape as ``list_connections`` (``_conn_dict``:
+        id/type/name/status, no ``config``). ``get_connection_decrypted()`` is
+        reserved for server-side credential resolution (sync/execution/worker),
+        never an HTTP response body. Tenant-scoped via the repo (returns None if
+        the connection is absent or belongs to another tenant)."""
+        conn = self.conn_repo.get_connection(connection_id, tenant_id)
+        if not conn:
+            return None
+        return self._conn_dict(conn)
+
     def test_connection(self, connection_id, tenant_id):
         import requests as http_requests
         data = self.conn_repo.get_connection_decrypted(connection_id, tenant_id)

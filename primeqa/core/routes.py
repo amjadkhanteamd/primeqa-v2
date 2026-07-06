@@ -320,11 +320,15 @@ def create_connection():
 
 
 @core_bp.route("/api/connections/<int:conn_id>", methods=["GET"])
-@require_auth
+@require_role("admin")
 def get_connection(conn_id):
+    # SEC-1: admin-gated (matching create/delete/test) AND returns the redacted
+    # display shape — never the decrypted config. Previously @require_auth +
+    # svc.get_connection() shipped plaintext client_secret/password/api_token/
+    # api_key to any authenticated role.
     svc, db = _get_conn_service()
     try:
-        conn = svc.get_connection(conn_id, request.user["tenant_id"])
+        conn = svc.get_connection_display(conn_id, request.user["tenant_id"])
         if not conn:
             return json_error("NOT_FOUND", "Connection not found", http=404)
         return jsonify(conn), 200
