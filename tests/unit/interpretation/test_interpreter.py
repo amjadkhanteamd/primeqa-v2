@@ -167,6 +167,23 @@ def test_errored_permanent_is_not_re_runnable():
     assert "evidence is incomplete" not in attr
 
 
+def test_errored_setup_rejection_names_the_setup_not_a_rerun():
+    # A field-less org business rejection of the padded create (AmbiguousRejection
+    # — the run-27317df6 shape): the attribution says the org rejected the SETUP
+    # data and a plain re-run repeats it — never "re-run", never "needs attention"
+    # (the generic our-side-defect line).
+    err = ErrorSurface(phase="create", error_type="AmbiguousRejection",
+                       message="create rejected with no field attribution")
+    ev = _run(outcome="errored", steps=[_read(0)], error=err)
+    interp = interpret_run(ev)
+    assert interp.verdict == "not_evaluated"          # verdict unchanged
+    attr = interp.attribution.lower()
+    assert "rejected the test's setup data" in attr
+    assert "fail the same way" in attr
+    assert "evidence is incomplete" not in attr
+    assert "could not be built" not in attr
+
+
 # ---------------------------------------------------------------------------
 # Discipline: outcome carried (never recomputed) + deterministic
 # ---------------------------------------------------------------------------

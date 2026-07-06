@@ -33,6 +33,21 @@ def test_permission_from_erroring_mutation_step_code():
         (FailureCategory.PERMISSION, "INSUFFICIENT_FIELD_ACCESS")
 
 
+def test_ambiguous_rejection_is_setup_rejection():
+    # The run-27317df6 shape: a field-less VR rejection of the padded create —
+    # D-115.2's AmbiguousRejection surface. The generic VR code rides along but
+    # the type mapping decides (it is neither a permission nor a normalization
+    # code), so the run persists the PERMANENT setup_rejection category.
+    err = ErrorSurface(phase="create", error_type="AmbiguousRejection",
+                       message="create rejected with no field attribution")
+    step = SimpleNamespace(error=err,
+                           error_code="FIELD_CUSTOM_VALIDATION_EXCEPTION")
+    sig = _run_failure(_ev(err, [step]))
+    assert sig == (FailureCategory.SETUP_REJECTION,
+                   "FIELD_CUSTOM_VALIDATION_EXCEPTION")
+    assert is_indeterminate(sig[0]) is False          # not a blind re-run
+
+
 def test_auth_from_error_type_without_code():
     err = ErrorSurface(phase="read", error_type="SFAuthError", message="x")
     step = SimpleNamespace(error=err)          # read evidence carries no error_code

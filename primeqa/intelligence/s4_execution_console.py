@@ -148,15 +148,28 @@ def read_claim_runs(tenant_id: int, test_id) -> dict:
 # --- read one run's detail (S4 evidence steps + S6 verdict/cause) (3c) --------
 
 _RUN_DETAIL_SQL = (
-    "SELECT CAST(run_id AS text) AS run_id, CAST(claim_test_id AS text) AS claim_test_id, "
-    "CAST(recipe_id AS text) AS recipe_id, recipe_version_seq, environment_id, "
-    "outcome::text AS outcome, started_at, finished_at, duration_ms, evidence "
-    "FROM s4_execution_runs WHERE run_id = CAST(:rid AS uuid)")
+    "SELECT CAST(r.run_id AS text) AS run_id, "
+    "CAST(r.claim_test_id AS text) AS claim_test_id, "
+    "CAST(r.recipe_id AS text) AS recipe_id, r.recipe_version_seq, "
+    "r.environment_id, r.outcome::text AS outcome, r.started_at, r.finished_at, "
+    "r.duration_ms, r.evidence, r.failure_category, r.sf_error_code, r.source, "
+    "c.claim_kind::text AS claim_kind, c.asserted_truth, "
+    "req.external_key AS requirement_key "
+    "FROM s4_execution_runs r "
+    "LEFT JOIN test_claims c ON c.test_id = r.claim_test_id AND c.valid_to IS NULL "
+    "LEFT JOIN LATERAL ("
+    "  SELECT l.external_key FROM test_requirement_links l "
+    "  WHERE l.test_id = r.claim_test_id AND l.link_kind = 'generated_from' "
+    "  ORDER BY l.linked_at DESC LIMIT 1) req ON true "
+    "WHERE r.run_id = CAST(:rid AS uuid)")
 
 
 def _read_run_detail(session, run_id) -> dict | None:
     """Pure: one S4 run row (the evidence trace) joined to its S6 interpretation
-    (verdict / attribution / cause), or None when no run matches ``run_id``."""
+    (verdict / attribution / cause), the current claim (kind + asserted_truth —
+    the page's title inputs) and the generated_from requirement key, or None
+    when no run matches ``run_id``. The claim/requirement joins are 1:0-or-1
+    LEFT JOINs — a deleted claim degrades to NULLs, never drops the run."""
     row = session.execute(
         text(_RUN_DETAIL_SQL), {"rid": str(run_id)}).mappings().first()
     if row is None:
@@ -169,6 +182,8 @@ def _read_run_detail(session, run_id) -> dict | None:
         if ir is not None:
             # D-201: the substrate agent's deterministic, human-gated repair
             # suggestions over the S6 vocabulary (empty for passing verdicts).
+            # failure_category forks the not_evaluated copy — a deterministic
+            # setup rejection must not read "re-run".
             from primeqa.evolution.repair import suggest_repairs
             interp = {
                 "verdict": ir.verdict,
@@ -179,7 +194,8 @@ def _read_run_detail(session, run_id) -> dict | None:
                 "repair_suggestions": suggest_repairs(
                     ir.verdict,
                     cause_kind=(ir.cause.cause_kind if ir.cause else None),
-                    vr_name=(ir.cause.vr_name if ir.cause else None)),
+                    vr_name=(ir.cause.vr_name if ir.cause else None),
+                    failure_category=row["failure_category"]),
             }
     except Exception:                                  # S6 read is best-effort
         interp = None
@@ -189,6 +205,12 @@ def _read_run_detail(session, run_id) -> dict | None:
         "environment_id": row["environment_id"], "outcome": row["outcome"],
         "started_at": _iso(row["started_at"]), "finished_at": _iso(row["finished_at"]),
         "duration_ms": row["duration_ms"],
+        "failure_category": row["failure_category"],
+        "sf_error_code": row["sf_error_code"],
+        "source": row["source"],
+        "claim_kind": row["claim_kind"],
+        "asserted_truth": row["asserted_truth"],
+        "requirement_key": row["requirement_key"],
         "api_choice": ev.get("api_choice"),
         "steps": ev.get("steps") or [],
         "error": ev.get("error"),

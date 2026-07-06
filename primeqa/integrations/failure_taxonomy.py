@@ -11,14 +11,19 @@ persist). The mapping is NOT duplicated at call sites — both entry points rout
 through ``category_for``.
 
 Categories (stored as VARCHAR; the code enum below is the source of truth):
-  auth          — authentication / token failure (``SFAuthError`` / 401)
-  rate_limit    — Salesforce throttle / quota (``SFRateLimitError`` / 429)
-  permission    — the integration user lacks access (FLS / object / record): the
-                  SF ``errorCode`` is one of the access-denial codes (the CF-1
-                  signal; D-225 named these on the mutation path)
-  transient     — a retryable server / transport hiccup (5xx, broken pagination)
-  normalization — a representation / world-build defect on our side
-  unknown       — unclassified (the default; never load-bearing)
+  auth            — authentication / token failure (``SFAuthError`` / 401)
+  rate_limit      — Salesforce throttle / quota (``SFRateLimitError`` / 429)
+  permission      — the integration user lacks access (FLS / object / record): the
+                    SF ``errorCode`` is one of the access-denial codes (the CF-1
+                    signal; D-225 named these on the mutation path)
+  transient       — a retryable server / transport hiccup (5xx, broken pagination)
+  normalization   — a representation / world-build defect on our side
+  setup_rejection — the org deterministically rejected the test's SETUP data (a
+                    business rule gated the staging/padding write and named no
+                    attributable field) — a well-formed request, not a malformed
+                    one, so distinct from ``normalization``; re-running as-is
+                    repeats it
+  unknown         — unclassified (the default; never load-bearing)
 """
 from __future__ import annotations
 
@@ -34,13 +39,14 @@ class FailureCategory:
     TRANSIENT = "transient"
     RATE_LIMIT = "rate_limit"
     NORMALIZATION = "normalization"
+    SETUP_REJECTION = "setup_rejection"
     UNKNOWN = "unknown"
 
 
 ALL_CATEGORIES = frozenset({
     FailureCategory.AUTH, FailureCategory.PERMISSION, FailureCategory.TRANSIENT,
     FailureCategory.RATE_LIMIT, FailureCategory.NORMALIZATION,
-    FailureCategory.UNKNOWN,
+    FailureCategory.SETUP_REJECTION, FailureCategory.UNKNOWN,
 })
 
 
@@ -57,12 +63,18 @@ ALL_CATEGORIES = frozenset({
 #     possibly after an onboarding fix — can still verify it.
 #   PERMANENT — re-running AS-IS will not change it: ``normalization`` is an
 #     our-side malformed / un-buildable test (MALFORMED_QUERY / INVALID_FIELD /
-#     UnfillableWorld / StepRefResolutionError). Still NOT a claim failure and
-#     still NOT ``Verified`` — but it needs the test fixed, not a blind re-run.
+#     UnfillableWorld / StepRefResolutionError); ``setup_rejection`` is the org
+#     deterministically rejecting the test's setup data (a field-less business
+#     rejection of the staging/padding write — D-115.2's AmbiguousRejection /
+#     PaddingRejection / SetupRejected surfaces). Still NOT a claim failure and
+#     still NOT ``Verified`` — but both need the test's setup fixed, not a blind
+#     re-run.
 # Reuses ``failure_category`` (no parallel state). This is the two-way evidence-
 # completeness split the ``Verified`` invariant rests on — NOT a retry policy
 # (blind-retry vs fix-then-rerun is a later slice).
-PERMANENT_CATEGORIES = frozenset({FailureCategory.NORMALIZATION})
+PERMANENT_CATEGORIES = frozenset({
+    FailureCategory.NORMALIZATION, FailureCategory.SETUP_REJECTION,
+})
 INDETERMINATE_CATEGORIES = ALL_CATEGORIES - PERMANENT_CATEGORIES
 
 
@@ -109,6 +121,17 @@ _TRANSIENT_TYPES = frozenset({
     "SFIncompletePaginationError",   # an SF cursor broke mid-walk (retryable)
 })
 
+# Recorded ``ErrorSurface`` types meaning "the org deterministically rejected the
+# test's SETUP data" — D-115.2's disambiguation surfaces where the rejection could
+# not be ascribed to the value under test: a business rule (VR / trigger / flow)
+# gated the staging or padding write. The request was well-formed (NOT
+# ``normalization``); re-running as-is fails identically, so these are PERMANENT.
+_SETUP_REJECTION_TYPES = frozenset({
+    "AmbiguousRejection",   # rejection named no fields — cannot attribute
+    "PaddingRejection",     # rejection named only S4's padding field(s)
+    "SetupRejected",        # the 2-step negative's setup create was rejected
+})
+
 
 def category_for(error_type: Optional[str], sf_error_code: Optional[str]) -> str:
     """The single mapping table. ``error_type`` is the recorded exception class
@@ -127,6 +150,8 @@ def category_for(error_type: Optional[str], sf_error_code: Optional[str]) -> str
         return FailureCategory.NORMALIZATION
     if error_type in _NORMALIZATION_TYPES:
         return FailureCategory.NORMALIZATION
+    if error_type in _SETUP_REJECTION_TYPES:
+        return FailureCategory.SETUP_REJECTION
     if error_type in _TRANSIENT_TYPES:
         return FailureCategory.TRANSIENT
     return FailureCategory.UNKNOWN

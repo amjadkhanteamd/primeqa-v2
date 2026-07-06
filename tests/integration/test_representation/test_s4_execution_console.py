@@ -154,11 +154,14 @@ def test_read_run_detail(session):
     ]}
     session.execute(text(
         "INSERT INTO s4_execution_runs (run_id, recipe_id, recipe_version_seq, "
-        "claim_test_id, environment_id, outcome, started_at, finished_at, evidence) "
+        "claim_test_id, environment_id, outcome, started_at, finished_at, evidence, "
+        "failure_category, sf_error_code, source) "
         "VALUES (CAST(:r AS uuid), CAST(:rec AS uuid), 1, CAST(:t AS uuid), 7, "
-        "CAST(:o AS run_outcome), NOW(), NOW(), CAST(:ev AS jsonb))"),
+        "CAST(:o AS run_outcome), NOW(), NOW(), CAST(:ev AS jsonb), "
+        ":fc, :code, :src)"),
         {"r": str(run_id), "rec": str(uuid4()), "t": str(uuid4()), "o": "passed",
-         "ev": json.dumps(evidence)})
+         "ev": json.dumps(evidence), "fc": "setup_rejection",
+         "code": "FIELD_CUSTOM_VALIDATION_EXCEPTION", "src": "manual"})
     session.flush()
 
     d = _read_run_detail(session, run_id)
@@ -167,6 +170,14 @@ def test_read_run_detail(session):
     assert d["api_choice"] == "tooling"
     assert len(d["steps"]) == 2 and d["steps"][1]["held"] is True
     assert d["interpretation"] is None              # no S6 row for this run
+    # the typed error columns + the trigger source ride the read verbatim
+    assert d["failure_category"] == "setup_rejection"
+    assert d["sf_error_code"] == "FIELD_CUSTOM_VALIDATION_EXCEPTION"
+    assert d["source"] == "manual"
+    # no test_claims row for this test_id → the claim/requirement LEFT JOINs
+    # degrade to NULLs, never drop the run
+    assert d["claim_kind"] is None and d["asserted_truth"] is None
+    assert d["requirement_key"] is None
 
 
 def test_read_run_detail_not_found(session):

@@ -91,10 +91,25 @@ def test_category_for_synthesized_surface_types():
     # UnfillableWorld is a synthesized ErrorSurface type (not an exception)
     assert category_for("UnfillableWorld", None) == FailureCategory.NORMALIZATION
     # a synthesized HTTP rejection with a permission code → permission
+    # (a clear access-denial code wins over the setup-rejection type)
     assert category_for("SetupRejected", "INSUFFICIENT_FIELD_ACCESS") == \
         FailureCategory.PERMISSION
-    # the same without a code → unknown (coarse, as documented)
-    assert category_for("SetupRejected", None) == FailureCategory.UNKNOWN
+    # the same without a code → setup_rejection (was 'unknown' pre-fix: the org
+    # deterministically rejected the setup data — a re-run repeats it)
+    assert category_for("SetupRejected", None) == FailureCategory.SETUP_REJECTION
+
+
+@pytest.mark.parametrize("error_type", [
+    "AmbiguousRejection", "PaddingRejection", "SetupRejected",
+])
+def test_setup_rejection_types_map_to_setup_rejection(error_type):
+    # D-115.2's disambiguation surfaces: a business rejection of the SETUP that
+    # cannot be ascribed to the value under test. A generic VR code
+    # (FIELD_CUSTOM_VALIDATION_EXCEPTION) is neither a permission nor a
+    # normalization code, so the type mapping decides.
+    assert category_for(error_type, None) == FailureCategory.SETUP_REJECTION
+    assert category_for(error_type, "FIELD_CUSTOM_VALIDATION_EXCEPTION") == \
+        FailureCategory.SETUP_REJECTION
 
 
 def test_category_for_is_total():
@@ -111,10 +126,12 @@ def test_partition_is_exhaustive_and_disjoint():
     assert not (INDETERMINATE_CATEGORIES & PERMANENT_CATEGORIES)
 
 
-def test_only_normalization_is_permanent():
-    # the one our-side malformed/un-buildable defect is permanent; the rest are
-    # could-not-evaluate → re-runnable.
-    assert PERMANENT_CATEGORIES == {FailureCategory.NORMALIZATION}
+def test_permanent_categories_are_normalization_and_setup_rejection():
+    # our-side malformed/un-buildable defects AND deterministic org rejections
+    # of the setup data are permanent; the rest are could-not-evaluate →
+    # re-runnable.
+    assert PERMANENT_CATEGORIES == {
+        FailureCategory.NORMALIZATION, FailureCategory.SETUP_REJECTION}
 
 
 @pytest.mark.parametrize("category", [
@@ -129,6 +146,12 @@ def test_indeterminate_categories_are_re_runnable(category):
 
 def test_normalization_is_permanent_not_re_runnable():
     assert is_indeterminate(FailureCategory.NORMALIZATION) is False
+
+
+def test_setup_rejection_is_permanent_not_re_runnable():
+    # a business rule gating the setup rejects deterministically — a blind
+    # re-run fails identically.
+    assert is_indeterminate(FailureCategory.SETUP_REJECTION) is False
 
 
 def test_none_is_indeterminate_conservative():

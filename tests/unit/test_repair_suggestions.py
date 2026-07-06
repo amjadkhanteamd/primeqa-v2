@@ -94,3 +94,31 @@ def test_inspection_drift_and_errored_paths():
     assert suggest_repairs("asserted_metadata_absent")[0]["owner"] == "org"
     assert suggest_repairs("asserted_value_differs")[0]["owner"] == "org"
     assert suggest_repairs("not_evaluated")[0]["owner"] == "ops"
+
+
+# --- not_evaluated forks by failure_category (never suggest a futile re-run) --
+
+def test_not_evaluated_setup_rejection_is_recipe_owned_no_rerun():
+    # A deterministic org rejection of the setup data (AmbiguousRejection /
+    # PaddingRejection / SetupRejected): the fix is the test's staged values or
+    # the org rule naming its fields — a re-run fails identically.
+    out = suggest_repairs("not_evaluated", failure_category="setup_rejection")
+    assert [s["owner"] for s in out] == ["recipe", "org"]
+    text = " ".join(s["title"] + " " + s["detail"] for s in out).lower()
+    assert "fail the same way" in text
+    assert "re-queue" not in text
+
+
+def test_not_evaluated_normalization_is_recipe_owned_no_rerun():
+    out = suggest_repairs("not_evaluated", failure_category="normalization")
+    assert out[0]["owner"] == "recipe"
+    assert "re-running as-is repeats it" in out[0]["detail"].lower()
+
+
+def test_not_evaluated_indeterminate_categories_keep_ops_rerun_copy():
+    # auth / transient / rate_limit / unknown / None (every pre-fork caller)
+    # keep today's ops re-run suggestion verbatim.
+    for cat in (None, "auth", "transient", "rate_limit", "unknown", "permission"):
+        out = suggest_repairs("not_evaluated", failure_category=cat)
+        assert out[0]["owner"] == "ops", cat
+        assert "re-run" in out[0]["title"].lower(), cat

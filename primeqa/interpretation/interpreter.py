@@ -372,13 +372,24 @@ def _not_evaluated(evidence: RunEvidence, step_id):
     captured evidence (which carries ``error_type``). Neither branch is a claim
     failure and neither is ``Verified``."""
     from primeqa.execution_engine.evidence import failure_signature
-    from primeqa.integrations.failure_taxonomy import is_indeterminate
+    from primeqa.integrations.failure_taxonomy import FailureCategory, is_indeterminate
 
     err = evidence.error
     detail = (f"{err.phase}: {err.error_type}: {err.message}" if err is not None
               else "errored (no error surface captured)")
     category, _ = failure_signature(evidence)
-    if is_indeterminate(category):
+    if category == FailureCategory.SETUP_REJECTION:
+        # A deterministic org business rejection of the SETUP data (D-115.2's
+        # AmbiguousRejection / PaddingRejection / SetupRejected): the request was
+        # well-formed but a rule gated it without attributable fields. A plain
+        # re-run repeats it — the fix is the test's staged values / padding (or
+        # the org rule naming its fields), never a blind retry.
+        attribution = (f"The run could not be evaluated: the org rejected the "
+                       f"test's setup data with a business rule that names no "
+                       f"attributable field ({detail}). A plain re-run will fail "
+                       f"the same way — adjust the test's staged values or "
+                       f"padding, or have the validation rule name its fields.")
+    elif is_indeterminate(category):
         attribution = (f"The run could not be evaluated against the org ({detail}). "
                        f"The evidence is incomplete — re-run.")
     else:

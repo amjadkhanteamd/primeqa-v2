@@ -20,12 +20,18 @@ def _s(owner: str, title: str, detail: str) -> dict:
             "human_gated": True}
 
 
-def suggest_repairs(verdict, cause_kind=None, vr_name=None) -> list:
+def suggest_repairs(verdict, cause_kind=None, vr_name=None,
+                    failure_category=None) -> list:
     """Deterministic repair suggestions for one interpreted run.
 
     Input is the S6 vocabulary (``Verdict`` + optional ``Cause``); output is an
     ordered list of ``{owner, title, detail, human_gated}`` suggestions —
     empty for passing verdicts (nothing to repair).
+
+    ``failure_category`` (the run's typed error class, D-261) forks the
+    ``not_evaluated`` copy: a deterministic setup rejection or an our-side
+    build defect must NOT suggest a blind re-run. Default ``None`` keeps every
+    existing caller on the ops/re-run copy.
     """
     vr = vr_name or "the grounding validation rule"
 
@@ -180,6 +186,32 @@ def suggest_repairs(verdict, cause_kind=None, vr_name=None) -> list:
         ]
 
     if verdict == "not_evaluated":
+        if failure_category == "setup_rejection":
+            # A deterministic org business rejection of the SETUP data (a rule
+            # that names no fields gated the staging/padding write) — a plain
+            # re-run fails identically, so never suggest one.
+            return [
+                _s("recipe", "The org rejected the test's setup data — adjust it",
+                   "A business rule that names no fields blocked the test's "
+                   "staging create, so the value under test was never reached. "
+                   "Adjust the test's staged values or padding (e.g. a "
+                   "dispatch-time field override), or regenerate the test; a "
+                   "plain re-run will fail the same way."),
+                _s("org", "Make the rejecting rule name its fields",
+                   "The rule's error carries no field attribution, which is why "
+                   "the rejection cannot be ascribed to the value under test. "
+                   "Assign the validation rule's error to a specific field so "
+                   "rejections become attributable."),
+            ]
+        if failure_category == "normalization":
+            # An our-side malformed / un-buildable test — needs the test fixed,
+            # not a blind retry (D-272 §2.4 permanent class).
+            return [
+                _s("recipe", "The test could not be built or run — fix it",
+                   "The run errored on an our-side defect (a malformed request "
+                   "or an unbuildable world). Re-running as-is repeats it — "
+                   "regenerate the test or repair its recipe."),
+            ]
         return [
             _s("ops", "Run errored before evaluation — re-run",
                "The run could not be evaluated (credentials, connectivity, or "
