@@ -127,6 +127,29 @@ class ReleaseRepository:
             q = q.filter(Requirement.tenant_id == tenant_id)
         return q.all()
 
+    def list_releases_for_requirements(self, tenant_id, requirement_ids):
+        """Batched reverse lookup for the requirements pages: which releases is
+        each requirement attached to? One query for the whole page. Returns
+        ``{requirement_id: [{id, name, status}, ...]}`` — missing ids simply
+        don't appear. Tenant scoping rides the join to ``releases.tenant_id``
+        (release_requirements itself carries no tenant_id)."""
+        ids = [int(i) for i in (requirement_ids or [])]
+        if not ids:
+            return {}
+        rows = self.db.query(
+            ReleaseRequirement.requirement_id, Release,
+        ).join(
+            Release, Release.id == ReleaseRequirement.release_id,
+        ).filter(
+            Release.tenant_id == tenant_id,
+            ReleaseRequirement.requirement_id.in_(ids),
+        ).order_by(Release.created_at.desc()).all()
+        out = {}
+        for req_id, rel in rows:
+            out.setdefault(req_id, []).append(
+                {"id": rel.id, "name": rel.name, "status": rel.status})
+        return out
+
     # --- Test Plan Items ---
 
     def add_test_plan_item(self, release_id, test_case_id, priority="medium", position=0,

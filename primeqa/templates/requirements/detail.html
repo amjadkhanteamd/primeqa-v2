@@ -1,6 +1,6 @@
 {% extends "base.html" %}
 {% from 'components/breadcrumbs.html' import breadcrumbs %}
-{% from 'components/_buttons.html' import btn_secondary %}
+{% from 'components/_buttons.html' import btn_secondary, btn_success %}
 {% block title %}Requirement {{ req.jira_key or '#' ~ req.id }} - Plimsol{% endblock %}
 {% block content %}
 
@@ -29,6 +29,13 @@
         {% if req.deleted_at %}
         <span class="inline-flex items-center px-2 py-0.5 rounded text-xs bg-gray-200 text-gray-700">Deleted</span>
         {% endif %}
+        {# Which releases include this requirement — closes the loop with the
+           release dashboard (the linkage existed but was invisible here). #}
+        {% for rel in req_releases %}
+        <a href="/releases/{{ rel.id }}"
+           class="inline-flex items-center px-2 py-0.5 rounded text-xs bg-purple-50 text-purple-700 hover:bg-purple-100 hover:underline"
+           title="In release {{ rel.name }} ({{ rel.status }})">&#128230; {{ rel.name }}</a>
+        {% endfor %}
       </div>
       <h1 class="mt-2 text-2xl font-bold text-gray-900">
         {{ req.jira_summary or ('Requirement #' ~ req.id) }}
@@ -56,6 +63,26 @@
         <button class="rounded-md bg-white px-3 py-1.5 text-sm font-medium text-red-600 ring-1 ring-red-200 hover:bg-red-50" data-purge-req="{{ req.id }}">Purge</button>
         {% endif %}
       {% else %}
+        {# Run the requirement's APPROVED test cases from here — same gating as
+           /run (Member tier route; env-scope + production refused server-side;
+           the env picker already hides production). Drafts aren't runnable, so
+           an all-draft plan gets a nudge instead of a dead button. #}
+        {% if user.role in ['ba', 'tester', 'admin', 'superadmin'] and environments %}
+          {% if approved_count %}
+          <form method="POST" action="/requirements/{{ req.id }}/run-substrate" class="flex items-center space-x-2">
+            {{ csrf_input | safe }}
+            <select name="environment_id" required class="rounded-md border border-gray-300 px-2 py-1.5 text-sm" title="Environment to run against (sandbox only)">
+              <option value="">Run env&hellip;</option>
+              {% for env in environments if not env.is_production %}
+              <option value="{{ env.id }}">{{ env.name }}</option>
+              {% endfor %}
+            </select>
+            {{ btn_success('Run ' ~ approved_count ~ ' test' ~ ('' if approved_count == 1 else 's'), type='submit', size='sm') }}
+          </form>
+          {% elif s2_claims and s2_claims.claims %}
+          <span class="text-xs text-gray-400 whitespace-nowrap" title="Only approved test cases run — approve them from the test plan below.">approve test cases to run them</span>
+          {% endif %}
+        {% endif %}
         {% if user.role in ['admin', 'tester', 'superadmin'] and environments %}
         {# S3 generation. If a job is in flight for this requirement, render the
            progress panel + poll; otherwise the Generate form. The env picker
@@ -87,6 +114,21 @@
         </form>
         {% endif %}
         {% endif %}
+        {% if user.role in ['admin', 'tester', 'superadmin'] and req.source == 'jira' and req.jira_key and jira_connections %}
+        {# Re-pull the ticket's fields from Jira. Connection rides the form:
+           hidden when the tenant has one, a picker when several. #}
+        <form method="POST" action="/requirements/{{ req.id }}/sync" class="flex items-center space-x-2">
+          {{ csrf_input | safe }}
+          {% if jira_connections | length == 1 %}
+          <input type="hidden" name="jira_connection_id" value="{{ jira_connections[0].id }}">
+          {% else %}
+          <select name="jira_connection_id" required class="rounded-md border border-gray-300 px-2 py-1.5 text-sm" title="Jira connection to sync from">
+            {% for c in jira_connections %}<option value="{{ c.id }}">{{ c.name }}</option>{% endfor %}
+          </select>
+          {% endif %}
+          {{ btn_secondary('Re-sync from Jira', type='submit', size='sm') }}
+        </form>
+        {% endif %}
         {% if user.role in ['admin', 'tester', 'superadmin'] %}
         <button class="rounded-md bg-white px-3 py-1.5 text-sm text-red-600 ring-1 ring-red-200 hover:bg-red-50" data-delete-req="{{ req.id }}">Delete</button>
         {% endif %}
@@ -94,57 +136,80 @@
     </div>
   </div>
 
-  <!-- Fields -->
+  <!-- Fields — each panel is a collapsible <details> (state persists per panel
+       via localStorage; see the collapse script at the bottom). -->
   <div class="bg-white shadow rounded-lg divide-y divide-gray-200">
-    <div class="px-6 py-4">
-      <h3 class="text-xs font-semibold uppercase tracking-wide text-gray-500 mb-2">{% if req.source == 'jira' %}Jira description{% else %}Description{% endif %}</h3>
-      {% if req.jira_description %}
-      <p class="text-sm text-gray-800 whitespace-pre-wrap">{{ req.jira_description }}</p>
-      {% else %}
-      <p class="text-sm text-gray-400 italic">No description</p>
-      {% endif %}
-    </div>
-
-    <div class="px-6 py-4">
-      <div class="flex items-center justify-between mb-2">
-        <h3 class="text-xs font-semibold uppercase tracking-wide text-gray-500">Acceptance criteria</h3>
-        {% if user.role in ['admin', 'tester', 'superadmin'] and not req.deleted_at %}
-        <button type="button" id="edit-ac-btn" class="text-xs text-indigo-600 hover:text-indigo-900">Edit</button>
+    <details open class="group" data-collapse-key="req-panel-desc">
+      <summary class="px-6 py-4 cursor-pointer select-none flex items-center justify-between">
+        <h3 class="text-xs font-semibold uppercase tracking-wide text-gray-500">{% if req.source == 'jira' %}Jira description{% else %}Description{% endif %}</h3>
+        <span class="text-xs text-gray-400 group-open:hidden">Show &darr;</span>
+        <span class="text-xs text-gray-400 hidden group-open:inline">Hide &uarr;</span>
+      </summary>
+      <div class="px-6 pb-4">
+        {% if req.jira_description %}
+        <p class="text-sm text-gray-800 whitespace-pre-wrap">{{ req.jira_description }}</p>
+        {% else %}
+        <p class="text-sm text-gray-400 italic">No description</p>
         {% endif %}
       </div>
-      <div id="ac-view" class="text-sm text-gray-800 whitespace-pre-wrap">
-        {% if req.acceptance_criteria %}{{ req.acceptance_criteria }}{% else %}<span class="text-gray-400 italic">No acceptance criteria</span>{% endif %}
-      </div>
-      <form id="ac-form" method="POST" action="/requirements/{{ req.id }}/edit" class="hidden mt-2" data-unsaved-guard>
-            {{ csrf_input | safe }}
-        <textarea name="acceptance_criteria" rows="5" class="block w-full rounded-md border border-gray-300 px-3 py-2 text-sm font-mono">{{ req.acceptance_criteria }}</textarea>
-        <div class="mt-2 flex justify-end space-x-2">
-          <button type="button" id="edit-ac-cancel" class="rounded-md bg-white px-3 py-1.5 text-sm text-gray-700 ring-1 ring-gray-300 hover:bg-gray-50">Cancel</button>
-          <button type="submit" class="rounded-md bg-indigo-600 px-3 py-1.5 text-sm font-semibold text-white hover:bg-indigo-500">Save</button>
-        </div>
-      </form>
-    </div>
+    </details>
 
-    <div class="px-6 py-4 grid grid-cols-2 gap-4 text-sm">
-      <div>
-        <p class="text-xs text-gray-500 uppercase">Source</p>
-        <p class="font-medium">{{ req.source }}</p>
+    <details open class="group" id="ac-details" data-collapse-key="req-panel-ac">
+      <summary class="px-6 py-4 cursor-pointer select-none flex items-center justify-between">
+        <h3 class="text-xs font-semibold uppercase tracking-wide text-gray-500">Acceptance criteria</h3>
+        <span class="flex items-center gap-3">
+          {% if user.role in ['admin', 'tester', 'superadmin'] and not req.deleted_at %}
+          {# preventDefault so Edit doesn't toggle the panel; the collapse
+             script also force-opens the panel when Edit is clicked. #}
+          <button type="button" id="edit-ac-btn" onclick="event.preventDefault()"
+                  class="text-xs text-indigo-600 hover:text-indigo-900">Edit</button>
+          {% endif %}
+          <span class="text-xs text-gray-400 group-open:hidden">Show &darr;</span>
+          <span class="text-xs text-gray-400 hidden group-open:inline">Hide &uarr;</span>
+        </span>
+      </summary>
+      <div class="px-6 pb-4">
+        <div id="ac-view" class="text-sm text-gray-800 whitespace-pre-wrap">
+          {% if req.acceptance_criteria %}{{ req.acceptance_criteria }}{% else %}<span class="text-gray-400 italic">No acceptance criteria</span>{% endif %}
+        </div>
+        <form id="ac-form" method="POST" action="/requirements/{{ req.id }}/edit" class="hidden mt-2" data-unsaved-guard>
+              {{ csrf_input | safe }}
+          <textarea name="acceptance_criteria" rows="5" class="block w-full rounded-md border border-gray-300 px-3 py-2 text-sm font-mono">{{ req.acceptance_criteria }}</textarea>
+          <div class="mt-2 flex justify-end space-x-2">
+            <button type="button" id="edit-ac-cancel" class="rounded-md bg-white px-3 py-1.5 text-sm text-gray-700 ring-1 ring-gray-300 hover:bg-gray-50">Cancel</button>
+            <button type="submit" class="rounded-md bg-indigo-600 px-3 py-1.5 text-sm font-semibold text-white hover:bg-indigo-500">Save</button>
+          </div>
+        </form>
       </div>
-      <div>
-        <p class="text-xs text-gray-500 uppercase">Jira version</p>
-        <p class="font-medium">{{ req.jira_version }}</p>
+    </details>
+
+    <details open class="group" data-collapse-key="req-panel-meta">
+      <summary class="px-6 py-4 cursor-pointer select-none flex items-center justify-between">
+        <h3 class="text-xs font-semibold uppercase tracking-wide text-gray-500">Details</h3>
+        <span class="text-xs text-gray-400 group-open:hidden">Show &darr;</span>
+        <span class="text-xs text-gray-400 hidden group-open:inline">Hide &uarr;</span>
+      </summary>
+      <div class="px-6 pb-4 grid grid-cols-2 gap-4 text-sm">
+        <div>
+          <p class="text-xs text-gray-500 uppercase">Source</p>
+          <p class="font-medium">{{ req.source }}</p>
+        </div>
+        <div>
+          <p class="text-xs text-gray-500 uppercase">Jira version</p>
+          <p class="font-medium">{{ req.jira_version }}</p>
+        </div>
+        {% if req.jira_last_synced %}
+        <div>
+          <p class="text-xs text-gray-500 uppercase">Last Jira sync</p>
+          <p class="font-medium">{{ req.jira_last_synced[:19] }}</p>
+        </div>
+        {% endif %}
+        <div>
+          <p class="text-xs text-gray-500 uppercase">Created</p>
+          <p class="font-medium">{{ req.created_at[:19] if req.created_at else '-' }}</p>
+        </div>
       </div>
-      {% if req.jira_last_synced %}
-      <div>
-        <p class="text-xs text-gray-500 uppercase">Last Jira sync</p>
-        <p class="font-medium">{{ req.jira_last_synced[:19] }}</p>
-      </div>
-      {% endif %}
-      <div>
-        <p class="text-xs text-gray-500 uppercase">Created</p>
-        <p class="font-medium">{{ req.created_at[:19] if req.created_at else '-' }}</p>
-      </div>
-    </div>
+    </details>
   </div>
 
   {# Failed/cancelled S3 job banner (a non-active terminal job) — surfaces the
@@ -192,13 +257,21 @@
   {% endif %}
 
   <!-- Test plan — S2 claims (generated by S3), grounded in the synced org model -->
-  <div class="bg-white shadow rounded-lg">
-    <div class="px-4 py-3 border-b flex items-center justify-between">
+  <details open class="bg-white shadow rounded-lg group" data-collapse-key="req-panel-plan">
+    <summary class="px-4 py-3 border-b cursor-pointer select-none flex items-center justify-between">
       <h3 class="text-sm font-semibold text-gray-700">Test plan
         <span class="text-gray-500 font-normal">({{ (s2_claims.claims | length) if s2_claims else 0 }} test{{ '' if (s2_claims and s2_claims.claims | length == 1) else 's' }})</span>
+        {% if quarantined_count %}
+        <span class="ml-1 inline-flex items-center px-2 py-0.5 rounded-full text-xs font-medium bg-rose-100 text-rose-800"
+              title="Quarantined tests don't count toward the release pass-rate">{{ quarantined_count }} quarantined</span>
+        {% endif %}
       </h3>
-      <span class="text-xs text-gray-400">Generated by Plimsol</span>
-    </div>
+      <span class="flex items-center gap-3">
+        <span class="text-xs text-gray-400">Generated by Plimsol</span>
+        <span class="text-xs text-gray-400 group-open:hidden">Show &darr;</span>
+        <span class="text-xs text-gray-400 hidden group-open:inline">Hide &uarr;</span>
+      </span>
+    </summary>
     {% if not s2_claims or not s2_claims.available %}
       <div class="px-6 py-8 text-sm text-gray-400">Test plan unavailable right now.</div>
     {% elif s2_claims.claims %}
@@ -217,6 +290,23 @@
                 {% if c.status == 'approved' %}bg-blue-100 text-blue-800
                 {% elif c.status == 'draft' %}bg-gray-100 text-gray-700
                 {% else %}bg-amber-100 text-amber-800{% endif %}">{{ c.status }}</span>
+              {# Last-run chip — the latest S4 run's outcome, linking to that
+                 run's evidence page. "never run" only for approved tests
+                 (drafts aren't runnable, so their silence isn't a gap). #}
+              {% if c.last_run %}
+              <a href="/runs/{{ c.last_run.run_id }}"
+                 title="Last run {{ c.last_run.last_ago or c.last_run.finished_at }} — view what happened"
+                 class="inline-flex items-center px-2 py-0.5 rounded-full text-xs font-medium hover:underline
+                 {% if c.last_run.outcome == 'passed' %}bg-emerald-100 text-emerald-800
+                 {% elif c.last_run.outcome in ('failed', 'errored') %}bg-red-100 text-red-800
+                 {% else %}bg-gray-100 text-gray-600{% endif %}">{{ c.last_run.outcome }}</a>
+              {% elif c.status == 'approved' %}
+              <span class="inline-flex items-center px-2 py-0.5 rounded-full text-xs bg-gray-50 text-gray-400">never run</span>
+              {% endif %}
+              {% if c.quarantined %}
+              <span class="inline-flex items-center px-2 py-0.5 rounded-full text-xs font-medium bg-rose-100 text-rose-800"
+                    title="Quarantined (flaky) — excluded from the release pass-rate. Manage from the test case page.">quarantined</span>
+              {% endif %}
             </div>
             <p class="mt-0.5 text-xs text-gray-500">
               {{ c.claim_kind.replace('-', ' ') }} · {{ c.recipe_count }} recipe{{ '' if c.recipe_count == 1 else 's' }}{% if c.recipes %} · {{ c.recipes | map(attribute='recipe_kind') | join(', ') }}{% endif %} · v{{ c.version_seq }}
@@ -234,20 +324,28 @@
       {% endif %}
     </div>
     {% endif %}
-  </div>
+  </details>
 
   {# D-315/D-316: Generation history — ALL runs, newest first, each with status,
      tests produced, LLM model/cost, and any error/refusal reason. One row per
      generation run (attempt). Rendered only once a run exists (the Test-plan
      card above owns the never-generated state). #}
   {% if gen_runs and gen_runs.available and gen_runs.runs %}
-  <div class="mt-6 bg-white shadow rounded-lg">
-    <div class="px-4 py-3 border-b flex items-center justify-between">
+  <details open class="mt-6 bg-white shadow rounded-lg group" data-collapse-key="req-panel-genhist">
+    <summary class="px-4 py-3 border-b cursor-pointer select-none flex items-center justify-between">
       <h3 class="text-sm font-semibold text-gray-700">Generation history
         <span class="text-gray-500 font-normal">({{ gen_runs.runs | length }} run{{ '' if gen_runs.runs | length == 1 else 's' }})</span>
+        {% if gen_total_cost %}
+        <span class="ml-1 text-xs text-gray-500 font-normal"
+              title="Sum of the runs shown below (the table is capped at the last 50)">· total spend ${{ '%.4f'|format(gen_total_cost) }}{% if gen_runs.runs | length >= 50 %} (last 50 runs){% endif %}</span>
+        {% endif %}
       </h3>
-      <span class="text-xs text-gray-400">most recent first</span>
-    </div>
+      <span class="flex items-center gap-3">
+        <span class="text-xs text-gray-400">most recent first</span>
+        <span class="text-xs text-gray-400 group-open:hidden">Show &darr;</span>
+        <span class="text-xs text-gray-400 hidden group-open:inline">Hide &uarr;</span>
+      </span>
+    </summary>
     <div class="overflow-x-auto">
       <table class="min-w-full text-sm">
         <thead class="bg-gray-50 text-xs text-gray-500 uppercase tracking-wide">
@@ -259,6 +357,7 @@
             <th class="px-4 py-2 text-right font-medium">Cost</th>
             <th class="px-4 py-2 text-right font-medium">Duration</th>
             <th class="px-4 py-2 text-left font-medium">Details</th>
+            <th class="px-4 py-2"><span class="sr-only">View</span></th>
           </tr>
         </thead>
         <tbody class="divide-y divide-gray-100">
@@ -289,12 +388,19 @@
             <td class="px-4 py-2 text-gray-500 max-w-xs">
               {% if run.detail %}<span class="{% if run.status_tone == 'red' %}text-red-600{% elif run.status_tone == 'amber' %}text-amber-700{% endif %}">{{ run.detail }}</span>{% else %}—{% endif %}
             </td>
+            <td class="px-4 py-2 whitespace-nowrap text-right">
+              {% if run.request_id %}
+              <a href="/requirements/{{ req.id }}/generation-runs/{{ run.request_id }}"
+                 class="text-xs font-medium text-indigo-600 hover:text-indigo-800"
+                 title="Line-by-line detail of this run">View &rarr;</a>
+              {% endif %}
+            </td>
           </tr>
           {% endfor %}
         </tbody>
       </table>
     </div>
-  </div>
+  </details>
   {% endif %}
 </div>
 
@@ -348,11 +454,30 @@
 
 <script>
 (function(){
+  // Collapsible panels: restore each panel's open/closed state from
+  // localStorage and persist on toggle. Keys are per-panel (not per
+  // requirement) so a collapsed Generation history stays collapsed app-wide.
+  document.querySelectorAll('details[data-collapse-key]').forEach(function (d) {
+    var key = 'plimsol.collapse.' + d.dataset.collapseKey;
+    try {
+      var saved = localStorage.getItem(key);
+      if (saved === '0') d.open = false;
+      else if (saved === '1') d.open = true;
+    } catch (_) {}
+    d.addEventListener('toggle', function () {
+      try { localStorage.setItem(key, d.open ? '1' : '0'); } catch (_) {}
+    });
+  });
+
   const editBtn = document.getElementById('edit-ac-btn');
   const cancelBtn = document.getElementById('edit-ac-cancel');
   const view = document.getElementById('ac-view');
   const form = document.getElementById('ac-form');
-  if (editBtn) editBtn.addEventListener('click', () => { view.classList.add('hidden'); form.classList.remove('hidden'); });
+  const acDetails = document.getElementById('ac-details');
+  if (editBtn) editBtn.addEventListener('click', () => {
+    if (acDetails) acDetails.open = true;  // editing needs the panel visible
+    view.classList.add('hidden'); form.classList.remove('hidden');
+  });
   if (cancelBtn) cancelBtn.addEventListener('click', () => { view.classList.remove('hidden'); form.classList.add('hidden'); });
 
   async function apiCall(method, url) {

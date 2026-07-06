@@ -260,6 +260,7 @@ def _shape_run_row(row, *, now) -> dict:
         "finished": _iso(finished),
         "s1_version_seq": row.get("s1_version_seq"),
         "attempt_no": row.get("attempt_no"),
+        "request_id": row.get("request_id"),
         "run_status": run_status,
         "outcome_kind": outcome_kind,
         "status_label": label,
@@ -277,6 +278,7 @@ def _read_generation_runs(conn, tenant_id, requirement_key, *, now, limit) -> li
     (by request_id), and a per-attempt LLM cost aggregate (time-window LATERAL)."""
     rows = conn.execute(text(
         "SELECT a.attempt_no, a.status AS attempt_status, "
+        "       CAST(a.request_id AS text) AS request_id, "
         "       a.error_code AS attempt_error_code, a.started_at, a.finished_at, "
         "       j.s1_version_seq, j.error_message AS job_error_message, "
         "       o.outcome_kind::text AS outcome_kind, o.claims_written, "
@@ -320,6 +322,113 @@ def read_generation_runs(tenant_id: int, requirement_key: str) -> dict:
         log.warning("read_generation_runs unavailable for tenant %s key %s: %s",
                     tenant_id, requirement_key, exc)
         return {"available": False, "runs": []}
+
+
+# --- read: ONE generation run's assembled detail (the "View" page) -----------
+# Everything recorded about a single attempt, rendered as a timeline: the
+# attempt (timing/status/error), its outcome (claims written / refusal reasons /
+# dedup / partial refusals), and the per-tool LLM telemetry (llm_calls). This is
+# ASSEMBLED from recorded events — the worker keeps no line-by-line log (only a
+# progress_msg snapshot), so the page says so. Raw prompt/response payloads
+# (llm_calls.raw_parameters/raw_response) are deliberately NOT read here — raw
+# LLM prompts are a superadmin-only surface.
+
+def read_generation_run_detail(tenant_id: int, requirement_key: str,
+                               request_id: str) -> dict:
+    """Best-effort read of one generation run (attempt) by its ``request_id``,
+    scoped to the requirement so a foreign request_id 404s. Never raises.
+    Returns ``{available, run, outcome, llm_calls}`` — ``run=None`` when the
+    attempt doesn't exist for this requirement."""
+    from datetime import datetime, timezone
+    empty = {"available": True, "run": None, "outcome": None, "llm_calls": []}
+    try:
+        from primeqa.semantic.connection import get_tenant_connection
+        with get_tenant_connection(tenant_id) as conn:
+            row = conn.execute(text(
+                "SELECT a.attempt_no, a.status AS attempt_status, "
+                "       CAST(a.request_id AS text) AS request_id, "
+                "       a.error_code AS attempt_error_code, a.started_at, a.finished_at, "
+                "       j.s1_version_seq, j.error_message AS job_error_message, "
+                "       j.progress_msg, "
+                "       o.outcome_kind::text AS outcome_kind, o.claims_written, "
+                "       o.refusal_kind::text AS refusal_kind, o.refusals, "
+                "       o.equivalent_existing, "
+                "       o.attempted_interpretation->'partial_refusals' AS partial_refusals, "
+                "       CAST(o.outcome_id AS text) AS outcome_id, "
+                "       o.created_at AS outcome_at, "
+                "       llm.models, llm.calls, llm.cost_usd, llm.in_tok, llm.out_tok "
+                "FROM s3_generation_job_attempts a "
+                "JOIN s3_generation_jobs j ON j.id = a.job_id "
+                "LEFT JOIN generation_outcomes o ON o.request_id = a.request_id "
+                "  AND o.requirement_ref->>'key' = :rk "
+                "LEFT JOIN LATERAL ("
+                "  SELECT array_agg(DISTINCT u.model) AS models, COUNT(*) AS calls, "
+                "         COALESCE(SUM(u.cost_usd), 0) AS cost_usd, "
+                "         COALESCE(SUM(u.input_tokens), 0) AS in_tok, "
+                "         COALESCE(SUM(u.output_tokens), 0) AS out_tok "
+                "  FROM public.llm_usage_log u "
+                "  WHERE u.tenant_id = :tid AND u.task = :task "
+                "    AND u.ts >= a.started_at AND u.ts <= COALESCE(a.finished_at, NOW())"
+                ") llm ON true "
+                "WHERE j.requirement_key = :rk AND a.request_id = CAST(:rid AS uuid)"),
+                {"tid": tenant_id, "task": _GENERATION_TASK,
+                 "rk": requirement_key, "rid": request_id}).mappings().first()
+            if row is None:
+                return empty
+            d = dict(row)
+            calls = []
+            if d.get("outcome_id"):
+                calls = conn.execute(text(
+                    "SELECT tool_name, operational_outcome::text AS op_outcome, "
+                    "       attempt_index, timing_start, timing_duration_ms, "
+                    "       token_count_input, token_count_output, "
+                    "       model_identifier, prompt_version "
+                    "FROM llm_calls "
+                    "WHERE generation_outcome_id = CAST(:oid AS uuid) "
+                    "ORDER BY timing_start NULLS LAST, created_at"),
+                    {"oid": d["outcome_id"]}).mappings().all()
+
+        run = _shape_run_row(d, now=datetime.now(timezone.utc))
+        partial = []
+        for entry in d.get("partial_refusals") or ():
+            if isinstance(entry, dict):
+                partial.append({
+                    "ac_ref": entry.get("ac_ref"),
+                    "refusal_kind": entry.get("refusal_kind"),
+                    "plain": refusal_plain(entry.get("refusal_kind"), [entry]),
+                })
+        outcome = None
+        if d.get("outcome_kind"):
+            outcome = {
+                "kind": d["outcome_kind"],
+                "at": _iso(d.get("outcome_at")),
+                "claims_written": d.get("claims_written") or [],
+                "equivalent_existing": d.get("equivalent_existing") or [],
+                "refusal_kind": d.get("refusal_kind"),
+                "refusal_plain": (refusal_plain(d.get("refusal_kind"), d.get("refusals"))
+                                  if d.get("refusal_kind") else None),
+                "partial_refusals": partial,
+            }
+        return {
+            "available": True,
+            "run": run,
+            "outcome": outcome,
+            "progress_msg": d.get("progress_msg"),
+            "llm_calls": [{
+                "tool_name": c["tool_name"], "outcome": c["op_outcome"],
+                "attempt_index": c["attempt_index"],
+                "at": _iso(c["timing_start"]),
+                "duration_ms": c["timing_duration_ms"],
+                "tokens_in": c["token_count_input"],
+                "tokens_out": c["token_count_output"],
+                "model": c["model_identifier"],
+                "prompt_version": c["prompt_version"],
+            } for c in calls],
+        }
+    except Exception as exc:
+        log.warning("read_generation_run_detail unavailable for tenant %s key %s: %s",
+                    tenant_id, requirement_key, exc)
+        return {"available": False, "run": None, "outcome": None, "llm_calls": []}
 
 
 
@@ -697,3 +806,73 @@ def count_claims_by_requirement(tenant_id: int, requirement_keys) -> dict:
         log.warning("count_claims_by_requirement unavailable for tenant %s: %s",
                     tenant_id, exc)
         return {"available": False, "counts": {}}
+
+
+def _count_claims_by_requirement_status(conn, keys) -> dict:
+    """Pure: ``{requirement_key: {status: n, ..., 'total': n}}`` for the given
+    keys on an open tenant conn. Same population as
+    :func:`_count_claims_by_requirement` (current, non-deprecated, generated_from)
+    but grouped by claim status so the list chips can show approved/draft/review
+    instead of one flat count — the totals stay in lockstep with the flat read."""
+    keys = list(keys)
+    if not keys:
+        return {}
+    from sqlalchemy import bindparam
+    stmt = text(
+        "SELECT l.external_key AS k, c.status::text AS status, "
+        "       COUNT(DISTINCT l.test_id) AS n "
+        "FROM test_requirement_links l "
+        "JOIN test_claims c ON c.test_id = l.test_id AND c.valid_to IS NULL "
+        "  AND c.status::text <> 'deprecated' "
+        "WHERE l.external_system = 'jira' AND l.link_kind = 'generated_from' "
+        "AND l.external_key IN :keys GROUP BY l.external_key, c.status"
+    ).bindparams(bindparam("keys", expanding=True))
+    rows = conn.execute(stmt, {"keys": keys}).mappings().all()
+    out: dict = {}
+    for r in rows:
+        g = out.setdefault(r["k"], {"total": 0})
+        g[r["status"]] = g.get(r["status"], 0) + r["n"]
+        g["total"] += r["n"]
+    return out
+
+
+def count_claims_by_requirement_status(tenant_id: int, requirement_keys) -> dict:
+    """Best-effort bulk read of per-status generated-claim counts per requirement
+    key (the richer list chips). Never raises. Returns ``{available, counts}``
+    with ``counts[key] = {status: n, ..., 'total': n}``; missing keys simply
+    don't appear (caller defaults to 0)."""
+    keys = list(requirement_keys or [])
+    if not keys:
+        return {"available": True, "counts": {}}
+    try:
+        from primeqa.semantic.connection import get_tenant_connection
+        with get_tenant_connection(tenant_id) as conn:
+            return {"available": True,
+                    "counts": _count_claims_by_requirement_status(conn, keys)}
+    except Exception as exc:
+        log.warning("count_claims_by_requirement_status unavailable for tenant %s: %s",
+                    tenant_id, exc)
+        return {"available": False, "counts": {}}
+
+
+def keys_with_claims(tenant_id: int) -> dict:
+    """Best-effort: the set of requirement external_keys that currently have at
+    least one live generated test (same population as the count reads). Powers
+    the requirements-list coverage filter — the caller intersects these keys
+    with the v1 rows in SQL so pagination totals stay honest. Never raises.
+    Returns ``{available, keys}`` — ``available=False`` means the caller must
+    DROP the filter (not silently render wrong results)."""
+    try:
+        from primeqa.semantic.connection import get_tenant_connection
+        with get_tenant_connection(tenant_id) as conn:
+            rows = conn.execute(text(
+                "SELECT DISTINCT l.external_key AS k "
+                "FROM test_requirement_links l "
+                "JOIN test_claims c ON c.test_id = l.test_id AND c.valid_to IS NULL "
+                "  AND c.status::text <> 'deprecated' "
+                "WHERE l.external_system = 'jira' AND l.link_kind = 'generated_from'"
+            )).mappings().all()
+        return {"available": True, "keys": {r["k"] for r in rows}}
+    except Exception as exc:
+        log.warning("keys_with_claims unavailable for tenant %s: %s", tenant_id, exc)
+        return {"available": False, "keys": set()}

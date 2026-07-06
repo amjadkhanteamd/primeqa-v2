@@ -1,0 +1,158 @@
+{% extends "base.html" %}
+{% from 'components/breadcrumbs.html' import breadcrumbs %}
+{% block title %}Generation run — {{ req.jira_key or '#' ~ req.id }} - Plimsol{% endblock %}
+{% block content %}
+
+{{ breadcrumbs([
+  ('Requirements', '/requirements'),
+  (req.jira_key or ('Requirement #' ~ req.id), '/requirements/' ~ req.id),
+  ('Generation run', None),
+]) }}
+
+<div class="max-w-4xl space-y-6">
+  <!-- Header -->
+  <div class="flex items-start justify-between">
+    <div class="min-w-0">
+      <div class="flex items-center space-x-2">
+        <span class="inline-flex items-center px-2 py-0.5 rounded-full text-xs font-medium
+          {% if run.status_tone == 'green' %}bg-emerald-100 text-emerald-800
+          {% elif run.status_tone == 'amber' %}bg-amber-100 text-amber-800
+          {% elif run.status_tone == 'red' %}bg-red-100 text-red-800
+          {% elif run.status_tone == 'indigo' %}bg-indigo-100 text-indigo-800
+          {% else %}bg-gray-100 text-gray-600{% endif %}">{{ run.status_label }}</span>
+        <span class="text-xs text-gray-400 font-mono" title="{{ run.request_id }}">run {{ (run.request_id or '')[:8] }}</span>
+      </div>
+      <h1 class="mt-2 text-2xl font-bold text-gray-900">Generation run detail</h1>
+      <p class="mt-1 text-sm text-gray-500">
+        {{ req.jira_summary or ('Requirement #' ~ req.id) }} ·
+        attempt {{ run.attempt_no }} · S1 v{{ run.s1_version_seq }}
+      </p>
+    </div>
+  </div>
+
+  <!-- Summary strip -->
+  <div class="bg-white shadow rounded-lg px-6 py-4 grid grid-cols-2 md:grid-cols-4 gap-4 text-sm">
+    <div>
+      <p class="text-xs text-gray-500 uppercase">Started</p>
+      <p class="font-medium">{{ (run.when or '—')[:19] | replace('T', ' ') }}</p>
+    </div>
+    <div>
+      <p class="text-xs text-gray-500 uppercase">Finished</p>
+      <p class="font-medium">{{ (run.finished or '—')[:19] | replace('T', ' ') }}</p>
+    </div>
+    <div>
+      <p class="text-xs text-gray-500 uppercase">Duration</p>
+      <p class="font-medium">
+        {%- if run.duration_s is not none -%}
+          {%- if run.duration_s >= 60 %}{{ '%.1f'|format(run.duration_s / 60) }} min{% else %}{{ '%.0f'|format(run.duration_s) }} s{% endif -%}
+        {%- else -%}—{%- endif -%}
+      </p>
+    </div>
+    <div>
+      <p class="text-xs text-gray-500 uppercase">AI cost</p>
+      <p class="font-medium" title="{% if run.llm %}{{ run.llm.input_tokens }} tokens in / {{ run.llm.output_tokens }} out{% endif %}">
+        {% if run.llm %}${{ '%.4f'|format(run.llm.cost_usd) }}{% else %}—{% endif %}
+      </p>
+    </div>
+  </div>
+
+  {# Honesty note: the worker keeps no raw line-by-line log — this page is
+     ASSEMBLED from what the run durably recorded. #}
+  <p class="text-xs text-gray-400">
+    Assembled from the run's recorded events (attempt, AI calls, outcome) —
+    not a raw process log.
+  </p>
+
+  <!-- Timeline -->
+  <div class="bg-white shadow rounded-lg">
+    <div class="px-4 py-3 border-b">
+      <h3 class="text-sm font-semibold text-gray-700">What happened</h3>
+    </div>
+    <ol class="divide-y divide-gray-100 text-sm">
+      <li class="px-6 py-3 flex gap-4">
+        <span class="text-xs text-gray-400 font-mono whitespace-nowrap w-20 flex-shrink-0">{{ (run.when or '')[11:19] or '—' }}</span>
+        <span class="text-gray-800">Attempt {{ run.attempt_no }} started against S1 version {{ run.s1_version_seq }}.</span>
+      </li>
+
+      {% for call in llm_calls %}
+      <li class="px-6 py-3 flex gap-4">
+        <span class="text-xs text-gray-400 font-mono whitespace-nowrap w-20 flex-shrink-0">{{ (call.at or '')[11:19] or '—' }}</span>
+        <span class="text-gray-800 min-w-0">
+          AI call <span class="font-mono text-xs bg-gray-100 rounded px-1.5 py-0.5">{{ call.tool_name }}</span>
+          on {{ call.model }}
+          <span class="text-gray-500">
+            —
+            {% if call.duration_ms is not none %}{{ call.duration_ms }} ms{% endif %}
+            {% if call.tokens_in is not none %} · {{ call.tokens_in }} in / {{ call.tokens_out }} out tokens{% endif %}
+            {% if call.attempt_index and call.attempt_index > 0 %} · correction attempt {{ call.attempt_index }}{% endif %}
+            {% if call.prompt_version %} · prompt {{ call.prompt_version }}{% endif %}
+          </span>
+          {% if call.outcome and call.outcome != 'success' %}
+          <span class="inline-flex items-center px-1.5 py-0.5 rounded text-xs bg-amber-100 text-amber-800 ml-1">{{ call.outcome }}</span>
+          {% endif %}
+        </span>
+      </li>
+      {% endfor %}
+      {% if not llm_calls and run.llm and run.llm.models %}
+      <li class="px-6 py-3 flex gap-4">
+        <span class="text-xs text-gray-400 font-mono whitespace-nowrap w-20 flex-shrink-0">—</span>
+        <span class="text-gray-800">Made AI calls on {{ run.llm.models | join(', ') }}
+          <span class="text-gray-500">— {{ run.llm.input_tokens }} in / {{ run.llm.output_tokens }} out tokens, ${{ '%.4f'|format(run.llm.cost_usd) }}. Per-call telemetry wasn't recorded for this run.</span>
+        </span>
+      </li>
+      {% endif %}
+
+      {% if outcome %}
+      <li class="px-6 py-3 flex gap-4">
+        <span class="text-xs text-gray-400 font-mono whitespace-nowrap w-20 flex-shrink-0">{{ (outcome.at or '')[11:19] or '—' }}</span>
+        <div class="text-gray-800 min-w-0 space-y-1">
+          {% if outcome.kind == 'refusal' %}
+          <p>The engine <span class="font-medium text-amber-700">declined</span> to generate tests.</p>
+          <p class="text-amber-800 bg-amber-50 border border-amber-200 rounded px-2 py-1 text-xs">{{ outcome.refusal_plain or 'No reason was recorded.' }}
+            {% if outcome.refusal_kind %}<span class="text-amber-600">({{ outcome.refusal_kind.replace('-', ' ') }})</span>{% endif %}</p>
+          {% else %}
+            {% if outcome.claims_written %}
+            <p>Wrote <span class="font-medium">{{ outcome.claims_written | length }}</span> test case{{ '' if outcome.claims_written | length == 1 else 's' }}:</p>
+            <ul class="list-disc pl-5 space-y-0.5">
+              {% for cw in outcome.claims_written %}
+              <li><a href="/claims/{{ cw.test_id }}" class="text-indigo-600 hover:underline font-mono text-xs" title="{{ cw.test_id }}">{{ cw.test_id[:8] }}</a> <span class="text-gray-500 text-xs">v{{ cw.version_seq }}</span></li>
+              {% endfor %}
+            </ul>
+            {% elif outcome.equivalent_existing %}
+            <p>Matched {{ outcome.equivalent_existing | length }} existing test case{{ '' if outcome.equivalent_existing | length == 1 else 's' }} — nothing new was created (the plan already covered what was asked).</p>
+            {% else %}
+            <p>Completed without writing new test cases.</p>
+            {% endif %}
+            {% if outcome.partial_refusals %}
+            <p class="text-amber-800">Declined {{ outcome.partial_refusals | length }} proposed test{{ '' if outcome.partial_refusals | length == 1 else 's' }} along the way:</p>
+            <ul class="list-disc pl-5 space-y-0.5 text-xs text-amber-800">
+              {% for pr in outcome.partial_refusals %}
+              <li>{% if pr.ac_ref %}<span class="font-medium">AC{{ pr.ac_ref }}:</span> {% endif %}{{ pr.plain or 'No reason was recorded.' }}</li>
+              {% endfor %}
+            </ul>
+            {% endif %}
+          {% endif %}
+        </div>
+      </li>
+      {% endif %}
+
+      {% if run.run_status in ['failed', 'cancelled'] %}
+      <li class="px-6 py-3 flex gap-4">
+        <span class="text-xs text-gray-400 font-mono whitespace-nowrap w-20 flex-shrink-0">{{ (run.finished or '')[11:19] or '—' }}</span>
+        <span class="text-red-700">Run {{ run.run_status }}{% if run.detail %}: {{ run.detail }}{% endif %}</span>
+      </li>
+      {% elif run.run_status in ['queued', 'claimed', 'running'] %}
+      <li class="px-6 py-3 flex gap-4">
+        <span class="text-xs text-gray-400 font-mono whitespace-nowrap w-20 flex-shrink-0">now</span>
+        <span class="text-indigo-700">Still running{% if progress_msg %} — {{ progress_msg }}{% endif %}.</span>
+      </li>
+      {% else %}
+      <li class="px-6 py-3 flex gap-4">
+        <span class="text-xs text-gray-400 font-mono whitespace-nowrap w-20 flex-shrink-0">{{ (run.finished or '')[11:19] or '—' }}</span>
+        <span class="text-gray-800">Attempt finished.</span>
+      </li>
+      {% endif %}
+    </ol>
+  </div>
+</div>
+{% endblock %}

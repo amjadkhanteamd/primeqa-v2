@@ -6,7 +6,8 @@
 
 {{ breadcrumbs([('Requirements', None)]) }}
 
-{% set qs %}{% if search %}&q={{ search | urlencode }}{% endif %}{% if show_deleted %}&deleted=1{% endif %}{% if meta.per_page and meta.per_page != 20 %}&per_page={{ meta.per_page }}{% endif %}{% endset %}
+{% set qs %}{% if search %}&q={{ search | urlencode }}{% endif %}{% if show_deleted %}&deleted=1{% endif %}{% if section_filter %}&section_id={{ section_filter }}{% endif %}{% if source_filter %}&source={{ source_filter }}{% endif %}{% if stale_filter %}&stale=1{% endif %}{% if coverage_filter %}&coverage={{ coverage_filter }}{% endif %}{% if meta.per_page and meta.per_page != 20 %}&per_page={{ meta.per_page }}{% endif %}{% endset %}
+{% set has_filters = search or section_filter or source_filter or stale_filter or coverage_filter %}
 
 {# D-165 (UI Area 2): the list is browse + S2 claim counts. Generation +
    execution moved to the requirement detail (S3 generate / S2 claims); the v1
@@ -48,14 +49,38 @@
                  class="block w-full rounded-md border border-gray-300 pl-9 pr-3 py-1.5 text-sm focus:border-indigo-500 focus:ring-indigo-500">
           <svg class="absolute left-3 top-2 h-4 w-4 text-gray-400" fill="none" viewBox="0 0 24 24" stroke-width="2" stroke="currentColor"><path stroke-linecap="round" stroke-linejoin="round" d="M21 21l-5.197-5.197m0 0A7.5 7.5 0 105.196 5.196a7.5 7.5 0 0010.607 10.607z"/></svg>
         </div>
-        <button type="submit" class="rounded-md bg-white border border-gray-300 px-3 py-1.5 text-sm text-gray-700 hover:bg-gray-50">Search</button>
-        {% if search %}<a href="/requirements" class="text-sm text-gray-500 hover:text-gray-700">Clear</a>{% endif %}
+        <select name="section_id" class="rounded-md border border-gray-300 px-2 py-1.5 text-sm focus:border-indigo-500 focus:ring-indigo-500">
+          <option value="">All sections</option>
+          {% for s in sections %}
+          <option value="{{ s.id }}" {% if section_filter == s.id %}selected{% endif %}>{{ s.name }}</option>
+          {% endfor %}
+        </select>
+        <select name="source" class="rounded-md border border-gray-300 px-2 py-1.5 text-sm focus:border-indigo-500 focus:ring-indigo-500">
+          <option value="">Any source</option>
+          <option value="jira" {% if source_filter == 'jira' %}selected{% endif %}>jira</option>
+          <option value="manual" {% if source_filter == 'manual' %}selected{% endif %}>manual</option>
+        </select>
+        <select name="coverage" class="rounded-md border border-gray-300 px-2 py-1.5 text-sm focus:border-indigo-500 focus:ring-indigo-500">
+          <option value="">Any coverage</option>
+          <option value="no_tests" {% if coverage_filter == 'no_tests' %}selected{% endif %}>no tests yet</option>
+          <option value="has_tests" {% if coverage_filter == 'has_tests' %}selected{% endif %}>has tests</option>
+        </select>
+        <label class="flex items-center gap-1.5 text-sm text-gray-600 whitespace-nowrap">
+          <input type="checkbox" name="stale" value="1" {% if stale_filter %}checked{% endif %}
+                 class="rounded border-gray-300 text-indigo-600 focus:ring-indigo-500">
+          Stale only
+        </label>
+        <button type="submit" class="rounded-md bg-white border border-gray-300 px-3 py-1.5 text-sm text-gray-700 hover:bg-gray-50">Filter</button>
+        {% if has_filters %}<a href="/requirements{% if show_deleted %}?deleted=1{% endif %}" class="text-sm text-gray-500 hover:text-gray-700">Clear</a>{% endif %}
       </form>
       <div class="ml-auto">{{ per_page_selector(meta.per_page, '/requirements', qs, [10, 20, 50]) }}</div>
     </div>
 
     {% if query_error %}
     <div class="rounded-md bg-red-50 border border-red-200 p-3 text-sm text-red-700">{{ query_error }}</div>
+    {% endif %}
+    {% if coverage_notice %}
+    <div class="rounded-md bg-amber-50 border border-amber-200 p-3 text-sm text-amber-800">{{ coverage_notice }}</div>
     {% endif %}
 
     {% if requirements %}
@@ -71,12 +96,25 @@
                             <span class="text-sm font-medium text-gray-900 truncate hover:text-indigo-600 hover:underline">{{ req.jira_summary or 'Requirement #' ~ req.id }}</span>
                             {% if req.is_stale %}<span class="inline-flex items-center px-2 py-0.5 rounded text-xs bg-yellow-100 text-yellow-800">Stale</span>{% endif %}
                             {% if req.claim_count %}
-                            <span class="inline-flex items-center px-2 py-0.5 rounded text-xs font-medium bg-indigo-50 text-indigo-700" title="{{ req.claim_count }} test case(s) generated for this requirement">
-                              {{ req.claim_count }} test case{{ '' if req.claim_count == 1 else 's' }}
-                            </span>
+                            {# Per-status rollup — same palette as the detail badges, so a
+                               requirement with only unapproved drafts doesn't look done. #}
+                            {% set sc = req.status_counts %}
+                            {% if sc.get('approved') %}
+                            <span class="inline-flex items-center px-2 py-0.5 rounded text-xs font-medium bg-blue-100 text-blue-800" title="{{ sc['approved'] }} approved test case(s)">{{ sc['approved'] }} approved</span>
+                            {% endif %}
+                            {% if sc.get('draft') %}
+                            <span class="inline-flex items-center px-2 py-0.5 rounded text-xs font-medium bg-gray-100 text-gray-700" title="{{ sc['draft'] }} draft test case(s) — not yet approved to run">{{ sc['draft'] }} draft</span>
+                            {% endif %}
+                            {% for k, v in sc.items() if k not in ('approved', 'draft', 'total') %}
+                            <span class="inline-flex items-center px-2 py-0.5 rounded text-xs font-medium bg-amber-100 text-amber-800" title="{{ v }} test case(s) in {{ k }}">{{ v }} {{ k }}</span>
+                            {% endfor %}
                             {% else %}
                             <span class="text-xs text-gray-400">no tests yet</span>
                             {% endif %}
+                            {% for rel in req.releases %}
+                            <span class="inline-flex items-center px-2 py-0.5 rounded text-xs bg-purple-50 text-purple-700"
+                                  title="In release {{ rel.name }} ({{ rel.status }})">&#128230; {{ rel.name }}</span>
+                            {% endfor %}
                         </div>
                         {% if req.acceptance_criteria %}<p class="mt-1 text-xs text-gray-500 line-clamp-2">{{ req.acceptance_criteria }}</p>{% endif %}
                     </a>
@@ -100,10 +138,10 @@
     <div class="bg-white shadow rounded-lg p-12 text-center">
         <h3 class="text-sm font-medium text-gray-900">
           {% if show_deleted %}Trash is empty.
-          {% elif search %}No requirements match your search.
+          {% elif has_filters %}No requirements match your search or filters.
           {% else %}No requirements yet{% endif %}
         </h3>
-        {% if not search and not show_deleted %}<p class="mt-1 text-sm text-gray-500">Import from Jira to get started.</p>{% endif %}
+        {% if not has_filters and not show_deleted %}<p class="mt-1 text-sm text-gray-500">Import from Jira to get started.</p>{% endif %}
     </div>
     {% endif %}
 

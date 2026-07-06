@@ -205,8 +205,27 @@ class RequirementRepository:
 
     def list_page(self, tenant_id, *, page=1, per_page=20, q=None,
                   sort="updated_at", order="desc", filters=None,
-                  include_deleted=False) -> PageResult:
+                  include_deleted=False, coverage=None,
+                  covered_jira_keys=(), covered_ids=()) -> PageResult:
         base = self.db.query(Requirement).filter(Requirement.tenant_id == tenant_id)
+        # Coverage ("has generated tests?") lives in the substrate, not this
+        # table — the caller passes the covered key/id sets (one substrate read)
+        # and the filter applies in SQL so total/pagination stay honest. A row's
+        # substrate key is jira_key when present, else "req-<id>" — so the id
+        # branch only applies to NULL-jira_key rows.
+        if coverage in ("has_tests", "no_tests"):
+            from sqlalchemy import and_, or_
+            # NULL-safe: a bare `jira_key IN (…)` is SQL-NULL for NULL keys, and
+            # NOT(NULL) drops the row — so guard each branch on key presence.
+            covered = or_(
+                and_(Requirement.jira_key.isnot(None),
+                     Requirement.jira_key.in_(list(covered_jira_keys))),
+                and_(Requirement.jira_key.is_(None),
+                     Requirement.id.in_(list(covered_ids))))
+            if coverage == "has_tests":
+                base = base.filter(covered)
+            else:
+                base = base.filter(~covered)
         return (ListQuery(base, Requirement,
                           search_fields=["jira_summary", "jira_key"],
                           sort_whitelist=["updated_at", "created_at", "jira_key"],

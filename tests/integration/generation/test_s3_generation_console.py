@@ -20,6 +20,8 @@ from primeqa.intelligence.s3_generation_console import (
     _read_claims,
     _read_latest_job,
     count_claims_by_requirement,
+    count_claims_by_requirement_status,
+    keys_with_claims,
     list_claims,
     read_claim_detail,
     read_latest_s3_job,
@@ -149,6 +151,40 @@ def test_count_claims_by_requirement_empty_keys(seeded):
 
 def test_count_claims_by_requirement_bad_tenant():
     assert count_claims_by_requirement(-1, ["R0"])["available"] is False
+
+
+# --- per-status counts + coverage key set (requirements-list chips/filters) ---
+
+def test_count_claims_by_requirement_status(seeded):
+    _emit_run(seeded, [_grounded_rel()], persister=LedgerPersister(TEST_TENANT_ID))
+    out = count_claims_by_requirement_status(TEST_TENANT_ID, ["R0", "R-absent"])
+    assert out["available"] is True
+    r0 = out["counts"].get("R0")
+    assert r0 is not None and r0["total"] == 1
+    assert r0.get("draft") == 1                     # freshly emitted claims are drafts
+    assert "R-absent" not in out["counts"]
+    # totals stay in lockstep with the flat read
+    flat = count_claims_by_requirement(TEST_TENANT_ID, ["R0"])["counts"]
+    assert flat.get("R0") == r0["total"]
+
+
+def test_count_claims_by_requirement_status_empty_keys(seeded):
+    out = count_claims_by_requirement_status(TEST_TENANT_ID, [])
+    assert out["available"] is True and out["counts"] == {}
+
+
+def test_count_claims_by_requirement_status_bad_tenant():
+    assert count_claims_by_requirement_status(-1, ["R0"])["available"] is False
+
+
+def test_keys_with_claims(seeded):
+    _emit_run(seeded, [_grounded_rel()], persister=LedgerPersister(TEST_TENANT_ID))
+    out = keys_with_claims(TEST_TENANT_ID)
+    assert out["available"] is True and "R0" in out["keys"]
+
+
+def test_keys_with_claims_bad_tenant():
+    assert keys_with_claims(-1)["available"] is False
 
 
 # --- D-269: deprecated claims drop from business-facing coverage views ---------
