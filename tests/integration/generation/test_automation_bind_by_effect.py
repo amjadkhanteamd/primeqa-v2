@@ -82,6 +82,32 @@ def test_effect_no_flow_produces_still_refuses(seeded):
     assert r.outcome.outcome_kind == OutcomeKind.REFUSAL
 
 
+def test_no_name_effect_no_flow_produces_refuses(seeded):
+    # SUB-3 (repro): the NO-NAME counterpart of test_effect_no_flow_produces_
+    # still_refuses. No automation_name + an effect value no Flow on the subject
+    # produces (empty producer set) + a NON-calculated observed field must REFUSE,
+    # not bind the blind flows[0] (a Flow that produces a DIFFERENT effect) — a
+    # wrong-green. The named branch already refuses this; the no-name branch must
+    # be symmetric. Against the old code this DRAFTS (bound to flows[0]).
+    r = _run(seeded, _intent(field_name="Loan__c.Risk_Rating__c",
+                             expected_value="Platinum"),   # no automation_name
+             expect_emit=True)
+    assert r.outcome.outcome_kind == OutcomeKind.REFUSAL
+    assert "produces the claimed effect" in r.outcome.refusals[0].payload["detail"]
+
+
+def test_no_name_calculated_field_still_binds_formula(seeded):
+    # No-regression: a CALCULATED observed field legitimately has no Flow producer
+    # (the formula engine is the mechanism); the coherence-guard re-binds
+    # primitive='formula'. The SUB-3 no-producer refusal is scoped to non-calc
+    # fields, so this still DRAFTS. (Order__c.Total_With_Tax__c is is_calculated.)
+    r = _run(seeded, _intent(sf_api_name="Order__c",
+                             field_name="Order__c.Total_With_Tax__c",
+                             expected_value="110"))
+    assert r.outcome.outcome_kind == OutcomeKind.DRAFT
+    assert r.emission.asserted_truth.automation_primitive == "formula"
+
+
 def test_cross_object_binds_the_flow_that_creates_the_object(seeded):
     # The Flow's recordCreates makes a Loan_Task__c — bind by the created object,
     # no name needed.
