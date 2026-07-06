@@ -70,7 +70,17 @@ def _alembic(db_url: str, *, mode: str, tenant_id=None) -> None:
 
 @pytest.fixture(scope="session")
 def test_db_url() -> str:
-    return os.environ.get("GOVERNANCE_TEST_DB_URL", DEFAULT_TEST_DB_URL)
+    # An explicit override wins verbatim (CI / operator owns uniqueness there).
+    override = os.environ.get("GOVERNANCE_TEST_DB_URL")
+    if override:
+        return override
+    # TEST-3 (wave-0): derive a UNIQUE-per-session DB name so two concurrent
+    # pytest sessions never share ``primeqa_test_governance`` — the sync suite
+    # uses the SAME base name, so without this, one session's teardown
+    # (pg_terminate_backend + DROP DATABASE) tears down the other's live DB.
+    # The base stays a PREFIX so the db_setup safety assertion still matches.
+    worker = os.environ.get("PYTEST_XDIST_WORKER", "main")
+    return f"{DEFAULT_TEST_DB_URL}_{worker}_{os.getpid()}"
 
 
 @pytest.fixture(scope="session", autouse=True)

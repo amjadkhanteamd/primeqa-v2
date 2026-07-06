@@ -16,7 +16,8 @@ import os
 import sys
 import uuid
 
-sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+# wave-0 TEST-2: moved under tests/integration/ so pytest collects it (testpaths).
+sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))))
 
 from dotenv import load_dotenv
 load_dotenv()
@@ -32,7 +33,7 @@ TENANT_ID = 1
 results = []
 
 
-def test(name, fn):
+def _run(name, fn):
     try:
         fn()
         print(f"  PASS  {name}")
@@ -111,7 +112,7 @@ def run_tests():
             assert row.user_id is not None, "release.created row has no user_id"
             assert (row.details or {}).get("name") == f"AUDIT-{sfx}", \
                 f"release.created details missing name: {row.details}"
-        results.append(test("1. create_release writes release.created", t_created))
+        results.append(_run("1. create_release writes release.created", t_created))
 
         # 2. minting a status token logs the grant but NEVER the raw token.
         raw_token = {"v": None}
@@ -125,7 +126,7 @@ def run_tests():
             # The raw token must not appear anywhere in the audit row.
             blob = str(rows[-1].details) + str(rows[-1].action)
             assert raw_token["v"] not in blob, "raw token leaked into activity_log!"
-        results.append(test("2. status-token mint audited, raw token NOT logged", t_mint))
+        results.append(_run("2. status-token mint audited, raw token NOT logged", t_mint))
 
         # 3. revoking the token logs the revoke.
         def t_revoke():
@@ -133,7 +134,7 @@ def run_tests():
             assert dr.status_code == 200, f"revoke failed: {dr.status_code}"
             rows = _audit_rows(rid, "release.status_token.revoked")
             assert len(rows) >= 1, "no release.status_token.revoked audit row"
-        results.append(test("3. status-token revoke audited", t_revoke))
+        results.append(_run("3. status-token revoke audited", t_revoke))
     finally:
         _cleanup(rid)
 
@@ -143,6 +144,14 @@ def run_tests():
     print(f"  {passed}/{total} passed")
     print("=" * 50 + "\n")
     return passed == total
+
+
+def test_release_audit_suite():
+    # wave-0 TEST-2: pytest entry point for the release-domain audit invariant
+    # (every destructive/admin release action writes activity_log; the raw
+    # status token is never logged). Sub-checks are nested inside run_tests(),
+    # so this single collected test is how the suite runs under pytest.
+    assert run_tests()
 
 
 if __name__ == "__main__":

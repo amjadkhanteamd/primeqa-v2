@@ -22,8 +22,6 @@ from primeqa.release.service import ReleaseService
 
 views_bp = Blueprint("views", __name__, template_folder="templates")
 
-JWT_SECRET = os.getenv("JWT_SECRET", "dev-secret-change-me")
-
 
 def get_current_user():
     """Audit fix C-4 (2026-04-19): tolerate a JWT that's missing the
@@ -34,8 +32,13 @@ def get_current_user():
     token = request.cookies.get("access_token")
     if not token:
         return None
+    # SEC-8: resolve the JWT secret through the fail-closed chokepoint
+    # (core.secrets.get_jwt_secret) — same as core/auth.py — instead of a
+    # module-level os.getenv default that could silently be the forgeable
+    # `dev-secret-change-me`. Per-request so it can't bind a stale default at import.
+    from primeqa.core.secrets import get_jwt_secret
     try:
-        payload = jwt.decode(token, JWT_SECRET, algorithms=["HS256"])
+        payload = jwt.decode(token, get_jwt_secret(), algorithms=["HS256"])
         if "sub" not in payload or "tenant_id" not in payload:
             return None  # malformed — drop to login flow
         return {
@@ -1514,14 +1517,21 @@ def connections_detail(conn_id):
 @views_bp.route("/connections/<int:conn_id>/test", methods=["POST"])
 @role_required("admin")
 def connections_test(conn_id):
+    from urllib.parse import quote
     db = next(get_db())
     try:
         svc = ConnectionService(ConnectionRepository(db))
         result = svc.test_connection(conn_id, request.user["tenant_id"])
-        msg = "Connected successfully!" if result.get("status") == "connected" else f"Failed: {result.get('detail', 'Unknown error')}"
-        return redirect(f"/connections/{conn_id}?message={msg}")
+        # SEC-9: `detail` is now a generic, server-sanitised message (the service
+        # logs any raw upstream body); still URL-encode it before the redirect.
+        msg = ("Connected successfully!" if result.get("status") == "connected"
+               else f"Failed: {result.get('detail', 'Unknown error')}")
+        return redirect(f"/connections/{conn_id}?message={quote(msg)}")
     except Exception as e:
-        return redirect(f"/connections/{conn_id}?message=Error: {e}")
+        # SEC-9: log the exception server-side; never echo it into the redirect URL.
+        import logging
+        logging.getLogger(__name__).warning("connection %s test view error: %s", conn_id, e)
+        return redirect(f"/connections/{conn_id}?message={quote('Connection test failed.')}")
     finally:
         db.close()
 
@@ -3532,6 +3542,21 @@ def releases_run(release_id):
         env = EnvironmentRepository(db).get_environment(env_id, tid)
         if env is None:
             flash("Environment not found.", "error")
+            return redirect(f"/releases/{release_id}")
+        # SEC-4: production gate (mirrors api_s4_execution_enqueue + the claim-run
+        # page). This enqueues to s4_execution_jobs, which the worker later runs as
+        # system (caller_tier=None) — so the execution chokepoint's production-role
+        # rule is structurally skipped and the gate MUST be enforced here.
+        # (1) a non-Admin may not dispatch against a production org; (2) even an
+        # Admin must explicitly confirm_production.
+        confirm_production = request.form.get("confirm_production") in ("on", "1", "true")
+        if env.is_production and rank(request.user["role"]) < Tier.ADMIN:
+            flash("Running against a production org requires an Admin.", "error")
+            return redirect(f"/releases/{release_id}")
+        from primeqa.runs.bulk import environment_can_bulk_run
+        ok, msg = environment_can_bulk_run(env, confirm_production)
+        if not ok:
+            flash(msg, "error")
             return redirect(f"/releases/{release_id}")
         rel_svc = ReleaseService(ReleaseRepository(db))
         release = rel_svc.get_release_detail(release_id, tid)

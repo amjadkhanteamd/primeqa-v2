@@ -287,6 +287,14 @@
             <option value="critical">Critical</option>
           </select>
         </div>
+        {# SEC-4: running against a production org requires an explicit confirmation
+           (and an Admin). The server gate in releases_run enforces it regardless. #}
+        <div>
+          <label class="flex items-start space-x-2 text-sm text-gray-700">
+            <input type="checkbox" name="confirm_production" value="on" class="mt-0.5 rounded border-gray-300">
+            <span>I confirm running against a <strong>production</strong> org (required for production environments; Admins only).</span>
+          </label>
+        </div>
         <div class="flex justify-end space-x-3">
           <button type="button" onclick="document.getElementById('run-plan-modal').classList.add('hidden')" class="rounded-md bg-white ring-1 ring-gray-300 px-3 py-2 text-sm text-gray-700">Cancel</button>
           <button type="submit" class="rounded-md bg-green-600 px-3 py-2 text-sm font-semibold text-white hover:bg-green-500">▶ Run Now</button>

@@ -4,12 +4,15 @@ Business logic: user management, auth, tenant operations, environment management
 """
 
 import hashlib
+import logging
 import os
 import secrets
 from datetime import datetime, timedelta, timezone
 
 import bcrypt
 import jwt
+
+logger = logging.getLogger(__name__)
 
 from primeqa.core.authz import (
     ROLE_TO_TIER,
@@ -25,7 +28,11 @@ MAX_REFRESH_TOKENS_PER_USER = 5
 
 
 def _get_jwt_secret():
-    return os.getenv("JWT_SECRET", "dev-secret-change-me")
+    # SEC-P1: sign tokens through the fail-closed secret chokepoint (mirrors
+    # core/auth.py) — never the forgeable `dev-secret-change-me` default in
+    # production. Signer and verifier now resolve the SAME secret.
+    from primeqa.core.secrets import get_jwt_secret
+    return get_jwt_secret()
 
 
 def _caller_tenant(caller):
@@ -282,6 +289,12 @@ class EnvironmentService:
 
         if not sf_instance_url:
             raise ValueError("Salesforce Instance URL is required (provide directly or via a Connection)")
+        # SEC-3: reject a non-Salesforce / private-IP / non-https instance URL at
+        # write time so the server can never later be pointed at an internal host
+        # with the org's access-token. Raises SalesforceUrlError (a ValueError) ->
+        # 400 at the route.
+        from primeqa.integrations.sf_url import validate_sf_instance_url
+        validate_sf_instance_url(sf_instance_url)
         sf_api_version = sf_api_version or "59.0"
 
         if env_type == "production":
@@ -333,6 +346,14 @@ class EnvironmentService:
         if not creds or not creds.get("access_token"):
             raise ValueError("No credentials or access token stored for this environment")
 
+        # SEC-3: re-validate before the outbound call (defense-in-depth — the env
+        # may predate the write-time guard). Never send the access-token to a
+        # non-Salesforce / private host.
+        from primeqa.integrations.sf_url import validate_sf_instance_url, SalesforceUrlError
+        try:
+            validate_sf_instance_url(env.sf_instance_url)
+        except SalesforceUrlError as e:
+            return {"status": "failed", "detail": str(e)}
         url = f"{env.sf_instance_url.rstrip('/')}/services/data/v{env.sf_api_version}/"
         try:
             resp = http_requests.get(url, headers={
@@ -340,9 +361,17 @@ class EnvironmentService:
             }, timeout=15)
             if resp.status_code == 200:
                 return {"status": "connected", "sf_version": env.sf_api_version}
-            return {"status": "failed", "status_code": resp.status_code, "detail": resp.text[:500]}
+            # SEC-9: log the raw upstream body server-side only; return a generic,
+            # category-keyed message (the caller places this into a redirect URL
+            # that lands in history/Referer/proxy logs).
+            logger.warning("env %s SF connection test failed: HTTP %s body=%r",
+                           environment_id, resp.status_code, resp.text[:500])
+            return {"status": "failed", "status_code": resp.status_code,
+                    "detail": f"Salesforce returned HTTP {resp.status_code}."}
         except http_requests.RequestException as e:
-            return {"status": "failed", "detail": str(e)}
+            logger.warning("env %s SF connection test network error: %s", environment_id, e)
+            return {"status": "failed",
+                    "detail": "Could not reach the Salesforce instance (network error)."}
 
     def refresh_sf_token(self, environment_id, tenant_id):
         pass
@@ -413,6 +442,18 @@ class ConnectionService:
     def get_connection(self, connection_id, tenant_id):
         return self.conn_repo.get_connection_decrypted(connection_id, tenant_id)
 
+    def get_connection_display(self, connection_id, tenant_id):
+        """SEC-1: redacted connection detail for API/UI display — NO decrypted
+        secrets. Returns the same shape as ``list_connections`` (``_conn_dict``:
+        id/type/name/status, no ``config``). ``get_connection_decrypted()`` is
+        reserved for server-side credential resolution (sync/execution/worker),
+        never an HTTP response body. Tenant-scoped via the repo (returns None if
+        the connection is absent or belongs to another tenant)."""
+        conn = self.conn_repo.get_connection(connection_id, tenant_id)
+        if not conn:
+            return None
+        return self._conn_dict(conn)
+
     def test_connection(self, connection_id, tenant_id):
         import requests as http_requests
         data = self.conn_repo.get_connection_decrypted(connection_id, tenant_id)
@@ -422,10 +463,15 @@ class ConnectionService:
         ctype = data["connection_type"]
         try:
             if ctype == "salesforce":
+                from primeqa.integrations.sf_url import validate_sf_instance_url
                 login_url = cfg.get("instance_url", "").rstrip("/")
                 if not login_url:
                     org_type = cfg.get("org_type", "sandbox")
                     login_url = "https://test.salesforce.com" if org_type == "sandbox" else "https://login.salesforce.com"
+                # SEC-5: never POST the org's client_secret (+ password in the
+                # password flow) to a non-Salesforce / private login host. Raises
+                # SalesforceUrlError -> caught by this method's except -> failed.
+                validate_sf_instance_url(login_url)
                 auth_flow = cfg.get("auth_flow", "client_credentials")
                 token_data_body = {
                     "client_id": cfg.get("client_id", ""),
@@ -444,10 +490,18 @@ class ConnectionService:
                 )
                 if token_resp.status_code != 200:
                     self.conn_repo.update_status(connection_id, "error", tenant_id)
-                    return {"status": "failed", "detail": token_resp.text[:500]}
+                    # SEC-9: log the raw OAuth error body server-side; return a
+                    # generic message (never echoed into a redirect URL).
+                    logger.warning("connection %s SF OAuth failed: HTTP %s body=%r",
+                                   connection_id, token_resp.status_code, token_resp.text[:500])
+                    return {"status": "failed",
+                            "detail": f"Salesforce authentication failed (HTTP {token_resp.status_code})."}
                 token_data = token_resp.json()
                 access_token = token_data.get("access_token", "")
                 instance_url = token_data.get("instance_url", cfg.get("instance_url", ""))
+                # SEC-3: validate the returned instance_url before sending the
+                # access-token to it (defense-in-depth over the OAuth response).
+                validate_sf_instance_url(instance_url)
                 api_url = f"{instance_url.rstrip('/')}/services/data/v{cfg.get('api_version', '59.0')}/"
                 resp = http_requests.get(api_url, headers={
                     "Authorization": f"Bearer {access_token}",
@@ -481,10 +535,16 @@ class ConnectionService:
             self.conn_repo.update_status(connection_id, "active" if ok else "error", tenant_id)
             if ok:
                 return {"status": "connected"}
-            return {"status": "failed", "detail": resp.text[:500]}
+            # SEC-9: log the raw upstream body server-side; return a generic message.
+            logger.warning("connection %s test failed: HTTP %s body=%r",
+                           connection_id, resp.status_code, resp.text[:500])
+            return {"status": "failed",
+                    "detail": f"Connection test failed (HTTP {resp.status_code})."}
         except Exception as e:
             self.conn_repo.update_status(connection_id, "error", tenant_id)
-            return {"status": "failed", "detail": str(e)}
+            # SEC-9: log the exception server-side; never echo it to the client.
+            logger.warning("connection %s test error: %s", connection_id, e)
+            return {"status": "failed", "detail": "Connection test failed. See server logs for details."}
 
     @staticmethod
     def _conn_dict(c):
@@ -535,9 +595,20 @@ class GroupService:
             raise ValueError("Group not found")
 
     def add_member(self, group_id, tenant_id, user_id, added_by):
+        from primeqa.core.models import User
         group = self.group_repo.get_group(group_id, tenant_id)
         if not group:
             raise ValueError("Group not found")
+        # Tenant isolation (SEC-2): the user must belong to the caller's tenant
+        # before it can be linked. group_members has no tenant column, so — like
+        # release/service.py add_requirement — the guard must live here; without
+        # it a foreign user_id links into the group and leaks the user's
+        # email/full_name back through get_group_detail.
+        own = self.group_repo.db.query(User.id).filter(
+            User.id == user_id, User.tenant_id == tenant_id,
+        ).first()
+        if not own:
+            raise ValueError("User not found")
         self.group_repo.add_member(group_id, user_id, added_by)
 
     def remove_member(self, group_id, tenant_id, user_id):
@@ -547,9 +618,19 @@ class GroupService:
         self.group_repo.remove_member(group_id, user_id)
 
     def add_environment(self, group_id, tenant_id, environment_id, added_by):
+        from primeqa.core.models import Environment
         group = self.group_repo.get_group(group_id, tenant_id)
         if not group:
             raise ValueError("Group not found")
+        # Tenant isolation (SEC-2): the environment must belong to the caller's
+        # tenant before linking (group_environments has no tenant column). Without
+        # it a foreign environment_id links in and leaks its sf_instance_url back
+        # through get_group_detail.
+        own = self.group_repo.db.query(Environment.id).filter(
+            Environment.id == environment_id, Environment.tenant_id == tenant_id,
+        ).first()
+        if not own:
+            raise ValueError("Environment not found")
         self.group_repo.add_environment(group_id, environment_id, added_by)
 
     def remove_environment(self, group_id, tenant_id, environment_id):
