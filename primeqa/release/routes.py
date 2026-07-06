@@ -442,6 +442,18 @@ def ci_webhook_trigger():
                 "NOT_FOUND",
                 "Environment not found for this release's tenant", http=404)
 
+        # SEC-7: a production run must be explicitly confirmed in the webhook
+        # payload. The caller is a machine (global WEBHOOK_SECRET, no user tier)
+        # and the queued job runs as system (caller_tier=None), so — like SEC-4 —
+        # the production decision must be made here at the enqueue boundary. Reuse
+        # the same gate helper the UI/API run paths use: fail closed on
+        # is_production without confirm_production (also honours allow_bulk_run).
+        from primeqa.runs.bulk import environment_can_bulk_run
+        confirm_production = bool(data.get("confirm_production"))
+        ok, msg = environment_can_bulk_run(env, confirm_production)
+        if not ok:
+            return json_error("FORBIDDEN", msg, http=403)
+
         # D-221 R3: the v1 pipeline half retired with the engine — the CI
         # trigger is substrate-only now. CI polls /status whose D-198
         # substrate block carries the verdict over fresh evidence.
