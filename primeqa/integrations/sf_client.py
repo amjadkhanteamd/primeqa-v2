@@ -1459,7 +1459,12 @@ class SalesforceClient:
             "Description FROM ProcessDefinition WHERE Type = 'Approval'"
         )
         path = f"/services/data/{self.api_version}/query/"
-        return self._query_all(path, soql)
+        # DATA-1: completeness-gated like fetch_validation_rule_ids (D-253). This
+        # is the reconcile present-set for phase_approval_process — a malformed
+        # cursor must RAISE (SFIncompletePaginationError), never silently return a
+        # partial that the deletion-reconcile would treat as the full current set
+        # and mass-close the missing approvals.
+        return self._query_all(path, soql, require_complete=True)
 
     def fetch_flow_definitions(self) -> list[dict]:
         """Tooling SOQL: SELECT … FROM FlowDefinition, with FullName + Metadata.

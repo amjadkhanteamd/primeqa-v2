@@ -3491,16 +3491,23 @@ def test_approval_phase_reconciles_deletions() -> None:
     assert args.args[3] == {"04a1"}
 
 
-def test_approval_phase_reconciles_even_when_org_has_none() -> None:
-    # Deleting the LAST approval must still close the modeled row — the
-    # raise-on-error fetcher makes [] a REAL empty set, so the reconcile runs
-    # before the no-payloads early return.
+def test_approval_phase_empty_fetch_refuses_reconcile() -> None:
+    # DATA-1 (was test_approval_phase_reconciles_even_when_org_has_none, which
+    # asserted the mass-close bug): an EMPTY ProcessDefinition fetch must NOT
+    # reconcile. reconcile_deletions_by_sf_id has no internal empty guard, so an
+    # empty present_ids SCD-2-closes every active approval + its edges; the
+    # `if present_ids:` gate fails safe (mirrors the VR path). The old premise
+    # ("the raise-on-error fetcher makes [] a REAL empty set") was false — the
+    # fetcher wasn't require_complete-gated; it now is, so a truncated non-empty
+    # set raises rather than slipping past the gate. Trade-off: deleting the org's
+    # LAST approval isn't detected on an empty fetch — accepted over mass-closing
+    # on an ambiguous/partial empty. The run still succeeds (an empty org is valid).
     ctx = _stub_ctx_with_mock_sf()
     ctx.sf_client.fetch_process_definitions.return_value = []
     conn = MagicMock()
     with patch("primeqa.sync.phases.reconcile_deletions_by_sf_id") as mock_rec:
         result = phase_approval_process(ctx, conn)
-    assert mock_rec.call_args.args[3] == set()
+    mock_rec.assert_not_called()
     assert result.succeeded is True
 
 

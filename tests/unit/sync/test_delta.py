@@ -257,3 +257,81 @@ class TestPhaseValidationRuleOrchestration:
             _c, sf, bm, me, rec = self._run(
                 delta_since=ds, fetch_rules_side_effect=[[]], fetch_ids_return=set())
             rec.assert_not_called()
+
+
+# ----------------------------------------------------------------------
+# 4. DATA-1: ApprovalProcess deletion-reconcile fail-safe (mirror of the VR path)
+# ----------------------------------------------------------------------
+def _approval_ctx():
+    sf = MagicMock(name="sf_client")
+    return SimpleNamespace(sf_client=sf, connected_org_id="org-1"), sf
+
+
+class TestPhaseApprovalProcessReconcileFailSafe:
+    """DATA-1: the ApprovalProcess phase must mirror the VR path's `if present_ids:`
+    fail-safe. reconcile_deletions_by_sf_id has NO internal empty guard — an empty
+    present_sf_ids SCD-2-closes every active ApprovalProcess row + its edges — so an
+    empty/partial ProcessDefinition fetch must REFUSE to reconcile."""
+
+    def _run(self, *, fetch_return):
+        from primeqa.sync import phases
+        ctx, sf = _approval_ctx()
+        sf.fetch_process_definitions.return_value = fetch_return
+        conn = MagicMock()
+        with mock.patch.object(phases, "reconcile_deletions_by_sf_id",
+                               return_value=0) as rec, \
+             mock.patch.object(phases, "batched_materialize", return_value={}), \
+             mock.patch.object(phases, "materialize_edges_for_entities"), \
+             mock.patch.object(phases, "normalize", side_effect=lambda t, p: p):
+            phases.phase_approval_process(ctx, conn)
+        return rec
+
+    def test_empty_fetch_refuses_reconcile(self) -> None:
+        # REPRO: the current `if definitions is not None:` gate lets [] through →
+        # reconcile runs with present_ids=set() → mass-close. Must refuse (skip).
+        rec = self._run(fetch_return=[])
+        rec.assert_not_called()
+
+    def test_non_empty_fetch_reconciles_against_the_present_set(self) -> None:
+        # No-regression: a real fetch still reconciles against the full id-set.
+        rec = self._run(fetch_return=[
+            {"Id": "a1", "DeveloperName": "Appr_A", "State": "Active",
+             "TableEnumOrId": "Order__c"}])
+        rec.assert_called_once()
+        assert rec.call_args[0][3] == {"a1"}     # present_ids threaded
+
+
+class TestFetchProcessDefinitionsCompleteness:
+    """DATA-1: fetch_process_definitions must be completeness-gated like
+    fetch_validation_rule_ids (require_complete=True) — a malformed cursor RAISES
+    instead of silently returning a partial the reconcile would treat as the full
+    current set."""
+
+    def _pages_client(self, pages):
+        c = _client()
+        resps = []
+        for pg in pages:
+            r = MagicMock()
+            r.json.return_value = pg
+            resps.append(r)
+        c._request = MagicMock(side_effect=resps)
+        return c
+
+    def test_malformed_cursor_raises(self) -> None:
+        # REPRO: without require_complete the fetch silently returns the partial
+        # (no raise) — a truncated approval set that then reconciles as complete.
+        from primeqa.integrations.exceptions import SFIncompletePaginationError
+        c = self._pages_client([
+            {"records": [{"Id": "a", "DeveloperName": "A"}], "done": False},  # no cursor
+        ])
+        with pytest.raises(SFIncompletePaginationError):
+            c.fetch_process_definitions()
+
+    def test_complete_multipage_walk_returns_all(self) -> None:
+        # No-regression: a genuinely complete multi-page walk still aggregates.
+        c = self._pages_client([
+            {"records": [{"Id": "a"}], "done": False, "nextRecordsUrl": "/n1"},
+            {"records": [{"Id": "b"}], "done": True},
+        ])
+        out = c.fetch_process_definitions()
+        assert [r["Id"] for r in out] == ["a", "b"]
