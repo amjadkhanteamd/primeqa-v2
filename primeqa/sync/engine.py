@@ -564,16 +564,30 @@ class SyncEngine:
             gaps = list(getattr(self.sf, "metadata_gaps", []) or [])
             if gaps:
                 from primeqa.integrations.failure_taxonomy import genuine_gap_count
+                genuine = genuine_gap_count(gaps)
                 try:
                     with conn.begin_nested():
                         readiness.record_run_gaps(
-                            conn, connected_org_id,
-                            genuine_gap_count(gaps), gaps)
+                            conn, connected_org_id, genuine, gaps)
                 except Exception as e:
+                    # CORR-1: record_run_gaps is the ONLY writer of
+                    # sync_runs.permission_gaps, which maybe_finalize_run (below)
+                    # reads (DEFAULT 0) to choose success vs partial_success.
+                    # Swallowing a failed write when a GENUINE gap was surfaced
+                    # would leave permission_gaps at 0 and finalize a false
+                    # 'success' despite dropped Salesforce metadata. Migrate-first
+                    # guarantees the column (readiness.maybe_finalize_run reads it
+                    # unconditionally), so this is a real error, not a benign
+                    # missing column — FAIL LOUD: re-raise so the sync finalizes
+                    # 'failed' (→ job retry) rather than lying. A benign-only run
+                    # (genuine == 0) doesn't change the success/partial decision,
+                    # so its visibility-only gap_details write stays best-effort.
+                    if genuine > 0:
+                        raise
                     logger.warning(
-                        "could not record %d metadata gap(s) for org %s (%s) — "
-                        "finalizing without them (migration 20260624_0020 may not "
-                        "be applied to this schema yet)",
+                        "could not record %d benign metadata gap(s) for org %s "
+                        "(%s) — finalizing without them (gap_details is "
+                        "visibility-only when no gap is genuine)",
                         len(gaps), connected_org_id, e,
                     )
 

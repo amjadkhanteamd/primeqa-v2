@@ -21,6 +21,7 @@ from primeqa.sync.exceptions import (
 )
 from primeqa.sync.fk_assertion import ENTITY_ORDER
 from primeqa.sync.result import PhaseResult
+from primeqa.integrations.failure_taxonomy import FailureCategory
 
 
 def _make_engine() -> SyncEngine:
@@ -1011,3 +1012,64 @@ class TestWatermarkCapturedEndToEnd:
             resume=True, existing_watermark=None)
         engine.sf.probe_setup_audit_trail.assert_not_called()
         assert watermark is None
+
+
+class TestStructuralCompleteGapFlushFailsLoud:
+    """CORR-1 (repro-first): a run that surfaced a GENUINE metadata gap must
+    never finalize 'success' when the gap-write fails.
+
+    ``record_run_gaps`` is the ONLY writer of ``sync_runs.permission_gaps``, and
+    ``maybe_finalize_run`` reads it (DEFAULT 0) to pick ``partial_success`` vs
+    ``success``. The gap-write is SAVEPOINT-isolated + bare-caught, so a failed
+    write (a real transient DB error, not a missing column — migrate-first
+    guarantees the column) leaves ``permission_gaps`` at 0 and the run finalizes
+    a false ``success`` despite dropped Salesforce metadata. The fix must fail
+    loud (re-raise) so the sync goes ``failed`` (→ job retry) instead.
+    """
+
+    def _harness(self, monkeypatch, *, record_raises):
+        from primeqa.sync import readiness
+
+        eng = _make_engine()
+        # a GENUINE gap (permission-denied dropped real model data)
+        eng.sf.metadata_gaps = [{"category": FailureCategory.PERMISSION}]
+        eng.sf.describe_calls = 0
+
+        conn = MagicMock(name="conn")
+        # begin_nested() is used as a context manager. IMPORTANT: force __exit__
+        # to return False so an exception raised inside the `with` is NOT
+        # suppressed (a bare MagicMock __exit__ is truthy → would swallow it).
+        conn.begin_nested.return_value.__enter__ = MagicMock(return_value=conn)
+        conn.begin_nested.return_value.__exit__ = MagicMock(return_value=False)
+        # the running-orgs SELECT must yield one row so the finalize loop is reached
+        row = MagicMock()
+        row.org_id = "org-1"
+        conn.execute.return_value.fetchall.return_value = [row]
+        # _connect() is a context manager yielding conn
+        cm = MagicMock()
+        cm.__enter__ = MagicMock(return_value=conn)
+        cm.__exit__ = MagicMock(return_value=False)
+        monkeypatch.setattr(eng, "_connect", lambda: cm)
+
+        rec = MagicMock(side_effect=RuntimeError("transient DB error")
+                        if record_raises else None)
+        monkeypatch.setattr(readiness, "record_run_gaps", rec)
+        monkeypatch.setattr(readiness, "apply_org_status", MagicMock())
+        finalize = MagicMock()
+        monkeypatch.setattr(readiness, "maybe_finalize_run", finalize)
+        return eng, finalize
+
+    def test_genuine_gap_write_failure_fails_loud_and_does_not_finalize(self, monkeypatch):
+        # REPRO: against the current (buggy) code the RuntimeError is swallowed,
+        # so nothing raises and maybe_finalize_run runs → false 'success'. This
+        # assertion therefore FAILS today (DID NOT RAISE) and passes once fixed.
+        eng, finalize = self._harness(monkeypatch, record_raises=True)
+        with pytest.raises(RuntimeError):
+            eng._mark_sync_run_structural_complete("run-1", "org-1")
+        finalize.assert_not_called()
+
+    def test_successful_gap_write_finalizes_normally(self, monkeypatch):
+        # No-regression: a successful gap-write finalizes the run as usual.
+        eng, finalize = self._harness(monkeypatch, record_raises=False)
+        eng._mark_sync_run_structural_complete("run-1", "org-1")
+        finalize.assert_called_once()
