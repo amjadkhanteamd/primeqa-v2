@@ -2117,16 +2117,22 @@ def phase_approval_process(ctx: SyncContext, conn: Any) -> PhaseResult:
     # full current set (no delta param), so any modeled ApprovalProcess whose
     # Id is absent was deleted in SF. Without this a deleted approval stays
     # active forever and keeps grounding claims — including green-washing the
-    # very ABSENCE claims this lever ships. The truthiness gate keeps the
-    # fail-safe posture (a failed/empty fetch never mass-closes) — BUT this
-    # runs BEFORE the not-payloads early return, so deleting the org's LAST
-    # approval still closes it (guarded by definitions being non-empty…
-    # a genuinely-zero-approvals org yields definitions == [] which is
-    # indistinguishable from a failed fetch payload-wise; the raise-on-error
-    # fetcher makes [] a REAL empty set, so reconcile on the raw fetch list).
+    # very ABSENCE claims this lever ships.
+    #
+    # DATA-1: gate on `if present_ids:` (truthiness), NOT `if definitions is not
+    # None:` — reconcile_deletions_by_sf_id has NO internal empty guard, so an
+    # empty present_sf_ids SCD-2-closes EVERY active ApprovalProcess row + its
+    # edges. An empty/partial fetch must fail-safe to NO-reconcile, mirroring the
+    # ValidationRule path (`if present_ids:`). Completeness is guaranteed upstream:
+    # fetch_process_definitions is now require_complete=True, so a truncated cursor
+    # RAISES rather than returning a partial non-empty set that would slip past the
+    # gate. Trade-off (identical to the VR path): a genuinely-zero-approvals org
+    # (definitions == []) is indistinguishable from a benign empty fetch, so
+    # deleting the org's LAST approval skips the reconcile — accepted, because
+    # never mass-closing on an ambiguous empty is the correct fail-safe.
     present_ids = {d.get("Id") for d in definitions
                    if isinstance(d, dict) and d.get("Id")}
-    if definitions is not None:
+    if present_ids:
         reconcile_deletions_by_sf_id(
             conn, ctx, "ApprovalProcess", present_ids, result,
         )

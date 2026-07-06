@@ -1584,6 +1584,12 @@ class GovernanceCore:
             automation_name = hint.get("automation_name")
             primitive = "flow"
             formula_ent = None
+            # SUB-3: set when the no-name branch hit the empty-producer floor and
+            # provisionally bound flows[0]. Checked AFTER the calc-field rebind so
+            # a calculated observed field (which legitimately has no Flow producer)
+            # can re-bind primitive='formula'; anything still non-formula then is a
+            # wrong-green and refuses (symmetric with the named branch).
+            no_producer_floor = False
 
             def _approval_binding():
                 # D-320: an approval-process effect (effect_object=ProcessInstance)
@@ -1703,9 +1709,12 @@ class GovernanceCore:
                     primitive = "approval_process"
                 else:
                     # D-318: no name — prefer the Flow that PRODUCES the effect over the
-                    # blind first-encountered one (a real disambiguation). Falls back to
-                    # flows[0] when no Flow's Metadata produces it (thin/pre-D-318 rows;
-                    # the downstream calc-field rebind still runs off flows[0]).
+                    # blind first-encountered one (a real disambiguation). SUB-3: when
+                    # NO Flow's Metadata produces the effect, provisionally bind flows[0]
+                    # only so a calculated observed field can reach the downstream
+                    # calc-field rebind (primitive='formula'); a non-calculated field
+                    # then REFUSES post-rebind (see no_producer_floor) — the named
+                    # branch's own posture on the identical empty-producer case.
                     producers = _flows_producing_effect(
                         flows, hint.get("field_name"),
                         hint.get("expected_value"), hint.get("effect_object"))
@@ -1723,6 +1732,7 @@ class GovernanceCore:
                                         f"name the specific automation")))
                     else:
                         flow_ent = flows[0] if flows else None
+                        no_producer_floor = True
             if flow_ent is None and formula_ent is None:
                 # defensive: positives admit on this edge; negatives may reach
                 # here without one
@@ -1985,6 +1995,22 @@ class GovernanceCore:
                         entity_id=field_ent.id,
                         entity_type=field_ent.entity_type,
                         external_id=field_ent.sf_api_name or str(field_ent.id))
+                # SUB-3: the no-name branch provisionally bound flows[0] because NO
+                # Flow on the subject produces the claimed effect. The calc-field
+                # rebind above already re-bound primitive='formula' for a calculated
+                # observed field (the honest mechanism). Anything STILL non-formula
+                # here has no verified producer — binding the blind flows[0] would
+                # ground the claim against an automation that may not cause the
+                # effect (a wrong-green). REFUSE, mirroring the named branch's
+                # posture on the identical empty-producer case (ground-or-refuse).
+                if no_producer_floor and primitive != "formula":
+                    return IntentResolution(
+                        grounded_candidates=[], next_action=NextAction.REFUSE,
+                        interpretation_delta=delta,
+                        refusal=self._router.emission_deferred(
+                            archetype, claim_kind,
+                            detail=("no Flow on the subject produces the claimed "
+                                    "effect — name the specific automation")))
                 # D-299: the OPTIONAL entry-condition trigger — the (field,
                 # value) pairs the create must SET so the Flow's entry gate
                 # fires. Same-record only (the gate is on the subject create);

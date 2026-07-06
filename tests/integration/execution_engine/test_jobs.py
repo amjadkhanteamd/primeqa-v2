@@ -147,6 +147,31 @@ def test_fail_is_race_safe_against_a_terminal_job():
     assert s.get_job(job.id).status == "completed"   # unchanged
 
 
+def test_complete_is_race_safe_against_a_reaper_failed_job():
+    # CORR-2 (repro): the REVERSE race. A long-running job the reaper terminalizes
+    # as 'failed' (it exceeded the heartbeat timeout while the worker was still
+    # alive) must NOT be resurrected to 'completed' when the slow worker finally
+    # returns and calls complete(). _finish had no terminal guard (fail() does),
+    # so 'failed' was clobbered to 'completed'. Fails against the old code.
+    s = _store()
+    job = s.create_or_get_job(test_id=_tid(), environment_id=7)
+    s.start_attempt(job.id)
+    s.fail(job.id, error_code="stale_timeout")   # reaper terminalizes the stale job
+    s.complete(job.id)                           # slow worker returns afterwards
+    assert s.get_job(job.id).status == "failed"  # must stay failed, not resurrected
+
+
+def test_cancel_is_race_safe_against_a_reaper_failed_job():
+    # CORR-2: cancel() also routes through _finish, so it must equally not clobber
+    # a job the reaper already terminalized.
+    s = _store()
+    job = s.create_or_get_job(test_id=_tid(), environment_id=7)
+    s.start_attempt(job.id)
+    s.fail(job.id, error_code="stale_timeout")
+    s.cancel(job.id)
+    assert s.get_job(job.id).status == "failed"  # terminal 'failed' is not clobbered
+
+
 def test_heartbeat_sets_timestamp():
     s = _store()
     job = s.create_or_get_job(test_id=_tid(), environment_id=7)
