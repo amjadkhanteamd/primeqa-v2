@@ -8,7 +8,9 @@ import sys
 import os
 import uuid
 
-sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+# wave-0: moved under tests/integration/ so pytest collects it (testpaths).
+# One extra dirname keeps the repo root on sys.path for `python tests/integration/…` too.
+sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))))
 
 from dotenv import load_dotenv
 load_dotenv()
@@ -35,7 +37,7 @@ tester_tokens = {}
 created_user_ids = []
 
 
-def test(name, fn):
+def _run(name, fn):
     try:
         fn()
         print(f"  PASS  {name}")
@@ -75,7 +77,7 @@ def run_tests():
         assert data["user"]["role"] in ("admin", "superadmin"), data["user"]["role"]
         admin_tokens["access"] = data["access_token"]
         admin_tokens["refresh"] = data["refresh_token"]
-    results.append(test("1. Admin login returns access_token and refresh_token", test_admin_login))
+    results.append(_run("1. Admin login returns access_token and refresh_token", test_admin_login))
 
     # 2. Login with wrong password
     def test_bad_password():
@@ -85,7 +87,7 @@ def run_tests():
             "tenant_id": TENANT_ID,
         })
         assert r.status_code == 401, f"Expected 401, got {r.status_code}"
-    results.append(test("2. Login with wrong password returns 401", test_bad_password))
+    results.append(_run("2. Login with wrong password returns 401", test_bad_password))
 
     # 3. /api/auth/me with valid token
     def test_me_valid():
@@ -96,7 +98,7 @@ def run_tests():
         data = r.get_json()
         assert data["email"] == ADMIN_EMAIL
         assert data["role"] in ("admin", "superadmin"), data["role"]
-    results.append(test("3. GET /api/auth/me with valid token returns user info", test_me_valid))
+    results.append(_run("3. GET /api/auth/me with valid token returns user info", test_me_valid))
 
     # 4. /api/auth/me with invalid token
     def test_me_invalid():
@@ -104,13 +106,13 @@ def run_tests():
             "Authorization": "Bearer invalidtoken123"
         })
         assert r.status_code == 401, f"Expected 401, got {r.status_code}"
-    results.append(test("4. GET /api/auth/me with invalid token returns 401", test_me_invalid))
+    results.append(_run("4. GET /api/auth/me with invalid token returns 401", test_me_invalid))
 
     # 5. /api/auth/me without token
     def test_me_no_token():
         r = client.get("/api/auth/me")
         assert r.status_code == 401, f"Expected 401, got {r.status_code}"
-    results.append(test("5. GET /api/auth/me without token returns 401", test_me_no_token))
+    results.append(_run("5. GET /api/auth/me without token returns 401", test_me_no_token))
 
     # 6. Token refresh
     def test_refresh():
@@ -124,7 +126,7 @@ def run_tests():
         assert data["refresh_token"] != admin_tokens["refresh"], "New refresh token should differ"
         admin_tokens["access"] = data["access_token"]
         admin_tokens["refresh"] = data["refresh_token"]
-    results.append(test("6. Token refresh returns new tokens", test_refresh))
+    results.append(_run("6. Token refresh returns new tokens", test_refresh))
 
     # 7. Old refresh token is revoked after rotation
     def test_old_refresh_revoked():
@@ -137,7 +139,7 @@ def run_tests():
 
         r2 = client.post("/api/auth/refresh", json={"refresh_token": old_refresh})
         assert r2.status_code == 401, f"Expected 401 for reused refresh token, got {r2.status_code}"
-    results.append(test("7. Old refresh token is revoked after rotation", test_old_refresh_revoked))
+    results.append(_run("7. Old refresh token is revoked after rotation", test_old_refresh_revoked))
 
     # 8. Create a tester user (admin only)
     def test_create_tester():
@@ -154,7 +156,7 @@ def run_tests():
         assert data["role"] == "tester"
         assert data["email"] == TESTER_EMAIL
         created_user_ids.append(data["id"])
-    results.append(test("8. Admin can create a tester user", test_create_tester))
+    results.append(_run("8. Admin can create a tester user", test_create_tester))
 
     # 9. Tester login
     def test_tester_login():
@@ -168,7 +170,7 @@ def run_tests():
         assert data["user"]["role"] == "tester"
         tester_tokens["access"] = data["access_token"]
         tester_tokens["refresh"] = data["refresh_token"]
-    results.append(test("9. Tester can log in", test_tester_login))
+    results.append(_run("9. Tester can log in", test_tester_login))
 
     # 10. Tester blocked from admin endpoints
     def test_tester_blocked():
@@ -176,7 +178,7 @@ def run_tests():
             "Authorization": f"Bearer {tester_tokens['access']}"
         })
         assert r.status_code == 403, f"Expected 403, got {r.status_code}"
-    results.append(test("10. Tester blocked from admin-only GET /api/auth/users", test_tester_blocked))
+    results.append(_run("10. Tester blocked from admin-only GET /api/auth/users", test_tester_blocked))
 
     # 11. Tester blocked from creating users
     def test_tester_cant_create():
@@ -189,7 +191,7 @@ def run_tests():
             "role": "admin",
         })
         assert r.status_code == 403, f"Expected 403, got {r.status_code}"
-    results.append(test("11. Tester blocked from POST /api/auth/users", test_tester_cant_create))
+    results.append(_run("11. Tester blocked from POST /api/auth/users", test_tester_cant_create))
 
     # 12. Admin can list users
     def test_list_users():
@@ -199,7 +201,7 @@ def run_tests():
         assert r.status_code == 200, f"Expected 200, got {r.status_code}"
         data = r.get_json()
         assert len(data) >= 2, f"Expected at least 2 users, got {len(data)}"
-    results.append(test("12. Admin can list users", test_list_users))
+    results.append(_run("12. Admin can list users", test_list_users))
 
     # 13. Duplicate email rejected
     def test_duplicate_email():
@@ -212,7 +214,7 @@ def run_tests():
             "role": "tester",
         })
         assert r.status_code == 409, f"Expected 409, got {r.status_code}"
-    results.append(test("13. Duplicate email rejected", test_duplicate_email))
+    results.append(_run("13. Duplicate email rejected", test_duplicate_email))
 
     # 14. user-cap enforcement — derived from the tenant's ACTUAL current count
     # (no clean-tenant assumption). Create uuid-suffixed users until the cap is
@@ -244,7 +246,7 @@ def run_tests():
             hit_cap = True
             break
         assert hit_cap, "user cap was never enforced after 60 creates"
-    results.append(test("14. user cap enforced (derived from live count)", test_user_limit))
+    results.append(_run("14. user cap enforced (derived from live count)", test_user_limit))
 
     # 15. Logout revokes all tokens
     def test_logout():
@@ -257,7 +259,7 @@ def run_tests():
             "refresh_token": tester_tokens["refresh"],
         })
         assert r2.status_code == 401, f"Expected 401 after logout, got {r2.status_code}"
-    results.append(test("15. Logout revokes refresh tokens", test_logout))
+    results.append(_run("15. Logout revokes refresh tokens", test_logout))
 
     # Teardown — delete all test-created user artifacts so future runs
     # don't saturate the 20-user tenant cap. Without this, the DB
@@ -315,6 +317,15 @@ def _teardown_auth_test_users():
     except Exception as e:
         # Best-effort — don't fail the test run if it errors.
         print(f"  (teardown warning: {e})")
+
+
+def test_auth_suite():
+    # wave-0: pytest entry point for the auth invariant suite (login, token
+    # rotation, /me gating, role gating, user-cap). The sub-checks are nested
+    # inside run_tests(), so this single collected test is how the suite runs +
+    # fails under pytest. Assertions unchanged; the TEST-4 race fixes (per-run
+    # uuid emails + live-count-derived cap) are already applied above.
+    assert run_tests()
 
 
 if __name__ == "__main__":
