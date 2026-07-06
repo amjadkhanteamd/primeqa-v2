@@ -4,6 +4,7 @@ from __future__ import annotations
 from primeqa.intelligence.claim_presentation import (
     claim_depth,
     claim_title,
+    condition_phrase,
     expected_binding,
     fmt_number,
     org_rejection_message,
@@ -15,6 +16,87 @@ def test_prohibition_title():
     body = {"target": {"external_id": "Opportunity"}, "operation": "modify_field"}
     assert claim_title("prohibition-claim", body) == \
         "Rejects editing fields on Opportunity"
+
+
+# --- the distinguishing "when …" conditions clause (D-293 identity, visible) --
+
+_COND_LABELS = {"Opportunity.StageName": "Stage Name",
+                "Opportunity.Credit_Score__c": "Credit Score",
+                "Opportunity.KYC_Complete__c": "KYC Complete",
+                "Opportunity.Loan_Type__c": "Loan Type"}
+
+
+def _conds(*conds):
+    return {"conditions": list(conds)}
+
+
+def _c(api, predicate, value=None):
+    return {"subject": {"external_id": api}, "predicate": predicate,
+            "value": value}
+
+
+def test_prohibition_title_with_conditions_is_distinguishing():
+    body = {"target": {"external_id": "Opportunity"}, "operation": "modify_field"}
+    conds = _conds(
+        _c("Opportunity.StageName", "equals", "Credit Assessment"),
+        _c("Opportunity.Credit_Score__c", "is_null"))
+    assert claim_title("prohibition-claim", body, _COND_LABELS,
+                       semantic_conditions=conds) == \
+        ("Rejects editing fields on Opportunity when Stage Name is "
+         "Credit Assessment and Credit Score is blank")
+
+
+def test_acceptance_title_with_conditions():
+    body = {"target": {"external_id": "Opportunity"}, "operation": "create"}
+    conds = _conds(_c("Opportunity.KYC_Complete__c", "equals", False))
+    assert claim_title("acceptance-claim", body, _COND_LABELS,
+                       semantic_conditions=conds) == \
+        "Accepts creating Opportunity when KYC Complete is False"
+
+
+def test_title_without_conditions_is_byte_identical():
+    body = {"target": {"external_id": "Opportunity"}, "operation": "modify_record"}
+    base = claim_title("prohibition-claim", body)
+    assert base == "Rejects editing records on Opportunity"
+    assert claim_title("prohibition-claim", body, semantic_conditions=None) == base
+    assert claim_title("prohibition-claim", body,
+                       semantic_conditions={"conditions": []}) == base
+    assert claim_title("prohibition-claim", body,
+                       semantic_conditions="junk") == base   # never raises
+
+
+def test_title_conditions_capped_with_more_marker():
+    body = {"target": {"external_id": "Opportunity"}, "operation": "modify_record"}
+    conds = _conds(
+        _c("Opportunity.Loan_Type__c", "equals", "Home Loan"),
+        _c("Opportunity.Credit_Score__c", "is_null"),
+        _c("Opportunity.KYC_Complete__c", "equals", False))
+    title = claim_title("prohibition-claim", body, _COND_LABELS,
+                        semantic_conditions=conds)
+    assert title == ("Rejects editing records on Opportunity when Loan Type is "
+                     "Home Loan and Credit Score is blank (+1 more)")
+
+
+def test_conditions_do_not_touch_other_kinds():
+    body = {"subject": {"external_id": "Opportunity.Amount"},
+            "expected_value": {"kind": "literal", "value": 5000}}
+    conds = _conds(_c("Opportunity.Loan_Type__c", "equals", "Home Loan"))
+    assert claim_title("value-claim", body, semantic_conditions=conds) == \
+        claim_title("value-claim", body)
+
+
+def test_condition_phrase_per_predicate():
+    assert condition_phrase(_c("Opportunity.KYC_Complete__c", "not_equals", True),
+                            _COND_LABELS)[0] == "KYC Complete is not True"
+    assert condition_phrase(_c("Opportunity.Loan_Type__c", "in_set",
+                               ["Home Loan", "Auto"]), _COND_LABELS)[0] == \
+        "Loan Type is one of Home Loan, Auto"
+    assert condition_phrase(_c("Opportunity.StageName", "matches_pattern", ">10"),
+                            _COND_LABELS)[0] == \
+        "Stage Name matches the required format"
+    assert condition_phrase(_c("Opportunity.Credit_Score__c", "is_not_null"),
+                            _COND_LABELS)[0] == "Credit Score is set"
+    assert condition_phrase("junk", _COND_LABELS) is None
 
 
 def test_value_title_quotes_strings():

@@ -151,8 +151,86 @@ def fmt_number(v: Any) -> str:
         return str(v)
 
 
+def _plain_condition_value(v: Any) -> str:
+    """A condition value as a short BA-friendly string (no quotes): unwraps a
+    ``LiteralValue`` dict; ``None`` → ``blank``. (The condition-sentence twin of
+    ``readable_body._plain_value`` — kept here so titles and preconditions share
+    ONE wording source.)"""
+    if isinstance(v, dict) and "value" in v:
+        v = v.get("value")
+    if v is None:
+        return "blank"
+    return str(v)
+
+
+def condition_phrase(cond: Any, labels=None) -> Optional[tuple]:
+    """One semantic condition → ``(sentence, grounds)`` in business language
+    ("Loan Type is Home Loan", "Credit Score is blank"), or None for a
+    non-dict. ``grounds`` are the tokens the sentence introduced (for callers
+    that thread a grounding set). The single wording source shared by claim
+    titles and ``readable_body._preconditions``. Pure, never raises."""
+    if not isinstance(cond, dict):
+        return None
+    try:
+        subj = _ref_name(cond.get("subject"), labels) or "the field"
+        pred = cond.get("predicate")
+        val = cond.get("value")
+        if pred == "equals":
+            v = _plain_condition_value(val)
+            return f"{subj} is {v}", (subj, v)
+        if pred == "not_equals":
+            v = _plain_condition_value(val)
+            return f"{subj} is not {v}", (subj, v)
+        if pred == "in_set":
+            members = val if isinstance(val, (list, tuple)) else [val]
+            rendered = [_plain_condition_value(m) for m in members]
+            return f"{subj} is one of {', '.join(rendered)}", (subj, *rendered)
+        if pred == "matches_pattern":
+            return f"{subj} matches the required format", (subj,)
+        if pred == "is_null":
+            return f"{subj} is blank", (subj,)
+        if pred == "is_not_null":
+            return f"{subj} is set", (subj,)
+        # unknown predicate: stay grounded
+        v = _plain_condition_value(val)
+        return f"{subj}: {pred} {v}".rstrip(), (subj, v)
+    except Exception:
+        return None
+
+
+# The most conditions a title spells out — beyond this the suffix says "+N more"
+# (the full list renders in the Preconditions section / technical drawer).
+_TITLE_CONDITIONS_MAX = 2
+
+
+def _conditions_suffix(semantic_conditions: Any, labels=None) -> str:
+    """The title's distinguishing clause — '' when no conditions render, else
+    ' when {c1} and {c2}( (+N more))'. Conditions ARE a behaviour-instance
+    claim's identity (D-293): without them, distinct prohibition/acceptance
+    claims on the same object render identical titles. Never raises."""
+    try:
+        conds = None
+        if isinstance(semantic_conditions, dict):
+            conds = semantic_conditions.get("conditions")
+        if not conds:
+            return ""
+        phrases = []
+        for c in conds:
+            rendered = condition_phrase(c, labels)
+            if rendered:
+                phrases.append(rendered[0])
+        if not phrases:
+            return ""
+        shown = phrases[:_TITLE_CONDITIONS_MAX]
+        more = len(phrases) - len(shown)
+        suffix = f" when {' and '.join(shown)}"
+        return f"{suffix} (+{more} more)" if more > 0 else suffix
+    except Exception:
+        return ""
+
+
 def claim_title(claim_kind: str, asserted_truth: Optional[dict],
-                labels=None) -> str:
+                labels=None, semantic_conditions=None) -> str:
     """The claim as one plain-English sentence, in BUSINESS language.
     Deterministic; falls back to the humanized kind when the body lacks the
     expected fields. ``labels`` (an optional ``{sf_api_name: display_name}`` map
@@ -160,17 +238,25 @@ def claim_title(claim_kind: str, asserted_truth: Optional[dict],
     subject/target api names to their org labels; without it the api names
     render verbatim (the pre-label behavior). API names, flow/recipe names, and
     schema terms (length/precision/scale) stay OUT of the title — they live in
-    the technical-details register, never the spine."""
+    the technical-details register, never the spine.
+
+    ``semantic_conditions`` (the claim's conditions body, optional) renders the
+    DISTINGUISHING "when …" clause on the condition-identified kinds
+    (prohibition / acceptance — D-293: conditions ARE their identity; without
+    the clause, distinct claims on one object title identically). Default None
+    keeps every existing caller byte-identical."""
     body = asserted_truth or {}
     try:
         if claim_kind == "prohibition-claim":
             target = _ref_name(body.get("target"), labels) or "the object"
             op = _OPERATION_WORDS.get(body.get("operation"), "the operation")
-            return f"Rejects {op} on {target}"
+            return (f"Rejects {op} on {target}"
+                    f"{_conditions_suffix(semantic_conditions, labels)}")
         if claim_kind == "acceptance-claim":
             target = _ref_name(body.get("target"), labels) or "the object"
             op = "updating" if body.get("operation") == "update" else "creating"
-            return f"Accepts {op} {target}"
+            return (f"Accepts {op} {target}"
+                    f"{_conditions_suffix(semantic_conditions, labels)}")
         if claim_kind == "value-claim":
             field = _ref_name(body.get("subject"), labels) or "the field"
             return f"{field} saves as {_literal(body.get('expected_value'))}"

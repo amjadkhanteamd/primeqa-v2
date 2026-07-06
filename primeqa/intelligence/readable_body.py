@@ -44,6 +44,7 @@ from primeqa.intelligence.claim_presentation import (
     _ref_name,
     claim_depth,
     claim_title,
+    condition_phrase,
     expected_binding,
 )
 from primeqa.test_representation.canonicalization import canonical_serialize
@@ -51,7 +52,9 @@ from primeqa.test_representation.canonicalization import canonical_serialize
 # Bumping this invalidates every cached phrasing keyed on a skeleton hash
 # (mirrors IDENTITY_HASH_VERSION): a change to the skeleton builder that alters
 # any rendered string is a policy change, and the hash must move with it.
-SKELETON_SHAPE_VERSION = 1
+# v2: prohibition/acceptance headlines carry the distinguishing "when …"
+# conditions clause (D-293 conditions-are-identity made visible).
+SKELETON_SHAPE_VERSION = 2
 
 # The seven claim-kinds that get a v1 readable-body shape (existence/property
 # are configuration inspections → a light one-line "what this checks"; the rest
@@ -285,7 +288,9 @@ def _plain_value(v: Any) -> str:
 
 def _preconditions(semantic_conditions: Any, labels, tokens: set) -> tuple:
     """The AND-composed semantic conditions as business sentences (label-
-    resolved). Empty conditions → ``()`` (omitted: "applies unconditionally")."""
+    resolved). Empty conditions → ``()`` (omitted: "applies unconditionally").
+    Wording comes from the shared :func:`condition_phrase` — the SAME source
+    the claim title's "when …" clause uses, so the two can never drift."""
     conds = None
     if isinstance(semantic_conditions, dict):
         conds = semantic_conditions.get("conditions")
@@ -293,32 +298,12 @@ def _preconditions(semantic_conditions: Any, labels, tokens: set) -> tuple:
         return ()
     out = []
     for c in conds:
-        if not isinstance(c, dict):
+        rendered = condition_phrase(c, labels)
+        if rendered is None:
             continue
-        subj = _ref_name(c.get("subject"), labels) or "the field"
-        pred = c.get("predicate")
-        val = c.get("value")
-        _add(tokens, subj)
-        if pred == "equals":
-            _add(tokens, _plain_value(val))
-            out.append(f"{subj} is {_plain_value(val)}")
-        elif pred == "not_equals":
-            _add(tokens, _plain_value(val))
-            out.append(f"{subj} is not {_plain_value(val)}")
-        elif pred == "in_set":
-            members = val if isinstance(val, (list, tuple)) else [val]
-            rendered = [_plain_value(m) for m in members]
-            _add(tokens, *rendered)
-            out.append(f"{subj} is one of {', '.join(rendered)}")
-        elif pred == "matches_pattern":
-            out.append(f"{subj} matches the required format")
-        elif pred == "is_null":
-            out.append(f"{subj} is blank")
-        elif pred == "is_not_null":
-            out.append(f"{subj} is set")
-        else:                                   # unknown predicate: stay grounded
-            _add(tokens, _plain_value(val))
-            out.append(f"{subj}: {pred} {_plain_value(val)}".rstrip())
+        sentence, grounds = rendered
+        _add(tokens, *grounds)
+        out.append(sentence)
     return tuple(out)
 
 
@@ -648,7 +633,10 @@ def build_readable_body(*, claim_kind, archetype, asserted_truth,
     recipes = recipes if isinstance(recipes, list) else []
     tokens: set = set()
     registered = claim_kind in _REGISTERED_KINDS
-    headline = claim_title(claim_kind, asserted, labels)   # never raises
+    # never raises; conditions render the distinguishing "when …" clause on the
+    # condition-identified kinds (prohibition/acceptance)
+    headline = claim_title(claim_kind, asserted, labels,
+                           semantic_conditions=semantic_conditions)
 
     try:
         depth = claim_depth([r.get("recipe_kind") for r in recipes

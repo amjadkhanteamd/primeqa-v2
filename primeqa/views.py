@@ -3134,7 +3134,8 @@ def s4_run_detail(run_id):
     # OWN rejection text for the error card ("Salesforce said: …").
     if _run:
         _run["title"] = (claim_title(_run["claim_kind"], _run.get("asserted_truth"),
-                                     _labels)
+                                     _labels,
+                                     semantic_conditions=_run.get("semantic_conditions"))
                          if _run.get("claim_kind") else None)
         _run["verdict_plain"] = verdict_plain(
             (_run.get("interpretation") or {}).get("verdict"),

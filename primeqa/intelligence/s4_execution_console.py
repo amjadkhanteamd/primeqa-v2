@@ -154,7 +154,7 @@ _RUN_DETAIL_SQL = (
     "r.claim_version_seq, "
     "r.environment_id, r.outcome::text AS outcome, r.started_at, r.finished_at, "
     "r.duration_ms, r.evidence, r.failure_category, r.sf_error_code, r.source, "
-    "c.claim_kind::text AS claim_kind, c.asserted_truth, "
+    "c.claim_kind::text AS claim_kind, c.asserted_truth, c.semantic_conditions, "
     "c.version_seq AS current_claim_version_seq, "
     "req.external_key AS requirement_key "
     "FROM s4_execution_runs r "
@@ -255,6 +255,7 @@ def _read_run_detail(session, run_id) -> dict | None:
         "source": row["source"],
         "claim_kind": row["claim_kind"],
         "asserted_truth": row["asserted_truth"],
+        "semantic_conditions": row["semantic_conditions"],
         "asserted_truth_pinned": asserted_pinned,
         "claim_version_drift": claim_version_drift,
         "recipe_semantic_fields": recipe_semantic_fields,
@@ -339,7 +340,7 @@ def _list_runs(conn, *, limit: int, offset: int, outcome=None, verdict=None,
         "CAST(r.claim_test_id AS text) AS claim_test_id, "
         "r.outcome::text AS outcome, r.finished_at, r.duration_ms, r.environment_id, "
         "i.verdict::text AS verdict, "
-        "c.claim_kind::text AS claim_kind, c.asserted_truth, "
+        "c.claim_kind::text AS claim_kind, c.asserted_truth, c.semantic_conditions, "
         "req.external_key AS requirement_key "
         f"{_RUNS_FROM} "
         "LEFT JOIN test_claims c ON c.test_id = r.claim_test_id AND c.valid_to IS NULL "
@@ -360,7 +361,8 @@ def _list_runs(conn, *, limit: int, offset: int, outcome=None, verdict=None,
              "duration_h": duration_human(r["duration_ms"]),
              "environment_id": r["environment_id"],
              "requirement_key": r["requirement_key"],
-             "title": (claim_title(r["claim_kind"], r["asserted_truth"], labels)
+             "title": (claim_title(r["claim_kind"], r["asserted_truth"], labels,
+                                   semantic_conditions=r["semantic_conditions"])
                        if r["claim_kind"] else None)}
             for r in rows]
     return total, runs
@@ -420,6 +422,7 @@ _SCOPED_LATEST_SQL = (
     "SELECT CAST(s.claim_test_id AS text) AS test_id, s.run_id, s.outcome, "
     "       s.finished_at, s.duration_ms, s.environment_id, s.verdict, s.cause_kind, "
     "       c.claim_kind::text AS claim_kind, c.asserted_truth, "
+    "       c.semantic_conditions, "
     "       req.external_key AS requirement_key "
     "FROM scoped s "
     "LEFT JOIN test_claims c ON c.test_id = s.claim_test_id AND c.valid_to IS NULL "
@@ -439,7 +442,8 @@ def _scoped_latest(conn, *, environment_id=None, since=None):
 
 
 def _row_title(r, labels=None):
-    return (claim_title(r["claim_kind"], r["asserted_truth"], labels)
+    return (claim_title(r["claim_kind"], r["asserted_truth"], labels,
+                        semantic_conditions=r.get("semantic_conditions"))
             if r["claim_kind"] else (r["test_id"][:8] if r["test_id"] else "test"))
 
 

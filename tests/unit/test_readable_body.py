@@ -117,8 +117,26 @@ def test_pinned_hash_regression():
          "predicate": {"subject_ref": "rd.Credit_Score__c", "predicate": "equals",
                        "value": 720}}])
     skel = _build("value-claim", asserted, conditions=conds, recipes=[recipe])
+    # v2 (SKELETON_SHAPE_VERSION bump): prohibition/acceptance headlines gained
+    # the distinguishing "when …" conditions clause — a conscious, reviewed move.
     assert skel.skeleton_content_hash == \
-        "ccc8bb52f5ad7d9cc34e69c0e53e49eb54c4002fe4ea897053681e07952fb171"
+        "93b8965d543e9b32d8a46e1cbeef4356ae21dfb01c20fa2bb1975239e50092af"
+
+
+def test_prohibition_headline_carries_the_conditions_clause():
+    # D-293: conditions ARE a prohibition claim's identity — the headline must
+    # distinguish two claims on the same object (and the clause is grounded).
+    asserted = {"kind": "prohibition-claim", "target": _ref("Loan__c"),
+                "operation": "modify_field"}
+    conds = _conditions({"subject": _ref("Loan__c.Applicant_Type__c"),
+                         "predicate": "equals", "value": "Individual"})
+    skel = _build("prohibition-claim", asserted, conditions=conds)
+    assert skel.headline == \
+        "Rejects editing fields on Loan when Applicant Type is Individual"
+    assert "applicant type" in skel.grounded_tokens
+    other = _build("prohibition-claim", asserted, conditions=_conditions(
+        {"subject": _ref("Loan__c.Credit_Score__c"), "predicate": "is_null"}))
+    assert other.headline != skel.headline
 
 
 # ---------------------------------------------------------------------------

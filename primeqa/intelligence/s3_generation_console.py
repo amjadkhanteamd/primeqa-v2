@@ -115,8 +115,10 @@ def _read_claims(session, requirement_key: str, labels=None) -> list[dict]:
                          "priority": r.priority, "status": r.status} for r in recipes],
             "linked_at": _iso(m.linked_at),
             # D-206 triage surface: the claim AS a sentence + the honesty badge.
+            # Conditions render the distinguishing "when …" clause (D-293).
             "title": claim_title(claim.claim_kind, _dump(claim.asserted_truth),
-                                 labels),
+                                 labels,
+                                 semantic_conditions=_dump(claim.semantic_conditions)),
             "depth": claim_depth([r.recipe_kind for r in recipes]),
         })
     # deterministic: archetype then claim_kind then test_id
@@ -475,7 +477,8 @@ def _read_claim_detail(session, test_id, labels=None) -> dict | None:
         "valid_from": _iso(claim.valid_from),
         "identity_hash": claim.identity_hash,
         # D-206 triage surface: the claim AS a sentence + the honesty badge.
-        "title": claim_title(claim.claim_kind, asserted, labels),
+        "title": claim_title(claim.claim_kind, asserted, labels,
+                             semantic_conditions=conditions),
         "depth": claim_depth([r.recipe_kind for r in recipes]),
         "asserted_truth": asserted,
         "semantic_conditions": conditions,
@@ -545,7 +548,8 @@ def _read_claim_siblings(session, test_id, labels=None) -> list[dict]:
     from sqlalchemy import text as _text
     rows = session.execute(_text(
         "SELECT DISTINCT c.test_id, c.claim_kind, c.archetype, c.status, "
-        "       c.asserted_truth, c.updated_at, l2.external_key "
+        "       c.asserted_truth, c.semantic_conditions, c.updated_at, "
+        "       l2.external_key "
         "FROM test_requirement_links l1 "
         "JOIN test_requirement_links l2 "
         "  ON l2.external_system = l1.external_system "
@@ -564,7 +568,8 @@ def _read_claim_siblings(session, test_id, labels=None) -> list[dict]:
         "claim_kind": r["claim_kind"],
         "archetype": r["archetype"],
         "status": r["status"],
-        "title": claim_title(r["claim_kind"], r["asserted_truth"], labels),
+        "title": claim_title(r["claim_kind"], r["asserted_truth"], labels,
+                             semantic_conditions=r["semantic_conditions"]),
         "requirement_key": r["external_key"],
         "updated_at": _iso(r["updated_at"]),
     } for r in rows]
@@ -658,7 +663,7 @@ def _list_claims(conn, *, limit: int, offset: int, q=None, status=None,
     rows = conn.execute(text(
         "SELECT CAST(c.test_id AS text) AS test_id, c.archetype::text AS archetype, "
         "c.claim_kind::text AS claim_kind, c.status::text AS status, "
-        "c.version_seq, c.updated_at, c.asserted_truth, "
+        "c.version_seq, c.updated_at, c.asserted_truth, c.semantic_conditions, "
         "COALESCE(rk.kinds, ARRAY[]::text[]) AS recipe_kinds, "
         "req.external_key AS requirement_key, "
         "lastrun.run_id AS last_run_id, lastrun.outcome AS last_outcome, "
@@ -684,7 +689,8 @@ def _list_claims(conn, *, limit: int, offset: int, q=None, status=None,
     claims = [{"test_id": r["test_id"], "archetype": r["archetype"],
                "claim_kind": r["claim_kind"], "status": r["status"],
                "version_seq": r["version_seq"], "updated_at": _iso(r["updated_at"]),
-               "title": claim_title(r["claim_kind"], r["asserted_truth"], labels),
+               "title": claim_title(r["claim_kind"], r["asserted_truth"], labels,
+                                    semantic_conditions=r["semantic_conditions"]),
                "depth": claim_depth(r["recipe_kinds"]),
                "requirement_key": r["requirement_key"],
                "last_run": ({"run_id": r["last_run_id"],
