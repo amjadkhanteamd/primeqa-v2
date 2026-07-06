@@ -30,10 +30,19 @@ class _StubS1:
     """``fields``: list of dicts (api + field_details columns). ``picklists``:
     {pvs_id: [ {value_api_name, is_active, is_default, sort_order} ]}."""
 
-    def __init__(self, object_api, fields, *, version=5, picklists=None):
+    def __init__(self, object_api, fields, *, version=5, picklists=None,
+                 vrs=None):
         self._object_api, self._version = object_api, version
         self._obj_id = "obj-" + object_api
         self._field_ents, self._detail, self._pv_ents = [], {}, {}
+        # ``vrs``: [{api, formula, active}] — the object's ValidationRules,
+        # served on the APPLIES_TO edge (the picklist gate-check read).
+        self._vr_ents = []
+        for j, v in enumerate(vrs or ()):
+            ent = _Ent(f"vr-{j}", "ValidationRule", v.get("api", f"VR{j}"))
+            ent.attributes = {"formula_text": v.get("formula", ""),
+                              "is_active": v.get("active", True)}
+            self._vr_ents.append(ent)
         for f in fields:
             fid = "fld-" + f["api"]
             self._field_ents.append(_Ent(fid, "Field", f["api"]))
@@ -70,6 +79,8 @@ class _StubS1:
 
     def get_related(self, entity_id, edge_types, direction, at_seq):
         if entity_id == self._obj_id:
+            if edge_types and "APPLIES_TO" in edge_types:
+                return [_Rel(e) for e in self._vr_ents]
             return [_Rel(e) for e in self._field_ents]
         return []
 
@@ -214,3 +225,64 @@ def test_required_picklist_without_value_set_is_unfillable():
         {"api": "Stage__c", "field_type": "picklist", "is_nillable": False}])
     res = _pad(s1)
     assert res.filler == {} and res.unfillable == ("Stage__c",)
+
+
+# ---------------------------------------------------------------------------
+# VR-gated picklist padding (the AmbiguousRejection fix): a value an ACTIVE VR
+# names as a quoted literal is skipped — the first unmentioned candidate wins;
+# all-mentioned / unreadable VRs fall back to today's exact pick.
+# ---------------------------------------------------------------------------
+
+_STAGE_FIELD = [{"api": "Stage__c", "field_type": "picklist",
+                 "is_nillable": False, "picklist_value_set_entity_id": "pvs-1"}]
+_STAGES = {"pvs-1": [
+    {"value_api_name": "Credit Assessment", "is_active": True, "sort_order": 1},
+    {"value_api_name": "Needs Analysis", "is_active": True, "sort_order": 2},
+    {"value_api_name": "Closed Won", "is_active": True, "sort_order": 3}]}
+
+
+def test_picklist_skips_vr_gated_first_value():
+    # The live env-59 shape: the first active stage is entry-gated by an active
+    # VR (double-quoted literal) → the next unmentioned stage wins.
+    s1 = _StubS1("Account", _STAGE_FIELD, picklists=_STAGES, vrs=[
+        {"api": "Gate", "active": True,
+         "formula": 'AND(ISPICKVAL(StageName, "Credit Assessment"), NOT(KYC__c))'}])
+    assert _pad(s1).filler == {"Stage__c": "Needs Analysis"}
+
+
+def test_picklist_skips_vr_gated_default_too():
+    stages = {"pvs-1": [
+        {"value_api_name": "Gated", "is_active": True, "is_default": True,
+         "sort_order": 1},
+        {"value_api_name": "Free", "is_active": True, "sort_order": 2}]}
+    s1 = _StubS1("Account", _STAGE_FIELD, picklists=stages, vrs=[
+        {"api": "Gate", "formula": "ISPICKVAL(Stage__c, 'Gated')"}])
+    assert _pad(s1).filler == {"Stage__c": "Free"}
+
+
+def test_picklist_all_values_gated_falls_back_to_todays_pick():
+    s1 = _StubS1("Account", _STAGE_FIELD, picklists=_STAGES, vrs=[
+        {"api": "G1", "formula": '"Credit Assessment" "Needs Analysis"'},
+        {"api": "G2", "formula": "'Closed Won'"}])
+    # never unfillable, never worse — today's first-active pick survives
+    assert _pad(s1).filler == {"Stage__c": "Credit Assessment"}
+
+
+def test_picklist_inactive_vr_is_ignored():
+    s1 = _StubS1("Account", _STAGE_FIELD, picklists=_STAGES, vrs=[
+        {"api": "Gate", "active": False,
+         "formula": 'ISPICKVAL(StageName, "Credit Assessment")'}])
+    assert _pad(s1).filler == {"Stage__c": "Credit Assessment"}
+
+
+def test_picklist_vr_mentioning_other_values_only_is_no_gate():
+    s1 = _StubS1("Account", _STAGE_FIELD, picklists=_STAGES, vrs=[
+        {"api": "Gate", "formula": "ISPICKVAL(Stage__c, 'Closed Lost')"}])
+    assert _pad(s1).filler == {"Stage__c": "Credit Assessment"}
+
+
+def test_picklist_gating_is_deterministic():
+    s1 = _StubS1("Account", _STAGE_FIELD, picklists=_STAGES, vrs=[
+        {"api": "Gate", "formula": 'ISPICKVAL(StageName, "Credit Assessment")'}])
+    picks = {_pad(s1).filler["Stage__c"] for _ in range(5)}
+    assert picks == {"Needs Analysis"}

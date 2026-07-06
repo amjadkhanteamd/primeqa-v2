@@ -42,6 +42,7 @@ from datetime import date, datetime, timezone
 from typing import Any, Optional
 
 _BELONGS_TO = "BELONGS_TO"
+_APPLIES_TO = "APPLIES_TO"    # ValidationRule → Object (the VR-gating read)
 
 # Field types S4 fills with a type-valid scalar (the §3 fence: scalars +
 # simple-picklist). ``field_type`` is Salesforce's ``DescribeField.type`` written
@@ -134,6 +135,12 @@ def resolve_operational_padding(
 
     fields = s1.get_related(
         obj.id, edge_types=[_BELONGS_TO], direction="inbound", at_seq=at_seq)
+    # The object's ACTIVE VR formulas — the padding-side gate check: a picklist
+    # value a VR names as a literal is likely entry-gated (the AmbiguousRejection
+    # class: a field-less business rejection of PADDING, not the value under
+    # test), so _picklist_value prefers an unmentioned value. Best-effort — an
+    # unreadable VR set degrades to today's blind pick, never to unfillable.
+    gated_formulas = _active_vr_formulas(obj.id, s1=s1, at_seq=at_seq)
 
     filler: dict[str, Any] = {}
     unfillable: list[str] = []
@@ -163,7 +170,7 @@ def resolve_operational_padding(
         if ref is not None:
             required_refs.append((api, ref))
             continue
-        value = _fill_value(details, s1, at_seq)
+        value = _fill_value(details, s1, at_seq, gated_formulas=gated_formulas)
         if value is _UNFILLABLE:
             unfillable.append(api)
         else:
@@ -319,11 +326,12 @@ def construct_world(
         client=client, tracker=tracker)
 
 
-def _fill_value(details: dict, s1, at_seq: int):
+def _fill_value(details: dict, s1, at_seq: int, gated_formulas=()):
     """A type-valid filler for a required scalar / simple-picklist, or the
     ``_UNFILLABLE`` sentinel. Format-aware for the constrained text types so the
     filler does not itself trip a format check (which would mis-read downstream as
-    a value rejection)."""
+    a value rejection). ``gated_formulas`` (the padded object's active VR formula
+    texts) steers the picklist pick away from VR-gated values."""
     ftype = (details.get("field_type") or "").lower()
     if ftype in _NUMERIC:
         return 1
@@ -344,14 +352,14 @@ def _fill_value(details: dict, s1, at_seq: int):
         val = "PQA"
         return val[:length] if 0 < length < len(val) else val
     if ftype == "picklist":
-        return _picklist_value(details, s1, at_seq)
+        return _picklist_value(details, s1, at_seq, gated_formulas=gated_formulas)
     # reference is handled by the caller (references_object_entity_id); every
     # other type (multipicklist, id, address, location, base64, time, anyType, …)
     # is not synthesizable in slice 1.
     return _UNFILLABLE
 
 
-def _picklist_value(details: dict, s1, at_seq: int):
+def _picklist_value(details: dict, s1, at_seq: int, gated_formulas=()):
     """The default (or first active, by sort order) value of a simple
     (value-set-backed) picklist, or ``_UNFILLABLE`` when the value set / an active
     value is not readable (an inline picklist whose set S1 did not capture —
@@ -364,22 +372,74 @@ def _picklist_value(details: dict, s1, at_seq: int):
     BELONGS_TO ``get_related`` walk here could never return values against the
     real store (only its test stubs satisfied it; surfaced live by the D-203
     proof when StageName padding found a linked-but-"empty" set). D-204.2.
+
+    ``gated_formulas`` (the object's active VR formula texts) filters the pick:
+    a candidate value one of them names as a quoted literal (``'v'`` or ``"v"``
+    — both quoting styles occur live) is likely entry-gated (e.g. a stage with
+    prerequisites), so the FIRST candidate no formula mentions wins, in today's
+    default-then-sort-order precedence. When every candidate is mentioned — or
+    no formulas were readable — this falls back to today's exact pick, so
+    behavior is never worse and never newly unfillable. Deterministic: a pure
+    function of the S1 state at ``at_seq``.
     """
     pvs_id = details.get("picklist_value_set_entity_id")
     if not pvs_id:
         return _UNFILLABLE
     rows = s1.get_picklist_values(pvs_id, at_seq=at_seq)
-    first_active: Optional[str] = None
+    default: Optional[str] = None
+    actives: list[str] = []
     for d in rows:                          # already ordered by sort_order
         if not d.get("is_active", True):
             continue
         name = d.get("value_api_name")
         if not name:
             continue
-        if d.get("is_default", False):
-            return name                     # an explicit default wins
-        if first_active is None:
-            first_active = name
-    if first_active is not None:
-        return first_active
-    return _UNFILLABLE
+        if d.get("is_default", False) and default is None:
+            default = name                  # an explicit default wins
+        else:
+            actives.append(name)
+    ordered = ([default] if default is not None else []) + actives
+    if not ordered:
+        return _UNFILLABLE
+    for name in ordered:
+        if not _vr_gated(name, gated_formulas):
+            return name
+    return ordered[0]                       # all gated — today's exact pick
+
+
+def _active_vr_formulas(object_entity_id, *, s1, at_seq: int) -> tuple:
+    """The formula texts of the ACTIVE ValidationRules that APPLY_TO the padded
+    object — the picklist gate check's input. Best-effort: any read/shape error
+    (including a port that doesn't serve APPLIES_TO) → ``()``, degrading to
+    today's blind pick, never blocking padding."""
+    try:
+        from primeqa.semantic.entity_attributes import vr_formula_text, vr_is_active
+        rows = s1.get_related(
+            object_entity_id, edge_types=[_APPLIES_TO], direction="inbound",
+            at_seq=at_seq)
+        out = []
+        for r in rows:
+            ent = getattr(r, "entity", None)
+            if ent is None or getattr(ent, "entity_type", None) != "ValidationRule":
+                continue
+            attrs = getattr(ent, "attributes", None)
+            if not vr_is_active(attrs):
+                continue
+            formula = vr_formula_text(attrs)
+            if formula:
+                out.append(formula)
+        return tuple(out)
+    except Exception:
+        return ()
+
+
+def _vr_gated(value: str, formulas) -> bool:
+    """Does any active VR formula name this picklist value as a quoted literal?
+    Checks BOTH quoting styles — live formulas carry ``"Credit Assessment"``
+    (double) and ``'Closed Lost'`` (single). Substring-on-quoted-literal is the
+    deliberate fidelity: no formula parsing, no evaluation (the full plan-time
+    evaluator is deferred — S4 DEFERRED_ITEMS)."""
+    for f in formulas or ():
+        if f"'{value}'" in f or f'"{value}"' in f:
+            return True
+    return False

@@ -61,6 +61,26 @@ The synchronous run path is realized (`run_recipe_execution` + `run_recipe_execu
 
 - **The run-path now conducts three substrates (S2 → S4 → S6).** `run.py` selects (S2), executes + finalizes (S4), then interprets + persists (S6) — the cross-substrate wiring lives in `execution_engine`. The S4↔S6 import cycle this created (`interpretation.attribution` imports `execution_engine.evidence`; `execution_engine/__init__` imports `run`) is resolved with a **call-time lazy import** in `_interpret_and_persist` — the convention `run_recipe_execution_for_tenant` already uses for the tenant connection. Proportionate at two consumers. If cross-substrate wiring grows (more stages, or a substrate that sequences across >3 others — e.g. an S8 evolution loop reading S6), a **dedicated orchestration layer above the substrates** may be warranted, so the run-path stops being both S4's executor *and* the cross-substrate conductor. Watch for: a third lazy-import cycle, or a stage that needs to sequence across more than three substrates. — **D-111.2**
 
+## 8. Padding-side VR awareness
+
+- **Full plan-time VR-formula evaluation for padding.** The shipped picklist
+  gate check is a **quoted-literal filter** (`world._vr_gated`): a candidate
+  padding value an active VR formula names as `'v'` / `"v"` is skipped in favor
+  of the first unmentioned candidate (fallback: today's exact pick — never
+  worse, never newly unfillable). The principled endgame is *evaluating* each
+  VR formula against the merged candidate payload at plan time (the
+  `semantic/formula` parser + three-valued evaluator exist) and searching for a
+  satisfying assignment — but that needs semantic values at plan time and is
+  D-107 `derive` territory. Take it up only if the literal filter's fidelity
+  proves insufficient on real orgs (e.g. formulas gating via CASE() or field
+  references rather than literals). Surfaced by the run-27317df6
+  AmbiguousRejection (env-59's `Credit_Assessment_Prerequisites` VR gating the
+  padded StageName).
+- **Backfill `failure_category` for historical errored runs.** `category_for`
+  works retroactively from the captured evidence `error_type`; a one-off
+  scratch backfill would reclassify pre-`setup_rejection` rows (currently
+  `unknown`). Optional — read-time surfaces already fork correctly for new runs.
+
 ---
 
 ## Cross-references (not S4-owned, tracked elsewhere)
