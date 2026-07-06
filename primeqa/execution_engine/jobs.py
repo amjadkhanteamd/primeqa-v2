@@ -207,9 +207,17 @@ class ExecutionJobStore:
 
     def _finish(self, job_id: int, *, job_status: str, attempt_status: str) -> None:
         with get_tenant_connection(self._tenant_id) as conn:
+            # CORR-2: guard the job-status UPDATE with ``status NOT IN (terminal)``
+            # — identical to fail() — so complete()/cancel() can never resurrect a
+            # job the reaper already terminalized. Without it, a long run the
+            # reaper failed (heartbeat timeout while the worker was still alive)
+            # was clobbered back to 'completed'/'cancelled' when the worker
+            # returned. The attempt UPDATE below is already race-safe via
+            # ``finished_at IS NULL`` (the reaper's fail() finalized the attempt).
             conn.execute(text(
                 "UPDATE s4_execution_jobs SET status = :st, "
-                "completed_at = NOW(), updated_at = NOW() WHERE id = :jid"
+                "completed_at = NOW(), updated_at = NOW() "
+                f"WHERE id = :jid AND status NOT IN {_TERMINAL}"
             ), {"jid": job_id, "st": job_status})
             conn.execute(text(
                 "UPDATE s4_execution_job_attempts SET status = :st, "
