@@ -39,12 +39,12 @@ from typing import Any, Optional
 
 from primeqa.intelligence.claim_presentation import (
     _expected_value,
-    _first_field_change,
     _label,
     _object_label_of,
     _ref_name,
     claim_depth,
     claim_title,
+    expected_binding,
 )
 from primeqa.test_representation.canonicalization import canonical_serialize
 
@@ -437,10 +437,14 @@ def _steps(recipe: Optional[dict], labels, tokens: set) -> tuple:
 
 def _expected_result(claim_kind: str, asserted: dict, labels, tokens: set) -> Optional[str]:
     """The claim's asserted outcome as one plain sentence, or None when the
-    body carries no groundable outcome (then the section is omitted)."""
+    body carries no groundable outcome (then the section is omitted). The
+    field/value extraction is the shared ``expected_binding`` dispatch (also
+    the run page's expected-vs-actual source) — only the sentence framing
+    lives here."""
     if claim_kind == "value-claim":
         subj = _ref_name(asserted.get("subject"), labels) or "the field"
-        ev = _expected_value(asserted.get("expected_value"))
+        binding = expected_binding(claim_kind, asserted)
+        ev = binding[1] if binding else _expected_value(asserted.get("expected_value"))
         _add(tokens, subj, ev)
         return f"{subj} saves as {ev}"
     if claim_kind == "prohibition-claim":
@@ -453,7 +457,7 @@ def _expected_result(claim_kind: str, asserted: dict, labels, tokens: set) -> Op
         return base
     if claim_kind == "acceptance-claim":
         if asserted.get("operation") == "update":
-            change = _first_field_change(asserted.get("update_state"))
+            change = expected_binding(claim_kind, asserted)
             if change:
                 fkey, val = change
                 label = _label(fkey, labels)
@@ -462,7 +466,7 @@ def _expected_result(claim_kind: str, asserted: dict, labels, tokens: set) -> Op
             return "The org accepts the update"
         return "The org accepts the creation"
     if claim_kind == "state-transition-claim":
-        change = _first_field_change(asserted.get("to_state"))
+        change = expected_binding(claim_kind, asserted)
         if change:
             fkey, val = change
             label = _label(fkey, labels)
@@ -475,7 +479,7 @@ def _expected_result(claim_kind: str, asserted: dict, labels, tokens: set) -> Op
         effect = asserted.get("expected_effect") or {}
         ekind = effect.get("kind") if isinstance(effect, dict) else None
         if ekind == "field_change":
-            change = _first_field_change(effect.get("changes"))
+            change = expected_binding(claim_kind, asserted)
             if change:
                 fkey, val = change
                 label = _label(fkey, labels)

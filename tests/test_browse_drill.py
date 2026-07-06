@@ -59,7 +59,9 @@ def _run_detail(steps, **over):
         "duration_ms": 1200, "api_choice": "rest", "steps": steps,
         "error": None, "interpretation": None,
         "failure_category": None, "sf_error_code": None, "source": None,
-        "claim_kind": None, "asserted_truth": None, "requirement_key": None}
+        "claim_kind": None, "asserted_truth": None, "requirement_key": None,
+        "asserted_truth_pinned": None, "claim_version_drift": False,
+        "recipe_semantic_fields": None}
     run.update(over)
     return {"available": True, "found": True, "run": run}
 
@@ -145,6 +147,56 @@ def run_tests():
         assert "From requirement SQ-1" in html, "requirement line missing"
     results.append(test("A4. header renders the claim title + requirement key",
                         test_header_renders_claim_title_and_requirement))
+
+    def test_readable_run_card_on_passed_run():
+        # The QA-readable result: TEST DATA (as staged), value-bearing steps,
+        # expected-vs-actual — composed from the evidence + the assertion.
+        steps = [
+            {"kind": "create", "sobject": "Opportunity", "success": True,
+             "matched": None,
+             "field_values": {"Loan_Amount__c": 5000000,
+                              "Property_Value__c": 10000000, "Name": "PQA"}},
+            {"kind": "read", "sobject": "Opportunity", "soql": "S",
+             "row_count": 1, "fields_captured": ["Id", "Loan_to_Value__c"],
+             "rows": [{"Id": "006x", "Loan_to_Value__c": 50.0}]},
+            {"kind": "assert", "predicate": "equals", "held": True},
+        ]
+        detail = _run_detail(
+            steps, outcome="passed", claim_kind="automation-effect-claim",
+            asserted_truth={"expected_effect": {"kind": "field_change",
+                "changes": {"field_values": {"Opportunity.Loan_to_Value__c": {
+                    "kind": "literal", "value": "50"}}}}},
+            recipe_semantic_fields=["Loan_Amount__c", "Property_Value__c"])
+        with patch("primeqa.intelligence.s4_execution_console.read_run_detail",
+                   return_value=detail):
+            html = client.get(f"/runs/{RUN_ID}").get_data(as_text=True)
+        assert "Test data (as staged)" in html, "TEST DATA section missing"
+        assert "5,000,000" in html, "formatted staged value missing"
+        assert "Read the record back" in html, "value-bearing read step missing"
+        assert "expected 50 — matched" in html.replace("&#34;", '"'), \
+            "expected-vs-actual sentence missing"
+        assert "supporting field" in html, "padding drawer missing"
+    results.append(test("A5. passed run renders the QA-readable result card",
+                        test_readable_run_card_on_passed_run))
+
+    def test_readable_run_card_suppressed_on_errored():
+        vr_text = "KYC must be complete."
+        steps = [{"kind": "create", "sobject": "Opportunity", "success": False,
+                  "matched": None, "message": vr_text,
+                  "field_values": {"Loan_Amount__c": 5000000},
+                  "rejection_body": [{"message": vr_text, "fields": []}]}]
+        detail = _run_detail(
+            steps, outcome="errored",
+            error={"phase": "create", "error_type": "AmbiguousRejection",
+                   "message": "create rejected with no field attribution"})
+        with patch("primeqa.intelligence.s4_execution_console.read_run_detail",
+                   return_value=detail):
+            html = client.get(f"/runs/{RUN_ID}").get_data(as_text=True)
+        assert "Test data (as staged)" not in html, \
+            "errored run must not narrate staged data as what-the-test-did"
+        assert "Salesforce said:" in html, "the error card must still lead"
+    results.append(test("A6. errored run suppresses the narrative, error leads",
+                        test_readable_run_card_suppressed_on_errored))
 
     # ---- B — last-run health column on /claims ----------------------------
 

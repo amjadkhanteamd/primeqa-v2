@@ -202,3 +202,68 @@ def test_flag_on_via_env(monkeypatch):
     assert rbp.readable_body_phrasing_enabled() is True
     monkeypatch.setenv("PLIMSOL_READABLE_BODY_PHRASING", "0")
     assert rbp.readable_body_phrasing_enabled() is False
+
+
+# ---------------------------------------------------------------------------
+# Run phrasing (get_or_phrase_run) — same cache, same validator, run prompt
+# ---------------------------------------------------------------------------
+
+def _run_skeleton(**over):
+    from primeqa.intelligence.readable_run import build_readable_run
+    kw = dict(
+        claim_kind="automation-effect-claim",
+        asserted_truth={"expected_effect": {"kind": "field_change", "changes": {
+            "field_values": {"Loan__c.Risk_Rating__c": {
+                "kind": "literal", "value": "High"}}}}},
+        outcome="passed",
+        verdict_plain="Triggered the automation — it produced the expected result",
+        steps=[
+            {"kind": "create", "sobject": "Loan__c", "success": True,
+             "matched": None, "field_values": {"Credit_Score__c": 649}},
+            {"kind": "read", "sobject": "Loan__c", "soql": "S", "row_count": 1,
+             "fields_captured": ["Id", "Risk_Rating__c"],
+             "rows": [{"Risk_Rating__c": "High"}]},
+            {"kind": "assert", "predicate": "equals", "held": True}],
+        semantic_field_keys=["Credit_Score__c"], labels=LABELS)
+    kw.update(over)
+    return build_readable_run(**kw)
+
+
+def test_run_phrasing_clean_pass(monkeypatch):
+    parsed = {"plain_terms": "The run created a Loan with a Credit Score of 649. "
+                             "The Risk Rating came back High — as expected.",
+              "step_narration": ["Created the Loan with Credit Score 649.",
+                                 "Read the Risk Rating back — High.",
+                                 "The result matched."]}
+    _stub(monkeypatch, parsed)
+    out = rbp.get_or_phrase_run(_run_skeleton(), tenant_id=1, api_key="k")
+    assert out is not None and out["plain_terms"].startswith("The run created")
+
+
+def test_run_phrasing_fabricated_value_rejected(monkeypatch):
+    # 651 was never recorded by the run → reject → deterministic fallback.
+    parsed = {"plain_terms": "The run used a Credit Score of 651.",
+              "step_narration": []}
+    _stub(monkeypatch, parsed)
+    assert rbp.get_or_phrase_run(_run_skeleton(), tenant_id=1, api_key="k") is None
+
+
+def test_run_phrasing_cache_hits_and_is_distinct_from_body_cache(monkeypatch):
+    counter = {"n": 0}
+    parsed = {"plain_terms": "The Risk Rating came back High for a Credit Score "
+                             "of 649.", "step_narration": []}
+    _stub(monkeypatch, parsed, counter)
+    skel = _run_skeleton()
+    a = rbp.get_or_phrase_run(skel, tenant_id=1, api_key="k")
+    b = rbp.get_or_phrase_run(skel, tenant_id=1, api_key="k")
+    assert a == b and counter["n"] == 1            # second view = cache hit
+    # a changed recorded fact → different hash → a fresh phrasing call
+    other = _run_skeleton(outcome="failed", steps=[
+        {"kind": "create", "sobject": "Loan__c", "success": True,
+         "matched": None, "field_values": {"Credit_Score__c": 649}},
+        {"kind": "read", "sobject": "Loan__c", "soql": "S", "row_count": 1,
+         "fields_captured": ["Id", "Risk_Rating__c"],
+         "rows": [{"Risk_Rating__c": "Low"}]},
+        {"kind": "assert", "predicate": "equals", "held": False}])
+    rbp.get_or_phrase_run(other, tenant_id=1, api_key="k")
+    assert counter["n"] == 2

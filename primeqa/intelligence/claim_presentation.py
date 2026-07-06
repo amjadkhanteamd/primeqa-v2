@@ -22,6 +22,7 @@ presentation must never break a page.
 """
 from __future__ import annotations
 
+import re
 from typing import Any, Optional
 
 # ---------------------------------------------------------------------------
@@ -89,6 +90,65 @@ def _first_field_change(state: Any) -> Optional[tuple]:
             field, ev = next(iter(fv.items()))
             return field, _expected_value(ev)
     return None
+
+
+def expected_binding(claim_kind: str, asserted_truth: Any) -> Optional[tuple]:
+    """The ``(field_key, rendered_expected_value)`` a claim asserts about ONE
+    field's value, or None for kinds with no field-value binding (prohibition,
+    absence, create-acceptance, blocked-operation, side-effect). ``field_key``
+    is the claim's stored (usually object-qualified) key — callers label it.
+    The single value-extraction dispatch shared by the readable test-case body
+    (its Expected-result section) and the readable run result (expected-vs-
+    actual) so the two surfaces can never disagree. First/primary assertion
+    only — the ``_first_field_change`` convention. Pure, never raises."""
+    try:
+        asserted = asserted_truth if isinstance(asserted_truth, dict) else {}
+        if claim_kind == "value-claim":
+            subj = asserted.get("subject")
+            fkey = (subj.get("external_id") or subj.get("sf_api_name")) \
+                if isinstance(subj, dict) else None
+            if not fkey:
+                return None
+            return fkey, _expected_value(asserted.get("expected_value"))
+        if claim_kind == "state-transition-claim":
+            return _first_field_change(asserted.get("to_state"))
+        if claim_kind == "acceptance-claim":
+            if asserted.get("operation") == "update":
+                return _first_field_change(asserted.get("update_state"))
+            return None
+        if claim_kind == "automation-effect-claim":
+            if asserted.get("expected_absence"):
+                return None
+            effect = asserted.get("expected_effect") or {}
+            if isinstance(effect, dict) and effect.get("kind") == "field_change":
+                return _first_field_change(effect.get("changes"))
+        return None
+    except Exception:
+        return None
+
+
+def fmt_number(v: Any) -> str:
+    """A display form for a scalar value: thousands-separated when numeric
+    (``5000000`` → ``5,000,000``), a float's redundant ``.0`` dropped (the org
+    returns ``50.0`` where the claim asserted ``50`` — display must agree),
+    everything else passed through via ``str``. Pure, never raises."""
+    try:
+        if isinstance(v, bool):                    # bool is an int — keep True/False
+            return str(v)
+        if isinstance(v, (int, float)):
+            n = v
+        elif isinstance(v, str):
+            s = v.strip()
+            n = float(s) if re.fullmatch(r"-?\d+(?:\.\d+)?", s) else None
+            if n is None:
+                return v
+        else:
+            return str(v)
+        if isinstance(n, float) and n.is_integer():
+            n = int(n)
+        return format(n, ",")
+    except Exception:
+        return str(v)
 
 
 def claim_title(claim_kind: str, asserted_truth: Optional[dict],

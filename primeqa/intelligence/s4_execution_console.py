@@ -151,9 +151,11 @@ _RUN_DETAIL_SQL = (
     "SELECT CAST(r.run_id AS text) AS run_id, "
     "CAST(r.claim_test_id AS text) AS claim_test_id, "
     "CAST(r.recipe_id AS text) AS recipe_id, r.recipe_version_seq, "
+    "r.claim_version_seq, "
     "r.environment_id, r.outcome::text AS outcome, r.started_at, r.finished_at, "
     "r.duration_ms, r.evidence, r.failure_category, r.sf_error_code, r.source, "
     "c.claim_kind::text AS claim_kind, c.asserted_truth, "
+    "c.version_seq AS current_claim_version_seq, "
     "req.external_key AS requirement_key "
     "FROM s4_execution_runs r "
     "LEFT JOIN test_claims c ON c.test_id = r.claim_test_id AND c.valid_to IS NULL "
@@ -199,6 +201,49 @@ def _read_run_detail(session, run_id) -> dict | None:
             }
     except Exception:                                  # S6 read is best-effort
         interp = None
+    # The readable-run inputs (best-effort each; the page renders without them):
+    # the claim version PINNED by the run — an edited claim must not misreport
+    # what an old run checked — and the recipe's semantic (authored) staged
+    # field keys, the k16 set that splits TEST DATA from S4's padding.
+    asserted_pinned = None
+    claim_version_drift = False
+    try:
+        cvs, cur = row["claim_version_seq"], row["current_claim_version_seq"]
+        if cvs is not None and cur is not None and cvs != cur:
+            from primeqa.test_representation.coordinator import (
+                SemanticTransactionCoordinator)
+            pinned = SemanticTransactionCoordinator().get_claim_version(
+                session, UUID(row["claim_test_id"]), cvs)
+            if pinned is not None:
+                body = pinned.asserted_truth
+                asserted_pinned = (body.model_dump(mode="json")
+                                   if hasattr(body, "model_dump") else
+                                   body if isinstance(body, dict) else None)
+                claim_version_drift = True
+    except Exception:
+        pass
+    recipe_semantic_fields = None
+    try:
+        if row["recipe_id"] and row["recipe_version_seq"] is not None:
+            from primeqa.test_representation.coordinator import (
+                SemanticTransactionCoordinator)
+            recipe = SemanticTransactionCoordinator().get_recipe_version(
+                session, UUID(row["recipe_id"]), row["recipe_version_seq"])
+            obs = getattr(recipe, "observation_realization", None)
+            obs = (obs.model_dump(mode="json") if hasattr(obs, "model_dump")
+                   else obs if isinstance(obs, dict) else {})
+            for s in (obs.get("steps") or []):
+                if not isinstance(s, dict):
+                    continue
+                fields = (s.get("field_values") if s.get("kind") == "create"
+                          else s.get("field_changes") if s.get("kind") == "update"
+                          else None)
+                if isinstance(fields, dict) and fields:
+                    recipe_semantic_fields = [
+                        str(k).split(".", 1)[-1] for k in fields]
+                    break
+    except Exception:
+        pass
     return {
         "run_id": row["run_id"], "claim_test_id": row["claim_test_id"],
         "recipe_id": row["recipe_id"], "recipe_version_seq": row["recipe_version_seq"],
@@ -210,6 +255,9 @@ def _read_run_detail(session, run_id) -> dict | None:
         "source": row["source"],
         "claim_kind": row["claim_kind"],
         "asserted_truth": row["asserted_truth"],
+        "asserted_truth_pinned": asserted_pinned,
+        "claim_version_drift": claim_version_drift,
+        "recipe_semantic_fields": recipe_semantic_fields,
         "requirement_key": row["requirement_key"],
         "api_choice": ev.get("api_choice"),
         "steps": ev.get("steps") or [],

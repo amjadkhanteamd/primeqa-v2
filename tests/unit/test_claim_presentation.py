@@ -4,6 +4,8 @@ from __future__ import annotations
 from primeqa.intelligence.claim_presentation import (
     claim_depth,
     claim_title,
+    expected_binding,
+    fmt_number,
     org_rejection_message,
     verdict_plain,
 )
@@ -346,6 +348,57 @@ def test_org_rejection_message_never_raises_on_malformed_steps():
     assert org_rejection_message([{"kind": "create", "success": False,
                                    "rejection_body": "not-a-list"},
                                   "junk", 42]) is None
+
+
+# --- expected_binding: the shared expected-value dispatch ---------------------
+
+def test_expected_binding_value_claim():
+    body = {"subject": {"external_id": "Opportunity.Amount"},
+            "expected_value": {"kind": "literal", "value": 5000}}
+    assert expected_binding("value-claim", body) == ("Opportunity.Amount", "5000")
+
+
+def test_expected_binding_automation_effect_field_change():
+    body = {"expected_effect": {"kind": "field_change", "changes": {
+        "field_values": {"Opportunity.Loan_to_Value__c": {
+            "kind": "literal", "value": "50"}}}}}
+    assert expected_binding("automation-effect-claim", body) == \
+        ("Opportunity.Loan_to_Value__c", '"50"')
+
+
+def test_expected_binding_state_transition_and_acceptance_update():
+    st = {"to_state": {"field_values": {"Opportunity.StageName": {
+        "kind": "literal", "value": "Approved"}}}}
+    assert expected_binding("state-transition-claim", st) == \
+        ("Opportunity.StageName", '"Approved"')
+    acc = {"operation": "update", "update_state": {"field_values": {
+        "Opportunity.Amount": {"kind": "literal", "value": 7500}}}}
+    assert expected_binding("acceptance-claim", acc) == \
+        ("Opportunity.Amount", "7500")
+
+
+def test_expected_binding_none_for_unbound_kinds():
+    assert expected_binding("prohibition-claim", {"operation": "create"}) is None
+    assert expected_binding("acceptance-claim", {"operation": "create"}) is None
+    assert expected_binding("automation-effect-claim",
+                            {"expected_absence": True}) is None
+    assert expected_binding("automation-effect-claim", {"expected_effect": {
+        "kind": "blocked_operation"}}) is None
+    assert expected_binding("existence-claim", {}) is None
+    assert expected_binding("value-claim", "junk") is None    # never raises
+
+
+# --- fmt_number ---------------------------------------------------------------
+
+def test_fmt_number_shapes():
+    assert fmt_number(5000000) == "5,000,000"
+    assert fmt_number(50.0) == "50"          # the org's float vs asserted "50"
+    assert fmt_number(62.5) == "62.5"
+    assert fmt_number("10000000") == "10,000,000"
+    assert fmt_number("Needs Analysis") == "Needs Analysis"
+    assert fmt_number(True) == "True"        # bool is not a number for display
+    assert fmt_number(None) == "None"
+    assert fmt_number({"v": 1}) == "{'v': 1}"
 
 
 def test_verdict_plain_other_verdicts_ignore_failure_category():

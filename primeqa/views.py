@@ -3156,10 +3156,35 @@ def s4_run_detail(run_id):
             _interp["attribution"], _run.get("steps"), _labels)
     if _interp and _interp.get("cause"):
         _interp["cause_plain"] = cause_plain(_interp["cause"].get("cause_kind"))
+    # The QA-readable run narrative — the run counterpart of the test-case
+    # plain-language view: a deterministic skeleton from the run's evidence +
+    # the (version-pinned) assertion. Best-effort; never breaks the page.
+    _run_skel = None
+    if _run:
+        try:
+            from primeqa.intelligence.readable_run import (
+                build_readable_run, to_display_dict as _run_display)
+            _run_skel = build_readable_run(
+                claim_kind=_run.get("claim_kind"),
+                asserted_truth=(_run.get("asserted_truth_pinned")
+                                or _run.get("asserted_truth")),
+                outcome=_run.get("outcome"),
+                verdict_plain=_run.get("verdict_plain"),
+                steps=_run.get("steps"),
+                semantic_field_keys=_run.get("recipe_semantic_fields"),
+                labels=_labels,
+                headline=_run.get("title"),
+                version_drift=bool(_run.get("claim_version_drift")))
+            _run["readable_run"] = _run_display(_run_skel)
+        except Exception:
+            _run["readable_run"] = None
     # Environment name + requirement link — v1 reads, best-effort (the page
-    # renders without them). Same resolve pattern as claims_detail.
+    # renders without them). Same resolve pattern as claims_detail. The
+    # optional grounded LLM re-phrasing of the run narrative (flag-gated,
+    # default OFF; cached per immutable run) rides the same db bracket.
     environment = None
     requirement = None
+    readable_run_phrasing = None
     try:
         db = next(get_db())
         try:
@@ -3179,6 +3204,23 @@ def s4_run_detail(run_id):
                     db, tid, [_run["requirement_key"]]).get(_run["requirement_key"])
                 requirement = {"key": _run["requirement_key"], "id": _rid,
                                "url": f"/requirements/{_rid}" if _rid else None}
+            if _run_skel is not None and _run_skel.steps:
+                from primeqa.intelligence.readable_body_phrasing import (
+                    get_or_phrase_run, readable_body_phrasing_enabled)
+                if readable_body_phrasing_enabled(db, tid):
+                    env_ids = [_run.get("environment_id")]
+                    try:
+                        env_ids += [e.id for e in
+                                    EnvironmentRepository(db).list_environments(
+                                        tid, request.user["id"],
+                                        request.user["role"])]
+                    except Exception:
+                        pass
+                    _key = _resolve_any_llm_key(
+                        db, tid, [i for i in env_ids if i])
+                    if _key:
+                        readable_run_phrasing = get_or_phrase_run(
+                            _run_skel, tenant_id=tid, api_key=_key)
         finally:
             db.close()
     except Exception:
@@ -3192,7 +3234,8 @@ def s4_run_detail(run_id):
         repair_proposal = open_proposal_for_run(request.user["tenant_id"], run_id)
     return render_template("runs/s4_detail.html", **ctx(
         active_page="test_library", detail=detail, repair_proposal=repair_proposal,
-        environment=environment, requirement=requirement))
+        environment=environment, requirement=requirement,
+        readable_run_phrasing=readable_run_phrasing))
 
 
 @views_bp.route("/requirements/<int:req_id>/edit", methods=["POST"])

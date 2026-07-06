@@ -38,6 +38,9 @@ from primeqa.intelligence.llm import LLMError, llm_call
 from primeqa.intelligence.llm.prompts.readable_body_phrasing import (
     VERSION as PROMPT_VERSION,
 )
+from primeqa.intelligence.llm.prompts.readable_run_phrasing import (
+    VERSION as RUN_PROMPT_VERSION,
+)
 from primeqa.intelligence.readable_body import (
     ReadableBodySkeleton,
     extract_named_tokens,
@@ -68,12 +71,13 @@ def _context(skeleton: ReadableBodySkeleton) -> Dict[str, Any]:
 
 
 def _validate_grounding(plain_terms: str, step_narration: List[str],
-                        skeleton: ReadableBodySkeleton) -> List[str]:
+                        skeleton) -> List[str]:
     """Return the list of OFFENDING (ungrounded) named tokens in the LLM prose;
     empty means fully grounded. A token passes if it is in the skeleton's
     ``grounded_tokens`` allow-set, or (for a multi-word label) every one of its
     words is grounded — so a faithful rephrase of a grounded label passes while
-    a fabricated value/label/number fails."""
+    a fabricated value/label/number fails. Duck-typed on ``grounded_tokens``:
+    the test-case skeleton and the run skeleton both satisfy it."""
     grounded = skeleton.grounded_tokens
     prose = plain_terms + "\n" + "\n".join(step_narration or [])
     offending: List[str] = []
@@ -84,6 +88,67 @@ def _validate_grounding(plain_terms: str, step_narration: List[str],
             continue
         offending.append(tok)
     return offending
+
+
+def _phrase_validated(*, task: str, context: Dict[str, Any], skeleton,
+                      tenant_id: int, api_key: str) -> Optional[Dict[str, Any]]:
+    """Call the gateway with ``task``+``context``, validate the output shape +
+    grounding against ``skeleton`` (duck-typed: needs ``grounded_tokens`` +
+    ``skeleton_content_hash``). Returns ``{plain_terms, step_narration, model,
+    prompt_version, generated_at}`` or None on: gateway error, malformed shape,
+    or a grounding violation (which is logged loud). Never raises."""
+    try:
+        resp = llm_call(
+            task=task,
+            tenant_id=tenant_id,
+            api_key=api_key,
+            context=context,
+        )
+    except LLMError as e:
+        log.warning("%s: LLMError for hash=%s: %s",
+                    task, skeleton.skeleton_content_hash, e)
+        return None
+    except Exception as e:  # pragma: no cover — defensive
+        log.warning("%s: unexpected error hash=%s: %s",
+                    task, skeleton.skeleton_content_hash, e)
+        return None
+
+    parsed = resp.parsed_content
+    if not isinstance(parsed, dict):
+        log.warning("%s: parsed_content not a dict (%s) hash=%s",
+                    task, type(parsed).__name__, skeleton.skeleton_content_hash)
+        return None
+
+    plain_terms = parsed.get("plain_terms")
+    steps = parsed.get("step_narration")
+    if not plain_terms or not str(plain_terms).strip():
+        log.warning("%s: empty plain_terms hash=%s",
+                    task, skeleton.skeleton_content_hash)
+        return None
+    if not isinstance(steps, list) or not all(isinstance(s, str) for s in steps):
+        log.warning("%s: step_narration not a list of str hash=%s",
+                    task, skeleton.skeleton_content_hash)
+        return None
+
+    plain_terms = str(plain_terms).strip()
+    steps = [s.strip() for s in steps][:_MAX_STEPS]
+
+    # FAIL LOUD on any ungrounded token — the reader must never see prose
+    # that names a value/field/entity the skeleton did not ground.
+    offending = _validate_grounding(plain_terms, steps, skeleton)
+    if offending:
+        log.warning("%s REJECTED (ungrounded) hash=%s offending=%r — falling "
+                    "back to the deterministic baseline",
+                    task, skeleton.skeleton_content_hash, offending)
+        return None
+
+    return {
+        "plain_terms": plain_terms[:_MAX_PLAIN_TERMS],
+        "step_narration": [s[:_MAX_STEP] for s in steps],
+        "model": resp.model,
+        "prompt_version": resp.prompt_version,
+        "generated_at": datetime.now(timezone.utc).isoformat(),
+    }
 
 
 class ReadableBodyPhrasingEnricher:
@@ -98,61 +163,12 @@ class ReadableBodyPhrasingEnricher:
 
     def phrase(self, skeleton: ReadableBodySkeleton) -> Optional[Dict[str, Any]]:
         """Return ``{plain_terms, step_narration, model, prompt_version,
-        generated_at}`` or None. None on: gateway error, malformed shape, or a
-        grounding violation (which is logged loud)."""
-        try:
-            resp = llm_call(
-                task="readable_body_phrasing_generation",
-                tenant_id=self.tenant_id,
-                api_key=self.api_key,
-                context=_context(skeleton),
-            )
-        except LLMError as e:
-            log.warning("readable_body phrasing: LLMError for hash=%s: %s",
-                        skeleton.skeleton_content_hash, e)
-            return None
-        except Exception as e:  # pragma: no cover — defensive
-            log.warning("readable_body phrasing: unexpected error hash=%s: %s",
-                        skeleton.skeleton_content_hash, e)
-            return None
-
-        parsed = resp.parsed_content
-        if not isinstance(parsed, dict):
-            log.warning("readable_body phrasing: parsed_content not a dict (%s) "
-                        "hash=%s", type(parsed).__name__,
-                        skeleton.skeleton_content_hash)
-            return None
-
-        plain_terms = parsed.get("plain_terms")
-        steps = parsed.get("step_narration")
-        if not plain_terms or not str(plain_terms).strip():
-            log.warning("readable_body phrasing: empty plain_terms hash=%s",
-                        skeleton.skeleton_content_hash)
-            return None
-        if not isinstance(steps, list) or not all(isinstance(s, str) for s in steps):
-            log.warning("readable_body phrasing: step_narration not a list of "
-                        "str hash=%s", skeleton.skeleton_content_hash)
-            return None
-
-        plain_terms = str(plain_terms).strip()
-        steps = [s.strip() for s in steps][:_MAX_STEPS]
-
-        # FAIL LOUD on any ungrounded token — the reader must never see prose
-        # that names a value/field/entity the skeleton did not ground.
-        offending = _validate_grounding(plain_terms, steps, skeleton)
-        if offending:
-            log.warning("readable_body phrasing REJECTED (ungrounded) hash=%s "
-                        "offending=%r — falling back to Stage-1 baseline",
-                        skeleton.skeleton_content_hash, offending)
-            return None
-
-        return {
-            "plain_terms": plain_terms[:_MAX_PLAIN_TERMS],
-            "step_narration": [s[:_MAX_STEP] for s in steps],
-            "model": resp.model,
-            "prompt_version": resp.prompt_version,
-            "generated_at": datetime.now(timezone.utc).isoformat(),
-        }
+        generated_at}`` or None (gateway error / malformed shape / grounding
+        violation)."""
+        return _phrase_validated(
+            task="readable_body_phrasing_generation",
+            context=_context(skeleton), skeleton=skeleton,
+            tenant_id=self.tenant_id, api_key=self.api_key)
 
 
 # ---------------------------------------------------------------------------
@@ -177,20 +193,15 @@ def cache_clear() -> None:
     _CACHE.clear()
 
 
-def get_or_phrase(skeleton: ReadableBodySkeleton, *, tenant_id: int,
-                  api_key: str) -> Optional[Dict[str, Any]]:
-    """Return the cached phrasing for this skeleton, or phrase it once and cache
-    it. Best-effort: a failed/ungrounded phrasing returns None and caches
-    nothing (so a transient issue retries next time). The CALLER gates on
-    :func:`readable_body_phrasing_enabled` — this is the flag-agnostic
-    cache-or-phrase primitive."""
-    key = _cache_key(skeleton)
+def _get_or_phrase_cached(key: tuple, phrase_fn) -> Optional[Dict[str, Any]]:
+    """The shared cache-or-phrase flow: LRU hit, else call ``phrase_fn`` once;
+    a failed/ungrounded phrasing returns None and caches nothing (a transient
+    issue retries on the next view)."""
     hit = _CACHE.get(key)
     if hit is not None:
         _CACHE.move_to_end(key)                       # LRU touch
         return hit
-    phrasing = ReadableBodyPhrasingEnricher(
-        tenant_id=tenant_id, api_key=api_key).phrase(skeleton)
+    phrasing = phrase_fn()
     if phrasing is None:
         return None                                   # best-effort: cache nothing
     _CACHE[key] = phrasing
@@ -198,6 +209,50 @@ def get_or_phrase(skeleton: ReadableBodySkeleton, *, tenant_id: int,
     while len(_CACHE) > _CACHE_MAX:
         _CACHE.popitem(last=False)                    # evict least-recently-used
     return phrasing
+
+
+def get_or_phrase(skeleton: ReadableBodySkeleton, *, tenant_id: int,
+                  api_key: str) -> Optional[Dict[str, Any]]:
+    """Return the cached phrasing for this skeleton, or phrase it once and cache
+    it. Best-effort: a failed/ungrounded phrasing returns None and caches
+    nothing (so a transient issue retries next time). The CALLER gates on
+    :func:`readable_body_phrasing_enabled` — this is the flag-agnostic
+    cache-or-phrase primitive."""
+    return _get_or_phrase_cached(
+        _cache_key(skeleton),
+        lambda: ReadableBodyPhrasingEnricher(
+            tenant_id=tenant_id, api_key=api_key).phrase(skeleton))
+
+
+def _run_context(skeleton) -> Dict[str, Any]:
+    """The readable-run skeleton FACTS handed to the model — nothing else
+    reaches it. Padding pairs are summarized as a COUNT (they are grounded but
+    non-semantic; the model must not narrate them as test inputs)."""
+    return {
+        "outcome": skeleton.outcome,
+        "headline": skeleton.headline,
+        "narrative": skeleton.narrative,
+        "test_data": [[a, b] for (a, b) in skeleton.test_data],
+        "supporting_field_count": len(skeleton.supporting_data),
+        "steps": [s.narration for s in skeleton.steps],
+        "expected": skeleton.expected,
+        "result_sentence": skeleton.result_sentence,
+    }
+
+
+def get_or_phrase_run(skeleton, *, tenant_id: int,
+                      api_key: str) -> Optional[Dict[str, Any]]:
+    """The run-result counterpart of :func:`get_or_phrase` — same cache, same
+    grounding validator, the run-phrasing prompt. ``skeleton`` is a
+    :class:`primeqa.intelligence.readable_run.ReadableRunSkeleton` (duck-typed:
+    grounded_tokens + skeleton_content_hash + the run sections). Runs are
+    immutable, so a cached phrasing is valid forever (within a process)."""
+    return _get_or_phrase_cached(
+        (skeleton.skeleton_content_hash, RUN_PROMPT_VERSION),
+        lambda: _phrase_validated(
+            task="readable_run_phrasing_generation",
+            context=_run_context(skeleton), skeleton=skeleton,
+            tenant_id=tenant_id, api_key=api_key))
 
 
 def readable_body_phrasing_enabled(db=None, tenant_id: int = None) -> bool:
@@ -216,6 +271,7 @@ def readable_body_phrasing_enabled(db=None, tenant_id: int = None) -> bool:
 __all__ = [
     "ReadableBodyPhrasingEnricher",
     "get_or_phrase",
+    "get_or_phrase_run",
     "readable_body_phrasing_enabled",
     "cache_clear",
 ]

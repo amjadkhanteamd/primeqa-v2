@@ -21,6 +21,7 @@ from primeqa.intelligence.llm.prompts import (
     grounded_answer,
     repair_proposal,
     readable_body_phrasing,
+    readable_run_phrasing,
 )
 
 
@@ -49,6 +50,11 @@ _REGISTRY: Dict[str, object] = {
     # skeleton into BA/QA prose. Haiku, best-effort, invent-nothing; a
     # grounding validator rejects any ungrounded output → Stage-1 fallback.
     "readable_body_phrasing_generation":  readable_body_phrasing,
+    # Readable-run phrasing — restate the deterministic readable-run skeleton
+    # (what one completed run did + its recorded result) into QA prose. Haiku,
+    # best-effort, invent-nothing, never re-judges the recorded outcome; the
+    # same grounding validator rejects ungrounded output → deterministic fallback.
+    "readable_run_phrasing_generation":   readable_run_phrasing,
 }
 
 
