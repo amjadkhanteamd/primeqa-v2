@@ -25,7 +25,11 @@ MAX_REFRESH_TOKENS_PER_USER = 5
 
 
 def _get_jwt_secret():
-    return os.getenv("JWT_SECRET", "dev-secret-change-me")
+    # SEC-P1: sign tokens through the fail-closed secret chokepoint (mirrors
+    # core/auth.py) — never the forgeable `dev-secret-change-me` default in
+    # production. Signer and verifier now resolve the SAME secret.
+    from primeqa.core.secrets import get_jwt_secret
+    return get_jwt_secret()
 
 
 def _caller_tenant(caller):

@@ -22,8 +22,6 @@ from primeqa.release.service import ReleaseService
 
 views_bp = Blueprint("views", __name__, template_folder="templates")
 
-JWT_SECRET = os.getenv("JWT_SECRET", "dev-secret-change-me")
-
 
 def get_current_user():
     """Audit fix C-4 (2026-04-19): tolerate a JWT that's missing the
@@ -34,8 +32,13 @@ def get_current_user():
     token = request.cookies.get("access_token")
     if not token:
         return None
+    # SEC-8: resolve the JWT secret through the fail-closed chokepoint
+    # (core.secrets.get_jwt_secret) — same as core/auth.py — instead of a
+    # module-level os.getenv default that could silently be the forgeable
+    # `dev-secret-change-me`. Per-request so it can't bind a stale default at import.
+    from primeqa.core.secrets import get_jwt_secret
     try:
-        payload = jwt.decode(token, JWT_SECRET, algorithms=["HS256"])
+        payload = jwt.decode(token, get_jwt_secret(), algorithms=["HS256"])
         if "sub" not in payload or "tenant_id" not in payload:
             return None  # malformed — drop to login flow
         return {
