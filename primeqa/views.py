@@ -3533,6 +3533,21 @@ def releases_run(release_id):
         if env is None:
             flash("Environment not found.", "error")
             return redirect(f"/releases/{release_id}")
+        # SEC-4: production gate (mirrors api_s4_execution_enqueue + the claim-run
+        # page). This enqueues to s4_execution_jobs, which the worker later runs as
+        # system (caller_tier=None) — so the execution chokepoint's production-role
+        # rule is structurally skipped and the gate MUST be enforced here.
+        # (1) a non-Admin may not dispatch against a production org; (2) even an
+        # Admin must explicitly confirm_production.
+        confirm_production = request.form.get("confirm_production") in ("on", "1", "true")
+        if env.is_production and rank(request.user["role"]) < Tier.ADMIN:
+            flash("Running against a production org requires an Admin.", "error")
+            return redirect(f"/releases/{release_id}")
+        from primeqa.runs.bulk import environment_can_bulk_run
+        ok, msg = environment_can_bulk_run(env, confirm_production)
+        if not ok:
+            flash(msg, "error")
+            return redirect(f"/releases/{release_id}")
         rel_svc = ReleaseService(ReleaseRepository(db))
         release = rel_svc.get_release_detail(release_id, tid)
         if not release:
