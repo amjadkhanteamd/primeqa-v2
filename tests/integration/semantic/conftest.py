@@ -53,7 +53,16 @@ _REPO_ROOT = Path(__file__).resolve().parents[3]
 
 @pytest.fixture(scope="session")
 def test_db_url() -> str:
-    return os.environ.get("SEMANTIC_QUERY_TEST_DB_URL", DEFAULT_TEST_DB_URL)
+    # An explicit override wins verbatim (CI / operator owns uniqueness there).
+    override = os.environ.get("SEMANTIC_QUERY_TEST_DB_URL")
+    if override:
+        return override
+    # TEST-3 (wave-0): derive a UNIQUE-per-session DB name so two concurrent
+    # sessions never share ``primeqa_test_semantic`` and never
+    # pg_terminate_backend + DROP each other's live database. Base kept as a
+    # PREFIX so any name-substring safety check still matches.
+    worker = os.environ.get("PYTEST_XDIST_WORKER", "main")
+    return f"{DEFAULT_TEST_DB_URL}_{worker}_{os.getpid()}"
 
 
 def _admin_url(test_db_url: str) -> str:
