@@ -4,6 +4,7 @@ from __future__ import annotations
 from primeqa.intelligence.claim_presentation import (
     claim_depth,
     claim_title,
+    org_rejection_message,
     verdict_plain,
 )
 
@@ -302,6 +303,49 @@ def test_verdict_plain_not_evaluated_permanent_needs_attention():
     line = verdict_plain("not_evaluated", "errored", "normalization")
     assert "needs attention" in line.lower()
     assert "re-run" not in line.lower()
+
+
+def test_verdict_plain_not_evaluated_setup_rejection_names_the_setup():
+    # a deterministic org rejection of the setup data — says so, and says a
+    # re-run repeats it (never the generic permanent line).
+    line = verdict_plain("not_evaluated", "errored", "setup_rejection")
+    assert "setup data" in line.lower()
+    assert "fail the same way" in line.lower()
+    assert "could not be built" not in line.lower()
+
+
+# --- org_rejection_message: the run page's "Salesforce said:" headline --------
+
+def test_org_rejection_message_prefers_failed_step_message():
+    steps = [
+        {"kind": "read", "success": True},
+        {"kind": "create", "success": False,
+         "message": "KYC must be complete before moving to Credit Assessment.",
+         "rejection_body": [{"message": "other"}]},
+    ]
+    assert org_rejection_message(steps) == \
+        "KYC must be complete before moving to Credit Assessment."
+
+
+def test_org_rejection_message_falls_back_to_rejection_body():
+    steps = [{"kind": "update", "success": False, "message": None,
+              "rejection_body": [{"message": "The VR said no.",
+                                  "errorCode": "FIELD_CUSTOM_VALIDATION_EXCEPTION",
+                                  "fields": []}]}]
+    assert org_rejection_message(steps) == "The VR said no."
+
+
+def test_org_rejection_message_none_when_no_failed_mutation():
+    assert org_rejection_message([{"kind": "create", "success": True}]) is None
+    assert org_rejection_message([{"kind": "read", "success": False}]) is None
+    assert org_rejection_message([]) is None
+    assert org_rejection_message(None) is None
+
+
+def test_org_rejection_message_never_raises_on_malformed_steps():
+    assert org_rejection_message([{"kind": "create", "success": False,
+                                   "rejection_body": "not-a-list"},
+                                  "junk", 42]) is None
 
 
 def test_verdict_plain_other_verdicts_ignore_failure_category():

@@ -3123,11 +3123,25 @@ def s4_run_detail(run_id):
     # the S6 attribution render display names, not raw API names. (Never blend
     # across orgs — the run names exactly one env.)
     from primeqa.intelligence.claim_presentation import (
-        humanize_attribution, step_plain,
+        cause_plain, claim_title, duration_human, humanize_attribution,
+        org_rejection_message, step_plain, time_ago, verdict_plain,
     )
     from primeqa.intelligence.entity_labels import label_map
     _labels = label_map(request.user["tenant_id"],
                         environment_id=_run.get("environment_id"))
+    # Plain-English page inputs: the claim's business title, the one-sentence
+    # result (failure_category-aware, D-272), humanized timing, and the org's
+    # OWN rejection text for the error card ("Salesforce said: …").
+    if _run:
+        _run["title"] = (claim_title(_run["claim_kind"], _run.get("asserted_truth"),
+                                     _labels)
+                         if _run.get("claim_kind") else None)
+        _run["verdict_plain"] = verdict_plain(
+            (_run.get("interpretation") or {}).get("verdict"),
+            _run.get("outcome"), _run.get("failure_category"))
+        _run["duration_h"] = duration_human(_run.get("duration_ms"))
+        _run["finished_ago"] = time_ago(_run.get("finished_at"))
+        _run["org_error_message"] = org_rejection_message(_run.get("steps"))
     # D-233: a plain-English headline per evidence step (the raw step tree stays
     # collapsed beneath it in the template). Attached here, mirroring how the
     # claim-detail view attaches verdict_plain onto each run row.
@@ -3140,6 +3154,35 @@ def s4_run_detail(run_id):
     if _interp and _interp.get("attribution"):
         _interp["attribution"] = humanize_attribution(
             _interp["attribution"], _run.get("steps"), _labels)
+    if _interp and _interp.get("cause"):
+        _interp["cause_plain"] = cause_plain(_interp["cause"].get("cause_kind"))
+    # Environment name + requirement link — v1 reads, best-effort (the page
+    # renders without them). Same resolve pattern as claims_detail.
+    environment = None
+    requirement = None
+    try:
+        db = next(get_db())
+        try:
+            tid = request.user["tenant_id"]
+            if _run.get("environment_id"):
+                env = EnvironmentRepository(db).get_environment(
+                    _run["environment_id"], tid)
+                if env is not None:
+                    environment = {
+                        "id": env.id, "name": env.name,
+                        "is_production": bool(getattr(env, "is_production", False)),
+                        "has_connection": bool(getattr(env, "connection_id", None)),
+                    }
+            if _run.get("requirement_key"):
+                from primeqa.intelligence.substrate_dashboard import _requirement_rows
+                _rid = _requirement_rows(
+                    db, tid, [_run["requirement_key"]]).get(_run["requirement_key"])
+                requirement = {"key": _run["requirement_key"], "id": _rid,
+                               "url": f"/requirements/{_rid}" if _rid else None}
+        finally:
+            db.close()
+    except Exception:
+        pass
     # D-231: close the failure→repair drill — surface the actionable repair
     # proposal for THIS run inline (admin+), reusing the queue's decide POST, so the
     # drill ends at an action instead of read-only suggestion text.
@@ -3148,7 +3191,8 @@ def s4_run_detail(run_id):
         from primeqa.intelligence.repair_agent import open_proposal_for_run
         repair_proposal = open_proposal_for_run(request.user["tenant_id"], run_id)
     return render_template("runs/s4_detail.html", **ctx(
-        active_page="test_library", detail=detail, repair_proposal=repair_proposal))
+        active_page="test_library", detail=detail, repair_proposal=repair_proposal,
+        environment=environment, requirement=requirement))
 
 
 @views_bp.route("/requirements/<int:req_id>/edit", methods=["POST"])

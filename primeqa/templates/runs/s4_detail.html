@@ -1,7 +1,8 @@
 {% extends "base.html" %}
 {% from 'components/breadcrumbs.html' import breadcrumbs %}
 {% from 'components/_empty_state.html' import empty_state %}
-{% block title %}Run - Plimsol{% endblock %}
+{% from 'components/_buttons.html' import btn_success %}
+{% block title %}Test run - Plimsol{% endblock %}
 {% block content %}
 
 {# D-168 (UI Area 3 slice 3c): one S4 execution run — the evidence trace +
@@ -38,7 +39,8 @@
 
 {{ breadcrumbs([
   ('Tests', '/claims'),
-  ('Test case', ('/claims/' ~ r.claim_test_id) if r else None),
+  ((r.title | truncate(60, True)) if r and r.title else 'Test case',
+   ('/claims/' ~ r.claim_test_id) if r else None),
   ('Run', None),
 ]) }}
 
@@ -51,54 +53,91 @@
         description='No execution run matches this id.') }}
   {% else %}
     <!-- Header -->
-    <div>
-      <div class="flex items-center gap-2 flex-wrap">
-        <span class="inline-flex items-center px-2 py-0.5 rounded-full text-xs font-medium
-          {% if r.outcome == 'passed' %}bg-green-100 text-green-800
-          {% elif r.outcome == 'failed' %}bg-red-100 text-red-800
-          {% elif r.outcome == 'errored' %}bg-amber-100 text-amber-800
-          {% else %}bg-gray-100 text-gray-700{% endif %}">{{ r.outcome }}</span>
-        {% if i and i.verdict %}<span class="text-sm text-gray-700">{{ i.verdict.replace('_', ' ') }}</span>{% endif %}
+    <div class="flex items-start justify-between gap-4">
+      <div class="min-w-0">
+        <div class="flex items-center gap-2 flex-wrap">
+          <span class="inline-flex items-center px-2 py-0.5 rounded-full text-xs font-medium
+            {% if r.outcome == 'passed' %}bg-green-100 text-green-800
+            {% elif r.outcome == 'failed' %}bg-red-100 text-red-800
+            {% elif r.outcome == 'errored' %}bg-amber-100 text-amber-800
+            {% else %}bg-gray-100 text-gray-700{% endif %}">{{ r.outcome }}</span>
+          {% if r.verdict_plain %}<span class="text-sm text-gray-700">{{ r.verdict_plain }}</span>{% endif %}
+        </div>
+        <h1 class="mt-2 text-xl font-semibold text-gray-900">
+          {{ r.title or (r.claim_kind.replace('-', ' ') if r.claim_kind else 'Run ' ~ r.run_id[:8]) }}
+        </h1>
+        {% if requirement and requirement.key %}
+        <p class="mt-1 text-xs">
+          {% if requirement.url %}
+          <a href="{{ requirement.url }}" class="text-indigo-600 hover:underline">&larr; From requirement {{ requirement.key }}</a>
+          {% else %}
+          <span class="text-gray-400">From requirement {{ requirement.key }}</span>
+          {% endif %}
+        </p>
+        {% endif %}
+        <p class="mt-1 text-sm text-gray-500">
+          {{ environment.name if environment else 'Environment #' ~ r.environment_id }}
+          {% if r.duration_h %} · {{ r.duration_h }}{% endif %}
+          {% if r.finished_ago %} · <span title="{{ r.finished_at }}">{{ r.finished_ago }}</span>{% endif %}
+          · <span class="font-mono text-xs text-gray-400" title="{{ r.run_id }}">run {{ r.run_id[:8] }}</span>
+          · <a href="/claims/{{ r.claim_test_id }}" class="text-indigo-600 hover:underline">back to test case &rarr;</a>
+        </p>
       </div>
-      <h1 class="mt-2 text-xl font-semibold text-gray-900 font-mono break-all">Run {{ r.run_id[:8] }}</h1>
-      <p class="mt-1 text-sm text-gray-500">
-        {% if r.finished_at %}{{ r.finished_at[:19] }} · {% endif %}
-        {% if r.duration_ms is not none %}{{ r.duration_ms }} ms · {% endif %}
-        env #{{ r.environment_id }} ·
-        <a href="/claims/{{ r.claim_test_id }}" class="text-indigo-600 hover:underline">back to claim &rarr;</a>
-      </p>
+      {# Re-run on the SAME environment — posts to the existing claim-run route,
+         which re-checks env access, run policy and production gating server-side.
+         Lands back on the test-case page (its flash + Recent runs show the result). #}
+      {% if r.claim_test_id and environment and environment.has_connection
+            and user.role in ['tester', 'admin', 'superadmin'] %}
+      <form method="POST" action="/claims/{{ r.claim_test_id }}/run" class="flex-shrink-0 flex flex-col items-end gap-1">
+        {{ csrf_input | safe }}
+        <input type="hidden" name="environment_id" value="{{ environment.id }}">
+        {% if environment.is_production %}
+        <label class="flex items-center gap-1.5 text-xs text-red-700">
+          <input type="checkbox" name="confirm_production" value="1" class="rounded border-red-300">
+          this is production — I'm sure
+        </label>
+        {% endif %}
+        {{ btn_success('Re-run this test', type='submit', size='sm') }}
+      </form>
+      {% endif %}
     </div>
 
-    <!-- Interpretation (S6 verdict / cause) -->
+    <!-- What happened (the S6 verdict / cause, in plain words) -->
     <div class="bg-white shadow rounded-lg">
       <div class="px-4 py-3 border-b">
-        <h3 class="text-sm font-semibold text-gray-700">Interpretation</h3>
-        <p class="text-xs text-gray-400">The semantic verdict + cause (S6).</p>
+        <h3 class="text-sm font-semibold text-gray-700">What happened</h3>
+        <p class="text-xs text-gray-400">Plain-English reading of this run.</p>
       </div>
       <div class="px-6 py-4">
         {% if i %}
           <div class="space-y-2">
             <div class="sm:flex sm:gap-3">
-              <span class="text-xs font-medium text-gray-500 sm:min-w-[8rem]">Verdict</span>
-              <span class="text-sm text-gray-800">{{ i.verdict.replace('_', ' ') }}</span>
+              <span class="text-xs font-medium text-gray-500 sm:min-w-[8rem]">Result</span>
+              <span class="text-sm text-gray-800">{{ r.verdict_plain or i.verdict.replace('_', ' ') }}
+                <span class="ml-1 font-mono text-[11px] text-gray-400" title="The recorded verdict">{{ i.verdict }}</span></span>
             </div>
+            {% if i.cause %}
+            <div class="sm:flex sm:gap-3">
+              <span class="text-xs font-medium text-gray-500 sm:min-w-[8rem]">Why</span>
+              <span class="text-sm text-gray-800">{{ i.cause_plain or i.cause.cause_kind.replace('_', ' ') }}
+                <span class="ml-1 font-mono text-[11px] text-gray-400" title="The recorded cause">{{ i.cause.cause_kind }}</span>
+                {% if i.cause.vr_name %} · <span class="font-mono text-xs" title="The validation rule involved">{{ i.cause.vr_name }}</span>{% endif %}</span>
+            </div>
+            {% endif %}
             {% if i.attribution %}
             <div class="sm:flex sm:gap-3">
-              <span class="text-xs font-medium text-gray-500 sm:min-w-[8rem]">Attribution</span>
+              <span class="text-xs font-medium text-gray-500 sm:min-w-[8rem]">What it checked</span>
               <span class="text-sm text-gray-800">{{ i.attribution }}</span>
             </div>
             {% endif %}
-            {% if i.cause %}
-            <div class="sm:flex sm:gap-3">
-              <span class="text-xs font-medium text-gray-500 sm:min-w-[8rem]">Cause</span>
-              <span class="text-sm text-gray-800">{{ i.cause.cause_kind.replace('_', ' ') }}{% if i.cause.vr_name %} · <span class="font-mono text-xs">{{ i.cause.vr_name }}</span>{% endif %}</span>
-            </div>
-            {% endif %}
             {% if i.phrasing %}
-            <div class="pt-2">
-              <span class="text-xs font-medium text-gray-500">Phrasing</span>
-              {{ render_value(i.phrasing) }}
-            </div>
+            <details class="group pt-2">
+              <summary class="cursor-pointer select-none text-xs text-gray-400 hover:text-gray-600">
+                <span class="group-open:hidden">Show interpretation internals &darr;</span>
+                <span class="hidden group-open:inline">Hide interpretation internals &uarr;</span>
+              </summary>
+              <div class="mt-2">{{ render_value(i.phrasing) }}</div>
+            </details>
             {% endif %}
             {# D-201: the substrate agent's deterministic repair suggestions —
                human-gated; each names the owner of the fix. #}
@@ -124,7 +163,7 @@
             {% endif %}
           </div>
         {% else %}
-          <p class="text-sm text-gray-400 italic">No interpretation recorded (the best-effort interpret step may have failed — the run outcome above is still authoritative).</p>
+          <p class="text-sm text-gray-400 italic">No plain-English reading was recorded for this run — the outcome badge above is still authoritative.</p>
         {% endif %}
       </div>
     </div>
@@ -171,21 +210,39 @@
     </div>
     {% endif %}
 
-    <!-- Run error (errored runs) -->
+    <!-- Run error (errored runs) — lead with the org's OWN words -->
     {% if r.error %}
-    <div class="rounded-md bg-amber-50 border border-amber-100 p-4">
-      <h3 class="text-sm font-semibold text-amber-800 mb-1">Run error</h3>
-      {{ render_value(r.error) }}
+    <div class="rounded-md bg-amber-50 border border-amber-100 p-4 space-y-2">
+      <h3 class="text-sm font-semibold text-amber-800">This run stopped before it could finish</h3>
+      {% if r.org_error_message %}
+      <p class="text-sm text-amber-900">Salesforce said: <span class="font-medium">&ldquo;{{ r.org_error_message }}&rdquo;</span></p>
+      <p class="text-xs text-amber-700">That message comes from the org itself — the run stopped at the {{ r.error.phase or 'first' }} step, so the value under test was never evaluated.</p>
+      {% elif r.error.message %}
+      <p class="text-sm text-amber-900">{{ r.error.message }}</p>
+      {% endif %}
+      <div class="flex items-center gap-1.5 flex-wrap">
+        {% if r.error.phase %}<span class="inline-flex items-center px-1.5 py-0.5 rounded text-[11px] font-mono bg-amber-100 text-amber-800" title="The step where the run stopped">{{ r.error.phase }}</span>{% endif %}
+        {% if r.error.error_type %}<span class="inline-flex items-center px-1.5 py-0.5 rounded text-[11px] font-mono bg-amber-100 text-amber-800" title="How the engine classified this error">{{ r.error.error_type }}</span>{% endif %}
+        {% if r.sf_error_code %}<span class="inline-flex items-center px-1.5 py-0.5 rounded text-[11px] font-mono bg-amber-100 text-amber-800" title="The Salesforce error code">{{ r.sf_error_code }}</span>{% endif %}
+        {% if r.failure_category %}<span class="inline-flex items-center px-1.5 py-0.5 rounded text-[11px] font-mono bg-amber-100 text-amber-800" title="The typed failure category">{{ r.failure_category }}</span>{% endif %}
+      </div>
+      <details class="group">
+        <summary class="cursor-pointer select-none text-xs text-amber-600 hover:text-amber-800">
+          <span class="group-open:hidden">Show technical details &darr;</span>
+          <span class="hidden group-open:inline">Hide technical details &uarr;</span>
+        </summary>
+        <div class="mt-2">{{ render_value(r.error) }}</div>
+      </details>
     </div>
     {% endif %}
 
     <!-- Evidence steps -->
     <div class="bg-white shadow rounded-lg">
       <div class="px-4 py-3 border-b flex items-center justify-between">
-        <h3 class="text-sm font-semibold text-gray-700">Evidence
+        <h3 class="text-sm font-semibold text-gray-700">Test execution steps
           <span class="text-gray-500 font-normal">({{ r.steps | length }} step{{ '' if r.steps | length == 1 else 's' }})</span>
         </h3>
-        {% if r.api_choice %}<span class="text-xs text-gray-400">api: {{ r.api_choice }}</span>{% endif %}
+        {% if r.api_choice %}<span class="text-xs text-gray-400" title="Salesforce API used">api: {{ r.api_choice }}</span>{% endif %}
       </div>
       {% if r.steps %}
       <div class="divide-y divide-gray-200">

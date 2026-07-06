@@ -302,6 +302,12 @@ _NOT_EVALUATED_PERMANENT = (
     "Could not be evaluated — the test itself could not be built or run "
     "(needs attention, not a retry)")
 
+# A deterministic org rejection of the test's SETUP data (a business rule that
+# names no fields gated the staging/padding write) — re-running repeats it.
+_NOT_EVALUATED_SETUP_REJECTED = (
+    "Could not be evaluated — the org rejected the test's setup data (a "
+    "business rule that names no fields); re-running will fail the same way")
+
 
 def verdict_plain(verdict: Optional[str], outcome: Optional[str] = None,
                   failure_category: Optional[str] = None) -> str:
@@ -310,10 +316,13 @@ def verdict_plain(verdict: Optional[str], outcome: Optional[str] = None,
 
     ``failure_category`` (the run's typed error class, D-261) splits the
     ``not_evaluated`` line per D-272 §2.4: a permanent our-side defect
-    (``normalization``) reads "needs attention", everything else keeps the
+    (``normalization``) reads "needs attention", a deterministic org rejection
+    of the setup data (``setup_rejection``) says so, everything else keeps the
     re-runnable credentials/infrastructure line. Default ``None`` → the
     indeterminate line, so every pre-D-272 caller is unchanged."""
     from primeqa.integrations.failure_taxonomy import is_indeterminate
+    if verdict == "not_evaluated" and failure_category == "setup_rejection":
+        return _NOT_EVALUATED_SETUP_REJECTED
     if verdict == "not_evaluated" and not is_indeterminate(failure_category):
         return _NOT_EVALUATED_PERMANENT
     if verdict and verdict in _VERDICT_PLAIN:
@@ -438,6 +447,37 @@ def _err_msg(err: Any) -> str:
     if isinstance(err, dict):
         return err.get("message") or err.get("error_type") or "an error occurred"
     return "an error occurred"
+
+
+def org_rejection_message(steps: Any) -> Optional[str]:
+    """The org's OWN words for a run's failed mutation — the headline the run
+    page's error card leads with (the Salesforce error body's message, e.g. a
+    validation rule's custom text), instead of S4's classification envelope.
+
+    Scans the evidence steps in order for the first create/update/delete that
+    did not succeed and returns its ``message`` (the parsed SF error text),
+    falling back to the first ``rejection_body`` entry's message. Pure +
+    never raises → ``None`` when no org rejection text exists (transport/auth
+    errors carry no org message)."""
+    try:
+        for s in steps or ():
+            if not isinstance(s, dict):
+                continue
+            if s.get("kind") not in ("create", "update", "delete"):
+                continue
+            if s.get("success") is not False and not s.get("error"):
+                continue                       # accepted (or not a failure)
+            msg = s.get("message")
+            if isinstance(msg, str) and msg.strip():
+                return msg.strip()
+            body = s.get("rejection_body")
+            if isinstance(body, (list, tuple)) and body and isinstance(body[0], dict):
+                m = body[0].get("message")
+                if isinstance(m, str) and m.strip():
+                    return m.strip()
+    except Exception:
+        pass
+    return None
 
 
 # Salesforce metadata / Tooling sobjects that surface as the read target on an

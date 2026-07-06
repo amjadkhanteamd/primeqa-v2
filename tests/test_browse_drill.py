@@ -51,13 +51,17 @@ def login_form(email, password):
 
 # ---- A — run-detail evidence headlines ------------------------------------
 
-def _run_detail(steps):
-    return {"available": True, "found": True, "run": {
+def _run_detail(steps, **over):
+    run = {
         "run_id": RUN_ID, "claim_test_id": CLAIM_ID, "recipe_id": None,
         "recipe_version_seq": 1, "environment_id": 59, "outcome": "failed",
         "started_at": None, "finished_at": "2026-06-14T00:00:00+00:00",
         "duration_ms": 1200, "api_choice": "rest", "steps": steps,
-        "error": None, "interpretation": None}}
+        "error": None, "interpretation": None,
+        "failure_category": None, "sf_error_code": None, "source": None,
+        "claim_kind": None, "asserted_truth": None, "requirement_key": None}
+    run.update(over)
+    return {"available": True, "found": True, "run": run}
 
 
 def run_tests():
@@ -94,6 +98,53 @@ def run_tests():
         assert "Show raw step data" in r.get_data(as_text=True)
     results.append(test("A2. an unknown step kind still renders (no 500)",
                         test_evidence_headline_degrades))
+
+    def test_error_card_leads_with_org_message():
+        # an errored run's card leads with the org's OWN words ("Salesforce
+        # said: …") + the typed chips; the raw envelope stays collapsed.
+        vr_text = ("KYC must be complete and Credit Score must be populated "
+                   "before moving to Credit Assessment.")
+        steps = [{"kind": "create", "ordinal": 0, "sobject": "Opportunity",
+                  "success": False, "matched": None, "message": vr_text,
+                  "error": {"phase": "create", "error_type": "AmbiguousRejection",
+                            "message": "create rejected with no field attribution"},
+                  "rejection_body": [{"message": vr_text, "fields": [],
+                                      "errorCode": "FIELD_CUSTOM_VALIDATION_EXCEPTION"}]}]
+        detail = _run_detail(
+            steps, outcome="errored",
+            error={"phase": "create", "error_type": "AmbiguousRejection",
+                   "message": "create rejected with no field attribution; "
+                              "cannot ascribe it to the value under test"},
+            failure_category="setup_rejection",
+            sf_error_code="FIELD_CUSTOM_VALIDATION_EXCEPTION")
+        with patch("primeqa.intelligence.s4_execution_console.read_run_detail",
+                   return_value=detail):
+            html = client.get(f"/runs/{RUN_ID}").get_data(as_text=True)
+        assert "Salesforce said:" in html, "org-message lead missing"
+        assert vr_text in html, "the VR's own text missing"
+        assert "AmbiguousRejection" in html, "error-type chip missing"
+        assert "setup_rejection" in html, "failure-category chip missing"
+        assert "FIELD_CUSTOM_VALIDATION_EXCEPTION" in html, "sf code chip missing"
+        assert "Show technical details" in html, "raw envelope not collapsed"
+    results.append(test("A3. errored run leads with the org's own error text",
+                        test_error_card_leads_with_org_message))
+
+    def test_header_renders_claim_title_and_requirement():
+        detail = _run_detail(
+            [], claim_kind="prohibition-claim",
+            asserted_truth={"target": {"external_id": "Opportunity"},
+                            "operation": "modify_field"},
+            requirement_key="SQ-1")
+        with patch("primeqa.intelligence.s4_execution_console.read_run_detail",
+                   return_value=detail):
+            html = client.get(f"/runs/{RUN_ID}").get_data(as_text=True)
+        assert "Rejects editing fields on Opportunity" in html, \
+            "claim title missing from header"
+        assert f"Run {RUN_ID[:8]}" not in html.split("<h1")[1][:200], \
+            "header still leads with the raw run id"
+        assert "From requirement SQ-1" in html, "requirement line missing"
+    results.append(test("A4. header renders the claim title + requirement key",
+                        test_header_renders_claim_title_and_requirement))
 
     # ---- B — last-run health column on /claims ----------------------------
 
