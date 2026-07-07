@@ -28,7 +28,7 @@ _VERSIONS_DIR = _DIR / "versions"
 
 # The default version new generations use (replay pins its own version on the
 # request's operational_context.prompt_template_version, per D-071).
-CURRENT = "generation@v19"
+CURRENT = "generation@v20"
 
 # version id -> frozen composed artifact (filesystem-safe slug).
 _FILES = {
@@ -51,6 +51,7 @@ _FILES = {
     "generation@v17": _VERSIONS_DIR / "generation_v17.md",
     "generation@v18": _VERSIONS_DIR / "generation_v18.md",
     "generation@v19": _VERSIONS_DIR / "generation_v19.md",
+    "generation@v20": _VERSIONS_DIR / "generation_v20.md",
 }
 
 # Recorded SHA-256 of each frozen version's composed content (D-103.1 drift
@@ -132,6 +133,15 @@ RECORDED_HASHES = {
     # only to break a tie when the object has >1 approval. Calculated fields stay
     # named (D-304).
     "generation@v19": "2132270d98f07eedbc534399978e343733f9fa66df9e5bdf5f515c53a71cfdfb",
+    # v20 (D-329): the implied valid case — a conditioned rule states its own
+    # complement, so the proposal includes (a) ONE in-scope happy-path
+    # acceptance (scope condition + every constrained field satisfied
+    # together, values consistent with every rule at once) and (b) ONE
+    # out-of-scope control per distinct scope condition (scope false,
+    # constrained fields deliberately absent via is_null) — anchored on the
+    # rule's own scope text. Closes the req-302 "no happy path, no negative
+    # controls" breadth gap without violating Guardrail-3.
+    "generation@v20": "540b016f97ffd1cc9e539879889e703e60d2fe74b0167f5d1e60e0cd25ab547b",
 }
 
 # Working composition order — authors the NEXT frozen version (NOT runtime).

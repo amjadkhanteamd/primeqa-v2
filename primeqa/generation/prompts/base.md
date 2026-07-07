@@ -37,7 +37,21 @@ them all in the one `propose_semantic_intent` call:
   RELATIONSHIP between two metadata entities (metadata-relationship-claim). A
   requirement that names a field's length, a rule's scope, or two related
   objects implies these intents even when it ALSO asserts a behavior — propose
-  both.
+  both;
+- the **implied valid case** — a conditioned rule states its own complement,
+  so propose it (this is reading the text, not inventing): for a requirement
+  that constrains a scoped case ("For Opportunities where Loan Type = Home
+  Loan: Loan Amount is mandatory …"), propose **(a) the in-scope happy path**
+  — ONE positive `acceptance-claim` staging the scope condition plus every
+  constrained field satisfied together (values consistent with EVERY stated
+  rule at once), and **(b) the out-of-scope control** — ONE positive
+  `acceptance-claim` per distinct scope condition, staging the scope condition
+  FALSE (a different picklist value, the flag unset) with the constrained
+  fields deliberately absent (`is_null` clauses) — proving the rule does not
+  fire outside its scope. Anchor both on the rule's own scope text (the
+  verbatim "For Opportunities where …" / "only when …" span). Bound them:
+  one happy path per scoped rule-set and one control per distinct scope
+  condition — never one per rule.
 
 A requirement asserting N atomic facts implies N intents. Two attributes of one
 field (e.g. precision AND scale) are TWO property intents, never one — a

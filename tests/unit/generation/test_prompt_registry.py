@@ -42,13 +42,18 @@ def test_working_source_composes_to_current():
     assert hashlib.sha256(composed.encode("utf-8")).hexdigest() == registry.recorded_hash()
 
 
-def test_current_resolves_to_v19():
-    # D-320: CURRENT bumped to v19 (approval-process name optional — bind the single
-    # approval on the object; name only to break a tie). v1..v18 stay frozen +
+def test_current_resolves_to_v20():
+    # D-329: CURRENT bumped to v20 (the implied valid case — one in-scope
+    # happy-path acceptance + one out-of-scope control per distinct scope
+    # condition, anchored on the rule's own scope text). v1..v19 stay frozen +
     # pinned-resolvable (test_runtime_honors_pinned_prompt_version).
-    assert registry.CURRENT == "generation@v19"
-    assert registry.get() == registry.get("generation@v19")
+    assert registry.CURRENT == "generation@v20"
+    assert registry.get() == registry.get("generation@v20")
     sys = registry.get()
+    # v20's implied-valid-case decomposition (D-329)
+    assert "implied valid case" in sys
+    assert "out-of-scope control" in sys
+    assert "one happy path per scoped rule-set" in sys
     assert len(sys) > 1000                                  # substantive, not a stub
     # v17's mandatory-intent_descriptors contract (D-313) — the fix directive
     assert "IS the proposal" in sys
