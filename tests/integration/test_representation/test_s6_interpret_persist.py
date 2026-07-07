@@ -35,9 +35,17 @@ from primeqa.execution_engine.result_store import S4ExecutionRun
 from primeqa.execution_engine.run import run_recipe_execution
 from primeqa.generation.emission import _inspection_recipe
 from primeqa.interpretation.result_store import S6Interpretation
+from primeqa.sync.credentials import ensure_connected_org_for_environment
 from primeqa.test_representation import SemanticTransactionCoordinator
 
 from ._fixtures import arrange_approved_claim
+
+_ENV_ID = 7
+"""The environment every test here runs against. Its connected_org mapping is
+seeded per-test (rolled back with the session) in
+``_seed_approved_inspection_recipe`` — the per-org Slice 3a gate in
+``_interpret_and_persist`` skips interpretation entirely when
+``get_connected_org_for_environment`` resolves nothing for the run's env."""
 
 
 class _StubClient:
@@ -54,7 +62,12 @@ class _StubClient:
 
 def _seed_approved_inspection_recipe(session, coord, *, subject="Lead"):
     """Approved claim + an approved inspection recipe (real emitted bodies) —
-    the same arrangement test_s4_run_path uses."""
+    the same arrangement test_s4_run_path uses — plus the ``_ENV_ID`` →
+    connected_org mapping the S6 interpret gate resolves (per-org Slice 3a).
+    Seeded through the production idempotent upsert so the arrangement is
+    hermetic: no reliance on pre-existing ``connected_orgs`` rows."""
+    ensure_connected_org_for_environment(
+        session.connection(), _ENV_ID, "https://s6.example", org_type="sandbox")
     test_id, _ = arrange_approved_claim(session, coord)
     # D-293 removed the prohibition -> inspection emission this used to source
     # from; build the inspection recipe directly (the interpret path is unchanged).
@@ -87,7 +100,7 @@ def test_run_path_persists_interpretation(session):
     test_id, recipe_id = _seed_approved_inspection_recipe(session, coord, subject="Lead")
 
     result = run_recipe_execution(
-        session, test_id, environment_id=7,
+        session, test_id, environment_id=_ENV_ID,
         client=_StubClient(rows=[{"Id": "03d", "ValidationName": "Req"}]),
         coordinator=coord)
 
@@ -119,7 +132,7 @@ def test_interpretation_run_id_is_one_to_one_with_the_run(session):
     coord = SemanticTransactionCoordinator()
     test_id, _ = _seed_approved_inspection_recipe(session, coord, subject="Lead")
     result = run_recipe_execution(
-        session, test_id, environment_id=7,
+        session, test_id, environment_id=_ENV_ID,
         client=_StubClient(rows=[{"Id": "1"}]), coordinator=coord)
 
     s4 = (session.query(S4ExecutionRun)
@@ -151,7 +164,7 @@ def test_s1_reader_failure_is_isolated(session, monkeypatch, caplog):
 
     with caplog.at_level(logging.ERROR, logger="primeqa.execution_engine.run"):
         result = run_recipe_execution(
-            session, test_id, environment_id=7,
+            session, test_id, environment_id=_ENV_ID,
             client=_StubClient(rows=[{"Id": "1"}]), coordinator=coord)
 
     # the run still ran + the truth survives; interpretation is the observable None.
@@ -187,7 +200,7 @@ def test_persist_db_error_is_isolated_by_savepoint(session, monkeypatch, caplog)
 
     with caplog.at_level(logging.ERROR, logger="primeqa.execution_engine.run"):
         result = run_recipe_execution(
-            session, test_id, environment_id=7,
+            session, test_id, environment_id=_ENV_ID,
             client=_StubClient(rows=[{"Id": "1"}]), coordinator=coord)
 
     # did not raise; interpretation is None.
