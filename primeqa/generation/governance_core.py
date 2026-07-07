@@ -268,6 +268,61 @@ def _bind_picklist_values(grounded, field_metadata):
     return out, invalid
 
 
+_ARC_ACTIONS = ("submit", "approve", "reject")
+
+
+def _ground_arc_prohibition(hint, neighborhood, field_metadata,
+                            active_approvals):
+    """D-333: ground the approval-arc prohibition's OWN inputs — the action
+    list + the explicit ``attempted_change`` update. Returns
+    ``(actions, (field_endpoint, bound_value), error)``; a non-None error
+    refuses (invent-nothing). The arc's completeness is constructional (the
+    org's own approval state realizes the rejection premise), so the D-293
+    VR-derivability gate deliberately does NOT apply — these checks replace
+    it: a real action vocabulary beginning with submit, exactly ONE active
+    ApprovalProcess on the subject (the D-320 enumeration law), and an
+    updateable, picklist-bound (D-332) attempted change."""
+    actions = hint.get("approval_actions")
+    if (not isinstance(actions, list) or not actions
+            or any(a not in _ARC_ACTIONS for a in actions)
+            or actions[0] != "submit"):
+        return None, None, (
+            f"approval_actions must be a non-empty list drawn from "
+            f"{list(_ARC_ACTIONS)} beginning with 'submit'; got {actions!r}")
+    if len(active_approvals) != 1:
+        return None, None, (
+            f"the approval-action arc needs exactly ONE active approval "
+            f"process on the subject to bind (the D-320 enumeration law); "
+            f"found {len(active_approvals)}")
+    ac = hint.get("attempted_change") or {}
+    fld, value = ac.get("field_name"), ac.get("value")
+    if not fld or value is None:
+        return None, None, (
+            "the approval-action arc requires attempted_change "
+            "{field_name, value} — the update the org must reject/accept "
+            "after the actions run")
+    fields_by_name = {
+        r.entity.sf_api_name: r.entity for r in neighborhood
+        if r.edge_type == EDGE_BELONGS and r.entity.entity_type == "Field"}
+    ent = fields_by_name.get(fld)
+    if ent is None:
+        return None, None, (
+            f"attempted_change field {fld!r} does not BELONG_TO the subject")
+    meta = (field_metadata or {}).get(fld.rsplit(".", 1)[-1]) or {}
+    if meta.get("is_calculated") or not meta.get("is_updateable", True):
+        return None, None, (
+            f"attempted_change field {fld!r} is not updateable "
+            f"(calculated/read-only)")
+    gc = _GroundedCondition(
+        field=_Endpoint(entity_id=ent.id, entity_type=ent.entity_type,
+                        external_id=ent.sf_api_name or str(ent.id)),
+        predicate="equals", value=_identity_safe(value))
+    bound, invalid = _bind_picklist_values([gc], field_metadata)
+    if invalid:
+        return None, None, invalid[0]
+    return tuple(actions), (bound[0].field, bound[0].value), None
+
+
 def _identity_safe(value):
     """D-304: canonicalization v1 FORBIDS floats in identity-bearing content
     (SPEC §6.3.2) — an LLM proposing a decimal expected value (0.63) must not
@@ -1372,45 +1427,85 @@ class GovernanceCore:
             # (cross-field / NOT-ISBLANK / NOT-ISPICKVAL / bare-boolean). DORMANT
             # this slice (derive ignores it), so the gate result is unchanged.
             field_metadata = _grounding_field_metadata(neighborhood, self._s1, at)
-            # D-293 decision-2 (refuse, never silently degrade): the behaviour
-            # instance is complete only when a BEHAVIOURAL reject recipe is
-            # derivable. A non-numeric VR (NOT-ISBLANK / picklist / cross-field) or
-            # a non-VR-rejectable operation (delete / share / transfer) derives
-            # nothing -> REFUSE here, rather than emitting the pre-D-293 caveated
-            # inspection (which masked the AC1/2/4 collapse and degraded AC3 to a
-            # bare existence check). Conditions de-collapse identity (Reading B);
-            # derivability is the hard gate. D-294 widens what derives via
-            # field_metadata (dormant here).
-            if not prohibition_recipe_derivable(
-                    hint.get("operation"), vr_formulas, field_metadata):
-                # D-295: a MISMATCH (no rule aligns with the asserted state) and
-                # D-293's derivability gap (the aligned/only VR cannot be tested)
-                # both refuse here, with distinct BA-facing reasons.
-                return IntentResolution(
-                    grounded_candidates=[], next_action=NextAction.REFUSE,
-                    interpretation_delta=delta,
-                    refusal=self._router.behaviour_incomplete(
-                        _prohibition_refusal_detail(
-                            subject.sf_api_name, vr_formulas, vr_all,
-                            grounded_conds)))
-            _stash_grounding(state, GroundedNegative(
-                archetype=archetype, claim_kind=claim_kind,
-                operation_hint=hint.get("operation"), version_seq=at,
-                subject=_Endpoint(
-                    entity_id=subject.id, entity_type=subject.entity_type,
-                    external_id=subject.sf_api_name or str(subject.id)),
-                requirement_excerpt=excerpt,
-                vr_formulas=vr_formulas,
-                # D-293: the grounded business-state -> the claim's identity-bearing
-                # semantic_conditions (distinct states -> distinct claims).
-                conditions=tuple(grounded_conds),
-                # D-294: read-only field metadata for violation-derivation breadth
-                # (dormant this slice; derive ignores it).
-                field_metadata=field_metadata,
-                # D-297 (lever 5): {VR formula -> error message} for the grounding
-                # VRs; DORMANT here — 5.2 looks up the DERIVED source formula's
-                # message and projects it into the recipe's error_message_pattern.
-                vr_messages=_grounding_vr_messages(claim_kind, neighborhood)))
+            if hint.get("approval_actions") is not None:
+                # D-333: the approval-action arc — its completeness is
+                # constructional (the explicit attempted_change IS the update
+                # under test; the org's own actions realize the approval
+                # state), so the D-293 VR-derivability gate does not apply.
+                # The arc STAGES its conditions (the acceptance discipline),
+                # so the D-332 picklist bind applies to them here.
+                staged_conds, unbindable = _bind_picklist_values(
+                    grounded_conds, field_metadata)
+                if unbindable:
+                    return IntentResolution(
+                        grounded_candidates=[], next_action=NextAction.REFUSE,
+                        interpretation_delta=delta,
+                        refusal=self._router.emission_deferred(
+                            archetype, claim_kind,
+                            detail="; ".join(unbindable)))
+                actions, change, arc_error = _ground_arc_prohibition(
+                    hint, neighborhood, field_metadata,
+                    _active_approvals(neighborhood))
+                if arc_error is not None:
+                    return IntentResolution(
+                        grounded_candidates=[], next_action=NextAction.REFUSE,
+                        interpretation_delta=delta,
+                        refusal=self._router.emission_deferred(
+                            archetype, claim_kind, detail=arc_error))
+                _stash_grounding(state, GroundedNegative(
+                    archetype=archetype, claim_kind=claim_kind,
+                    operation_hint=hint.get("operation"), version_seq=at,
+                    subject=_Endpoint(
+                        entity_id=subject.id, entity_type=subject.entity_type,
+                        external_id=subject.sf_api_name or str(subject.id)),
+                    requirement_excerpt=excerpt,
+                    vr_formulas=vr_formulas,
+                    conditions=tuple(staged_conds),
+                    field_metadata=field_metadata,
+                    vr_messages=_grounding_vr_messages(
+                        claim_kind, neighborhood),
+                    approval_actions=actions,
+                    attempted_change=change))
+            else:
+                # D-293 decision-2 (refuse, never silently degrade): the behaviour
+                # instance is complete only when a BEHAVIOURAL reject recipe is
+                # derivable. A non-numeric VR (NOT-ISBLANK / picklist / cross-field) or
+                # a non-VR-rejectable operation (delete / share / transfer) derives
+                # nothing -> REFUSE here, rather than emitting the pre-D-293 caveated
+                # inspection (which masked the AC1/2/4 collapse and degraded AC3 to a
+                # bare existence check). Conditions de-collapse identity (Reading B);
+                # derivability is the hard gate. D-294 widens what derives via
+                # field_metadata (dormant here).
+                if not prohibition_recipe_derivable(
+                        hint.get("operation"), vr_formulas, field_metadata):
+                    # D-295: a MISMATCH (no rule aligns with the asserted state) and
+                    # D-293's derivability gap (the aligned/only VR cannot be tested)
+                    # both refuse here, with distinct BA-facing reasons.
+                    return IntentResolution(
+                        grounded_candidates=[], next_action=NextAction.REFUSE,
+                        interpretation_delta=delta,
+                        refusal=self._router.behaviour_incomplete(
+                            _prohibition_refusal_detail(
+                                subject.sf_api_name, vr_formulas, vr_all,
+                                grounded_conds)))
+                _stash_grounding(state, GroundedNegative(
+                    archetype=archetype, claim_kind=claim_kind,
+                    operation_hint=hint.get("operation"), version_seq=at,
+                    subject=_Endpoint(
+                        entity_id=subject.id, entity_type=subject.entity_type,
+                        external_id=subject.sf_api_name or str(subject.id)),
+                    requirement_excerpt=excerpt,
+                    vr_formulas=vr_formulas,
+                    # D-293: the grounded business-state -> the claim's identity-bearing
+                    # semantic_conditions (distinct states -> distinct claims).
+                    conditions=tuple(grounded_conds),
+                    # D-294: read-only field metadata for violation-derivation breadth
+                    # (dormant this slice; derive ignores it).
+                    field_metadata=field_metadata,
+                    # D-297 (lever 5): {VR formula -> error message} for the grounding
+                    # VRs; DORMANT here — 5.2 looks up the DERIVED source formula's
+                    # message and projects it into the recipe's error_message_pattern.
+                    vr_messages=_grounding_vr_messages(claim_kind, neighborhood)))
 
         # Stash grounding for the positive value-claim (D-115.3). Grounding has
         # already verified the NAMED field exists, so re-resolve it from the same
@@ -1641,6 +1736,48 @@ class GovernanceCore:
                                     "initial state — a no-op change cannot "
                                     "witness an accepted transition")))
                 grounded_upd = tuple(upd_conds)
+            # D-333: the approval-arc acceptance — actions run against the
+            # created record BEFORE the accepted update, so the arc REQUIRES
+            # the update phase; the same vocabulary/binding rules as the
+            # prohibition arc, minus attempted_change (update_conditions IS
+            # the change here).
+            arc_actions: tuple = ()
+            if hint.get("approval_actions") is not None:
+                proposed_actions = hint.get("approval_actions")
+                if (not isinstance(proposed_actions, list)
+                        or not proposed_actions
+                        or any(a not in _ARC_ACTIONS
+                               for a in proposed_actions)
+                        or proposed_actions[0] != "submit"):
+                    return IntentResolution(
+                        grounded_candidates=[], next_action=NextAction.REFUSE,
+                        interpretation_delta=delta,
+                        refusal=self._router.emission_deferred(
+                            archetype, claim_kind,
+                            detail=(f"approval_actions must be a non-empty "
+                                    f"list drawn from {list(_ARC_ACTIONS)} "
+                                    f"beginning with 'submit'; got "
+                                    f"{proposed_actions!r}")))
+                if not grounded_upd:
+                    return IntentResolution(
+                        grounded_candidates=[], next_action=NextAction.REFUSE,
+                        interpretation_delta=delta,
+                        refusal=self._router.emission_deferred(
+                            archetype, claim_kind,
+                            detail=("an approval-arc acceptance needs "
+                                    "update_conditions — the CHANGE the org "
+                                    "must accept after the actions run")))
+                if len(_active_approvals(neighborhood)) != 1:
+                    return IntentResolution(
+                        grounded_candidates=[], next_action=NextAction.REFUSE,
+                        interpretation_delta=delta,
+                        refusal=self._router.emission_deferred(
+                            archetype, claim_kind,
+                            detail=("the approval-action arc needs exactly "
+                                    "ONE active approval process on the "
+                                    "subject to bind (the D-320 enumeration "
+                                    "law)")))
+                arc_actions = tuple(proposed_actions)
             _stash_grounding(state, GroundedAcceptance(
                 archetype=archetype, claim_kind=claim_kind, version_seq=at,
                 subject=_Endpoint(
@@ -1648,7 +1785,8 @@ class GovernanceCore:
                     external_id=subject.sf_api_name or str(subject.id)),
                 requirement_excerpt=excerpt,
                 conditions=tuple(grounded_conds),
-                update_conditions=grounded_upd))
+                update_conditions=grounded_upd,
+                approval_actions=arc_actions))
 
         # D-210.1 covers the POSITIVE shapes only; a NEGATIVE state-transition /
         # automation-effect (grounded via its VR/Flow dim) has no authored

@@ -42,14 +42,17 @@ def test_working_source_composes_to_current():
     assert hashlib.sha256(composed.encode("utf-8")).hexdigest() == registry.recorded_hash()
 
 
-def test_current_resolves_to_v21():
-    # D-330: CURRENT bumped to v21 (the cross-field rejection clause —
-    # `exceeds` + `compared_to`; derivability wording corrected to the
-    # D-294/D-296 reality). v1..v20 stay frozen + pinned-resolvable
-    # (test_runtime_honors_pinned_prompt_version).
-    assert registry.CURRENT == "generation@v21"
-    assert registry.get() == registry.get("generation@v21")
+def test_current_resolves_to_v22():
+    # D-333: CURRENT bumped to v22 (the approval-action arc —
+    # approval_actions + attempted_change / update_conditions; the approval
+    # status realized by actions, never staged). v1..v21 stay frozen +
+    # pinned-resolvable (test_runtime_honors_pinned_prompt_version).
+    assert registry.CURRENT == "generation@v22"
+    assert registry.get() == registry.get("generation@v22")
     sys = registry.get()
+    # v22's approval-action arc (D-333)
+    assert "APPROVAL-ACTION ARC" in sys
+    assert "approval_actions" in sys and "attempted_change" in sys
     # v20's implied-valid-case decomposition (D-329)
     assert "implied valid case" in sys
     assert "out-of-scope control" in sys

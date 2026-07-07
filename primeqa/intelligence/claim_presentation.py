@@ -244,6 +244,23 @@ def _conditions_suffix(semantic_conditions: Any, labels=None) -> str:
         return ""
 
 
+# D-333: the approval-arc phrase — the claim body's approval_actions rendered
+# in business language. '' for every non-arc body (pre-D-333 titles identical).
+_ARC_PHRASES = {
+    ("submit",): " while its approval is pending",
+    ("submit", "approve"): " after its approval is granted",
+    ("submit", "reject"): " after its approval is rejected",
+}
+
+
+def _arc_phrase(body: dict) -> str:
+    actions = tuple(body.get("approval_actions") or ())
+    if not actions:
+        return ""
+    return _ARC_PHRASES.get(
+        actions, " after the approval actions " + " then ".join(actions))
+
+
 def claim_title(claim_kind: str, asserted_truth: Optional[dict],
                 labels=None, semantic_conditions=None) -> str:
     """The claim as one plain-English sentence, in BUSINESS language.
@@ -266,11 +283,13 @@ def claim_title(claim_kind: str, asserted_truth: Optional[dict],
             target = _ref_name(body.get("target"), labels) or "the object"
             op = _OPERATION_WORDS.get(body.get("operation"), "the operation")
             return (f"Rejects {op} on {target}"
+                    f"{_arc_phrase(body)}"
                     f"{_conditions_suffix(semantic_conditions, labels)}")
         if claim_kind == "acceptance-claim":
             target = _ref_name(body.get("target"), labels) or "the object"
             op = "updating" if body.get("operation") == "update" else "creating"
             return (f"Accepts {op} {target}"
+                    f"{_arc_phrase(body)}"
                     f"{_conditions_suffix(semantic_conditions, labels)}")
         if claim_kind == "value-claim":
             field = _ref_name(body.get("subject"), labels) or "the field"

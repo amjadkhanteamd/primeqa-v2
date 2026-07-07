@@ -65,9 +65,11 @@ from primeqa.test_representation.models.claims.ui import (
     LayoutClaimBody,
 )
 from primeqa.test_representation.models.claims.data_behavior.prohibition_claim import (
+    ProhibitionClaimArcBody,
     ProhibitionClaimBody,
 )
 from primeqa.test_representation.models.claims.data_behavior.acceptance_claim import (
+    AcceptanceClaimArcBody,
     AcceptanceClaimBody,
     AcceptanceClaimUpdateBody,
 )
@@ -104,6 +106,7 @@ from primeqa.test_representation.models.primitives import (
     StateDescriptor,
 )
 from primeqa.test_representation.models.recipes.data_recipe import (
+    ApprovalActionStep,
     AssertStep as DataAssertStep,
     CreateStep,
     DataRecipeBody,
@@ -254,6 +257,14 @@ class GroundedNegative:
     # S4 grade confirms WHICH rule fired. Empty (the default) -> no pattern ->
     # byte-identical. Not persisted (transient), not an identity_hash input.
     vr_messages: dict = field(default_factory=dict)
+    # D-333: the approval-action arc. Non-empty -> the ARC author (v2 body;
+    # staged-conditions create -> actions -> the explicit rejected update);
+    # () (the default) -> every pre-D-333 prohibition byte-identical.
+    approval_actions: tuple = ()
+    # D-333: the explicit update the org must REJECT after the arc —
+    # ``(_Endpoint, value)``. REQUIRED when approval_actions is non-empty
+    # (governance refuses otherwise); ignored on the non-arc path.
+    attempted_change: Optional[tuple] = None
 
 
 @dataclass(frozen=True)
@@ -399,6 +410,11 @@ class GroundedAcceptance:
     # carries ONLY the initial state on the conditions layer. Empty () → the
     # D-305 create shape verbatim.
     update_conditions: tuple = ()
+    # D-333: the approval-action arc — non-empty (with a non-empty
+    # update_conditions, governance-enforced) authors the v3 arc body: the
+    # actions run against the created record BEFORE the accepted update.
+    # () (the default) -> every pre-D-333 acceptance byte-identical.
+    approval_actions: tuple = ()
 
 
 @dataclass(frozen=True)
@@ -1089,11 +1105,22 @@ def _author_acceptance(g: GroundedAcceptance) -> EmissionBundle:
             # non-equals clause would enter identity yet never be staged.
             raise ValueError(
                 f"update_conditions must be equals-only; got {non_equals}")
-        claim = AcceptanceClaimUpdateBody(
-            target=subject_ref, operation="update",
-            update_state=StateDescriptor(field_values={
-                c.field.external_id: LiteralValue(value=c.value)
-                for c in g.update_conditions}))
+        if getattr(g, "approval_actions", ()):
+            # D-333: the approval-arc acceptance — the actions are IDENTITY
+            # (the v3 body): "accepted AFTER approval" and the plain
+            # "accepted" must hash apart.
+            claim = AcceptanceClaimArcBody(
+                target=subject_ref, operation="update",
+                update_state=StateDescriptor(field_values={
+                    c.field.external_id: LiteralValue(value=c.value)
+                    for c in g.update_conditions}),
+                approval_actions=list(g.approval_actions))
+        else:
+            claim = AcceptanceClaimUpdateBody(
+                target=subject_ref, operation="update",
+                update_state=StateDescriptor(field_values={
+                    c.field.external_id: LiteralValue(value=c.value)
+                    for c in g.update_conditions}))
     else:
         claim = AcceptanceClaimBody(target=subject_ref, operation="create")
     conditions = _conditions_body(tuple(g.conditions), g.version_seq)
@@ -1114,12 +1141,19 @@ def _author_acceptance(g: GroundedAcceptance) -> EmissionBundle:
         # finding: the org refused a change the requirement says must succeed).
         update_staged = {c.field.external_id: c.value
                          for c in g.update_conditions if c.predicate == "equals"}
+        # D-333: the approval actions run BETWEEN the initial-state create and
+        # the accepted update (the arc realizes the approval state the change
+        # depends on). () -> byte-identical to the D-306 shape.
+        arc_steps = [
+            ApprovalActionStep(step_id=f"approval-{i}", action=a)
+            for i, a in enumerate(getattr(g, "approval_actions", ()))]
         steps = [
             CreateStep(
                 step_id="create-record",
                 target_object=target,
                 field_values=staged,
             ),
+            *arc_steps,
             UpdateStep(
                 step_id="update-record",
                 target=target,
@@ -1139,8 +1173,13 @@ def _author_acceptance(g: GroundedAcceptance) -> EmissionBundle:
                     subject_ref="read-created.Id", predicate="exists"),
             ),
         ]
+        arc_detail = (
+            f"run the approval action(s) "
+            f"[{' then '.join(getattr(g, 'approval_actions', ()))}], "
+            if arc_steps else "")
         details = (f"create a {object_api} record staging the initial state "
                    f"({', '.join(sorted(staged)) or 'no staged fields'}), "
+                   f"{arc_detail}"
                    f"update it to ({', '.join(sorted(update_staged))}) and "
                    f"expect the org to ACCEPT the change (no validation rule "
                    f"fires)")
@@ -1221,8 +1260,92 @@ def _conditions_body(grounded: tuple, version_seq: int):
     ])
 
 
+def _author_arc_negative(g: GroundedNegative) -> EmissionBundle:
+    """Author the D-333 approval-arc prohibition: after ``approval_actions``
+    run against the subject record, the org REJECTS the explicit
+    ``attempted_change``. Complete BY CONSTRUCTION — the rejection premise
+    (the record's approval state) is realized by the org's own actions,
+    never staged and never VR-derived, so the D-293 derivability machinery
+    does not apply. The recipe stages the claim's equals conditions on the
+    setup create (the D-305 acceptance staging discipline — governance
+    already picklist-bound them, D-332), runs the actions, then attempts
+    the update expecting the business rejection. Layer-1 + the honest
+    caveat: the deeper pre-verification layer genuinely wasn't run — the
+    RUN is the verification (the acceptance posture, D-305)."""
+    subject_ref = IdentityBearingRef(
+        entity_type=g.subject.entity_type, entity_id=g.subject.entity_id,
+        version_seq=g.version_seq, external_id=g.subject.external_id,
+    )
+    change_ep, change_value = g.attempted_change
+    operation = (g.operation_hint
+                 if g.operation_hint in ("modify_field", "modify_record")
+                 else "modify_record")
+    # D-297: bind the aligned VR's synced message when the grounding narrowed
+    # to exactly one formula — the arc's rejection should name ITS rule.
+    _raw = (g.vr_messages.get(g.vr_formulas[0])
+            if len(g.vr_formulas) == 1 else None)
+    error_message = html.unescape(_raw) if _raw else None
+
+    claim = ProhibitionClaimArcBody(
+        target=subject_ref,
+        operation=operation,
+        prohibition_mechanism="validation_rule",
+        expected_rejection=RejectionSignal(error_code=_VR_REJECTION_ERROR_CODE),
+        approval_actions=list(g.approval_actions),
+        attempted_change={change_ep.external_id: str(change_value)},
+    )
+    conditions = _conditions_body(g.conditions, g.version_seq)
+
+    target = LogicalRef(entity_type=g.subject.entity_type,
+                        external_id=g.subject.external_id)
+    staged = {c.field.external_id: c.value for c in g.conditions
+              if c.predicate == "equals"}
+    trigger = DataMutationTriggerBody(
+        operation="update", target=target,
+        identity_context="system", volume="single",
+    )
+    steps = [CreateStep(step_id="create-setup", target_object=target,
+                        field_values=staged)]
+    steps += [ApprovalActionStep(step_id=f"approval-{i}", action=a)
+              for i, a in enumerate(g.approval_actions)]
+    steps.append(UpdateStep(
+        step_id="update-blocked", target=target,
+        field_changes={change_ep.external_id: change_value},
+        expect_rejection=RejectionExpectation(
+            error_code=_VR_REJECTION_ERROR_CODE,
+            error_message_pattern=(
+                re.escape(error_message) if error_message else None)),
+    ))
+    recipe = DataRecipeBody(
+        api_choice="rest", identity_context="system",
+        execution_mechanism="direct_api", steps=steps,
+    )
+    arc_words = " then ".join(g.approval_actions)
+    env = ExecutionEnvironmentBody(auth_assumptions=[AuthAssumption(
+        auth_kind="data_api_user",
+        details=(f"create a {g.subject.external_id} staging the asserted "
+                 f"business state, run the approval action(s) [{arc_words}], "
+                 f"then attempt {change_ep.external_id}="
+                 f"{change_value!r} and expect the org to REJECT it"),
+    )])
+    return EmissionBundle(
+        archetype=g.archetype, claim_kind=g.claim_kind,
+        asserted_truth=claim, semantic_conditions=conditions,
+        trigger_kind="data-mutation-trigger", recipe_kind="data-recipe",
+        causal_initiation=trigger, observation_realization=recipe,
+        execution_environment=env,
+        admissibility_layer=AdmissibilityLayer.LAYER_1,
+        caveat_required=requires_caveat(g.claim_kind),
+        caveat_kind=caveat_kind(g.claim_kind),
+    )
+
+
 def _author_negative(g: GroundedNegative, *,
                      enable_bva_boundaries: bool = False) -> EmissionBundle:
+    # D-333: the approval-action arc has its own author — dispatch BEFORE the
+    # VR-derivation path (the arc's completeness is constructional).
+    if g.approval_actions:
+        return _author_arc_negative(g)
     subject_ref = IdentityBearingRef(
         entity_type=g.subject.entity_type, entity_id=g.subject.entity_id,
         version_seq=g.version_seq, external_id=g.subject.external_id,
