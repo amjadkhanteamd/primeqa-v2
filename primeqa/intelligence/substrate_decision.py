@@ -245,8 +245,10 @@ def _claim_grounding(session, coord, test_id, approved_seq,
 
 def _claim_test_ids(session, external_keys):
     """The release's requirement keys → (ordered distinct claim test_ids,
-    ``{test_id: {requirement keys}}``) via the ``generated_from`` links."""
+    ``{test_id: {requirement keys}}``) via the COVERAGE_LINK_KINDS links
+    (``generated_from`` + curated ``verifies``)."""
     from primeqa.test_representation.coordinator import (
+        COVERAGE_LINK_KINDS,
         SemanticTransactionCoordinator,
     )
     coord = SemanticTransactionCoordinator()
@@ -255,7 +257,7 @@ def _claim_test_ids(session, external_keys):
     for key in external_keys:
         for m in coord.list_tests_by_requirement(
                 session, external_system="jira", external_key=key,
-                link_kind="generated_from"):
+                link_kind=COVERAGE_LINK_KINDS):
             sid = str(m.test_id)
             keys_by_tid.setdefault(sid, set()).add(key)   # record even when shared
             if sid not in seen:                    # a claim shared by 2 reqs

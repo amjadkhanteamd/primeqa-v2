@@ -39,7 +39,7 @@ from __future__ import annotations
 import uuid as _uuid_mod
 from dataclasses import dataclass
 from datetime import datetime
-from typing import Literal, Optional
+from typing import Literal, Optional, Sequence, Union
 from uuid import UUID
 
 from sqlalchemy import text
@@ -255,6 +255,16 @@ class RequirementMatch:
     link_kind: str
     external_version: Optional[str]
     linked_at: datetime
+
+
+# The link kinds that constitute COVERAGE of a requirement: tests S3
+# generated from it plus tests a human curated onto it as verifying it.
+# ``related_to`` is deliberately excluded — it is an associative pointer,
+# not a coverage assertion. Every business-facing "which tests cover this
+# requirement" read (requirement plan, chips, run-from-requirement
+# dispatch, release verdicts, GO/NO-GO) filters on THIS set; provenance
+# reads ("which requirement generated this claim") stay generated_from.
+COVERAGE_LINK_KINDS: tuple = ("generated_from", "verifies")
 
 
 # ---------------------------------------------------------------------------
@@ -1296,15 +1306,23 @@ class SemanticTransactionCoordinator:
         external_system: str,
         external_key: str,
         link_kind: Optional[
-            Literal["generated_from", "verifies", "related_to"]
+            Union[
+                Literal["generated_from", "verifies", "related_to"],
+                Sequence[str],
+            ]
         ] = None,
     ) -> list[RequirementMatch]:
         """Return tests linked to an external requirement.
 
         Reads from :class:`TestRequirementLink`. Filter:
 
-          link_kind: restricts to a specific link kind. ``None``
-            returns all link kinds.
+          link_kind: restricts to a specific link kind, or to any of a
+            sequence of kinds (e.g. :data:`COVERAGE_LINK_KINDS`).
+            ``None`` returns all link kinds.
+
+        A test linked under more than one matching kind returns one
+        match per link row — callers that want distinct tests dedupe
+        on ``test_id`` (order puts ``generated_from`` first).
 
         Result order: deterministic by
         ``(test_id, link_kind)`` ascending.
@@ -1314,8 +1332,12 @@ class SemanticTransactionCoordinator:
             TestRequirementLink.external_key == external_key,
         )
         if link_kind is not None:
+            kinds = (
+                (link_kind,) if isinstance(link_kind, str)
+                else tuple(link_kind)
+            )
             query = query.filter(
-                TestRequirementLink.link_kind == link_kind,
+                TestRequirementLink.link_kind.in_(kinds),
             )
         rows = query.order_by(
             TestRequirementLink.test_id,

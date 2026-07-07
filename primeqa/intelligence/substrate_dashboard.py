@@ -49,16 +49,25 @@ def _corpus_keys(session) -> list[str]:
 
 
 def _keys_to_test_ids(session, keys) -> dict:
-    """{external_key: [test_id, ...]} via the coordinator's requirement index."""
+    """{external_key: [test_id, ...]} via the coordinator's requirement index
+    (COVERAGE_LINK_KINDS membership, deduped per key)."""
     from primeqa.test_representation.coordinator import (
+        COVERAGE_LINK_KINDS,
         SemanticTransactionCoordinator,
     )
     coord = SemanticTransactionCoordinator()
     out: dict = {}
     for key in keys:
-        out[key] = [str(m.test_id) for m in coord.list_tests_by_requirement(
-            session, external_system="jira", external_key=key,
-            link_kind="generated_from")]
+        seen: set = set()
+        ids = []
+        for m in coord.list_tests_by_requirement(
+                session, external_system="jira", external_key=key,
+                link_kind=COVERAGE_LINK_KINDS):
+            sid = str(m.test_id)
+            if sid not in seen:
+                seen.add(sid)
+                ids.append(sid)
+        out[key] = ids
     return out
 
 

@@ -8,9 +8,10 @@ and ``substrate_insights``). Three operations for the ``/requirements`` surface:
     (``s3_enqueue.resolve_requirement``) + validate the env, then pin a queued
     S3 job (``enqueue_s3_generation``). The worker's ``s3_generation_tick`` runs
     it async; there is no synchronous path.
-  - :func:`read_requirement_claims` — the requirement's generated test plan:
-    ``coordinator.list_tests_by_requirement`` (the ``generated_from`` links the
-    persister writes per D-166) → per test ``get_latest_claim`` +
+  - :func:`read_requirement_claims` — the requirement's coverage test plan:
+    ``coordinator.list_tests_by_requirement`` (COVERAGE_LINK_KINDS — the
+    ``generated_from`` links the persister writes per D-166 plus human-curated
+    ``verifies`` links) → per test ``get_latest_claim`` +
     ``list_active_recipes``, flattened for the template.
   - :func:`read_latest_s3_job` — the most-recent S3 job for the requirement key,
     so a page reload during generation re-renders progress + resumes polling.
@@ -83,16 +84,24 @@ def trigger_s3_generation(db, *, tenant_id: int, requirement_id: int,
 # --- read: the requirement's generated test plan (S2 claims + recipes) -------
 
 def _read_claims(session, requirement_key: str, labels=None) -> list[dict]:
-    """Pure: the requirement's ``generated_from`` test plan on an open S2 session.
-    Directly testable on the semantic harness with seeded links/claims/recipes.
-    ``labels`` (the org label map) renders titles in business language."""
-    from primeqa.test_representation.coordinator import SemanticTransactionCoordinator
+    """Pure: the requirement's coverage test plan on an open S2 session —
+    ``generated_from`` links plus human-curated ``verifies`` links
+    (COVERAGE_LINK_KINDS). Directly testable on the semantic harness with
+    seeded links/claims/recipes. ``labels`` (the org label map) renders
+    titles in business language."""
+    from primeqa.test_representation.coordinator import (
+        COVERAGE_LINK_KINDS, SemanticTransactionCoordinator,
+    )
     coord = SemanticTransactionCoordinator()
     matches = coord.list_tests_by_requirement(
         session, external_system="jira", external_key=requirement_key,
-        link_kind="generated_from")
+        link_kind=COVERAGE_LINK_KINDS)
     claims = []
+    seen_tests = set()                       # a test linked under both kinds shows once
     for m in matches:
+        if m.test_id in seen_tests:
+            continue
+        seen_tests.add(m.test_id)
         claim = coord.get_latest_claim(session, m.test_id)
         if claim is None:                             # link with no live claim — skip
             continue
@@ -151,16 +160,22 @@ def read_requirement_claims(tenant_id: int, requirement_key: str) -> dict:
 def _read_test_sequence(session, requirement_key: str) -> list[dict]:
     """Pure: the requirement's live test plan as an ORDERED lean sequence — the
     walk-the-plan read (prev/next strips, live chips). Mirrors ``_read_claims``'
-    membership + sort exactly (``generated_from`` links, deprecated excluded,
+    membership + sort exactly (COVERAGE_LINK_KINDS links, deprecated excluded,
     archetype → claim_kind → test_id) so a position here IS a position on the
     requirement page; skips recipes/labels/titles to stay cheap."""
-    from primeqa.test_representation.coordinator import SemanticTransactionCoordinator
+    from primeqa.test_representation.coordinator import (
+        COVERAGE_LINK_KINDS, SemanticTransactionCoordinator,
+    )
     coord = SemanticTransactionCoordinator()
     matches = coord.list_tests_by_requirement(
         session, external_system="jira", external_key=requirement_key,
-        link_kind="generated_from")
+        link_kind=COVERAGE_LINK_KINDS)
     tests = []
+    seen_tests = set()                       # mirror _read_claims' dedupe
     for m in matches:
+        if m.test_id in seen_tests:
+            continue
+        seen_tests.add(m.test_id)
         claim = coord.get_latest_claim(session, m.test_id)
         if claim is None:
             continue
@@ -852,7 +867,9 @@ def _count_claims_by_requirement(conn, keys) -> dict:
         "FROM test_requirement_links l "
         "JOIN test_claims c ON c.test_id = l.test_id AND c.valid_to IS NULL "
         "  AND c.status::text <> 'deprecated' "
-        "WHERE l.external_system = 'jira' AND l.link_kind = 'generated_from' "
+        # COVERAGE_LINK_KINDS: generated_from + human-curated verifies
+        "WHERE l.external_system = 'jira' "
+        "AND l.link_kind IN ('generated_from', 'verifies') "
         "AND l.external_key IN :keys GROUP BY l.external_key"
     ).bindparams(bindparam("keys", expanding=True))
     rows = conn.execute(stmt, {"keys": keys}).mappings().all()
@@ -892,7 +909,9 @@ def _count_claims_by_requirement_status(conn, keys) -> dict:
         "FROM test_requirement_links l "
         "JOIN test_claims c ON c.test_id = l.test_id AND c.valid_to IS NULL "
         "  AND c.status::text <> 'deprecated' "
-        "WHERE l.external_system = 'jira' AND l.link_kind = 'generated_from' "
+        # COVERAGE_LINK_KINDS: generated_from + human-curated verifies
+        "WHERE l.external_system = 'jira' "
+        "AND l.link_kind IN ('generated_from', 'verifies') "
         "AND l.external_key IN :keys GROUP BY l.external_key, c.status"
     ).bindparams(bindparam("keys", expanding=True))
     rows = conn.execute(stmt, {"keys": keys}).mappings().all()
@@ -938,7 +957,9 @@ def keys_with_claims(tenant_id: int) -> dict:
                 "FROM test_requirement_links l "
                 "JOIN test_claims c ON c.test_id = l.test_id AND c.valid_to IS NULL "
                 "  AND c.status::text <> 'deprecated' "
-                "WHERE l.external_system = 'jira' AND l.link_kind = 'generated_from'"
+                # COVERAGE_LINK_KINDS: generated_from + human-curated verifies
+                "WHERE l.external_system = 'jira' "
+                "AND l.link_kind IN ('generated_from', 'verifies')"
             )).mappings().all()
         return {"available": True, "keys": {r["k"] for r in rows}}
     except Exception as exc:

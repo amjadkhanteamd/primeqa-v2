@@ -742,7 +742,8 @@ def deprecate_claim(tenant_id: int, test_id, reason: str) -> dict:
 
 def enqueue_claims_for_keys(tenant_id: int, external_keys, environment_id: int,
                             *, created_by=None) -> dict:
-    """Enqueue every ``generated_from`` claim behind ``external_keys`` for
+    """Enqueue every coverage claim (COVERAGE_LINK_KINDS: ``generated_from``
+    + curated ``verifies``) behind ``external_keys`` for
     execution on ``environment_id`` (deduped; best-effort per claim). The CI
     webhook's re-verify path — CI then polls /status for the D-198 substrate
     verdict over FRESH evidence. Never raises."""
@@ -755,6 +756,7 @@ def enqueue_claims_for_keys(tenant_id: int, external_keys, environment_id: int,
         from primeqa.execution_engine.intake import enqueue_s4_execution
         from primeqa.semantic.connection import get_tenant_connection
         from primeqa.test_representation.coordinator import (
+            COVERAGE_LINK_KINDS,
             SemanticTransactionCoordinator,
         )
         coord = SemanticTransactionCoordinator()
@@ -765,7 +767,7 @@ def enqueue_claims_for_keys(tenant_id: int, external_keys, environment_id: int,
                 for key in keys:
                     for m in coord.list_tests_by_requirement(
                             session, external_system="jira", external_key=key,
-                            link_kind="generated_from"):
+                            link_kind=COVERAGE_LINK_KINDS):
                         sid = str(m.test_id)
                         if sid not in seen:
                             seen.add(sid)

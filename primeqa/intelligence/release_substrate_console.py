@@ -25,7 +25,9 @@ _AT_RISK = ("drifted", "broken")
 def _assemble_release_substrate(session, external_keys) -> dict:
     """Pure: fan the release's requirement keys → claims → grounding + latest
     verdict, rolled up. Directly testable on the substrate session."""
-    from primeqa.test_representation.coordinator import SemanticTransactionCoordinator
+    from primeqa.test_representation.coordinator import (
+        COVERAGE_LINK_KINDS, SemanticTransactionCoordinator,
+    )
     from primeqa.evolution import list_grounding_validity, read_grounding_validity
     from primeqa.intelligence.s4_execution_console import _read_claim_runs
 
@@ -34,7 +36,7 @@ def _assemble_release_substrate(session, external_keys) -> dict:
     for key in external_keys:                          # release's requirement keys
         for m in coord.list_tests_by_requirement(
                 session, external_system="jira", external_key=key,
-                link_kind="generated_from"):
+                link_kind=COVERAGE_LINK_KINDS):
             sid = str(m.test_id)
             if sid not in seen:                        # dedupe a claim shared by 2 reqs
                 seen.add(sid)

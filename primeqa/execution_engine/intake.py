@@ -65,6 +65,7 @@ def enqueue_claims_for_requirements(
 
     from primeqa.semantic.connection import get_tenant_connection
     from primeqa.test_representation.coordinator import (
+        COVERAGE_LINK_KINDS,
         SemanticTransactionCoordinator,
     )
 
@@ -77,7 +78,7 @@ def enqueue_claims_for_requirements(
             for key in keys:
                 for m in coord.list_tests_by_requirement(
                         session, external_system="jira", external_key=key,
-                        link_kind="generated_from"):
+                        link_kind=COVERAGE_LINK_KINDS):
                     sid = str(m.test_id)
                     if sid in seen:
                         continue
