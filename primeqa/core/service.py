@@ -6,6 +6,7 @@ Business logic: user management, auth, tenant operations, environment management
 import hashlib
 import logging
 import os
+import re
 import secrets
 from datetime import datetime, timedelta, timezone
 
@@ -263,6 +264,46 @@ VALID_ENV_TYPES = {"sandbox", "uat", "staging", "production"}
 VALID_EXECUTION_POLICIES = {"full", "read_only", "disabled"}
 VALID_CAPTURE_MODES = {"minimal", "smart", "full"}
 
+# 2026-07-07 incident: a real production org ("Prod1") saved with the default
+# is_production=False let record-writing runs dispatch at production. The
+# guard below makes "not production" an explicit human decision whenever a
+# save looks like production. Letter-only lookarounds (not \b) so digit- and
+# separator-suffixed names ("Prod1", "PROD_EU") match while "product" /
+# "preprod" / "delivery" do not.
+PROD_NAME_RX = re.compile(r"(?<![a-z])(production|prod|live)(?![a-z])",
+                          re.IGNORECASE)
+
+
+def production_signals(name, env_type, connection_org_type=None):
+    """Human-readable reasons an environment save "looks like production":
+    prod-ish name, env_type='production', or the linked Salesforce connection
+    declared org_type='production' (that declaration is load-bearing — it
+    selects login.salesforce.com as the OAuth host — not a cosmetic label)."""
+    signals = []
+    if name and PROD_NAME_RX.search(name):
+        signals.append(f"the name '{name}' matches a production pattern "
+                       "(prod/production/live)")
+    if env_type == "production":
+        signals.append("the environment type is 'production'")
+    if connection_org_type == "production":
+        signals.append("its Salesforce connection is a production org "
+                       "(authenticates via login.salesforce.com)")
+    return signals
+
+
+class ProductionConfirmationRequired(ValueError):
+    """Saving is_production=False on an environment that looks like production.
+    Carries the trip reasons; callers re-submit with
+    ``confirm_not_production=True`` after a human explicitly confirms."""
+
+    def __init__(self, signals):
+        self.signals = list(signals)
+        super().__init__(
+            "This environment looks like a production org: "
+            + "; ".join(self.signals)
+            + ". Tick 'This is a PRODUCTION org' — or, if it truly is not "
+            "production, explicitly confirm that and save again.")
+
 
 class EnvironmentService:
     def __init__(self, env_repo, conn_repo=None):
@@ -279,6 +320,7 @@ class EnvironmentService:
         if cm not in VALID_CAPTURE_MODES:
             raise ValueError(f"Invalid capture_mode. Must be one of: {', '.join(VALID_CAPTURE_MODES)}")
 
+        connection_org_type = None
         connection_id = kwargs.get("connection_id")
         if connection_id and self.conn_repo:
             conn_data = self.conn_repo.get_connection_decrypted(connection_id, tenant_id)
@@ -286,6 +328,7 @@ class EnvironmentService:
                 cfg = conn_data["config"]
                 sf_instance_url = sf_instance_url or cfg.get("instance_url", "")
                 sf_api_version = sf_api_version or cfg.get("api_version", "59.0")
+                connection_org_type = cfg.get("org_type")
 
         if not sf_instance_url:
             raise ValueError("Salesforce Instance URL is required (provide directly or via a Connection)")
@@ -299,22 +342,101 @@ class EnvironmentService:
 
         if env_type == "production":
             kwargs.setdefault("cleanup_mandatory", True)
+            # Type 'production' with the enforcement flag off is contradictory;
+            # default the flag on unless the caller explicitly says otherwise
+            # (an explicit False still has to pass the guard below).
+            kwargs.setdefault("is_production", True)
+
+        confirm_not_production = bool(kwargs.pop("confirm_not_production", False))
+        kwargs["is_production"] = bool(kwargs.get("is_production", False))
+        signals = production_signals(name, env_type, connection_org_type)
+        if not kwargs["is_production"] and signals and not confirm_not_production:
+            raise ProductionConfirmationRequired(signals)
 
         env = self.env_repo.create_environment(
             tenant_id, name, env_type, sf_instance_url, sf_api_version, **kwargs,
         )
+        if env.is_production:
+            self._log_flag_activity(
+                tenant_id, kwargs.get("created_by"), "environment.is_production_set",
+                env.id, {"environment_name": name, "is_production": True})
+        elif signals:
+            self._log_flag_activity(
+                tenant_id, kwargs.get("created_by"),
+                "environment.not_production_confirmed",
+                env.id, {"environment_name": name, "signals": signals})
         return self._env_dict(env)
 
-    def update_environment(self, environment_id, tenant_id, updates):
+    def update_environment(self, environment_id, tenant_id, updates, actor_user_id=None):
         if "execution_policy" in updates and updates["execution_policy"] not in VALID_EXECUTION_POLICIES:
             raise ValueError(f"Invalid execution_policy. Must be one of: {', '.join(VALID_EXECUTION_POLICIES)}")
         if "capture_mode" in updates and updates["capture_mode"] not in VALID_CAPTURE_MODES:
             raise ValueError(f"Invalid capture_mode. Must be one of: {', '.join(VALID_CAPTURE_MODES)}")
 
+        env = self.env_repo.get_environment(environment_id, tenant_id)
+        if not env:
+            raise ValueError("Environment not found")
+
+        confirm_not_production = bool(updates.pop("confirm_not_production", False))
+        old_flag = bool(env.is_production)
+        if "is_production" in updates:
+            updates["is_production"] = bool(updates["is_production"])
+        new_flag = updates.get("is_production", old_flag)
+        # The guard re-evaluates whenever the save touches the flag or an
+        # identity-bearing field (name / env_type) and would leave the flag
+        # off — a rename to "Prod1" must not slip past on a partial update.
+        signals = []
+        if not new_flag and ({"is_production", "name", "env_type"} & set(updates)):
+            signals = production_signals(
+                updates.get("name") or env.name,
+                updates.get("env_type") or env.env_type,
+                self._connection_org_type(env.connection_id, tenant_id))
+            if signals and not confirm_not_production:
+                raise ProductionConfirmationRequired(signals)
+
         env = self.env_repo.update_environment(environment_id, tenant_id, updates)
         if not env:
             raise ValueError("Environment not found")
+        if bool(env.is_production) != old_flag:
+            self._log_flag_activity(
+                tenant_id, actor_user_id, "environment.is_production_changed",
+                env.id, {"environment_name": env.name, "from": old_flag,
+                         "to": bool(env.is_production),
+                         "confirmed_not_production": confirm_not_production,
+                         "signals": signals})
+        elif signals and confirm_not_production:
+            self._log_flag_activity(
+                tenant_id, actor_user_id, "environment.not_production_confirmed",
+                env.id, {"environment_name": env.name, "signals": signals})
         return self._env_dict(env)
+
+    def _connection_org_type(self, connection_id, tenant_id):
+        """Best-effort org_type ('production' / 'sandbox') of the linked
+        Salesforce connection — org_type lives in plaintext config, so this is
+        a row read, no decryption and no Salesforce call. None when there is
+        no connection/repo or on any read failure: the guard then rests on the
+        name / env_type signals rather than blocking the save."""
+        if not (connection_id and self.conn_repo):
+            return None
+        try:
+            conn = self.conn_repo.get_connection(connection_id, tenant_id)
+            if conn is not None and conn.connection_type == "salesforce":
+                return (conn.config or {}).get("org_type")
+        except Exception as e:  # pragma: no cover - defensive
+            logger.warning("connection org_type read failed for connection %s: %s",
+                           connection_id, e)
+        return None
+
+    def _log_flag_activity(self, tenant_id, user_id, action, environment_id, details):
+        """activity_log write for is_production changes (2026-07-07 incident).
+        Best-effort — an audit-log failure must not break the save."""
+        try:
+            from primeqa.core.repository import ActivityLogRepository
+            ActivityLogRepository(self.env_repo.db).log_activity(
+                tenant_id, user_id, action, "environment", environment_id, details)
+        except Exception as e:  # pragma: no cover - defensive
+            logger.warning("environment activity-log write failed (%s): %s",
+                           action, e)
 
     def get_environment(self, environment_id, tenant_id):
         env = self.env_repo.get_environment(environment_id, tenant_id)
@@ -393,6 +515,7 @@ class EnvironmentService:
             "capture_mode": env.capture_mode,
             "max_execution_slots": env.max_execution_slots,
             "cleanup_mandatory": env.cleanup_mandatory,
+            "is_production": env.is_production,
             "is_active": env.is_active,
             "created_at": env.created_at.isoformat() if env.created_at else None,
             "updated_at": env.updated_at.isoformat() if env.updated_at else None,

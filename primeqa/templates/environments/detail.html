@@ -9,6 +9,11 @@
         <div>
             <h1 class="text-2xl font-bold text-gray-900">{{ env.name }}</h1>
             <span class="inline-flex items-center px-2 py-0.5 rounded text-xs font-medium mt-1 {% if env.env_type == 'production' %}bg-red-100 text-red-800{% elif env.env_type == 'uat' %}bg-yellow-100 text-yellow-800{% else %}bg-green-100 text-green-800{% endif %}">{{ env.env_type }}</span>
+            {% if env.is_production %}
+            <span class="inline-flex items-center px-2 py-0.5 rounded text-xs font-bold mt-1 bg-red-600 text-white" title="Production protections are on">PRODUCTION</span>
+            {% elif env.env_type == 'production' %}
+            <span class="inline-flex items-center px-2 py-0.5 rounded text-xs font-medium mt-1 bg-amber-100 text-amber-800" title="Type is production but the production protections flag is OFF — record-writing runs are not blocked">not flagged production</span>
+            {% endif %}
         </div>
         <div class="flex space-x-3">
             {{ btn_edit('Edit', href='/environments/' ~ env.id ~ '/edit') }}

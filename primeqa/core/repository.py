@@ -153,6 +153,7 @@ class EnvironmentRepository:
             capture_mode=kwargs.get("capture_mode", "smart"),
             max_execution_slots=kwargs.get("max_execution_slots", 2),
             cleanup_mandatory=kwargs.get("cleanup_mandatory", False),
+            is_production=bool(kwargs.get("is_production", False)),
             created_by=kwargs.get("created_by"),
             connection_id=kwargs.get("connection_id"),
             jira_connection_id=kwargs.get("jira_connection_id"),

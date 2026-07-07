@@ -1,0 +1,30 @@
+{# The per-test last-run chip — single-sourced for the requirement page's rows
+   AND the live-chips poll fragment (D-317 slice 6). States, in precedence:
+     in flight (active s4 job) → pulsing amber queued/running;
+     last run → outcome chip linking to the evidence page;
+     approved but never run → the honest gap;
+     draft → nothing (not runnable, silence isn't a gap).
+   ``oob=true`` adds hx-swap-oob so a fragment response updates the row
+   behind the drawer / across the poll. #}
+
+{% macro run_chip(test_id, status, last_run, active_status, oob=false) %}
+<span id="claim-run-chip-{{ test_id }}" class="inline-flex" {% if oob %}hx-swap-oob="true"{% endif %}>
+  {% if active_status %}
+  <span class="inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-xs font-medium bg-amber-100 text-amber-800"
+        title="A run is in flight — this chip updates live.">
+    <span class="h-1.5 w-1.5 rounded-full bg-amber-500 animate-pulse"></span>
+    {{ 'queued' if active_status == 'queued' else 'running' }}</span>
+  {% elif last_run %}
+  {# Multi-org: env_name rides last_run when the tenant has >1 env — a sandbox
+     pass must not read as a production pass. #}
+  <a href="/runs/{{ last_run.run_id }}" data-drawer-ignore
+     title="Last run {{ last_run.last_ago or last_run.finished_at }}{% if last_run.env_name %} in {{ last_run.env_name }}{% endif %} — view what happened"
+     class="inline-flex items-center px-2 py-0.5 rounded-full text-xs font-medium hover:underline
+     {% if last_run.outcome == 'passed' %}bg-emerald-100 text-emerald-800
+     {% elif last_run.outcome in ('failed', 'errored') %}bg-red-100 text-red-800
+     {% else %}bg-gray-100 text-gray-600{% endif %}">{{ last_run.outcome }}{% if last_run.env_name %} · {{ last_run.env_name }}{% endif %}</a>
+  {% elif status == 'approved' %}
+  <span class="inline-flex items-center px-2 py-0.5 rounded-full text-xs bg-gray-50 text-gray-400">never run</span>
+  {% endif %}
+</span>
+{% endmacro %}

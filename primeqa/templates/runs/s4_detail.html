@@ -37,12 +37,21 @@
 {% set r = detail.run if detail else None %}
 {% set i = r.interpretation if r else None %}
 
+{% if requirement and requirement.url %}
+{{ breadcrumbs([
+  (requirement.key, requirement.url),
+  ((r.title | truncate(60, True)) if r and r.title else 'Test case',
+   ('/claims/' ~ r.claim_test_id) if r else None),
+  ('Run', None),
+]) }}
+{% else %}
 {{ breadcrumbs([
   ('Tests', '/claims'),
   ((r.title | truncate(60, True)) if r and r.title else 'Test case',
    ('/claims/' ~ r.claim_test_id) if r else None),
   ('Run', None),
 ]) }}
+{% endif %}
 
 <div class="max-w-4xl space-y-6">
   {% if not detail or not detail.available %}
@@ -67,11 +76,26 @@
           {{ r.title or (r.claim_kind.replace('-', ' ') if r.claim_kind else 'Run ' ~ r.run_id[:8]) }}
         </h1>
         {% if requirement and requirement.key %}
-        <p class="mt-1 text-xs">
+        <p class="mt-1 text-xs flex items-center gap-2 flex-wrap">
           {% if requirement.url %}
           <a href="{{ requirement.url }}" class="text-indigo-600 hover:underline">&larr; From requirement {{ requirement.key }}</a>
           {% else %}
           <span class="text-gray-400">From requirement {{ requirement.key }}</span>
+          {% endif %}
+          {# Walk-the-plan strip — prev/next go to the SIBLING TEST pages. #}
+          {% if plan_nav %}
+          <span class="text-gray-300">&middot;</span>
+          <span class="text-gray-500">test {{ plan_nav.position }} of {{ plan_nav.total }}</span>
+          {% if plan_nav.prev_id %}
+          <a href="/claims/{{ plan_nav.prev_id }}" class="text-indigo-600 hover:underline" title="Previous test in this requirement's plan">&larr; prev</a>
+          {% else %}
+          <span class="text-gray-300">&larr; prev</span>
+          {% endif %}
+          {% if plan_nav.next_id %}
+          <a href="/claims/{{ plan_nav.next_id }}" class="text-indigo-600 hover:underline" title="Next test in this requirement's plan">next &rarr;</a>
+          {% else %}
+          <span class="text-gray-300">next &rarr;</span>
+          {% endif %}
           {% endif %}
         </p>
         {% endif %}
