@@ -295,11 +295,11 @@
                  (drafts aren't runnable, so their silence isn't a gap). #}
               {% if c.last_run %}
               <a href="/runs/{{ c.last_run.run_id }}"
-                 title="Last run {{ c.last_run.last_ago or c.last_run.finished_at }} — view what happened"
+                 title="Last run {{ c.last_run.last_ago or c.last_run.finished_at }}{% if c.last_run.env_name %} in {{ c.last_run.env_name }}{% endif %} — view what happened"
                  class="inline-flex items-center px-2 py-0.5 rounded-full text-xs font-medium hover:underline
                  {% if c.last_run.outcome == 'passed' %}bg-emerald-100 text-emerald-800
                  {% elif c.last_run.outcome in ('failed', 'errored') %}bg-red-100 text-red-800
-                 {% else %}bg-gray-100 text-gray-600{% endif %}">{{ c.last_run.outcome }}</a>
+                 {% else %}bg-gray-100 text-gray-600{% endif %}">{{ c.last_run.outcome }}{% if c.last_run.env_name %} · {{ c.last_run.env_name }}{% endif %}</a>
               {% elif c.status == 'approved' %}
               <span class="inline-flex items-center px-2 py-0.5 rounded-full text-xs bg-gray-50 text-gray-400">never run</span>
               {% endif %}

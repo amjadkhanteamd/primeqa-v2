@@ -22,7 +22,27 @@
     </div>
   </div>
 
-  {{ render_search('/claims', q, 'Search test type or area…') }}
+  <div class="flex items-center justify-between gap-4 flex-wrap">
+    {{ render_search('/claims', q, 'Search test type or area…',
+                     extra_params=('?environment_id=' ~ active_env) if active_env else '',
+                     hidden_params={'environment_id': active_env}) }}
+    {# Multi-org filter — rendered only when the caller can see more than one
+       environment: keeps tests with a run in that org and shows that org's
+       latest run. Tests themselves are shared across orgs. #}
+    {% if envs_for_picker and envs_for_picker|length > 1 %}
+    <form method="GET" action="/claims" class="flex items-center gap-2 text-xs">
+      {% if q %}<input type="hidden" name="q" value="{{ q }}">{% endif %}
+      <label for="claims-env" class="text-gray-500">Org</label>
+      <select id="claims-env" name="environment_id" onchange="this.form.submit()"
+              class="rounded-md border border-gray-300 px-2 py-1 text-xs">
+        <option value="">All environments</option>
+        {% for e in envs_for_picker %}
+        <option value="{{ e.id }}" {% if active_env == e.id %}selected{% endif %}>{{ e.name }}</option>
+        {% endfor %}
+      </select>
+    </form>
+    {% endif %}
+  </div>
 
   {% if not data or not data.available %}
     {{ empty_state(title='Test cases unavailable',
@@ -78,7 +98,7 @@
                 {% elif c.last_run.outcome == 'failed' %}bg-red-100 text-red-800
                 {% elif c.last_run.outcome == 'errored' %}bg-amber-100 text-amber-800
                 {% else %}bg-gray-100 text-gray-700{% endif %}"
-                title="{{ c.last_run.finished_at[:19] if c.last_run.finished_at else '' }}">{{ c.last_run.outcome }}</a>
+                title="{{ c.last_run.finished_at[:19] if c.last_run.finished_at else '' }}{% if c.last_run.env_name %} in {{ c.last_run.env_name }}{% endif %}">{{ c.last_run.outcome }}{% if c.last_run.env_name %} · {{ c.last_run.env_name }}{% endif %}</a>
               {% else %}
               <span class="text-xs text-gray-400">never run</span>
               {% endif %}
@@ -92,7 +112,7 @@
     </div>
     <div class="flex items-center justify-between">
       <p class="text-xs text-gray-500">{{ data.total }} test case{{ '' if data.total == 1 else 's' }}</p>
-      {{ render_pagination(data.page, data.total_pages, '/claims', ('&q=' ~ q | urlencode) if q else '') }}
+      {{ render_pagination(data.page, data.total_pages, '/claims', (('&q=' ~ q | urlencode) if q else '') ~ (('&environment_id=' ~ active_env) if active_env else '')) }}
     </div>
   {% else %}
     {{ empty_state(

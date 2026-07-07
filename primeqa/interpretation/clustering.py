@@ -54,16 +54,22 @@ class FlappingCluster:
 
 def cluster_recurring_causes(
     session, *, recipe_id: Optional[UUID] = None, min_runs: int = 2,
+    environment_id: Optional[int] = None,
 ) -> list[CauseCluster]:
     """Group interpretations by deeper ``cause_kind`` (the promoted column),
     keeping kinds that recur across ``>= min_runs`` runs. Optionally scoped to a
-    ``recipe_id``. Ordered most-frequent first."""
+    ``recipe_id`` and/or one environment (``s6_interpretations`` carries no env
+    column — the env filter joins the run's ``s4_execution_runs`` row).
+    Ordered most-frequent first."""
     sql = (
         "SELECT cause_kind, COUNT(*) AS n, "
-        "       array_agg(run_id ORDER BY run_id) AS run_ids "
+        "       array_agg(s6_interpretations.run_id ORDER BY s6_interpretations.run_id) AS run_ids "
         "FROM s6_interpretations "
-        "WHERE cause_kind IS NOT NULL "
-        + ("AND recipe_id = CAST(:recipe_id AS uuid) " if recipe_id is not None else "")
+        + ("JOIN s4_execution_runs r ON r.run_id = s6_interpretations.run_id "
+           "AND r.environment_id = :env " if environment_id is not None else "")
+        + "WHERE cause_kind IS NOT NULL "
+        + ("AND s6_interpretations.recipe_id = CAST(:recipe_id AS uuid) "
+           if recipe_id is not None else "")
         + "GROUP BY cause_kind "
         "HAVING COUNT(*) >= :min_runs "
         "ORDER BY n DESC, cause_kind"
@@ -71,6 +77,8 @@ def cluster_recurring_causes(
     params: dict = {"min_runs": min_runs}
     if recipe_id is not None:
         params["recipe_id"] = str(recipe_id)
+    if environment_id is not None:
+        params["env"] = environment_id
     rows = session.execute(text(sql), params).mappings().all()
     return [CauseCluster(
         cause_kind=r["cause_kind"], count=r["n"],
@@ -79,18 +87,23 @@ def cluster_recurring_causes(
 
 def cluster_by_vr(
     session, *, recipe_id: Optional[UUID] = None, min_runs: int = 2,
+    environment_id: Optional[int] = None,
 ) -> list[VrCluster]:
     """Group interpretations by the implicated validation rule (``vr_name``),
     keeping VRs implicated across ``>= min_runs`` runs, with the distinct
     outcomes under which each was implicated. Optionally scoped to a
-    ``recipe_id``. Ordered most-frequent first."""
+    ``recipe_id`` and/or one environment (via the run's ``s4_execution_runs``
+    row). Ordered most-frequent first."""
     sql = (
         "SELECT vr_name, COUNT(*) AS n, "
-        "       array_agg(DISTINCT outcome::text ORDER BY outcome::text) AS outcomes, "
-        "       array_agg(run_id ORDER BY run_id) AS run_ids "
+        "       array_agg(DISTINCT s6_interpretations.outcome::text ORDER BY s6_interpretations.outcome::text) AS outcomes, "
+        "       array_agg(s6_interpretations.run_id ORDER BY s6_interpretations.run_id) AS run_ids "
         "FROM s6_interpretations "
-        "WHERE vr_name IS NOT NULL "
-        + ("AND recipe_id = CAST(:recipe_id AS uuid) " if recipe_id is not None else "")
+        + ("JOIN s4_execution_runs r ON r.run_id = s6_interpretations.run_id "
+           "AND r.environment_id = :env " if environment_id is not None else "")
+        + "WHERE vr_name IS NOT NULL "
+        + ("AND s6_interpretations.recipe_id = CAST(:recipe_id AS uuid) "
+           if recipe_id is not None else "")
         + "GROUP BY vr_name "
         "HAVING COUNT(*) >= :min_runs "
         "ORDER BY n DESC, vr_name"
@@ -98,6 +111,8 @@ def cluster_by_vr(
     params: dict = {"min_runs": min_runs}
     if recipe_id is not None:
         params["recipe_id"] = str(recipe_id)
+    if environment_id is not None:
+        params["env"] = environment_id
     rows = session.execute(text(sql), params).mappings().all()
     return [VrCluster(
         vr_name=r["vr_name"], count=r["n"], outcomes=tuple(r["outcomes"]),
@@ -106,23 +121,36 @@ def cluster_by_vr(
 
 def cluster_flapping(
     session, *, recipe_id: Optional[UUID] = None,
+    environment_id: Optional[int] = None,
 ) -> list[FlappingCluster]:
     """Claim_tests whose runs disagree — more than one distinct ``outcome``
     across the runs (the flapping signal). Uses the typed ``outcome`` column.
-    Optionally scoped to a ``recipe_id``. Ordered by claim_test_id."""
+    Optionally scoped to a ``recipe_id`` and/or one environment (via the run's
+    ``s4_execution_runs`` row) — a claim that passes in org A and fails in
+    org B is a cross-org difference, not flapping, so the env-scoped read is
+    the honest per-org signal. Ordered by claim_test_id."""
+    conditions = []
+    if environment_id is not None:
+        conditions.append("r.environment_id = :env")
+    if recipe_id is not None:
+        conditions.append("s6_interpretations.recipe_id = CAST(:recipe_id AS uuid)")
     sql = (
-        "SELECT claim_test_id, "
-        "       array_agg(DISTINCT outcome::text ORDER BY outcome::text) AS outcomes, "
-        "       array_agg(run_id ORDER BY run_id) AS run_ids "
+        "SELECT s6_interpretations.claim_test_id, "
+        "       array_agg(DISTINCT s6_interpretations.outcome::text ORDER BY s6_interpretations.outcome::text) AS outcomes, "
+        "       array_agg(s6_interpretations.run_id ORDER BY s6_interpretations.run_id) AS run_ids "
         "FROM s6_interpretations "
-        + ("WHERE recipe_id = CAST(:recipe_id AS uuid) " if recipe_id is not None else "")
-        + "GROUP BY claim_test_id "
-        "HAVING COUNT(DISTINCT outcome) > 1 "
-        "ORDER BY claim_test_id"
+        + ("JOIN s4_execution_runs r ON r.run_id = s6_interpretations.run_id "
+           if environment_id is not None else "")
+        + ("WHERE " + " AND ".join(conditions) + " " if conditions else "")
+        + "GROUP BY s6_interpretations.claim_test_id "
+        "HAVING COUNT(DISTINCT s6_interpretations.outcome) > 1 "
+        "ORDER BY s6_interpretations.claim_test_id"
     )
     params: dict = {}
     if recipe_id is not None:
         params["recipe_id"] = str(recipe_id)
+    if environment_id is not None:
+        params["env"] = environment_id
     rows = session.execute(text(sql), params).mappings().all()
     return [FlappingCluster(
         claim_test_id=r["claim_test_id"], outcomes=tuple(r["outcomes"]),

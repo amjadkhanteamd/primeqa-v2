@@ -47,17 +47,21 @@ log = logging.getLogger(__name__)
 
 _RECENT_RUNS_SQL = (
     "SELECT CAST(r.run_id AS text) AS run_id, CAST(r.claim_test_id AS text) AS claim_test_id, "
-    "r.outcome::text AS outcome, r.finished_at, i.verdict::text AS verdict, "
+    "r.outcome::text AS outcome, r.finished_at, r.environment_id, "
+    "i.verdict::text AS verdict, "
     "i.cause_kind, i.vr_name "
     "FROM s4_execution_runs r LEFT JOIN s6_interpretations i ON i.run_id = r.run_id "
+    "WHERE (CAST(:env AS int) IS NULL OR r.environment_id = :env) "
     "ORDER BY r.finished_at DESC LIMIT :limit")
 
 
-def _recent_runs(session, limit: int) -> list[dict]:
-    rows = session.execute(text(_RECENT_RUNS_SQL), {"limit": limit}).mappings().all()
+def _recent_runs(session, limit: int, environment_id=None) -> list[dict]:
+    rows = session.execute(text(_RECENT_RUNS_SQL),
+                           {"limit": limit, "env": environment_id}).mappings().all()
     return [{
         "run_id": r["run_id"], "claim_test_id": r["claim_test_id"],
         "outcome": r["outcome"], "verdict": r["verdict"],
+        "environment_id": r["environment_id"],
         "cause": ({"cause_kind": r["cause_kind"], "vr_name": r["vr_name"]}
                   if r["cause_kind"] else None),
         "finished_at": r["finished_at"].isoformat() if r["finished_at"] is not None else None,
@@ -111,16 +115,24 @@ def _empty_payload(*, available: bool) -> dict:
 
 # --- the pure assembler (directly testable on a tenant-scoped session) --------
 
-def _assemble_insights(session, limit: int) -> dict:
+def _assemble_insights(session, limit: int, environment_id=None) -> dict:
     """Read S6 interpretations + clustering + S8 grounding verdicts on a
     **tenant-scoped** ``session`` and return JSON-safe plain dicts. Pure — no
-    connection management; the caller owns the session's scope."""
-    recent_runs = _recent_runs(session, limit)
+    connection management; the caller owns the session's scope.
+
+    ``environment_id`` scopes the run-derived reads (recent runs + the three
+    clusterings) to one connected org — flapping in a sandbox stops polluting
+    the production view. Grounding stays tenant-wide (the store carries no org
+    dimension yet)."""
+    recent_runs = _recent_runs(session, limit, environment_id)
     cause_clusters = [_cause_cluster_dict(c)
-                      for c in cluster_recurring_causes(session, min_runs=2)]
+                      for c in cluster_recurring_causes(
+                          session, min_runs=2, environment_id=environment_id)]
     vr_clusters = [_vr_cluster_dict(c)
-                   for c in cluster_by_vr(session, min_runs=2)]
-    flapping = [_flapping_dict(c) for c in cluster_flapping(session)]
+                   for c in cluster_by_vr(
+                       session, min_runs=2, environment_id=environment_id)]
+    flapping = [_flapping_dict(c) for c in cluster_flapping(
+        session, environment_id=environment_id)]
     grounding = [_grounding_dict(r)
                  for r in list_grounding_validity(session, limit=limit)]
     grounding_counts = _grounding_counts(session)
@@ -134,18 +146,21 @@ def _assemble_insights(session, limit: int) -> dict:
 
 # --- the bridge (best-effort; v1 owns it) ------------------------------------
 
-def get_substrate_insights(tenant_id: int, *, limit: int = 50) -> dict:
+def get_substrate_insights(tenant_id: int, *, limit: int = 50,
+                           environment_id=None) -> dict:
     """Tenant-scoped best-effort read of the substrate insights for the
     ``/substrate-insights`` page. Opens a tenant connection, binds an ORM
     ``Session`` over it (the read APIs need ``.query()``), and assembles the
-    dict. **Never raises** — any failure (absent tenant schema, the stores not
-    yet migrated, a read error) returns ``available=False`` so the v1 page
-    degrades to an empty-state rather than erroring."""
+    dict. ``environment_id`` scopes the run-derived sections to one connected
+    org (``None`` = tenant-wide, the single-org behavior). **Never raises** —
+    any failure (absent tenant schema, the stores not yet migrated, a read
+    error) returns ``available=False`` so the v1 page degrades to an
+    empty-state rather than erroring."""
     try:
         from sqlalchemy.orm import Session
         from primeqa.semantic.connection import get_tenant_connection
         with get_tenant_connection(tenant_id) as conn:
-            return _assemble_insights(Session(bind=conn), limit)
+            return _assemble_insights(Session(bind=conn), limit, environment_id)
     except Exception as exc:                 # absent schema / empty / read error
         log.warning("substrate insights unavailable for tenant %s: %s",
                     tenant_id, exc)

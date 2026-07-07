@@ -627,10 +627,12 @@ def read_claim_requirement(tenant_id: int, test_id) -> dict:
 # "Current" = valid_to IS NULL, matching get_latest_claim's filter.
 
 def _list_claims(conn, *, limit: int, offset: int, q=None, status=None,
-                 labels=None):
+                 labels=None, environment_id=None):
     """Pure: (total, page-rows) of current claims on an open tenant conn. ``q``
     ILIKE-matches claim_kind / archetype / test_id (enum cols cast to text);
-    ``status`` filters exactly (the drafts inbox passes ``'draft'``).
+    ``status`` filters exactly (the drafts inbox passes ``'draft'``);
+    ``environment_id`` keeps claims with at least one run in that env and makes
+    ``last_run`` that env's latest (None = tenant-wide, claims org-agnostic).
     ``labels`` (the org label map) renders titles in business language.
 
     Each row also carries the D-206 triage surface — ``title`` (the claim AS a
@@ -645,6 +647,16 @@ def _list_claims(conn, *, limit: int, offset: int, q=None, status=None,
         clause += (" AND (c.claim_kind::text ILIKE :q OR c.archetype::text ILIKE :q "
                    "OR CAST(c.test_id AS text) ILIKE :q)")
         qp["q"] = f"%{q}%"
+    if environment_id is not None:
+        # Multi-org filter: claims are org-agnostic (authored once), so "claims
+        # for env N" means claims with at least one run in that env; the
+        # last-run chip below is then that env's latest, not any org's.
+        clause += (" AND EXISTS (SELECT 1 FROM s4_execution_runs er "
+                   "WHERE er.claim_test_id = c.test_id "
+                   "AND er.environment_id = :envf)")
+    # The lastrun LATERAL always names :envf (None = any org's latest), so the
+    # bind must always be present; the COUNT statement ignores the extra key.
+    qp["envf"] = environment_id
     if status:
         clause += " AND c.status::text = :status"
         qp["status"] = status
@@ -667,7 +679,7 @@ def _list_claims(conn, *, limit: int, offset: int, q=None, status=None,
         "COALESCE(rk.kinds, ARRAY[]::text[]) AS recipe_kinds, "
         "req.external_key AS requirement_key, "
         "lastrun.run_id AS last_run_id, lastrun.outcome AS last_outcome, "
-        "lastrun.finished_at AS last_finished "
+        "lastrun.finished_at AS last_finished, lastrun.environment_id AS last_env "
         "FROM test_claims c "
         "LEFT JOIN LATERAL ("
         "  SELECT array_agg(DISTINCT r.recipe_kind::text) AS kinds "
@@ -679,9 +691,10 @@ def _list_claims(conn, *, limit: int, offset: int, q=None, status=None,
         "  ORDER BY l.linked_at DESC LIMIT 1) req ON true "
         "LEFT JOIN LATERAL ("
         "  SELECT CAST(lr.run_id AS text) AS run_id, lr.outcome::text AS outcome, "
-        "         lr.finished_at "
+        "         lr.finished_at, lr.environment_id "
         "  FROM s4_execution_runs lr "
         "  WHERE lr.claim_test_id = c.test_id "
+        "  AND (CAST(:envf AS int) IS NULL OR lr.environment_id = :envf) "
         "  ORDER BY lr.finished_at DESC LIMIT 1) lastrun ON true "
         f"WHERE c.valid_to IS NULL{clause} "
         "ORDER BY c.updated_at DESC, c.test_id LIMIT :limit OFFSET :offset"),
@@ -695,17 +708,20 @@ def _list_claims(conn, *, limit: int, offset: int, q=None, status=None,
                "requirement_key": r["requirement_key"],
                "last_run": ({"run_id": r["last_run_id"],
                              "outcome": r["last_outcome"],
-                             "finished_at": _iso(r["last_finished"])}
+                             "finished_at": _iso(r["last_finished"]),
+                             "environment_id": r["last_env"]}
                             if r["last_outcome"] else None)}
               for r in rows]
     return (total or 0), claims
 
 
 def list_claims(tenant_id: int, *, page: int = 1, per_page: int = 20, q=None,
-                status=None) -> dict:
+                status=None, environment_id=None) -> dict:
     """Best-effort paginated read of the tenant's current claims (the claims
     library; ``status='draft'`` powers the approval inbox). Never raises.
-    ``per_page`` capped at 50. Returns
+    ``per_page`` capped at 50. ``environment_id`` filters to claims with a run
+    in that env and makes each row's ``last_run`` that env's latest (None =
+    tenant-wide). Returns
     ``{available, claims, total, page, per_page, total_pages}``."""
     page = max(1, page)
     per_page = max(1, min(per_page, 50))
@@ -716,7 +732,7 @@ def list_claims(tenant_id: int, *, page: int = 1, per_page: int = 20, q=None,
         with get_tenant_connection(tenant_id) as conn:
             total, claims = _list_claims(
                 conn, limit=per_page, offset=(page - 1) * per_page, q=q,
-                status=status, labels=labels)
+                status=status, labels=labels, environment_id=environment_id)
         total_pages = max(1, (total + per_page - 1) // per_page)
         return {"available": True, "claims": claims, "total": total,
                 "page": page, "per_page": per_page, "total_pages": total_pages}

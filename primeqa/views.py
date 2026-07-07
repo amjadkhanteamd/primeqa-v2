@@ -184,13 +184,25 @@ def dashboard():
         setup_complete = (row["conn_count"] > 0 and row["env_count"] > 0
                           and row["group_count"] > 0)
 
+        # Multi-org: the run-derived KPIs are scoped to one connected org when
+        # the picker selects one (?environment_id=N, validated against the
+        # caller's accessible envs). Default stays "All environments" — the
+        # tenant-wide view — so single-org tenants render exactly as before.
+        envs = EnvironmentRepository(db).list_environments(
+            tid, request.user["id"], request.user["role"])
+        envs_for_picker = [{"id": e.id, "name": e.name} for e in envs]
+        env_names = {e.id: e.name for e in envs}
+        env = request.args.get("environment_id", type=int)
+        if env is not None and env not in env_names:
+            env = None                       # inaccessible/unknown → tenant-wide
+
         # D-219: the landing metrics read substrate evidence — claims,
         # s4 runs, latest-per-claim pass rate, flake-flagged claims. The
         # v1 product-table counts froze when the engine moved.
         from primeqa.intelligence.substrate_dashboard import (
             get_landing_substrate_stats,
         )
-        sub = get_landing_substrate_stats(tid)
+        sub = get_landing_substrate_stats(tid, environment_id=env)
 
         stats = {
             "total_test_cases": sub["approved_claims"],
@@ -206,11 +218,13 @@ def dashboard():
         # (the old sub["recent_runs"] shape carried id/outcome/verdict only,
         # plus a dead hard-coded priority).
         from primeqa.intelligence.s4_execution_console import list_runs
-        recent = list_runs(tid, page=1, per_page=10)
+        recent = list_runs(tid, page=1, per_page=10, environment_id=env)
         return render_template("dashboard.html", **ctx(
             active_page="dashboard", stats=stats,
             recent_runs=recent.get("runs") or [],
             setup_complete=setup_complete,
+            envs_for_picker=envs_for_picker, active_env=env,
+            env_names=env_names,
             env_pass_rates=[], flaky_tests=[],
             flaky_claims=sub["flaky_claims"], releases_health=[],
         ))
@@ -280,9 +294,26 @@ def substrate_insights():
     from primeqa.intelligence.substrate_insights import get_substrate_insights
 
     def _render():
-        insights = get_substrate_insights(request.user["tenant_id"])
+        tid = request.user["tenant_id"]
+        # Multi-org scope: ?environment_id=N (validated against the caller's
+        # accessible envs) scopes the run-derived sections; default stays the
+        # tenant-wide view so single-org tenants render exactly as before.
+        db = next(get_db())
+        try:
+            envs = EnvironmentRepository(db).list_environments(
+                tid, request.user["id"], request.user["role"])
+        finally:
+            db.close()
+        env_names = {e.id: e.name for e in envs}
+        envs_for_picker = [{"id": e.id, "name": e.name} for e in envs]
+        env = request.args.get("environment_id", type=int)
+        if env is not None and env not in env_names:
+            env = None
+        insights = get_substrate_insights(tid, environment_id=env)
         return render_template("substrate_insights.html", **ctx(
-            active_page="substrate_insights", insights=insights))
+            active_page="substrate_insights", insights=insights,
+            envs_for_picker=envs_for_picker, active_env=env,
+            env_names=env_names))
 
     return _render()
 
@@ -2370,7 +2401,9 @@ def requirements_detail(req_id):
         req_key = _requirement_to_ref(req)["key"]
         s2 = read_requirement_claims(tid, req_key)
         # Per-test last-run chip: one batched S4 read (latest run per test),
-        # each chip linking to the run's evidence page (/runs/<run_id>).
+        # each chip linking to the run's evidence page (/runs/<run_id>). On a
+        # multi-org tenant the chip carries the run's env name — a sandbox pass
+        # must not read as a production pass.
         from primeqa.intelligence.s4_execution_console import latest_runs_by_test
         last_runs = latest_runs_by_test(
             tid, [c["test_id"] for c in s2.get("claims", [])])
@@ -2407,6 +2440,17 @@ def requirements_detail(req_id):
             "ready": bool(e.llm_connection_id and e.current_meta_version_id),
             "is_production": bool(e.is_production),
         } for e in envs]
+        # Env name on each last-run chip — rendered only on multi-org tenants
+        # (the template gates on multi_env), with a numeric fallback for runs
+        # in an env outside the caller's accessible set.
+        multi_env = len(envs_data) > 1
+        if multi_env:
+            _env_names = {e.id: e.name for e in envs}
+            for c in s2.get("claims", []):
+                lr = c.get("last_run")
+                if lr and lr.get("environment_id") is not None:
+                    lr["env_name"] = (_env_names.get(lr["environment_id"])
+                                      or f"env {lr['environment_id']}")
         approved_count = sum(
             1 for c in s2.get("claims", []) if c.get("status") == "approved")
 
@@ -2608,21 +2652,45 @@ def claims_list():
     list of the tenant's current S2 claims (the substrate replacement for the v1
     Test Library at /test-cases). Best-effort read via the bridge."""
     from primeqa.intelligence.s3_generation_console import list_claims
+    tid = request.user["tenant_id"]
     page = request.args.get("page", 1, type=int) or 1
     per_page = request.args.get("per_page", 20, type=int) or 20
     q = (request.args.get("q") or "").strip() or None
-    data = list_claims(request.user["tenant_id"], page=page, per_page=per_page, q=q)
-    _attach_requirement_summaries(request.user["tenant_id"], data.get("claims"))
+    # Multi-org filter: ?environment_id=N (validated against the caller's
+    # accessible envs) keeps claims with a run in that env and shows that
+    # env's latest run. Default stays the tenant-wide library.
+    db = next(get_db())
+    try:
+        envs = EnvironmentRepository(db).list_environments(
+            tid, request.user["id"], request.user["role"])
+    finally:
+        db.close()
+    env_names = {e.id: e.name for e in envs}
+    envs_for_picker = [{"id": e.id, "name": e.name} for e in envs]
+    env = request.args.get("environment_id", type=int)
+    if env is not None and env not in env_names:
+        env = None
+    data = list_claims(tid, page=page, per_page=per_page, q=q,
+                       environment_id=env)
+    _attach_requirement_summaries(tid, data.get("claims"))
     # D-232: mark quarantined rows for the list badge — one best-effort batch read
     # over the active ledger rows (a missing table degrades to no badges).
     from primeqa.intelligence import quarantine as _quar
     _q_ids = {r["test_id"] for r in _quar.list_quarantined(request.user["tenant_id"])}
     for _c in data.get("claims") or []:
         _c["quarantined"] = str(_c.get("test_id")) in _q_ids
+    # Env name on each row's last-run chip (multi-org tenants only).
+    if len(envs_for_picker) > 1:
+        for _c in data.get("claims") or []:
+            lr = _c.get("last_run")
+            if lr and lr.get("environment_id") is not None:
+                lr["env_name"] = (env_names.get(lr["environment_id"])
+                                  or f"env {lr['environment_id']}")
     # The inbox chip: how many drafts are waiting for approval (D-206).
     pending = list_claims(request.user["tenant_id"], page=1, per_page=1, status="draft")
     return render_template("claims/list.html", **ctx(
         active_page="test_library", data=data, q=q or "",
+        envs_for_picker=envs_for_picker, active_env=env,
         pending_total=pending.get("total", 0)))
 
 

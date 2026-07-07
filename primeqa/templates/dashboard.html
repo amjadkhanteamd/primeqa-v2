@@ -2,7 +2,25 @@
 {% block title %}Dashboard - Plimsol{% endblock %}
 {% block content %}
 <div class="space-y-6">
-    <h1 class="text-2xl font-bold text-gray-900">Dashboard</h1>
+    <div class="flex items-center justify-between gap-4 flex-wrap">
+        <h1 class="text-2xl font-bold text-gray-900">Dashboard</h1>
+        {# Multi-org scope picker: only rendered when the tenant has more than
+           one environment the caller can see — single-org tenants keep the
+           plain header. Scopes the run-derived numbers below; test-case counts
+           stay workspace-wide (tests are shared across orgs). #}
+        {% if envs_for_picker and envs_for_picker|length > 1 %}
+        <form method="GET" action="/" class="flex items-center gap-2 text-xs">
+            <label for="dash-env" class="text-gray-500">Org</label>
+            <select id="dash-env" name="environment_id" onchange="this.form.submit()"
+                    class="rounded-md border border-gray-300 px-2 py-1 text-xs">
+                <option value="">All environments</option>
+                {% for e in envs_for_picker %}
+                <option value="{{ e.id }}" {% if active_env == e.id %}selected{% endif %}>{{ e.name }}</option>
+                {% endfor %}
+            </select>
+        </form>
+        {% endif %}
+    </div>
 
     {% if user.role in ['admin', 'superadmin'] and not setup_complete %}
     <div class="rounded-lg bg-indigo-50 border border-indigo-200 p-4 flex items-center justify-between">
@@ -76,6 +94,9 @@
                         <th class="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase">Test</th>
                         <th class="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase">Result</th>
                         <th class="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase">Requirement</th>
+                        {% if envs_for_picker and envs_for_picker|length > 1 %}
+                        <th class="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase">Org</th>
+                        {% endif %}
                         <th class="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase">When</th>
                     </tr>
                 </thead>
@@ -96,11 +117,14 @@
                             </div>
                         </td>
                         <td class="px-6 py-4 text-sm text-gray-500 whitespace-nowrap">{{ run.requirement_key or '—' }}</td>
+                        {% if envs_for_picker and envs_for_picker|length > 1 %}
+                        <td class="px-6 py-4 text-sm text-gray-500 whitespace-nowrap">{{ env_names.get(run.environment_id) or 'env ' ~ run.environment_id }}</td>
+                        {% endif %}
                         <td class="px-6 py-4 text-sm text-gray-500 whitespace-nowrap" title="{{ run.finished_at }}">{{ run.finished_ago or (run.finished_at[:19] if run.finished_at else '—') }}</td>
                     </tr>
                     {% endfor %}
                     {% if not recent_runs %}
-                    <tr><td colspan="4" class="px-6 py-8 text-center text-sm text-gray-500">No runs yet</td></tr>
+                    <tr><td colspan="{{ 5 if envs_for_picker and envs_for_picker|length > 1 else 4 }}" class="px-6 py-8 text-center text-sm text-gray-500">No runs yet</td></tr>
                     {% endif %}
                 </tbody>
             </table>

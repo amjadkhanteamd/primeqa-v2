@@ -48,9 +48,11 @@
 {% endmacro %}
 
 
-{% macro render_search(base_url, current_search='', placeholder='Search...', extra_params='') %}
+{% macro render_search(base_url, current_search='', placeholder='Search...', extra_params='', hidden_params={}) %}
 <form method="GET" action="{{ base_url }}" class="flex items-center space-x-2">
-    {# preserve filter state across searches — parent builds hidden inputs if needed #}
+    {# preserve filter state across searches — hidden_params carries the
+       page's active facets (e.g. environment_id) through a search submit #}
+    {% for k, v in hidden_params.items() %}{% if v is not none and v != '' %}<input type="hidden" name="{{ k }}" value="{{ v }}">{% endif %}{% endfor %}
     <div class="relative flex-1 max-w-xs">
         <input type="text" name="q" value="{{ current_search }}" placeholder="{{ placeholder }}"
             class="block w-full rounded-md border border-gray-300 pl-9 pr-3 py-1.5 text-sm focus:border-indigo-500 focus:ring-indigo-500">

@@ -20,9 +20,26 @@
         verdicts produced by the substrate spine — additive and read-only.
       </p>
     </div>
-    {# UI Area 6 (D-174 6b): entry to /ask, this page's grounded-answering sibling
-       (same view_intelligence_report gate, so the link always resolves here). #}
-    <a href="/ask" class="flex-shrink-0 text-sm font-medium text-indigo-600 hover:underline whitespace-nowrap">Ask a question &rarr;</a>
+    <div class="flex items-center gap-4 flex-shrink-0">
+      {# Multi-org scope picker — rendered only when the caller can see more
+         than one environment. Scopes the run-derived sections (recent runs +
+         clusters); grounding stays workspace-wide until it carries an org. #}
+      {% if envs_for_picker and envs_for_picker|length > 1 %}
+      <form method="GET" action="/substrate-insights" class="flex items-center gap-2 text-xs">
+        <label for="ins-env" class="text-gray-500">Org</label>
+        <select id="ins-env" name="environment_id" onchange="this.form.submit()"
+                class="rounded-md border border-gray-300 px-2 py-1 text-xs">
+          <option value="">All environments</option>
+          {% for e in envs_for_picker %}
+          <option value="{{ e.id }}" {% if active_env == e.id %}selected{% endif %}>{{ e.name }}</option>
+          {% endfor %}
+        </select>
+      </form>
+      {% endif %}
+      {# UI Area 6 (D-174 6b): entry to /ask, this page's grounded-answering sibling
+         (same view_intelligence_report gate, so the link always resolves here). #}
+      <a href="/ask" class="text-sm font-medium text-indigo-600 hover:underline whitespace-nowrap">Ask a question &rarr;</a>
+    </div>
   </div>
 
   {% if not insights.available %}
@@ -52,6 +69,9 @@
               <th class="py-2 pr-4">Outcome</th>
               <th class="py-2 pr-4">Verdict</th>
               <th class="py-2 pr-4">Cause</th>
+              {% if envs_for_picker and envs_for_picker|length > 1 %}
+              <th class="py-2 pr-4">Org</th>
+              {% endif %}
               <th class="py-2 pr-4">Finished</th>
             </tr>
           </thead>
@@ -70,6 +90,9 @@
               <td class="py-2 pr-4 text-gray-500">
                 {% if it.cause %}{{ it.cause.cause_kind.replace('_', ' ') }}{% if it.cause.vr_name %} · <span class="font-mono text-xs">{{ it.cause.vr_name }}</span>{% endif %}{% else %}—{% endif %}
               </td>
+              {% if envs_for_picker and envs_for_picker|length > 1 %}
+              <td class="py-2 pr-4 text-gray-500 whitespace-nowrap">{{ env_names.get(it.environment_id) or 'env ' ~ it.environment_id }}</td>
+              {% endif %}
               <td class="py-2 pr-4 text-gray-500">{{ it.finished_at[:19] if it.finished_at else '' }}</td>
             </tr>
             {% endfor %}

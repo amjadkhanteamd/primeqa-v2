@@ -862,38 +862,46 @@ def requirement_run_health(tenant_id: int, keys) -> dict:
 
 # --- per-test latest run (the requirement detail's last-run chips) ------------
 
-def _latest_run_rows_by_test(conn, test_ids):
+def _latest_run_rows_by_test(conn, test_ids, environment_id=None):
     """Pure: the latest S4 run per claim test id, restricted to the passed ids.
     One row per test (DISTINCT ON … finished_at DESC → latest-wins). Ids compare
-    as text so callers pass the string test_ids the S2 read already carries."""
+    as text so callers pass the string test_ids the S2 read already carries.
+    ``environment_id`` restricts to one connected org's runs (None = any org,
+    the tenant-wide latest)."""
     from sqlalchemy import bindparam
     stmt = text(
         "SELECT DISTINCT ON (claim_test_id) "
         "  CAST(claim_test_id AS text) AS test_id, CAST(run_id AS text) AS run_id, "
-        "  outcome::text AS outcome, finished_at "
+        "  outcome::text AS outcome, finished_at, environment_id "
         "FROM s4_execution_runs "
         "WHERE CAST(claim_test_id AS text) IN :ids "
+        "AND (CAST(:env AS int) IS NULL OR environment_id = :env) "
         "ORDER BY claim_test_id, finished_at DESC"
     ).bindparams(bindparam("ids", expanding=True))
-    return conn.execute(stmt, {"ids": list(test_ids)}).mappings().all()
+    return conn.execute(stmt, {"ids": list(test_ids),
+                               "env": environment_id}).mappings().all()
 
 
-def latest_runs_by_test(tenant_id: int, test_ids) -> dict:
-    """Best-effort: ``{test_id: {run_id, outcome, finished_at, last_ago}}`` — the
-    latest run per test, batched (one query). Powers the requirement detail's
-    per-test last-run chip, each linking to the run's evidence page
-    (``/runs/<run_id>``). Never raises → ``{}`` (the page renders without chips)."""
+def latest_runs_by_test(tenant_id: int, test_ids, environment_id=None) -> dict:
+    """Best-effort: ``{test_id: {run_id, outcome, finished_at, last_ago,
+    environment_id}}`` — the latest run per test, batched (one query). Powers
+    the requirement detail's per-test last-run chip, each linking to the run's
+    evidence page (``/runs/<run_id>``). ``environment_id`` scopes the read to
+    one connected org; the payload always carries the run's env so multi-org
+    surfaces can label which org the chip's outcome came from. Never raises →
+    ``{}`` (the page renders without chips)."""
     ids = [str(t) for t in (test_ids or []) if t]
     if not ids:
         return {}
     try:
         from primeqa.semantic.connection import get_tenant_connection
         with get_tenant_connection(tenant_id) as conn:
-            rows = _latest_run_rows_by_test(conn, ids)
+            rows = _latest_run_rows_by_test(conn, ids, environment_id)
         return {r["test_id"]: {
             "run_id": r["run_id"], "outcome": r["outcome"],
             "finished_at": _iso(r["finished_at"]),
             "last_ago": time_ago(_iso(r["finished_at"])),
+            "environment_id": r["environment_id"],
         } for r in rows}
     except Exception as exc:
         log.warning("latest_runs_by_test unavailable for tenant %s: %s",
