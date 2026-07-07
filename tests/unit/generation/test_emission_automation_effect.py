@@ -67,10 +67,10 @@ def test_empty_trigger_fields_authors_todays_shallow_recipe():
     assert isinstance(create, CreateStep)
     # the padding-only create is EMPTY — nothing set on the subject
     assert create.field_values == {}
-    # empty tuple keeps the ORIGINAL triggering_action (the requirement excerpt,
-    # NOT the entry-condition rewrite) — fully locks the byte-identical claim
-    assert body.triggering_action.description == \
-        "when an Order is created the Flow stamps Status__c"
+    # D-327: the description narrates the trigger STRUCTURALLY — the
+    # requirement excerpt is provenance, never identity. Empty trigger_fields
+    # → the bare-create narration (no staged clause, no excerpt).
+    assert body.triggering_action.description == "creating a Order__c"
 
 
 def test_trigger_fields_set_the_entry_condition_on_the_create():
@@ -95,3 +95,39 @@ def test_trigger_fields_set_the_entry_condition_on_the_create():
     # the claim's triggering event names the entry condition (explainability)
     desc = b.asserted_truth.triggering_action.description
     assert "Order__c.Stage__c" in desc and "Order__c.Priority__c" in desc
+
+
+def test_excerpt_is_not_identity_bearing_same_intent_hashes_together():
+    # D-327: two intents that ground to the SAME automation effect (same
+    # subject, automation, effect, staged trigger) but carry DIFFERENT
+    # requirement-excerpt slices must produce identity-equal claims, so
+    # persistence dedup (SPEC §7.7) collapses them instead of minting
+    # duplicate tests (the req-302 f91fd866/45180120 pair).
+    from primeqa.test_representation.identity_hash import compute_identity_hash
+
+    shared = dict(
+        archetype="data_behavior", claim_kind="automation-effect-claim",
+        version_seq=7,
+        subject=_Endpoint(entity_id=uuid4(), entity_type="Object",
+                          external_id="Order__c"),
+        automation=_Endpoint(entity_id=uuid4(), entity_type="Flow",
+                             external_id="Stamp_Order_Status"),
+        effect_field=_Endpoint(entity_id=uuid4(), entity_type="Field",
+                               external_id="Order__c.Status__c"),
+        effect_value="Activated",
+        trigger_fields=(
+            (_Endpoint(entity_id=uuid4(), entity_type="Field",
+                       external_id="Order__c.Stage__c"), "Submitted"),
+        ),
+    )
+    a = author_emission(GroundedAutomationEffect(
+        requirement_excerpt="the Flow stamps Status on submitted orders",
+        **shared))
+    b = author_emission(GroundedAutomationEffect(
+        requirement_excerpt="Status: Activated, Assigned To: Ops",  # different slice
+        **shared))
+    ha = compute_identity_hash(a.archetype, a.claim_kind,
+                               a.asserted_truth, a.semantic_conditions)
+    hb = compute_identity_hash(b.archetype, b.claim_kind,
+                               b.asserted_truth, b.semantic_conditions)
+    assert ha == hb

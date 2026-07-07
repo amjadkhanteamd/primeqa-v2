@@ -1512,10 +1512,18 @@ def _author_state_transition(g: GroundedStateTransition) -> EmissionBundle:
     # a RELATED record, not the subject itself. The event description names
     # the trigger object (EventDescriptor stays prose; precise_trigger is
     # reserved, B-γ).
-    event_desc = g.requirement_excerpt
+    # D-327: the description narrates the trigger from STRUCTURE only — the
+    # requirement excerpt is provenance (it rides the intent/llm_calls), not
+    # identity. Same-meaning intents with different excerpt slices must hash
+    # together so persistence dedup (SPEC §7.7) collapses them.
     if g.trigger_object is not None:
         event_desc = (f"creating a {g.trigger_object.external_id} linked to "
-                      f"the subject — {g.requirement_excerpt}")
+                      f"the subject")
+    elif g.trigger_field is not None:
+        event_desc = (f"a data change setting "
+                      f"{g.trigger_field.external_id}={g.trigger_value!r}")
+    else:
+        event_desc = f"a data change on {object_api}"
     claim = StateTransitionClaimBody(
         subject=subject_ref,
         subject_fields=subject_fields,
@@ -1598,8 +1606,10 @@ def _author_automation_effect(g: GroundedAutomationEffect) -> EmissionBundle:
     automation_ref = IdentityBearingRef(
         entity_type=g.automation.entity_type, entity_id=g.automation.entity_id,
         version_seq=g.version_seq, external_id=g.automation.external_id)
+    # D-327: structural narration only — the requirement excerpt is
+    # provenance, not identity (see _author_state_transition).
     event = EventDescriptor(trigger_kind="data-mutation-trigger",
-                            description=g.requirement_excerpt)
+                            description=f"creating a {object_api}")
     target = LogicalRef(entity_type="Object", external_id=object_api)
     trigger_op = "create"
 
@@ -1635,17 +1645,17 @@ def _author_automation_effect(g: GroundedAutomationEffect) -> EmissionBundle:
         if update_fields:
             # The update IS the causal event — the description narrates the
             # phase (create-scoped vs update-scoped claims hash apart on it).
+            # D-327: staged clause only — the excerpt is provenance.
             trigger_op = "update"
             initial = f" with {gate}" if create_fields else ""
             sr_event = EventDescriptor(
                 trigger_kind="data-mutation-trigger",
                 description=(f"creating a {object_api}{initial} then updating "
-                             f"{upd_gate} — {g.requirement_excerpt}"))
+                             f"{upd_gate}"))
         elif create_fields:
             sr_event = EventDescriptor(
                 trigger_kind="data-mutation-trigger",
-                description=(f"creating a {object_api} with {gate} — "
-                             f"{g.requirement_excerpt}"))
+                description=f"creating a {object_api} with {gate}")
         claim = AutomationEffectClaimBody(
             automation=automation_ref,
             automation_primitive=g.automation_primitive,
@@ -1690,8 +1700,7 @@ def _author_automation_effect(g: GroundedAutomationEffect) -> EmissionBundle:
             gated = f" with {gate}"
             ps_event = EventDescriptor(
                 trigger_kind="data-mutation-trigger",
-                description=(f"creating a {object_api} with {gate} — "
-                             f"{g.requirement_excerpt}"))
+                description=f"creating a {object_api} with {gate}")
         field_ref = IdentityBearingRef(
             entity_type=g.effect_field.entity_type,
             entity_id=g.effect_field.entity_id,
@@ -1751,8 +1760,7 @@ def _author_automation_effect(g: GroundedAutomationEffect) -> EmissionBundle:
             gated = f" with {gate}"
             xo_event = EventDescriptor(
                 trigger_kind="data-mutation-trigger",
-                description=(f"creating a {object_api} with {gate} — "
-                             f"{g.requirement_excerpt}"))
+                description=f"creating a {object_api} with {gate}")
         if g.expected_absence:
             # D-307: the ABSENCE mirror — same staged create, same correlate
             # read, the assert INVERTS (no row may exist). The v2 body IS the
