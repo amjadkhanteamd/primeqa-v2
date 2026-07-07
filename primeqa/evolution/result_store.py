@@ -29,7 +29,7 @@ import uuid
 from dataclasses import dataclass
 from typing import Optional
 
-from sqlalchemy import Column, Integer, Text, case
+from sqlalchemy import Column, Integer, Text, case, tuple_
 from sqlalchemy.dialects.postgresql import JSONB, UUID
 
 from primeqa.db import Base
@@ -147,6 +147,58 @@ def read_grounding_validity(
         row = q.order_by(_OVERALL_SEVERITY,
                          S8GroundingValidity.connected_org_id).first()
     return _row_to_read(row) if row is not None else None
+
+
+def read_grounding_validity_bulk(
+    session, targets, connected_org_id=None,
+) -> dict:
+    """Batch read: one verdict per test for many tests in (at most) two
+    queries — the set-based form of the per-claim decision read.
+
+    ``targets`` is an iterable of ``(test_id, version_seq | None)``. Per-test
+    semantics mirror the singular reads exactly:
+
+    - ``version_seq`` given → :func:`read_grounding_validity` at that pin
+      (org-exact when ``connected_org_id`` is set, else WORST across orgs —
+      broken < drifted < intact, tie-broken by ``connected_org_id``).
+    - ``version_seq`` ``None`` → the LATEST verdict across the test's history
+      (max ``(version_seq, connected_org_id)``) — what
+      ``list_grounding_validity(...)[-1]`` returns for any test whose verdict
+      rows fit the list bound.
+
+    Returns ``{test_id (uuid): GroundingValidityRead}``; tests with no verdict
+    row are absent. Callers pass a bounded test set (a release's corpus)."""
+    org = (uuid.UUID(str(connected_org_id))
+           if connected_org_id is not None else None)
+    pinned, unpinned = [], []
+    for test_id, version_seq in targets:
+        tid = uuid.UUID(str(test_id))
+        if version_seq is not None:
+            pinned.append((tid, int(version_seq)))
+        else:
+            unpinned.append(tid)
+    out: dict = {}
+    if pinned:
+        q = (session.query(S8GroundingValidity)
+             .filter(tuple_(S8GroundingValidity.test_id,
+                            S8GroundingValidity.version_seq).in_(pinned)))
+        if org is not None:
+            q = q.filter(S8GroundingValidity.connected_org_id == org)
+        rows = q.order_by(S8GroundingValidity.test_id, _OVERALL_SEVERITY,
+                          S8GroundingValidity.connected_org_id).all()
+        for r in rows:                       # worst-first per test → first wins
+            out.setdefault(r.test_id, _row_to_read(r))
+    if unpinned:
+        q = (session.query(S8GroundingValidity)
+             .filter(S8GroundingValidity.test_id.in_(unpinned)))
+        if org is not None:
+            q = q.filter(S8GroundingValidity.connected_org_id == org)
+        rows = q.order_by(S8GroundingValidity.test_id,
+                          S8GroundingValidity.version_seq,
+                          S8GroundingValidity.connected_org_id).all()
+        for r in rows:                       # ascending per test → last wins
+            out[r.test_id] = _row_to_read(r)
+    return out
 
 
 def list_grounding_validity(

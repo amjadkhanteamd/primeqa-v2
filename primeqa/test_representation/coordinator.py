@@ -1114,6 +1114,37 @@ class SemanticTransactionCoordinator:
             return None
         return self._hydrate_claim_row(row)
 
+    def get_latest_claims(
+        self,
+        session: Session,
+        test_ids: Sequence[UUID],
+    ) -> dict[UUID, "ClaimRead"]:
+        """Batch form of :meth:`get_latest_claim` — one query for
+        many tests.
+
+        Returns ``{test_id: ClaimRead}`` for every given test that
+        has a current (``valid_to IS NULL``) version; tests with no
+        row are simply absent. Same per-test semantics as the
+        singular read (status-independent; first row wins should
+        the one-NULL-per-test_id invariant be temporarily
+        violated per D-057).
+        """
+        if not test_ids:
+            return {}
+        rows = (
+            session.query(TestClaim)
+            .filter(
+                TestClaim.test_id.in_(list(test_ids)),
+                TestClaim.valid_to.is_(None),
+            )
+            .all()
+        )
+        out: dict[UUID, ClaimRead] = {}
+        for row in rows:
+            if row.test_id not in out:
+                out[row.test_id] = self._hydrate_claim_row(row)
+        return out
+
     def get_claim_version(
         self,
         session: Session,
@@ -1353,6 +1384,58 @@ class SemanticTransactionCoordinator:
             for row in rows
         ]
 
+    def list_tests_by_requirements(
+        self,
+        session: Session,
+        *,
+        external_system: str,
+        external_keys: Sequence[str],
+        link_kind: Optional[
+            Union[
+                Literal["generated_from", "verifies", "related_to"],
+                Sequence[str],
+            ]
+        ] = None,
+    ) -> dict[str, list[RequirementMatch]]:
+        """Batch form of :meth:`list_tests_by_requirement` — one
+        query for many external keys.
+
+        Returns ``{external_key: [RequirementMatch, ...]}`` with
+        each key's list ordered exactly as the singular read
+        (``(test_id, link_kind)`` ascending). Keys with no links
+        are absent from the dict.
+        """
+        if not external_keys:
+            return {}
+        query = session.query(TestRequirementLink).filter(
+            TestRequirementLink.external_system == external_system,
+            TestRequirementLink.external_key.in_(list(external_keys)),
+        )
+        if link_kind is not None:
+            kinds = (
+                (link_kind,) if isinstance(link_kind, str)
+                else tuple(link_kind)
+            )
+            query = query.filter(
+                TestRequirementLink.link_kind.in_(kinds),
+            )
+        rows = query.order_by(
+            TestRequirementLink.external_key,
+            TestRequirementLink.test_id,
+            TestRequirementLink.link_kind,
+        ).all()
+        out: dict[str, list[RequirementMatch]] = {}
+        for row in rows:
+            out.setdefault(row.external_key, []).append(
+                RequirementMatch(
+                    test_id=row.test_id,
+                    link_kind=row.link_kind,
+                    external_version=row.external_version,
+                    linked_at=row.linked_at,
+                )
+            )
+        return out
+
     # ------------------------------------------------------------------
     # Resolution-class operations (Track D-γ.2)
     #
@@ -1404,6 +1487,34 @@ class SemanticTransactionCoordinator:
         if row is None:
             return None
         return self._hydrate_claim_row(row)
+
+    def get_current_approved_claims(
+        self,
+        session: Session,
+        test_ids: Sequence[UUID],
+    ) -> dict[UUID, "ClaimRead"]:
+        """Batch form of :meth:`get_current_approved_claim` — one
+        query for many tests.
+
+        Returns ``{test_id: ClaimRead}`` mapping each given test to
+        its highest-``version_seq`` ``approved`` row; tests with no
+        approved version in their history are absent. Postgres
+        ``DISTINCT ON`` keyed by ``test_id``, newest approved
+        version first — the exact singular resolution, set-based.
+        """
+        if not test_ids:
+            return {}
+        rows = (
+            session.query(TestClaim)
+            .filter(
+                TestClaim.test_id.in_(list(test_ids)),
+                TestClaim.status == "approved",
+            )
+            .distinct(TestClaim.test_id)
+            .order_by(TestClaim.test_id, TestClaim.version_seq.desc())
+            .all()
+        )
+        return {row.test_id: self._hydrate_claim_row(row) for row in rows}
 
     def get_test_runtime_status(
         self,

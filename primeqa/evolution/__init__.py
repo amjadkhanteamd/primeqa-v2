@@ -79,6 +79,7 @@ from primeqa.evolution.result_store import (
     list_grounding_validity,
     persist_grounding_validity,
     read_grounding_validity,
+    read_grounding_validity_bulk,
 )
 from primeqa.evolution.s1_reader import S8S1Reader
 
@@ -106,6 +107,7 @@ __all__ = [
     # recorded-verdict store + read API (D-142)
     "persist_grounding_validity",
     "read_grounding_validity",
+    "read_grounding_validity_bulk",
     "list_grounding_validity",
     "GroundingValidityRead",
     "S8GroundingValidity",

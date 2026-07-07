@@ -33,8 +33,11 @@ log = logging.getLogger(__name__)
 # The recent COUNTED runs, newest-first: S4 as the base (true recency;
 # interpret-failed runs still show, verdict NULL — the _CLAIM_RUNS_SQL
 # discipline) + the D-198 version filter. Row 0 is the counted latest; the
-# window (5) feeds the D-200 flakiness detection. :seq is the approved
-# version_seq; pass NULL to disable the filter (unapproved claim).
+# window (5) feeds the D-200 flakiness detection. One query for the WHOLE
+# corpus (D-331 follow-up): per-claim round trips made the assembly
+# O(claims × RTT) against a remote DB — the window is a per-claim
+# ROW_NUMBER partition, with each claim's approved version_seq riding in
+# via unnest (NULL seq disables the filter — unapproved claim).
 _FLAKE_WINDOW = 5
 
 # D-300 review-fix B1: the raw window is WIDER than the flake window because a
@@ -42,18 +45,24 @@ _FLAKE_WINDOW = 5
 # 25 raw rows cover 5 logical entries even at a 5-probe batch size.
 _RAW_RUN_WINDOW = 25
 
-_COUNTED_RUNS_SQL = (
-    "SELECT CAST(r.run_id AS text) AS run_id, r.outcome::text AS outcome, "
+_COUNTED_RUNS_BULK_SQL = (
+    "SELECT tid, run_id, outcome, finished_at, claim_version_seq, "
+    "batch_id, verdict, detail FROM ("
+    "SELECT CAST(r.claim_test_id AS text) AS tid, "
+    "CAST(r.run_id AS text) AS run_id, r.outcome::text AS outcome, "
     "r.finished_at, r.claim_version_seq, "
     "CAST(r.batch_id AS text) AS batch_id, "
-    "i.verdict::text AS verdict, i.detail AS detail "
+    "i.verdict::text AS verdict, i.detail AS detail, "
+    "ROW_NUMBER() OVER (PARTITION BY r.claim_test_id "
+    "ORDER BY r.finished_at DESC) AS rn "
     "FROM s4_execution_runs r "
     "LEFT JOIN s6_interpretations i ON i.run_id = r.run_id "
-    "WHERE r.claim_test_id = CAST(:tid AS uuid) "
-    "AND (CAST(:env AS int) IS NULL OR r.environment_id = :env) "
-    "AND (CAST(:seq AS int) IS NULL "
-    "     OR r.claim_version_seq IS NULL OR r.claim_version_seq = :seq) "
-    f"ORDER BY r.finished_at DESC LIMIT {_RAW_RUN_WINDOW}")
+    "JOIN unnest(CAST(:tids AS uuid[]), CAST(:seqs AS int[])) "
+    "AS t(tid, seq) ON r.claim_test_id = t.tid "
+    "WHERE (CAST(:env AS int) IS NULL OR r.environment_id = :env) "
+    "AND (t.seq IS NULL "
+    "     OR r.claim_version_seq IS NULL OR r.claim_version_seq = t.seq) "
+    f") w WHERE rn <= {_RAW_RUN_WINDOW} ORDER BY tid, rn")
 
 
 def _collapse_batches(rows) -> list:
@@ -203,13 +212,17 @@ def _claim_quarantined(c) -> bool:
 
 # Is there a NEWER run of a DIFFERENT (non-NULL) version than the approved one?
 # (Superseded evidence newer than what we counted — the decision warns on it.)
-_NEWER_SUPERSEDED_SQL = (
-    "SELECT 1 FROM s4_execution_runs "
-    "WHERE claim_test_id = CAST(:tid AS uuid) "
-    "AND (CAST(:env AS int) IS NULL OR environment_id = :env) "
-    "AND claim_version_seq IS NOT NULL AND claim_version_seq != :seq "
-    "AND finished_at > COALESCE(CAST(:after AS timestamptz), '-infinity') "
-    "LIMIT 1")
+# One query for the corpus: each claim's (approved seq, counted-latest cutoff)
+# rides in via unnest; the result is the set of claim ids that have one.
+_NEWER_SUPERSEDED_BULK_SQL = (
+    "SELECT DISTINCT CAST(r.claim_test_id AS text) AS tid "
+    "FROM s4_execution_runs r "
+    "JOIN unnest(CAST(:tids AS uuid[]), CAST(:seqs AS int[]), "
+    "CAST(:cutoffs AS timestamptz[])) AS t(tid, seq, cutoff) "
+    "ON r.claim_test_id = t.tid "
+    "WHERE (CAST(:env AS int) IS NULL OR r.environment_id = :env) "
+    "AND r.claim_version_seq IS NOT NULL AND r.claim_version_seq != t.seq "
+    "AND r.finished_at > COALESCE(t.cutoff, '-infinity')")
 
 
 def _current_s1_seq(session, connected_org_id=None):
@@ -228,36 +241,24 @@ def _current_s1_seq(session, connected_org_id=None):
         return None
 
 
-def _claim_grounding(session, coord, test_id, approved_seq,
-                     connected_org_id=None):
-    """Grounding for the version the release ships: at the approved seq, else the
-    latest verdict when no approved version exists (the D-172 idiom).
-    ``connected_org_id`` (the per-env decision path) reads THAT org's verdict;
-    ``None`` reads worst-of across orgs (identical on a single-org store)."""
-    from primeqa.evolution import list_grounding_validity, read_grounding_validity
-    if approved_seq is not None:
-        return read_grounding_validity(session, test_id, approved_seq,
-                                       connected_org_id=connected_org_id)
-    rows = list_grounding_validity(session, test_id=test_id,
-                                   connected_org_id=connected_org_id)
-    return rows[-1] if rows else None
-
-
 def _claim_test_ids(session, external_keys):
     """The release's requirement keys → (ordered distinct claim test_ids,
     ``{test_id: {requirement keys}}``) via the COVERAGE_LINK_KINDS links
-    (``generated_from`` + curated ``verifies``)."""
+    (``generated_from`` + curated ``verifies``). ONE link query for all keys
+    (the batched coordinator read); iteration order — keys as given, matches
+    by ``(test_id, link_kind)`` within each — is the per-key read's exactly."""
     from primeqa.test_representation.coordinator import (
         COVERAGE_LINK_KINDS,
         SemanticTransactionCoordinator,
     )
     coord = SemanticTransactionCoordinator()
+    matches = coord.list_tests_by_requirements(
+        session, external_system="jira", external_keys=list(external_keys),
+        link_kind=COVERAGE_LINK_KINDS)
     test_ids, seen = [], set()
     keys_by_tid: dict[str, set] = {}               # D-237: claim → its requirement key(s)
     for key in external_keys:
-        for m in coord.list_tests_by_requirement(
-                session, external_system="jira", external_key=key,
-                link_kind=COVERAGE_LINK_KINDS):
+        for m in matches.get(key, ()):
             sid = str(m.test_id)
             keys_by_tid.setdefault(sid, set()).add(key)   # record even when shared
             if sid not in seen:                    # a claim shared by 2 reqs
@@ -304,8 +305,15 @@ def _assemble_claim_evidence(session, external_keys, *, tenant_id=None,
     staleness to the org's own latest S1 version. Both ``None`` = the exact
     single-org read this function always did. ``manual_q`` accepts the
     quarantine map precomputed by a per-env loop (one read, not one per env).
+
+    Assembly is SET-BASED: one query per evidence facet across the whole
+    corpus (links → latest/approved versions → grounding → run windows →
+    superseded check), never one per claim — the old per-claim loop was
+    O(claims × round-trips), which a remote DB's RTT turned into minutes.
     """
     test_ids, keys_by_tid = _claim_test_ids(session, external_keys)
+    if not test_ids:
+        return []
     from primeqa.test_representation.coordinator import (
         SemanticTransactionCoordinator,
     )
@@ -317,19 +325,45 @@ def _assemble_claim_evidence(session, external_keys, *, tenant_id=None,
     if manual_q is None:
         from primeqa.intelligence import quarantine as _q
         manual_q = _q.manual_states(tenant_id) if tenant_id is not None else {}
-    out = []
-    for tid in test_ids:
-        # D-219: a deprecated claim is RETIRED from the corpus — its stale
-        # run evidence must not grade the release (D-ε-1 deprecation is the
-        # human's "this test no longer applies" signal).
-        latest = coord.get_latest_claim(session, tid)
-        if latest is not None and latest.status == "deprecated":
-            continue
-        approved = coord.get_current_approved_claim(session, tid)
-        approved_seq = approved.version_seq if approved is not None else None
 
-        gv = _claim_grounding(session, coord, tid, approved_seq,
-                              connected_org_id=connected_org_id)
+    # D-219: a deprecated claim is RETIRED from the corpus — its stale
+    # run evidence must not grade the release (D-ε-1 deprecation is the
+    # human's "this test no longer applies" signal).
+    latest_by_tid = coord.get_latest_claims(session, test_ids)
+    live_ids = [tid for tid in test_ids
+                if getattr(latest_by_tid.get(tid), "status", None)
+                != "deprecated"]
+    if not live_ids:
+        return []
+    approved_by_tid = coord.get_current_approved_claims(session, live_ids)
+    seq_by_tid = {tid: a.version_seq for tid, a in approved_by_tid.items()}
+
+    # Grounding for the version the release ships: at the approved seq, else
+    # the latest verdict when no approved version exists (the D-172 idiom).
+    # ``connected_org_id`` reads THAT org's verdict; ``None`` reads worst-of
+    # across orgs (identical on a single-org store).
+    from primeqa.evolution import read_grounding_validity_bulk
+    gv_by_tid = read_grounding_validity_bulk(
+        session, [(tid, seq_by_tid.get(tid)) for tid in live_ids],
+        connected_org_id=connected_org_id)
+
+    run_rows = session.execute(
+        text(_COUNTED_RUNS_BULK_SQL),
+        {"tids": [str(t) for t in live_ids],
+         "seqs": [seq_by_tid.get(t) for t in live_ids],
+         "env": environment_id}).mappings().all()
+    raw_by_tid: dict[str, list] = {}
+    for r in run_rows:                      # newest-first within each claim
+        raw_by_tid.setdefault(r["tid"], []).append(r)
+
+    out = []
+    sup_tids, sup_seqs, sup_cutoffs = [], [], []
+    for tid in live_ids:
+        sid = str(tid)
+        approved = approved_by_tid.get(tid)
+        approved_seq = seq_by_tid.get(tid)
+
+        gv = gv_by_tid.get(tid)
         grounding = None
         if gv is not None:
             stale = (gv.evaluated_at_version_seq < current_seq
@@ -337,13 +371,9 @@ def _assemble_claim_evidence(session, external_keys, *, tenant_id=None,
             grounding = {"overall": gv.overall, "stale": stale,
                          "evaluated_at_version_seq": gv.evaluated_at_version_seq}
 
-        raw_rows = session.execute(text(_COUNTED_RUNS_SQL),
-                                   {"tid": str(tid), "seq": approved_seq,
-                                    "env": environment_id}
-                                   ).mappings().all()
         # D-300 review-fix B1: batches collapse to ONE logical run each (the
         # single path passes through byte-identical — batch_id NULL).
-        rows = _collapse_batches(raw_rows)
+        rows = _collapse_batches(raw_by_tid.get(sid, []))
         row = rows[0] if rows else None
         latest_run = None
         if row is not None:
@@ -367,7 +397,7 @@ def _assemble_claim_evidence(session, external_keys, *, tenant_id=None,
         # single path exactly as before; the kind/test_id/session are inert on that
         # path. The wiring is dead until 4f.2 writes the first 'bva'.
         verified = _claim_verified(
-            {"latest_run": latest_run, "test_id": str(tid),
+            {"latest_run": latest_run, "test_id": sid,
              "strategy_kind": getattr(approved, "strategy_kind", None)},
             session=session)
         if latest_run is not None and not verified:
@@ -377,27 +407,33 @@ def _assemble_claim_evidence(session, external_keys, *, tenant_id=None,
         recent_outcomes = [r["outcome"] for r in rows]
         flaky = _is_flaky(recent_outcomes)
 
-        superseded_newer = False
         if approved_seq is not None:
-            superseded_newer = session.execute(
-                text(_NEWER_SUPERSEDED_SQL),
-                {"tid": str(tid), "seq": approved_seq, "env": environment_id,
-                 "after": row["finished_at"] if row is not None else None},
-            ).first() is not None
+            sup_tids.append(sid)
+            sup_seqs.append(approved_seq)
+            sup_cutoffs.append(row["finished_at"] if row is not None else None)
 
         out.append({
-            "test_id": str(tid),
-            "external_keys": sorted(keys_by_tid.get(str(tid), ())),  # D-237
+            "test_id": sid,
+            "external_keys": sorted(keys_by_tid.get(sid, ())),  # D-237
             "approved_seq": approved_seq,
             "grounding": grounding,
             "latest_run": latest_run,
             "verified": verified,                          # D-280: the decided good state
-            "superseded_newer_run": superseded_newer,
+            "superseded_newer_run": False,                 # set below, one query
             "never_run": latest_run is None,
             "flaky": flaky,
             "recent_outcomes": recent_outcomes,
-            "manual_quarantine": manual_q.get(str(tid)),   # D-232: pinned|lifted|None
+            "manual_quarantine": manual_q.get(sid),        # D-232: pinned|lifted|None
         })
+
+    if sup_tids:
+        hit = {r[0] for r in session.execute(
+            text(_NEWER_SUPERSEDED_BULK_SQL),
+            {"tids": sup_tids, "seqs": sup_seqs, "cutoffs": sup_cutoffs,
+             "env": environment_id}).all()}
+        for c in out:
+            if c["test_id"] in hit:
+                c["superseded_newer_run"] = True
     return out
 
 
