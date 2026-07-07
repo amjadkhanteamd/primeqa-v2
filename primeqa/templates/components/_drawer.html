@@ -13,7 +13,12 @@
 {% macro drawer_shell(id, label='Details', width='max-w-xl') %}
 <div id="{{ id }}" class="hidden fixed inset-0 z-40" role="dialog" aria-modal="true"
      aria-label="{{ label }}" data-drawer>
-  <div class="absolute inset-0 bg-gray-900 bg-opacity-40" data-drawer-close></div>
+  {# The scrim is theme-INDEPENDENT on purpose: the Plimsol dark reskin remaps
+     the gray ramp (gray-900 → near-white) and the remapped hex vars ignore
+     bg-opacity-*, so a Tailwind gray here renders as an opaque light sheet
+     that hides the page. A literal rgba stays a translucent dark scrim in
+     both themes. #}
+  <div class="absolute inset-0" style="background-color: rgba(8, 10, 14, 0.55);" data-drawer-close></div>
   <div class="absolute inset-y-0 right-0 w-full {{ width }} bg-white shadow-xl
               flex flex-col transform transition-transform duration-200
               translate-x-full" data-drawer-panel>
