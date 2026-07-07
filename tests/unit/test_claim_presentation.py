@@ -699,3 +699,17 @@ def test_step_plain_dejargons_system_sobject_read():
     # a custom sobject resolves through the label map
     assert sp({"kind": "read", "sobject": "Case_SLA__c", "row_count": 2},
               {"Case_SLA__c": "Case SLA"}) == "Read 2 Case SLA rows"
+
+
+def test_cross_field_exceeds_condition_renders_both_fields():
+    # D-330: the v2 cross-field clause — "when Loan Amount exceeds Property Value"
+    labels = {"Opportunity.Loan_Amount__c": "Loan Amount",
+              "Opportunity.Property_Value__c": "Property Value"}
+    body = {"target": {"external_id": "Opportunity"}, "operation": "modify_record"}
+    conds = _conds({
+        "subject": {"external_id": "Opportunity.Loan_Amount__c"},
+        "predicate": "exceeds", "value": None,
+        "compared_to": {"external_id": "Opportunity.Property_Value__c"}})
+    assert claim_title("prohibition-claim", body, labels,
+                       semantic_conditions=conds) == \
+        "Rejects editing records on Opportunity when Loan Amount exceeds Property Value"

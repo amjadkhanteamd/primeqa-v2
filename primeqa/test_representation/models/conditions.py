@@ -100,6 +100,82 @@ class Condition(BaseModel):
 
 
 # ---------------------------------------------------------------------------
+# ConditionV2 — the cross-field comparison form (D-330)
+# ---------------------------------------------------------------------------
+
+# v2 predicates whose right-hand side is ANOTHER FIELD (``compared_to``),
+# not a literal ``value``.
+_FIELD_COMPARISON_PREDICATES = {"exceeds"}
+
+
+class ConditionV2(BaseModel):
+    """A v2 semantic-conditions clause — v1's taxonomy plus the
+    CROSS-FIELD comparison form (D-330): ``exceeds`` asserts the
+    subject field's value is greater than ANOTHER field's value
+    ("Loan Amount exceeds Property Value"), carried as
+    ``compared_to`` (a pinned ref, walkable for coverage per
+    D-058 §5.4) instead of a literal ``value``.
+
+    Coupling (model-validated):
+      - value-bearing predicates: ``value`` required, ``compared_to``
+        forbidden (v1 semantics unchanged).
+      - value-free predicates: both forbidden.
+      - field-comparison predicates (``exceeds``): ``compared_to``
+        required, ``value`` forbidden.
+    """
+
+    model_config = ConfigDict(extra="forbid", frozen=True)
+
+    subject: IdentityBearingRef
+    predicate: Literal[
+        "equals",
+        "not_equals",
+        "in_set",
+        "matches_pattern",
+        "is_null",
+        "is_not_null",
+        "exceeds",
+    ]
+    value: Optional[Any] = None
+    compared_to: Optional[IdentityBearingRef] = None
+    """The right-hand FIELD of a field-comparison predicate. Pinned
+    per D-058 §5.4 — coverage extraction walks this ref too."""
+
+    @model_validator(mode="after")
+    def _check_value_predicate_coupling(self) -> "ConditionV2":
+        if self.predicate in _FIELD_COMPARISON_PREDICATES:
+            if self.compared_to is None:
+                raise ValueError(
+                    f"predicate {self.predicate!r} requires "
+                    f"``compared_to``"
+                )
+            if self.value is not None:
+                raise ValueError(
+                    f"predicate {self.predicate!r} forbids a "
+                    f"``value``; got {self.value!r}"
+                )
+            return self
+        if self.compared_to is not None:
+            raise ValueError(
+                f"predicate {self.predicate!r} forbids "
+                f"``compared_to``"
+            )
+        if self.predicate in _VALUE_BEARING_PREDICATES:
+            if self.value is None:
+                raise ValueError(
+                    f"predicate {self.predicate!r} requires a "
+                    f"non-None ``value``"
+                )
+        elif self.predicate in _VALUE_FREE_PREDICATES:
+            if self.value is not None:
+                raise ValueError(
+                    f"predicate {self.predicate!r} forbids a "
+                    f"``value``; got {self.value!r}"
+                )
+        return self
+
+
+# ---------------------------------------------------------------------------
 # SemanticConditionsBody
 # ---------------------------------------------------------------------------
 
@@ -131,3 +207,28 @@ class SemanticConditionsBody(BodyBase):
     unconditionally". Marked :class:`ArraySemantics.SET` per D-059
     §6.3.4: AND-composition is commutative; order is incidental on
     the wire and canonicalization sorts for hashing."""
+
+
+@register_body("conditions", 2)
+class SemanticConditionsBodyV2(BodyBase):
+    """The conditions-layer body shape, v2 (D-330) — same envelope
+    as v1 but the clauses are :class:`ConditionV2` (adds the
+    cross-field ``exceeds`` predicate + ``compared_to`` ref).
+
+    Why a new version, not a v1 field (the D-306.1 precedent):
+    canonicalization includes every model field (None → null), so
+    adding ``compared_to`` to v1's ``Condition`` would re-key every
+    existing claim's conditions hash (dedup misses, duplicate
+    claims). Claims whose clauses all fit v1 keep authoring v1
+    (byte-identical); only a claim carrying a cross-field clause
+    authors v2.
+    """
+
+    model_config = ConfigDict(extra="forbid", frozen=False)
+
+    body_schema_version: Literal[2] = 2
+    kind: Literal["conditions"] = "conditions"
+
+    conditions: Annotated[list[ConditionV2], ArraySemantics.SET] = []
+    """Implicitly AND-composed clauses — v1 semantics, v2 clause
+    shape."""

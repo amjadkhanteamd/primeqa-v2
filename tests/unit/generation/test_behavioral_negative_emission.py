@@ -567,3 +567,69 @@ def test_flag_on_non_threshold_shape_does_not_stamp():
     on = author_emission(g, enable_bva_boundaries=True)
     assert on.strategy_kind is None and on.boundary_recipes == ()
     assert on == author_emission(g)                             # fully byte-identical
+
+
+# --- D-330: the cross-field prohibition (req-302 AC2) -------------------------
+
+_VR_LOAN_EXCEEDS = (
+    "AND(NOT(ISBLANK(Loan_Amount__c)), NOT(ISBLANK(Property_Value__c)), "
+    "Loan_Amount__c > Property_Value__c)"
+)
+
+
+def test_cross_field_condition_authors_v2_body_and_verified_update_reject():
+    from primeqa.generation.emission import _GroundedCondition
+    from primeqa.test_representation.models.conditions import (
+        SemanticConditionsBodyV2,
+    )
+    loan = _Endpoint(entity_id=uuid4(), entity_type="Field",
+                     external_id="Opportunity.Loan_Amount__c")
+    prop = _Endpoint(entity_id=uuid4(), entity_type="Field",
+                     external_id="Opportunity.Property_Value__c")
+    meta = {"Loan_Amount__c": {"field_type": "currency"},
+            "Property_Value__c": {"field_type": "currency"}}
+    g = GroundedNegative(
+        archetype="data_behavior", claim_kind="prohibition-claim",
+        operation_hint="modify_record", version_seq=7,
+        subject=_Endpoint(entity_id=uuid4(), entity_type="Object",
+                          external_id="Opportunity"),
+        requirement_excerpt="Loan Amount must not exceed Property Value.",
+        vr_formulas=(_VR_LOAN_EXCEEDS,),
+        conditions=(_GroundedCondition(field=loan, predicate="exceeds",
+                                       compared_to=prop),),
+        field_metadata=meta)
+    b = author_emission(g)
+    # the cross-field clause rides the v2 conditions body (v1 claims never re-key)
+    assert isinstance(b.semantic_conditions, SemanticConditionsBodyV2)
+    c = b.semantic_conditions.conditions[0]
+    assert c.predicate == "exceeds"
+    assert c.compared_to.external_id == "Opportunity.Property_Value__c"
+    # a verified Layer-2 behavioural reject — the D-296 update pair: a
+    # non-violating setup create, then the ordered violating update
+    assert not b.caveat_required
+    steps = b.observation_realization.steps
+    ids = [s.step_id for s in steps]
+    assert "update-violating" in ids
+    upd = next(s for s in steps if s.step_id == "update-violating")
+    ch = upd.field_changes
+    assert ch["Opportunity.Loan_Amount__c"] > ch["Opportunity.Property_Value__c"]
+
+
+def test_v1_only_conditions_still_author_v1_body():
+    from primeqa.generation.emission import _GroundedCondition
+    from primeqa.test_representation.models.conditions import (
+        SemanticConditionsBody,
+    )
+    lt = _Endpoint(entity_id=uuid4(), entity_type="Field",
+                   external_id="Opportunity.Loan_Type__c")
+    g = _grounded(formulas=("Amount > 10000",), external_id="Opportunity")
+    g = GroundedNegative(
+        archetype=g.archetype, claim_kind=g.claim_kind,
+        operation_hint=g.operation_hint, version_seq=g.version_seq,
+        subject=g.subject, requirement_excerpt=g.requirement_excerpt,
+        vr_formulas=g.vr_formulas,
+        conditions=(_GroundedCondition(field=lt, predicate="equals",
+                                       value="Home"),))
+    b = author_emission(g)
+    assert isinstance(b.semantic_conditions, SemanticConditionsBody)
+    assert b.semantic_conditions.body_schema_version == 1

@@ -159,6 +159,9 @@ def phase_for_reason(reason: str) -> Optional[str]:
 # grounding rather than crashing emission.
 _CONDITION_VALUE_FREE = {"is_null", "is_not_null"}
 _CONDITION_VALUE_BEARING = {"equals", "not_equals", "in_set", "matches_pattern"}
+# D-330: cross-field comparison predicates — the right-hand side is ANOTHER
+# field (clause key ``compared_to``), never a literal value.
+_CONDITION_FIELD_COMPARISON = {"exceeds"}
 
 
 def _ground_rejection_conditions(proposed, neighborhood: list, version_seq: int):
@@ -166,18 +169,27 @@ def _ground_rejection_conditions(proposed, neighborhood: list, version_seq: int)
     Option A — the business STATE under which the rejection is asserted). A clause
     is ``{field: "Object.Field", predicate, value}``; its field must BELONG_TO the
     subject (verified in the scoped neighborhood) and its predicate/value must
-    satisfy the S2 ``Condition`` coupling. Returns ``(grounded, invalid)`` —
-    ``invalid`` is a list of human reasons; a non-empty list means the caller
-    refuses (invent-nothing). Empty ``proposed`` -> ``([], [])``: the dormant
-    default, byte-identical to the pre-D-293 condition-free prohibition."""
+    satisfy the S2 ``Condition`` coupling. D-330: a CROSS-FIELD clause is
+    ``{field, predicate: "exceeds", compared_to: "Object.OtherField"}`` — both
+    fields must BELONG_TO the subject; ``value`` is forbidden. Returns
+    ``(grounded, invalid)`` — ``invalid`` is a list of human reasons; a non-empty
+    list means the caller refuses (invent-nothing). Empty ``proposed`` ->
+    ``([], [])``: the dormant default, byte-identical to the pre-D-293
+    condition-free prohibition."""
     fields_by_name = {
         r.entity.sf_api_name: r.entity for r in neighborhood
         if r.edge_type == EDGE_BELONGS and r.entity.entity_type == "Field"}
+
+    def _endpoint(ent):
+        return _Endpoint(entity_id=ent.id, entity_type=ent.entity_type,
+                         external_id=ent.sf_api_name or str(ent.id))
+
     grounded: list = []
     invalid: list[str] = []
     for clause in (proposed or []):
         c = clause or {}
         fld, predicate, value = c.get("field"), c.get("predicate"), c.get("value")
+        compared_to = c.get("compared_to")
         # D-304.1 (review S1): the 7th hint->claim ingress — decimal clause
         # values coerce like every other identity-bearing hint; element-wise
         # for in_set lists.
@@ -189,6 +201,21 @@ def _ground_rejection_conditions(proposed, neighborhood: list, version_seq: int)
         if ent is None:
             invalid.append(f"field {fld!r} does not BELONG_TO the subject")
             continue
+        if predicate in _CONDITION_FIELD_COMPARISON:
+            # D-330: the cross-field form — compared_to required, value forbidden.
+            if value is not None:
+                invalid.append(f"predicate {predicate!r} forbids a value"); continue
+            other = fields_by_name.get(compared_to)
+            if other is None:
+                invalid.append(
+                    f"compared_to field {compared_to!r} does not BELONG_TO "
+                    f"the subject"); continue
+            grounded.append(_GroundedCondition(
+                field=_endpoint(ent), predicate=predicate, value=None,
+                compared_to=_endpoint(other)))
+            continue
+        if compared_to is not None:
+            invalid.append(f"predicate {predicate!r} forbids compared_to"); continue
         if predicate in _CONDITION_VALUE_FREE:
             if value is not None:
                 invalid.append(f"predicate {predicate!r} forbids a value"); continue
@@ -198,9 +225,7 @@ def _ground_rejection_conditions(proposed, neighborhood: list, version_seq: int)
         else:
             invalid.append(f"predicate {predicate!r} not in the condition taxonomy"); continue
         grounded.append(_GroundedCondition(
-            field=_Endpoint(entity_id=ent.id, entity_type=ent.entity_type,
-                            external_id=ent.sf_api_name or str(ent.id)),
-            predicate=predicate, value=value))
+            field=_endpoint(ent), predicate=predicate, value=value))
     return grounded, invalid
 
 
@@ -331,11 +356,31 @@ def _claim_condition_fields(grounded_conds) -> frozenset[str]:
     conditions reference (D-295 — the LEFT side of the VR field-overlap match).
     ``_GroundedCondition.field.external_id`` is object-qualified (``Object.Field``,
     ``governance_core.py`` grounding); the bare tail (``rsplit('.',1)[-1]``) is what
-    the VR formula parser speaks, so both sides of the overlap are normalized alike."""
-    return frozenset(
-        gc.field.external_id.rsplit(".", 1)[-1].lower()
-        for gc in (grounded_conds or [])
-        if gc.field and gc.field.external_id)
+    the VR formula parser speaks, so both sides of the overlap are normalized alike.
+    D-330: a cross-field clause contributes BOTH its fields."""
+    out = set()
+    for gc in (grounded_conds or []):
+        if gc.field and gc.field.external_id:
+            out.add(gc.field.external_id.rsplit(".", 1)[-1].lower())
+        other = getattr(gc, "compared_to", None)
+        if other is not None and other.external_id:
+            out.add(other.external_id.rsplit(".", 1)[-1].lower())
+    return frozenset(out)
+
+
+def _claim_cross_field_pairs(grounded_conds) -> frozenset[frozenset[str]]:
+    """The order-free bare-field pairs of the claim's CROSS-FIELD clauses
+    (D-330) — the claim-side mirror of :func:`_vr_cross_field_pairs`. Empty for
+    an all-v1 clause set (the dormant default)."""
+    out = set()
+    for gc in (grounded_conds or []):
+        other = getattr(gc, "compared_to", None)
+        if other is not None and gc.field and gc.field.external_id \
+                and other.external_id:
+            out.add(frozenset({
+                gc.field.external_id.rsplit(".", 1)[-1].lower(),
+                other.external_id.rsplit(".", 1)[-1].lower()}))
+    return frozenset(out)
 
 
 def _vr_formula_fields(text: str) -> frozenset[str]:
@@ -408,10 +453,25 @@ def _best_aligned_vr(vr_formulas: tuple[str, ...], grounded_conds) -> Optional[s
     pair exactly matches the claim. **Residual (unchanged):** a mis-attributed grounding
     whose fields give a STRICT higher overlap on a wrong-but-derivable VR is still the
     unique top-scorer and is selected — bounded by grounding quality, not this selector.
-    Callers apply the degenerate guard (empty conds / single VR) before this."""
+    Callers apply the degenerate guard (empty conds / single VR) before this.
+
+    **D-330 (predicate-aware hard filter):** when the claim carries a
+    CROSS-FIELD clause ("Loan Amount exceeds Property Value"), only a VR whose
+    formula contains that exact cross-field comparison pair can be the
+    grounding rule — field-overlap alone is blind to the predicate and would
+    prefer a wider same-fields rule (the req-302 AC2 mis-attribution: the
+    mandatory-fields VR out-scored the cross-field VR 3-to-2). The filter
+    applies BEFORE scoring; an empty filtered set refuses (``None``)."""
     claim_fields = _claim_condition_fields(grounded_conds)
     if not claim_fields:
         return None
+    cross_pairs = _claim_cross_field_pairs(grounded_conds)
+    if cross_pairs:
+        vr_formulas = tuple(
+            t for t in vr_formulas
+            if cross_pairs <= _vr_cross_field_pairs(t))
+        if not vr_formulas:
+            return None
     # Pass 1: the top field-overlap score (each VR's fields parsed once).
     scored = [(len(claim_fields & _vr_formula_fields(t)), t) for t in vr_formulas]
     best_score = max((s for s, _ in scored), default=0)

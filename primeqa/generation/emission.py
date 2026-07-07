@@ -40,7 +40,7 @@ from __future__ import annotations
 import html
 import re
 from dataclasses import dataclass, field
-from typing import Any, Optional
+from typing import Any, Optional, Union
 from uuid import UUID
 
 from primeqa.generation.enums import AdmissibilityLayer, CaveatKind
@@ -82,7 +82,12 @@ from primeqa.test_representation.models.claims.data_behavior.value_claim import 
     ValueClaimBody,
 )
 from primeqa.test_representation.models.common import BodyBase
-from primeqa.test_representation.models.conditions import Condition, SemanticConditionsBody
+from primeqa.test_representation.models.conditions import (
+    Condition,
+    ConditionV2,
+    SemanticConditionsBody,
+    SemanticConditionsBodyV2,
+)
 from primeqa.test_representation.models.environment import (
     AuthAssumption,
     ExecutionEnvironmentBody,
@@ -200,11 +205,14 @@ class _GroundedCondition:
     """A grounded business-state clause for a prohibition's identity-bearing
     semantic_conditions (D-293, Option A). ``field`` is the S1-resolved subject of
     the clause (governance fills the ``_Endpoint``); ``predicate``/``value`` follow
-    the S2 ``Condition`` taxonomy (value-free predicates carry ``value=None``)."""
+    the S2 ``Condition`` taxonomy (value-free predicates carry ``value=None``).
+    D-330: a cross-field comparison clause (``exceeds``) carries the right-hand
+    field as ``compared_to`` (S1-resolved) and no ``value``."""
 
     field: _Endpoint
     predicate: str
     value: Any = None
+    compared_to: Optional[_Endpoint] = None
 
 
 @dataclass(frozen=True)
@@ -513,7 +521,8 @@ class EmissionBundle:
     claim_kind: str
     # identity-bearing layer (claim) — concrete type varies by claim_kind
     asserted_truth: BodyBase
-    semantic_conditions: SemanticConditionsBody
+    # v1, or v2 when a cross-field clause rides the conditions (D-330)
+    semantic_conditions: Union[SemanticConditionsBody, SemanticConditionsBodyV2]
     # operational layers (recipe)
     trigger_kind: str
     recipe_kind: str
@@ -1181,17 +1190,33 @@ def _author_acceptance(g: GroundedAcceptance) -> EmissionBundle:
     )
 
 
-def _conditions_body(grounded: tuple, version_seq: int) -> SemanticConditionsBody:
-    """Build the identity-bearing ``SemanticConditionsBody`` from grounded
-    business-state clauses (D-293). Each clause becomes one ``Condition`` over the
-    S1-resolved field. Empty input -> ``conditions=[]`` — byte-identical to the
-    pre-D-293 condition-free prohibition (the dormant default)."""
+def _conditions_body(grounded: tuple, version_seq: int):
+    """Build the identity-bearing conditions body from grounded business-state
+    clauses (D-293). Each clause becomes one condition over the S1-resolved
+    field. Empty input -> ``conditions=[]`` — byte-identical to the pre-D-293
+    condition-free prohibition (the dormant default).
+
+    D-330: a clause set containing a CROSS-FIELD comparison (``compared_to``)
+    authors the v2 body (``SemanticConditionsBodyV2``); an all-v1 clause set
+    keeps authoring v1 byte-identically (existing claims never re-key)."""
+    def _ref(ep):
+        return IdentityBearingRef(
+            entity_type=ep.entity_type, entity_id=ep.entity_id,
+            version_seq=version_seq, external_id=ep.external_id)
+
+    # getattr keeps hand-built grounded conditions working (the D-288 idiom).
+    if any(getattr(c, "compared_to", None) is not None for c in grounded):
+        return SemanticConditionsBodyV2(conditions=[
+            ConditionV2(
+                subject=_ref(c.field), predicate=c.predicate, value=c.value,
+                compared_to=(_ref(c.compared_to)
+                             if getattr(c, "compared_to", None) is not None
+                             else None))
+            for c in grounded
+        ])
     return SemanticConditionsBody(conditions=[
         Condition(
-            subject=IdentityBearingRef(
-                entity_type=c.field.entity_type, entity_id=c.field.entity_id,
-                version_seq=version_seq, external_id=c.field.external_id),
-            predicate=c.predicate, value=c.value)
+            subject=_ref(c.field), predicate=c.predicate, value=c.value)
         for c in grounded
     ])
 

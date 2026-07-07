@@ -792,3 +792,42 @@ def test_names_a_subject_approval_active_or_inactive_but_not_unknown():
     # a Flow of the same name is NOT a subject approval
     assert gc._names_a_subject_approval(
         [_appr_rel("A", True, etype="Flow")], "A") is False
+
+
+# --- D-330: the cross-field rejection clause (exceeds + compared_to) ---------
+
+def test_ground_rejection_conditions_cross_field_grounds_both_fields():
+    nb = [_field_rel("Opportunity.Loan_Amount__c"),
+          _field_rel("Opportunity.Property_Value__c")]
+    grounded, invalid = gc._ground_rejection_conditions(
+        [{"field": "Opportunity.Loan_Amount__c", "predicate": "exceeds",
+          "compared_to": "Opportunity.Property_Value__c"}], nb, 7)
+    assert invalid == [] and len(grounded) == 1
+    assert grounded[0].predicate == "exceeds" and grounded[0].value is None
+    assert grounded[0].compared_to.external_id == "Opportunity.Property_Value__c"
+
+
+def test_ground_rejection_conditions_cross_field_unresolved_other_is_invalid():
+    nb = [_field_rel("Opportunity.Loan_Amount__c")]
+    grounded, invalid = gc._ground_rejection_conditions(
+        [{"field": "Opportunity.Loan_Amount__c", "predicate": "exceeds",
+          "compared_to": "Opportunity.Nope__c"}], nb, 7)
+    assert grounded == [] and invalid and "Nope__c" in invalid[0]
+
+
+def test_ground_rejection_conditions_cross_field_value_is_invalid():
+    nb = [_field_rel("Opportunity.Loan_Amount__c"),
+          _field_rel("Opportunity.Property_Value__c")]
+    grounded, invalid = gc._ground_rejection_conditions(
+        [{"field": "Opportunity.Loan_Amount__c", "predicate": "exceeds",
+          "compared_to": "Opportunity.Property_Value__c", "value": 5}], nb, 7)
+    assert grounded == [] and invalid and "forbids a value" in invalid[0]
+
+
+def test_ground_rejection_conditions_compared_to_on_v1_predicate_is_invalid():
+    nb = [_field_rel("Opportunity.Loan_Amount__c"),
+          _field_rel("Opportunity.Property_Value__c")]
+    grounded, invalid = gc._ground_rejection_conditions(
+        [{"field": "Opportunity.Loan_Amount__c", "predicate": "equals",
+          "value": 5, "compared_to": "Opportunity.Property_Value__c"}], nb, 7)
+    assert grounded == [] and invalid and "forbids compared_to" in invalid[0]

@@ -88,6 +88,7 @@ class TestRootImportSurface:
 EXPECTED_REGISTRATIONS = (
     # Conditions (B-β)
     ("conditions", 1),
+    ("conditions", 2),                # D-330 — the cross-field clause (exceeds)
     # Data-behavior claim bodies (B-β)
     ("value-claim", 1),
     ("state-transition-claim", 1),

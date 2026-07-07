@@ -28,7 +28,7 @@ _VERSIONS_DIR = _DIR / "versions"
 
 # The default version new generations use (replay pins its own version on the
 # request's operational_context.prompt_template_version, per D-071).
-CURRENT = "generation@v20"
+CURRENT = "generation@v21"
 
 # version id -> frozen composed artifact (filesystem-safe slug).
 _FILES = {
@@ -52,6 +52,7 @@ _FILES = {
     "generation@v18": _VERSIONS_DIR / "generation_v18.md",
     "generation@v19": _VERSIONS_DIR / "generation_v19.md",
     "generation@v20": _VERSIONS_DIR / "generation_v20.md",
+    "generation@v21": _VERSIONS_DIR / "generation_v21.md",
 }
 
 # Recorded SHA-256 of each frozen version's composed content (D-103.1 drift
@@ -142,6 +143,13 @@ RECORDED_HASHES = {
     # rule's own scope text. Closes the req-302 "no happy path, no negative
     # controls" breadth gap without violating Guardrail-3.
     "generation@v20": "540b016f97ffd1cc9e539879889e703e60d2fe74b0167f5d1e60e0cd25ab547b",
+    # v21 (D-330): the cross-field rejection clause — `exceeds` +
+    # `compared_to` ("Loan Amount must not exceed Property Value" is a
+    # field-vs-field state, never flattened to its scope condition); the
+    # derivability list corrected (D-294/D-296 armed ISBLANK / picklist /
+    # cross-field derivation — the stale wording discouraged exactly these
+    # proposals).
+    "generation@v21": "c0eaf67e9ab6a9a9afa40971042d2abf4c7c9241a2c8bae3c928509fb79b1c4b",
 }
 
 # Working composition order — authors the NEXT frozen version (NOT runtime).

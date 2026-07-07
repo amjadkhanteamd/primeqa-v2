@@ -202,6 +202,10 @@ def condition_phrase(cond: Any, labels=None) -> Optional[tuple]:
             return f"{subj} is blank", (subj,)
         if pred == "is_not_null":
             return f"{subj} is set", (subj,)
+        if pred == "exceeds":
+            # D-330 cross-field clause: the right-hand side is another field.
+            other = _ref_name(cond.get("compared_to"), labels) or "the other field"
+            return f"{subj} exceeds {other}", (subj, other)
         # unknown predicate: stay grounded
         v = _plain_condition_value(val)
         return f"{subj}: {pred} {v}".rstrip(), (subj, v)

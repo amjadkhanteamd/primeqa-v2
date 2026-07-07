@@ -42,18 +42,22 @@ def test_working_source_composes_to_current():
     assert hashlib.sha256(composed.encode("utf-8")).hexdigest() == registry.recorded_hash()
 
 
-def test_current_resolves_to_v20():
-    # D-329: CURRENT bumped to v20 (the implied valid case — one in-scope
-    # happy-path acceptance + one out-of-scope control per distinct scope
-    # condition, anchored on the rule's own scope text). v1..v19 stay frozen +
-    # pinned-resolvable (test_runtime_honors_pinned_prompt_version).
-    assert registry.CURRENT == "generation@v20"
-    assert registry.get() == registry.get("generation@v20")
+def test_current_resolves_to_v21():
+    # D-330: CURRENT bumped to v21 (the cross-field rejection clause —
+    # `exceeds` + `compared_to`; derivability wording corrected to the
+    # D-294/D-296 reality). v1..v20 stay frozen + pinned-resolvable
+    # (test_runtime_honors_pinned_prompt_version).
+    assert registry.CURRENT == "generation@v21"
+    assert registry.get() == registry.get("generation@v21")
     sys = registry.get()
     # v20's implied-valid-case decomposition (D-329)
     assert "implied valid case" in sys
     assert "out-of-scope control" in sys
     assert "one happy path per scoped rule-set" in sys
+    # v21's cross-field rejection clause (D-330)
+    assert '"exceeds"' in sys
+    assert "compared_to" in sys
+    assert "Never flatten a" in sys
     assert len(sys) > 1000                                  # substantive, not a stub
     # v17's mandatory-intent_descriptors contract (D-313) — the fix directive
     assert "IS the proposal" in sys

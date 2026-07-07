@@ -366,3 +366,57 @@ def test_break_tie_superset_attack_rejected_by_exact_equality():
 def test_break_tie_zero_qualifiers_returns_none():
     conds = frozenset({"x__c", "y__c"})   # no VR references these
     assert gc._break_tie_by_cross_field([VR_HOME_LOAN, VR_CREDIT_ASSESSMENT], conds) is None
+
+
+# --- D-330: cross-field clause + predicate-aware hard filter -----------------
+
+def _cross_cond(left: str, right: str) -> _GroundedCondition:
+    return _GroundedCondition(
+        field=_Endpoint(entity_id=1, entity_type="Field", external_id=left),
+        predicate="exceeds",
+        compared_to=_Endpoint(entity_id=2, entity_type="Field", external_id=right))
+
+
+def test_cross_field_clause_contributes_both_fields():
+    conds = (_cross_cond("Opportunity.Loan_Amount__c",
+                         "Opportunity.Property_Value__c"),)
+    assert gc._claim_condition_fields(conds) == frozenset(
+        {"loan_amount__c", "property_value__c"})
+    assert gc._claim_cross_field_pairs(conds) == frozenset(
+        {frozenset({"loan_amount__c", "property_value__c"})})
+
+
+def test_cross_field_hard_filter_beats_wider_field_overlap():
+    # The req-302 AC2 mis-attribution: with conditions {Loan Type, Loan Amount
+    # exceeds Property Value}, plain field-overlap scores VR_HOME_LOAN 3
+    # (loan_type + loan_amount + property_value) vs VR_LOAN_EXCEEDS 2 — the
+    # WRONG unique top-scorer. The D-330 hard filter admits only VRs carrying
+    # the claim's cross-field pair, so the exceeds rule wins.
+    conds = (
+        _cond("Opportunity.Loan_Type__c"),
+        _cross_cond("Opportunity.Loan_Amount__c",
+                    "Opportunity.Property_Value__c"),
+    )
+    assert gc._align_vr_to_conditions(ALL_VRS, conds) == (VR_LOAN_EXCEEDS,)
+
+
+def test_cross_field_clause_alone_selects_the_exceeds_rule():
+    conds = (_cross_cond("Opportunity.Loan_Amount__c",
+                         "Opportunity.Property_Value__c"),)
+    assert gc._align_vr_to_conditions(ALL_VRS, conds) == (VR_LOAN_EXCEEDS,)
+
+
+def test_cross_field_filter_refuses_when_no_vr_carries_the_pair():
+    # A cross-field claim whose pair no VR contains refuses (never falls back
+    # to a same-fields-different-predicate rule).
+    conds = (_cross_cond("Opportunity.Loan_Amount__c",
+                         "Opportunity.Annual_Income__c"),)
+    assert gc._align_vr_to_conditions(ALL_VRS, conds) == ()
+
+
+def test_v1_only_conditions_unchanged_by_the_filter():
+    # No cross-field clause -> the D-330 filter is inert; D-295/D-296
+    # behavior byte-identical (the AC1 mandatory-fields selection).
+    conds = (_cond("Opportunity.Loan_Type__c"),
+             _cond("Opportunity.Annual_Income__c"))
+    assert gc._align_vr_to_conditions(ALL_VRS, conds) == (VR_HOME_LOAN,)

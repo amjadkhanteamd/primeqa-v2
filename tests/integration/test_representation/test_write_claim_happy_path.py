@@ -211,3 +211,46 @@ def test_write_with_conditions_produces_both_coverage_kinds(
     # reference_kind).
     kinds = sorted(c.reference_kind for c in coverage)
     assert kinds == ["condition", "subject"]
+
+
+# ---------------------------------------------------------------------------
+# D-330: v2 conditions body (cross-field ``exceeds``) round-trips write_claim
+# ---------------------------------------------------------------------------
+
+
+def test_write_claim_with_v2_cross_field_conditions(session) -> None:
+    from primeqa.test_representation.models.conditions import (
+        ConditionV2,
+        SemanticConditionsBodyV2,
+    )
+    from ._builders import ib, make_prohibition
+
+    coord = SemanticTransactionCoordinator()
+    loan = ib(external_id="Opportunity.Loan_Amount__c", entity_type="Field")
+    prop = ib(external_id="Opportunity.Property_Value__c", entity_type="Field")
+    conds = SemanticConditionsBodyV2(conditions=[
+        ConditionV2(subject=loan, predicate="exceeds", compared_to=prop)])
+    result = coord.write_claim(
+        session,
+        actor="s3",
+        test_id=None,
+        archetype="data_behavior",
+        claim_kind="prohibition-claim",
+        asserted_truth=make_prohibition(),
+        semantic_conditions=conds,
+    )
+    assert result.version_seq == 1 and result.was_noop is False
+    row = session.execute(text(
+        "SELECT semantic_conditions FROM test_claims "
+        "WHERE test_id = :t AND version_seq = 1"), {"t": str(result.test_id)}
+    ).scalar()
+    assert row["body_schema_version"] == 2
+    assert row["conditions"][0]["predicate"] == "exceeds"
+    assert row["conditions"][0]["compared_to"]["external_id"] == \
+        "Opportunity.Property_Value__c"
+    # coverage extraction walked BOTH condition refs (D-058 §5.4)
+    covered = {
+        str(r[0]) for r in session.execute(text(
+            "SELECT entity_id FROM test_claim_coverage "
+            "WHERE claim_test_id = :t"), {"t": str(result.test_id)}).fetchall()}
+    assert str(loan.entity_id) in covered and str(prop.entity_id) in covered
