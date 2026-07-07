@@ -481,9 +481,8 @@ def test_boundary_set_refuses_non_threshold_shapes():
     assert _bset("Amount <> 0") == ()
     # String/boolean literals: no numeric adjacency.
     assert _bset('Status__c = "Open"') == ()
-    # Compounds: no single threshold (derive() handles them; the boundary
-    # generator is deliberately stricter).
-    assert _bset("AND(Amount > 100, ISBLANK(Reason__c))") == ()
+    # Or / Not compounds: no uniquely-gating threshold.
+    assert _bset("OR(Amount > 100, ISBLANK(Reason__c))") == ()
     assert _bset("NOT(Amount > 100)") == ()
     # Function shapes.
     assert _bset("ISBLANK(Reason__c)") == ()
@@ -493,6 +492,76 @@ def test_boundary_set_refuses_non_threshold_shapes():
         parse("Loan__c > Property__c"),
         {"Loan__c": {"field_type": "currency"},
          "Property__c": {"field_type": "currency"}}) == ()
+
+
+# ---------------------------------------------------------------------------
+# D-328: compound-AND boundary — ONE threshold conjunct + gates staged TRUE
+# in both probes.
+# ---------------------------------------------------------------------------
+
+def test_boundary_compound_and_stages_gates_in_both_probes():
+    # AND(gate, threshold) — the gate rides BOTH payloads, so the just-inside
+    # accept is meaningful (gates true; only the value is inside).
+    members = _bset("AND(Amount > 100, ISBLANK(Reason__c))")
+    assert len(members) == 2
+    firing, inside = members
+    assert firing.payload == {"Reason__c": None, "Amount": 101}
+    assert firing.expect_reject is True and firing.edge == "firing"
+    assert inside.payload == {"Reason__c": None, "Amount": 100}
+    assert inside.expect_reject is False and inside.edge == "just-inside"
+
+
+def test_boundary_compound_block_approved_shape():
+    # The req-302 ₹50,00,000 approval VR shape: picklist gate + threshold +
+    # NOT-ISPICKVAL gate (needs the D-294 picklist rail for the alternative).
+    formula = ('AND(ISPICKVAL(StageName, "Approved"), Loan_Amount__c > 5000000, '
+               'NOT(ISPICKVAL(Approval_Status__c, "Approved")))')
+    meta = {"Approval_Status__c": {"field_type": "picklist",
+                                   "picklist_values": ["Pending", "Approved"]}}
+    members = derive_boundary_set(parse(formula), meta)
+    assert len(members) == 2
+    firing, inside = members
+    assert firing.payload == {"StageName": "Approved",
+                              "Approval_Status__c": "Pending",
+                              "Loan_Amount__c": 5000001}
+    assert inside.payload == {"StageName": "Approved",
+                              "Approval_Status__c": "Pending",
+                              "Loan_Amount__c": 5000000}
+    assert firing.expect_reject and not inside.expect_reject
+
+
+def test_boundary_compound_firing_member_equals_derive_payload():
+    # The D-300 drift self-check holds on the compound shape too.
+    formula = "AND(ISBLANK(Reason__c), Amount >= 10)"
+    members = _bset(formula)
+    primary = derive(parse(formula))
+    assert isinstance(primary, VerifiedNegative)
+    assert members[0].payload == primary.violating_payload
+
+
+def test_boundary_compound_soft_gate_yields_to_threshold_field():
+    # A NOT-ISBLANK gate on the SAME field as the threshold: the soft fill
+    # yields to the hard boundary values (D-296 merge semantics).
+    meta = {"Loan__c": {"field_type": "currency"}}
+    members = derive_boundary_set(
+        parse("AND(NOT(ISBLANK(Loan__c)), Loan__c > 5000)"), meta)
+    assert len(members) == 2
+    assert members[0].payload == {"Loan__c": 5001}
+    assert members[1].payload == {"Loan__c": 5000}
+
+
+def test_boundary_compound_refusals():
+    # Zero threshold conjuncts.
+    assert _bset("AND(ISBLANK(A__c), ISBLANK(B__c))") == ()
+    # Two threshold conjuncts — ambiguous, refuse.
+    assert _bset("AND(Amount > 100, Loan__c > 5)") == ()
+    # An underivable gate refuses the whole set (no picklist rail here).
+    assert _bset('AND(NOT(ISPICKVAL(Status__c, "Open")), Amount > 100)') == ()
+    # A gate conflicting with the threshold field (equality pin vs boundary
+    # values) refuses via the merge.
+    assert _bset("AND(Amount = 5, Amount > 100)") == ()
+    # Fractional threshold inside a compound refuses (integers only).
+    assert _bset("AND(ISBLANK(A__c), Amount > 10.5)") == ()
 
 
 def test_boundary_set_refuses_pre_scan_gates():

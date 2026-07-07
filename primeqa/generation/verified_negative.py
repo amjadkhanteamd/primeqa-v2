@@ -154,56 +154,95 @@ _BOUNDARY_OPS = frozenset({">", ">=", "<", "<="})  # threshold orderings only
 
 
 def derive_boundary_set(ast, field_metadata=None) -> tuple:
-    """D-300: the ordered boundary set for a SINGLE-THRESHOLD-NUMERIC
-    prohibition — the firing probe (the existing :func:`derive` payload; the VR
-    must reject it) + the just-inside probe (the boundary-adjacent non-firing
-    value; the create must SUCCEED). Both values come from the SHIPPED
-    derivation machinery — firing = ``_violating_value(op, lit)``, just-inside =
-    the ``_NEG[op]`` direction (exactly :func:`derive_update`'s setup direction)
-    — so no new value arithmetic exists here.
+    """D-300 (+D-328 compound-AND): the ordered boundary set for a
+    single-threshold-numeric prohibition — the firing probe (the existing
+    :func:`derive` payload; the VR must reject it) + the just-inside probe
+    (the boundary-adjacent non-firing value; the create must SUCCEED). Both
+    values come from the SHIPPED derivation machinery — firing =
+    ``_violating_value(op, lit)``, just-inside = the ``_NEG[op]`` direction
+    (exactly :func:`derive_update`'s setup direction) — so no new value
+    arithmetic exists here.
 
-    Certainty bar (refuse → ``()``, never a guessed set): the formula must be a
-    bare top-level ``Comparison`` of one FieldRef against one NUMERIC literal
-    with a threshold ordering (``>`` / ``>=`` / ``<`` / ``<=``). Equality ops are
-    point constraints (no threshold adjacency); compounds, cross-field,
-    string/boolean literals, org-state functions, and dotted refs all refuse —
-    the same :func:`_pre_scan` gates as :func:`derive`. ``field_metadata`` is
-    accepted for signature parity with the derive family; the literal shape
-    does not gate on it (matching :func:`derive`'s literal path — the primary
-    reject create carries the identical writability exposure).
+    Shapes (refuse → ``()``, never a guessed set):
+
+      - A bare top-level ``Comparison`` of one FieldRef against one INTEGER
+        literal with a threshold ordering (``>`` / ``>=`` / ``<`` / ``<=``) —
+        the D-300 shape, unchanged.
+      - D-328: a top-level ``And`` whose operands contain EXACTLY ONE such
+        threshold comparison; every other operand is a GATE condition staged
+        TRUE (via :func:`_satisfy`) in BOTH probes. Gates make the just-inside
+        accept MEANINGFUL: with the gates true, the only reason the create
+        succeeds is the value being inside the threshold (e.g.
+        ``AND(ISPICKVAL(StageName,"Approved"), Loan__c > 5000000,
+        NOT(ISPICKVAL(Approval_Status__c,"Approved")))`` probes exactly the
+        5000000 boundary). Any underivable gate, zero or multiple threshold
+        conjuncts, or a gate/threshold assignment conflict refuses the set.
+
+    Equality ops are point constraints (no threshold adjacency); ``Or`` /
+    ``Not`` compounds, cross-field thresholds, string/boolean literals,
+    org-state functions, and dotted refs all refuse — the same
+    :func:`_pre_scan` gates as :func:`derive`. ``field_metadata`` feeds gate
+    derivation (D-294 rail: NOT-ISBLANK / NOT-ISPICKVAL gates need it).
 
     Invariant (drift self-check, unit-pinned): ``member[0].payload`` equals
     ``derive(ast).violating_payload`` — the firing probe IS the primary's
-    payload, never a divergent re-derivation.
+    payload (same constraint set through the same ``_merge``), never a
+    divergent re-derivation.
 
     Integer ±1 adjacency is SOUND (genuinely firing / non-firing) but not
     scale-tight on decimal fields — tightening via field scale metadata is a
-    named D-300 deferral. DORMANT until D-300 S3 wires the flag-gated author."""
+    named D-300 deferral."""
     if _pre_scan(ast) is not None:
         return ()
-    if not isinstance(ast, Comparison):
-        return ()                       # compound / function shapes: no single threshold
-    if isinstance(ast.left, FieldRef) and isinstance(ast.right, FieldRef):
-        return ()                       # cross-field: no literal to be adjacent to
+    meta = field_metadata or {}
+    if isinstance(ast, Comparison):
+        return _boundary_members(ast, gates=(), meta=meta)
+    if isinstance(ast, And):
+        # D-328: exactly one threshold conjunct; the rest are gates.
+        thresholds = [op for op in ast.operands if _is_threshold(op)]
+        if len(thresholds) != 1:
+            return ()
+        thr = thresholds[0]
+        gates = tuple(op for op in ast.operands if op is not thr)
+        return _boundary_members(thr, gates=gates, meta=meta)
+    return ()                           # Or / Not / function shapes: no single threshold
+
+
+def _is_threshold(node) -> bool:
+    """A single-field-vs-INTEGER-literal comparison with a threshold ordering —
+    the boundary-eligible conjunct shape (D-300 review-fix: integers only;
+    fractional ±1 adjacency is unsound under field-scale rounding)."""
+    if not isinstance(node, Comparison):
+        return False
+    if isinstance(node.left, FieldRef) and isinstance(node.right, FieldRef):
+        return False
     try:
-        field, literal, op = _orient(ast)
+        _field, literal, op = _orient(node)
+    except _Undecidable:
+        return False
+    return (literal.kind == "number" and op in _BOUNDARY_OPS
+            and isinstance(literal.value, int))
+
+
+def _boundary_members(thr: Comparison, *, gates: tuple, meta: dict) -> tuple:
+    """The (firing, just-inside) pair for threshold ``thr`` with ``gates``
+    staged TRUE in both probes. Refuses (``()``) when the threshold shape is
+    ineligible, a gate is underivable, or the merge conflicts."""
+    if not _is_threshold(thr):
+        return ()
+    field, literal, op = _orient(thr)
+    try:
+        gate_payloads = [_satisfy(g, True, meta) for g in gates]
+        firing = _unwrap_soft(_merge(
+            gate_payloads + [{field: _violating_value(op, literal)}]))
+        just_inside = _unwrap_soft(_merge(
+            gate_payloads + [{field: _violating_value(_NEG[op], literal)}]))
     except _Undecidable:
         return ()
-    if literal.kind != "number" or op not in _BOUNDARY_OPS:
-        return ()
-    if not isinstance(literal.value, int):
-        # D-300 review-fix: ±1 on a FRACTIONAL literal is unsound — float
-        # artifacts + field-scale rounding can make the "just-inside" value
-        # actually FIRE the VR (e.g. `> 10000.5` on a scale-0 field rounds
-        # 10000.5 up), silently minting a permanently-red probe. Scale-aware
-        # adjacency is a named deferral; until then, integers only.
-        return ()
-    firing = _violating_value(op, literal)
-    just_inside = _violating_value(_NEG[op], literal)
     return (
-        BoundaryMember(payload={field: firing}, expect_reject=True,
+        BoundaryMember(payload=firing, expect_reject=True,
                        edge="firing"),
-        BoundaryMember(payload={field: just_inside}, expect_reject=False,
+        BoundaryMember(payload=just_inside, expect_reject=False,
                        edge="just-inside"),
     )
 
