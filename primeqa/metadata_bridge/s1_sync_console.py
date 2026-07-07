@@ -290,15 +290,32 @@ def _read_org_model(model, object_api_name=None) -> dict:
     return {"available": True, "synced": True, "version_seq": seq, "objects": objects}
 
 
-def read_org_model(tenant_id: int, object_api_name=None) -> dict:
+def read_org_model(tenant_id: int, object_api_name=None,
+                   environment_id=None) -> dict:
     """Best-effort read of the tenant's current S1 org model. Never raises.
-    ``synced=False`` when no S1 version exists yet; ``available=False`` on error."""
+    ``synced=False`` when no S1 version exists yet; ``available=False`` on error.
+
+    ``environment_id`` scopes the read to that env's connected org — the only
+    correct mode on a multi-org tenant, where the unscoped model is the UNION
+    of every org's entities (ambiguous when two orgs share an Object api-name).
+    ``None`` keeps the org-blind read (vacuously correct on a single org). An
+    env with no connected org reads as ``synced=False``."""
     try:
         from primeqa.semantic.connection import get_tenant_connection
         from primeqa.semantic.query import SemanticOrgModel, VersionNotFoundError
         with get_tenant_connection(tenant_id) as conn:
+            org_id = None
+            if environment_id is not None:
+                from primeqa.sync.credentials import (
+                    get_connected_org_for_environment,
+                )
+                org_id = get_connected_org_for_environment(conn, environment_id)
+                if org_id is None:
+                    return {"available": True, "synced": False}
             try:
-                return _read_org_model(SemanticOrgModel(conn), object_api_name)
+                return _read_org_model(
+                    SemanticOrgModel(conn, connected_org_id=org_id),
+                    object_api_name)
             except VersionNotFoundError:
                 return {"available": True, "synced": False}
     except Exception as exc:

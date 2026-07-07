@@ -1047,13 +1047,37 @@ def environments_run_detail(env_id, run_id):
 @views_bp.route("/org-model")
 @role_required("admin", "superadmin")
 def org_model():
-    """Read-only browser of the synced S1 org model (D-164, 1c). Tenant-level —
-    S1 is one versioned org model per tenant. ``?object=ApiName`` drills in."""
+    """Read-only browser of the synced S1 org model (D-164, 1c). S1 is
+    per-org: on a multi-org tenant the page requires an Org selection — the
+    unscoped read is the UNION of every org's metadata, ambiguous when two
+    orgs share an Object api-name. Single-env tenants render as before (no
+    picker, the unscoped read is vacuously that org). ``?object=ApiName``
+    drills in; ``?environment_id=N`` picks the org."""
     from primeqa.metadata_bridge.s1_sync_console import read_org_model
     obj = request.args.get("object") or None
-    data = read_org_model(request.user["tenant_id"], obj)
+    tid = request.user["tenant_id"]
+    db = next(get_db())
+    try:
+        envs = EnvironmentRepository(db).list_environments(
+            tid, request.user["id"], request.user["role"])
+    finally:
+        db.close()
+    envs_for_picker = [{"id": e.id, "name": e.name} for e in envs]
+    env = request.args.get("environment_id", type=int)
+    if env is not None and env not in {e.id for e in envs}:
+        env = None
+    multi_env = len(envs_for_picker) > 1
+    if multi_env and env is None:
+        # No blended browsing on multi-org: prompt for an org, read nothing.
+        return render_template("org_model.html", **ctx(
+            active_page="org_model", model=None, selected_object=obj,
+            envs_for_picker=envs_for_picker, active_env=None,
+            needs_env=True))
+    data = read_org_model(tid, obj, environment_id=env if multi_env else None)
     return render_template("org_model.html", **ctx(
-        active_page="org_model", model=data, selected_object=obj))
+        active_page="org_model", model=data, selected_object=obj,
+        envs_for_picker=envs_for_picker, active_env=env,
+        needs_env=False))
 
 
 @views_bp.route("/environments/<int:env_id>/edit", methods=["GET"])

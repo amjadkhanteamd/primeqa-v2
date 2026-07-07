@@ -8,14 +8,35 @@
 
 <div class="max-w-5xl mx-auto space-y-6" data-page="org-model">
 
-  {{ breadcrumbs([('Org model', '/org-model')] + ([(selected_object, None)] if selected_object else [])) }}
+  {% set om_base = '/org-model' ~ (('?environment_id=' ~ active_env) if active_env else '') %}
+  {{ breadcrumbs([('Org model', om_base)] + ([(selected_object, None)] if selected_object else [])) }}
 
-  <div>
-    <h1 class="text-xl font-semibold text-gray-900">Org model <span class="text-gray-400 text-base">(Substrate S1)</span></h1>
-    <p class="mt-1 text-sm text-gray-500">The Salesforce metadata synced into the substrate &mdash; objects, fields, and validation rules at the current version. This is what the new generation, validation, and intelligence read from.</p>
+  <div class="flex items-start justify-between gap-4 flex-wrap">
+    <div>
+      <h1 class="text-xl font-semibold text-gray-900">Org model <span class="text-gray-400 text-base">(Substrate S1)</span></h1>
+      <p class="mt-1 text-sm text-gray-500">The Salesforce metadata synced into the substrate &mdash; objects, fields, and validation rules at the current version. This is what the new generation, validation, and intelligence read from.</p>
+    </div>
+    {# Multi-org: the model is per-org — the picker chooses which org to
+       browse. Single-env tenants get no picker (their one org is implicit). #}
+    {% if envs_for_picker and envs_for_picker|length > 1 %}
+    <form method="GET" action="/org-model" class="flex items-center gap-2 text-xs mt-1">
+      {% if selected_object %}<input type="hidden" name="object" value="{{ selected_object }}">{% endif %}
+      <label for="om-env" class="text-gray-500">Org</label>
+      <select id="om-env" name="environment_id" onchange="this.form.submit()"
+              class="rounded-md border border-gray-300 px-2 py-1 text-xs">
+        <option value="">Select an org…</option>
+        {% for e in envs_for_picker %}
+        <option value="{{ e.id }}" {% if active_env == e.id %}selected{% endif %}>{{ e.name }}</option>
+        {% endfor %}
+      </select>
+    </form>
+    {% endif %}
   </div>
 
-  {% if not model or not model.available %}
+  {% if needs_env %}
+    {{ empty_state(title='Pick an org to browse',
+        description='This workspace has more than one connected org, and each has its own model. Choose one above — a merged view would be ambiguous where the orgs share object names.') }}
+  {% elif not model or not model.available %}
     {{ empty_state(title='Org model unavailable',
         description='The substrate could not be read for your tenant right now.') }}
   {% elif not model.synced %}
@@ -60,7 +81,7 @@
       {% if model.objects %}
         <div class="grid grid-cols-1 sm:grid-cols-2 md:grid-cols-3 gap-2">
           {% for o in model.objects %}
-            <a href="/org-model?object={{ o.api_name|urlencode }}"
+            <a href="/org-model?object={{ o.api_name|urlencode }}{% if active_env %}&environment_id={{ active_env }}{% endif %}"
                class="block rounded border border-gray-200 px-3 py-2 text-sm hover:bg-gray-50">
               <span class="font-mono text-gray-800">{{ o.api_name }}</span>
             </a>
