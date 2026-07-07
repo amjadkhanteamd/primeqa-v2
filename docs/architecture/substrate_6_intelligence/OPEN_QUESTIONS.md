@@ -16,4 +16,13 @@ Questions specific to S6's design. Cross-cutting questions live in the top-level
 ## Open
 
 - **S6-Q-005 — The reviewer edit/version lifecycle.** The `Interpretation` is designed reviewable / editable / versionable, but the edit + version mechanics (mirroring the S2-claim lifecycle) are not built. What is the version model for a human-corrected interpretation, and how does it relate to deterministic re-interpretation of the same evidence? (Deferred — `DEFERRED_ITEMS.md`.)
+
+  > **Status 2026-07-07:** confirmed still open — `s6_interpretations` remains
+  > produce-only (no version/edit columns in the schema; no lifecycle code in
+  > `interpretation/result_store.py`).
+
 - **S6-Q-008 — Does S6 consume S8's evolution signals?** S8 may emit a drift-trigger signal toward S6 ("keeps drifting across runs → re-evaluate"). Whether and how S6 ingests it is open — it is *not* part of the S6 interpret core (the predicate boundary keeps S8 ↛ S6 for the predicate), but evolution-signal → S6 is a separate channel. (Cross-ref top-level + S8 `OPEN_QUESTIONS`.)
+
+  > **Status 2026-07-07:** confirmed still open — no S8→S6 channel exists in
+  > code (nothing in `interpretation/` reads S8 verdicts; the D-143 S1-advance
+  > trigger refreshes S8's own store only).

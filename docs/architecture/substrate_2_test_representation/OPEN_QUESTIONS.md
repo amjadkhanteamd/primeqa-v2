@@ -110,6 +110,16 @@ specified across D-051 through D-065.
   trade-off** framing: short-term v2.2 feature parity sacrificed
   for long-term substrate coherence. Gap is real, acceptable,
   intentional. See `SPEC.md` §11.
+
+  > **Superseded in execution (status audit 2026-07-07):** the v1
+  > retirement (D-191…D-221) overtook D-065's MIGRATE dispositions.
+  > Migration `053_drop_v1_product_tables.sql` DROPPED `test_suites`,
+  > `suite_test_cases`, `ba_reviews`, `test_cases`, and
+  > `test_case_versions` — no migrate-to-future-substrate happened
+  > for the suite/review tables. Only `sections` survived and is live
+  > (`test_management/service.py` `create_section`). The D-065
+  > *decision* stands as recorded history; this note records that
+  > the later retirement resolved the deferred dispositions by drop.
 - ~~S2-Q-011 — Trigger-kind classification~~ → resolved by D-055.
   5 kinds locked, four-discriminator framing extended, six-layer
   model amended (rename: "execution realization" → "observation
@@ -119,6 +129,14 @@ specified across D-051 through D-065.
 
 ## Open
 
-None. Substrate-2 design is complete pending §1 synthesis section
-(conventionally written last, composing the substantive content
-from §2 through §11 into a single overview).
+None. Substrate-2 design is complete. (The §1 synthesis section this
+entry once pended on was written 2026-05-18 — see `SPEC.md` "Last
+substantive update".)
+
+> **Implementation status notes (audit 2026-07-07):**
+> `test_recipe_runtime_state` shipped (alembic
+> `20260518_1014_create_substrate_2_tables.py`, per D-062). The
+> reserved provenance surfaces (`get_provenance` /
+> `get_recipe_provenance`, SPEC §10.2) have NOT shipped — the S3
+> generation ledger still owns emission history and has not retired
+> into S2 provenance.
