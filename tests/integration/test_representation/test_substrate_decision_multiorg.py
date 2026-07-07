@@ -146,7 +146,8 @@ def test_org_bound_staleness_uses_the_orgs_own_seq(session):
     coord = SemanticTransactionCoordinator()
     cr = _approved_claim(session, coord, key="MO-2")
     persist_grounding_validity(
-        session, test_id=cr.test_id, version_seq=cr.version_seq,
+        session, connected_org_id=org_a, test_id=cr.test_id,
+        version_seq=cr.version_seq,
         evaluated_at_version_seq=seq_a, validity=_gv(overall="intact"))
     _seed_run(session, claim_test_id=cr.test_id, outcome="passed",
               finished_at="2026-06-01T10:00:00+00:00",

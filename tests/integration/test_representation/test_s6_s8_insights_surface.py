@@ -51,7 +51,7 @@ def _seed_run(session, run_id, *, outcome, finished_at) -> None:
          "o": outcome, "f": finished_at})
 
 
-def _seed_full(session) -> None:
+def _seed_full(session, grounding_org) -> None:
     """A coherent S6 + S8 set: 2 enforcement_gap / VR_A failures (→ a cause
     cluster + a vr cluster), a flapping claim_test (passed + failed on one CT),
     2 grounding verdicts — plus an s4_execution_runs row paired to each
@@ -73,15 +73,15 @@ def _seed_full(session) -> None:
     for n, it in enumerate(interps):                      # an S4 run per interpretation
         _seed_run(session, it.run_id, outcome=it.outcome,
                   finished_at="2026-06-0%dT10:00:00+00:00" % (n + 1))
-    persist_grounding_validity(session, test_id=uuid4(), version_seq=1,
+    persist_grounding_validity(session, connected_org_id=grounding_org, test_id=uuid4(), version_seq=1,
                                evaluated_at_version_seq=5, validity=_gv(overall="drifted"))
-    persist_grounding_validity(session, test_id=uuid4(), version_seq=1,
+    persist_grounding_validity(session, connected_org_id=grounding_org, test_id=uuid4(), version_seq=1,
                                evaluated_at_version_seq=5, validity=_gv(overall="broken"))
     session.flush()
 
 
-def test_assemble_surfaces_seeded_rows(session):
-    _seed_full(session)
+def test_assemble_surfaces_seeded_rows(session, grounding_org):
+    _seed_full(session, grounding_org)
     out = _assemble_insights(session, limit=50)
     assert out["available"] is True
     assert out["empty"] is False
@@ -102,7 +102,7 @@ def test_assemble_surfaces_seeded_rows(session):
     assert out["flapping"][0]["run_ids"]              # flapping run links present
 
 
-def test_assemble_empty_when_unseeded(session):
+def test_assemble_empty_when_unseeded(session, grounding_org):
     out = _assemble_insights(session, limit=50)
     assert out["available"] is True
     assert out["empty"] is True
@@ -111,7 +111,7 @@ def test_assemble_empty_when_unseeded(session):
     assert out["flapping"] == []
 
 
-def test_recent_runs_shape(session):
+def test_recent_runs_shape(session, grounding_org):
     it = _interp(recipe_id=uuid4(), claim_test_id=uuid4(), outcome="failed",
                  verdict="prohibition_not_enforced",
                  cause_kind="enforcement_gap", vr_name="VR_B")
@@ -127,9 +127,9 @@ def test_recent_runs_shape(session):
     assert isinstance(row["run_id"], str)        # UUID flattened to str
 
 
-def test_grounding_dict_shape(session):
+def test_grounding_dict_shape(session, grounding_org):
     tid = uuid4()
-    persist_grounding_validity(session, test_id=tid, version_seq=2,
+    persist_grounding_validity(session, connected_org_id=grounding_org, test_id=tid, version_seq=2,
                                evaluated_at_version_seq=9, validity=_gv(overall="drifted"))
     session.flush()
     g = _assemble_insights(session, limit=50)["grounding"][0]

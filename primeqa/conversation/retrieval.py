@@ -75,7 +75,10 @@ def _grounding_item(r) -> EvidenceItem:
         kind="grounding_validity",
         data={"test_id": str(r.test_id), "version_seq": r.version_seq,
               "overall": r.overall, "claim_verdict": r.claim_verdict,
-              "evaluated_at_version_seq": r.evaluated_at_version_seq})
+              "evaluated_at_version_seq": r.evaluated_at_version_seq,
+              # per-org grounding (3f): which org the verdict grounds against
+              "connected_org_id": (str(r.connected_org_id)
+                                   if r.connected_org_id else None)})
 
 
 def _entity_item(e) -> EvidenceItem:

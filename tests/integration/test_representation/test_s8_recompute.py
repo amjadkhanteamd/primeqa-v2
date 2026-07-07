@@ -82,9 +82,9 @@ def _ref(test_id=None, version_seq=1) -> ArtifactRef:
 
 # --- the orchestration -----------------------------------------------------
 
-def test_recompute_grounds_and_persists(session):
+def test_recompute_grounds_and_persists(session, grounding_org):
     ref = _ref()
-    result = recompute_grounding(session, [ref], s1=_S1(), at_seq=5)
+    result = recompute_grounding(session, [ref], s1=_S1(), at_seq=5, connected_org_id=grounding_org)
     assert (result.grounded, result.skipped_fresh, result.remaining) == (1, 0, 0)
     read = read_grounding_validity(session, ref.test_id, ref.version_seq)
     assert read is not None
@@ -92,30 +92,30 @@ def test_recompute_grounds_and_persists(session):
     assert read.overall == "intact"
 
 
-def test_recompute_skips_fresh(session):
+def test_recompute_skips_fresh(session, grounding_org):
     ref = _ref()
-    recompute_grounding(session, [ref], s1=_S1(), at_seq=5)          # ground at 5
-    result = recompute_grounding(session, [ref], s1=_S1(), at_seq=5)  # already fresh
+    recompute_grounding(session, [ref], s1=_S1(), at_seq=5, connected_org_id=grounding_org)          # ground at 5
+    result = recompute_grounding(session, [ref], s1=_S1(), at_seq=5, connected_org_id=grounding_org)  # already fresh
     assert (result.grounded, result.skipped_fresh) == (0, 1)
 
 
-def test_recompute_regrounds_stale(session):
+def test_recompute_regrounds_stale(session, grounding_org):
     ref = _ref()
     # pre-persist a verdict at an OLDER S1 seq (3) -> stale at seq 5.
     persist_grounding_validity(
-        session, test_id=ref.test_id, version_seq=ref.version_seq,
+        session, connected_org_id=grounding_org, test_id=ref.test_id, version_seq=ref.version_seq,
         evaluated_at_version_seq=3,
         validity=grounding_validity(ref.artifact, subjects=_S1(), vrs=_S1(),
                                     picklists=_S1()))
-    result = recompute_grounding(session, [ref], s1=_S1(), at_seq=5)
+    result = recompute_grounding(session, [ref], s1=_S1(), at_seq=5, connected_org_id=grounding_org)
     assert result.grounded == 1
     assert read_grounding_validity(
         session, ref.test_id, ref.version_seq).evaluated_at_version_seq == 5
 
 
-def test_recompute_honors_cap(session):
+def test_recompute_honors_cap(session, grounding_org):
     refs = [_ref(), _ref()]
-    result = recompute_grounding(session, refs, s1=_S1(), at_seq=5, cap=1)
+    result = recompute_grounding(session, refs, s1=_S1(), at_seq=5, cap=1, connected_org_id=grounding_org)
     assert (result.grounded, result.remaining) == (1, 1)            # one deferred
     # exactly one of the two got persisted.
     persisted = sum(
@@ -126,7 +126,7 @@ def test_recompute_honors_cap(session):
 
 # --- the S2 read + decode --------------------------------------------------
 
-def test_load_current_artifacts_decodes_claim_and_recipe(session):
+def test_load_current_artifacts_decodes_claim_and_recipe(session, grounding_org):
     coord = SemanticTransactionCoordinator()
     test_id, _ = arrange_approved_claim(session, coord)
     arrange_recipe_with_status(

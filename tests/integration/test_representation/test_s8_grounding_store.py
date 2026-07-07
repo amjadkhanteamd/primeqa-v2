@@ -57,10 +57,10 @@ def _gv(*, overall="broken", claim_verdict="intact") -> GroundingValidity:
     return GroundingValidity(claim, (rv,), overall)
 
 
-def test_persist_read_round_trip(session):
+def test_persist_read_round_trip(session, grounding_org):
     tid = uuid4()
     persist_grounding_validity(
-        session, test_id=tid, version_seq=3, evaluated_at_version_seq=17,
+        session, connected_org_id=grounding_org, test_id=tid, version_seq=3, evaluated_at_version_seq=17,
         validity=_gv(overall="broken", claim_verdict="intact"))
     session.flush()
 
@@ -78,18 +78,18 @@ def test_persist_read_round_trip(session):
     assert rv["rolled_up"] == "broken"
 
 
-def test_read_absent_is_none(session):
+def test_read_absent_is_none(session, grounding_org):
     assert read_grounding_validity(session, uuid4(), 1) is None
 
 
-def test_persist_upserts_same_claim_version(session):
+def test_persist_upserts_same_claim_version(session, grounding_org):
     tid = uuid4()
     persist_grounding_validity(
-        session, test_id=tid, version_seq=1, evaluated_at_version_seq=10,
+        session, connected_org_id=grounding_org, test_id=tid, version_seq=1, evaluated_at_version_seq=10,
         validity=_gv(overall="intact", claim_verdict="intact"))
     # re-ground the SAME claim version at a later S1 seq -> refresh, not collide.
     persist_grounding_validity(
-        session, test_id=tid, version_seq=1, evaluated_at_version_seq=20,
+        session, connected_org_id=grounding_org, test_id=tid, version_seq=1, evaluated_at_version_seq=20,
         validity=_gv(overall="broken", claim_verdict="broken"))
     session.flush()
 
@@ -100,24 +100,24 @@ def test_persist_upserts_same_claim_version(session):
     assert (read.overall, read.claim_verdict) == ("broken", "broken")
 
 
-def test_list_scopes_by_test_id(session):
+def test_list_scopes_by_test_id(session, grounding_org):
     a, b = uuid4(), uuid4()
-    persist_grounding_validity(session, test_id=a, version_seq=1,
+    persist_grounding_validity(session, connected_org_id=grounding_org, test_id=a, version_seq=1,
                                evaluated_at_version_seq=1, validity=_gv())
-    persist_grounding_validity(session, test_id=a, version_seq=2,
+    persist_grounding_validity(session, connected_org_id=grounding_org, test_id=a, version_seq=2,
                                evaluated_at_version_seq=1, validity=_gv())
-    persist_grounding_validity(session, test_id=b, version_seq=1,
+    persist_grounding_validity(session, connected_org_id=grounding_org, test_id=b, version_seq=1,
                                evaluated_at_version_seq=1, validity=_gv())
     session.flush()
     got = list_grounding_validity(session, test_id=a)
     assert {(r.test_id, r.version_seq) for r in got} == {(a, 1), (a, 2)}
 
 
-def test_list_scopes_by_overall(session):
+def test_list_scopes_by_overall(session, grounding_org):
     tid = uuid4()
-    persist_grounding_validity(session, test_id=tid, version_seq=1,
+    persist_grounding_validity(session, connected_org_id=grounding_org, test_id=tid, version_seq=1,
                                evaluated_at_version_seq=1, validity=_gv(overall="intact"))
-    persist_grounding_validity(session, test_id=tid, version_seq=2,
+    persist_grounding_validity(session, connected_org_id=grounding_org, test_id=tid, version_seq=2,
                                evaluated_at_version_seq=1, validity=_gv(overall="broken"))
     session.flush()
     broken = [r for r in list_grounding_validity(session, overall="broken")
@@ -125,10 +125,73 @@ def test_list_scopes_by_overall(session):
     assert [r.version_seq for r in broken] == [2]
 
 
-def test_list_honors_limit(session):
+def test_list_honors_limit(session, grounding_org):
     tid = uuid4()
     for seq in (1, 2, 3):
-        persist_grounding_validity(session, test_id=tid, version_seq=seq,
+        persist_grounding_validity(session, connected_org_id=grounding_org, test_id=tid, version_seq=seq,
                                    evaluated_at_version_seq=1, validity=_gv())
     session.flush()
     assert len(list_grounding_validity(session, test_id=tid, limit=2)) == 2
+
+
+# --- per-org grounding (3f Slices 2-3) -----------------------------------------
+
+def _second_org(session):
+    from sqlalchemy import text
+    return session.execute(text(
+        "INSERT INTO connected_orgs (org_type, sf_instance_url, label) "
+        "VALUES ('sandbox', 'https://s8b.example', 's8-test-org-b') "
+        "RETURNING CAST(id AS text)")).scalar()
+
+
+def test_one_verdict_per_claim_version_per_org(session, grounding_org):
+    org_b = _second_org(session)
+    tid = uuid4()
+    persist_grounding_validity(session, connected_org_id=grounding_org,
+                               test_id=tid, version_seq=1,
+                               evaluated_at_version_seq=10,
+                               validity=_gv(overall="intact", claim_verdict="intact"))
+    persist_grounding_validity(session, connected_org_id=org_b,
+                               test_id=tid, version_seq=1,
+                               evaluated_at_version_seq=20,
+                               validity=_gv(overall="broken", claim_verdict="broken"))
+    session.flush()
+    rows = session.query(S8GroundingValidity).filter_by(test_id=tid).all()
+    assert len(rows) == 2                    # one per org, not an upsert collision
+
+
+def test_org_scoped_read_and_worst_of_blind_read(session, grounding_org):
+    org_b = _second_org(session)
+    tid = uuid4()
+    persist_grounding_validity(session, connected_org_id=grounding_org,
+                               test_id=tid, version_seq=1,
+                               evaluated_at_version_seq=10,
+                               validity=_gv(overall="intact", claim_verdict="intact"))
+    persist_grounding_validity(session, connected_org_id=org_b,
+                               test_id=tid, version_seq=1,
+                               evaluated_at_version_seq=20,
+                               validity=_gv(overall="broken", claim_verdict="broken"))
+    session.flush()
+    # org-scoped: each org sees its own verdict
+    a = read_grounding_validity(session, tid, 1, connected_org_id=grounding_org)
+    b = read_grounding_validity(session, tid, 1, connected_org_id=org_b)
+    assert (a.overall, b.overall) == ("intact", "broken")
+    assert str(a.connected_org_id) == grounding_org
+    # org-blind: the WORST verdict wins (never MultipleResultsFound)
+    blind = read_grounding_validity(session, tid, 1)
+    assert blind.overall == "broken"
+
+
+def test_list_filters_by_org(session, grounding_org):
+    org_b = _second_org(session)
+    tid = uuid4()
+    persist_grounding_validity(session, connected_org_id=grounding_org,
+                               test_id=tid, version_seq=1,
+                               evaluated_at_version_seq=1, validity=_gv())
+    persist_grounding_validity(session, connected_org_id=org_b,
+                               test_id=tid, version_seq=1,
+                               evaluated_at_version_seq=1, validity=_gv())
+    session.flush()
+    got = list_grounding_validity(session, test_id=tid,
+                                  connected_org_id=grounding_org)
+    assert len(got) == 1 and str(got[0].connected_org_id) == grounding_org

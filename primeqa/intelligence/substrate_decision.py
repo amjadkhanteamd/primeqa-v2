@@ -228,13 +228,18 @@ def _current_s1_seq(session, connected_org_id=None):
         return None
 
 
-def _claim_grounding(session, coord, test_id, approved_seq):
+def _claim_grounding(session, coord, test_id, approved_seq,
+                     connected_org_id=None):
     """Grounding for the version the release ships: at the approved seq, else the
-    latest verdict when no approved version exists (the D-172 idiom)."""
+    latest verdict when no approved version exists (the D-172 idiom).
+    ``connected_org_id`` (the per-env decision path) reads THAT org's verdict;
+    ``None`` reads worst-of across orgs (identical on a single-org store)."""
     from primeqa.evolution import list_grounding_validity, read_grounding_validity
     if approved_seq is not None:
-        return read_grounding_validity(session, test_id, approved_seq)
-    rows = list_grounding_validity(session, test_id=test_id)
+        return read_grounding_validity(session, test_id, approved_seq,
+                                       connected_org_id=connected_org_id)
+    rows = list_grounding_validity(session, test_id=test_id,
+                                   connected_org_id=connected_org_id)
     return rows[-1] if rows else None
 
 
@@ -321,7 +326,8 @@ def _assemble_claim_evidence(session, external_keys, *, tenant_id=None,
         approved = coord.get_current_approved_claim(session, tid)
         approved_seq = approved.version_seq if approved is not None else None
 
-        gv = _claim_grounding(session, coord, tid, approved_seq)
+        gv = _claim_grounding(session, coord, tid, approved_seq,
+                              connected_org_id=connected_org_id)
         grounding = None
         if gv is not None:
             stale = (gv.evaluated_at_version_seq < current_seq

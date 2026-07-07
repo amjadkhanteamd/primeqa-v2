@@ -62,7 +62,7 @@ def _approved_claim(session, coord, *, key):
     return cr
 
 
-def test_superseded_version_run_is_excluded_and_flagged(session):
+def test_superseded_version_run_is_excluded_and_flagged(session, grounding_org):
     # approved at seq N; an OLDER run at seq N and a NEWER run at seq N+1 —
     # the N run counts (version-correct, not blind recency); the newer
     # mismatching run flags superseded_newer_run.
@@ -84,7 +84,7 @@ def test_superseded_version_run_is_excluded_and_flagged(session):
     assert row["never_run"] is False
 
 
-def test_null_seq_run_counts_with_version_unknown(session):
+def test_null_seq_run_counts_with_version_unknown(session, grounding_org):
     coord = SemanticTransactionCoordinator()
     cr = _approved_claim(session, coord, key="DEC-2")
     _seed_run(session, claim_test_id=cr.test_id, outcome="passed",
@@ -99,7 +99,7 @@ def test_null_seq_run_counts_with_version_unknown(session):
     assert row["grounding"] is None
 
 
-def test_only_superseded_runs_means_never_run(session):
+def test_only_superseded_runs_means_never_run(session, grounding_org):
     coord = SemanticTransactionCoordinator()
     cr = _approved_claim(session, coord, key="DEC-3")
     _seed_run(session, claim_test_id=cr.test_id, outcome="passed",
@@ -112,11 +112,11 @@ def test_only_superseded_runs_means_never_run(session):
     assert row["superseded_newer_run"] is True             # the warning still fires
 
 
-def test_grounding_staleness_vs_current_s1_version(session):
+def test_grounding_staleness_vs_current_s1_version(session, grounding_org):
     coord = SemanticTransactionCoordinator()
     cr = _approved_claim(session, coord, key="DEC-4")
     persist_grounding_validity(
-        session, test_id=cr.test_id, version_seq=cr.version_seq,
+        session, connected_org_id=grounding_org, test_id=cr.test_id, version_seq=cr.version_seq,
         evaluated_at_version_seq=5, validity=_gv(overall="intact"))
     _seed_s1_version(session, 10)                          # current S1 = 10 > 5
     session.flush()
@@ -127,12 +127,12 @@ def test_grounding_staleness_vs_current_s1_version(session):
     assert row["grounding"]["evaluated_at_version_seq"] == 5
 
 
-def test_grounding_fresh_when_evaluated_at_current(session):
+def test_grounding_fresh_when_evaluated_at_current(session, grounding_org):
     coord = SemanticTransactionCoordinator()
     cr = _approved_claim(session, coord, key="DEC-5")
     _seed_s1_version(session, 7)
     persist_grounding_validity(
-        session, test_id=cr.test_id, version_seq=cr.version_seq,
+        session, connected_org_id=grounding_org, test_id=cr.test_id, version_seq=cr.version_seq,
         evaluated_at_version_seq=7, validity=_gv(overall="broken", claim_verdict="broken"))
     session.flush()
 
@@ -141,7 +141,7 @@ def test_grounding_fresh_when_evaluated_at_current(session):
     assert row["grounding"]["stale"] is False
 
 
-def test_unapproved_claim_counts_any_version_run(session):
+def test_unapproved_claim_counts_any_version_run(session, grounding_org):
     # no approved version → no reference seq: the latest run counts unfiltered
     # and grounding falls back to the latest verdict (the D-172 idiom).
     coord = SemanticTransactionCoordinator()
@@ -154,7 +154,7 @@ def test_unapproved_claim_counts_any_version_run(session):
         session, actor="s3", test_id=cr.test_id,
         external_system="jira", external_key="DEC-6", link_kind="generated_from")
     persist_grounding_validity(
-        session, test_id=cr.test_id, version_seq=cr.version_seq,
+        session, connected_org_id=grounding_org, test_id=cr.test_id, version_seq=cr.version_seq,
         evaluated_at_version_seq=3, validity=_gv(overall="drifted"))
     _seed_run(session, claim_test_id=cr.test_id, outcome="errored",
               finished_at="2026-06-01T10:00:00+00:00",
@@ -168,7 +168,7 @@ def test_unapproved_claim_counts_any_version_run(session):
     assert row["superseded_newer_run"] is False            # no reference seq
 
 
-def test_unknown_key_yields_empty(session):
+def test_unknown_key_yields_empty(session, grounding_org):
     assert _assemble_claim_evidence(session, ["NO-SUCH-KEY"]) == []
 
 
@@ -192,13 +192,13 @@ def test_wrapper_best_effort_bad_tenant():
 # the recommendation comes out right, both directions (D-198 slice 4).
 # ---------------------------------------------------------------------------
 
-def test_e2e_clean_evidence_yields_go(session):
+def test_e2e_clean_evidence_yields_go(session, grounding_org):
     from primeqa.intelligence.substrate_decision import compute_substrate_decision
     coord = SemanticTransactionCoordinator()
     cr = _approved_claim(session, coord, key="E2E-GO")
     _seed_s1_version(session, 4)
     persist_grounding_validity(
-        session, test_id=cr.test_id, version_seq=cr.version_seq,
+        session, connected_org_id=grounding_org, test_id=cr.test_id, version_seq=cr.version_seq,
         evaluated_at_version_seq=4, validity=_gv(overall="intact"))
     _seed_run(session, claim_test_id=cr.test_id, outcome="passed",
               finished_at="2026-06-10T09:00:00+00:00",
@@ -218,13 +218,13 @@ def test_e2e_clean_evidence_yields_go(session):
     assert out["risk"]["level"] == "low"
 
 
-def test_e2e_broken_grounding_and_failed_run_yields_no_go(session):
+def test_e2e_broken_grounding_and_failed_run_yields_no_go(session, grounding_org):
     from primeqa.intelligence.substrate_decision import compute_substrate_decision
     coord = SemanticTransactionCoordinator()
     cr = _approved_claim(session, coord, key="E2E-NOGO")
     _seed_s1_version(session, 4)
     persist_grounding_validity(
-        session, test_id=cr.test_id, version_seq=cr.version_seq,
+        session, connected_org_id=grounding_org, test_id=cr.test_id, version_seq=cr.version_seq,
         evaluated_at_version_seq=4,
         validity=_gv(overall="broken", claim_verdict="broken"))
     _seed_run(session, claim_test_id=cr.test_id, outcome="failed",

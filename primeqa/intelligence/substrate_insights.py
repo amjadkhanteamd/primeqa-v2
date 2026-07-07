@@ -90,6 +90,9 @@ def _grounding_dict(r) -> dict:
     return {"test_id": str(r.test_id), "version_seq": r.version_seq,
             "evaluated_at_version_seq": r.evaluated_at_version_seq,
             "overall": r.overall, "claim_verdict": r.claim_verdict,
+            # Per-org grounding (3f): which org this verdict grounds against.
+            "connected_org_id": (str(r.connected_org_id)
+                                 if r.connected_org_id else None),
             # D-170 4c: the rich "why drifted/broke" — claim_grounding{reason,
             # unresolved}, recipe_verdicts[{recipe_grounding, field_value{invalid},
             # rolled_up}]. Already a JSON-safe dict (the stored JSONB).

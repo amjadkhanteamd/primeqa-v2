@@ -59,17 +59,26 @@ def test_failure_cause_surfaces_interpretations_and_clusters(conn, seed):
 
 
 def test_grounding_drift_only_drifted_and_broken(conn, seed):
+    from sqlalchemy import text
     session = Session(bind=conn)
+    org = session.execute(text(
+        "INSERT INTO connected_orgs (org_type, sf_instance_url, label) "
+        "VALUES ('sandbox', 'https://s8.example', 's8-org') "
+        "RETURNING CAST(id AS text)")).scalar()
     persist_grounding_validity(session, test_id=uuid4(), version_seq=1,
-                               evaluated_at_version_seq=5, validity=_gv(overall="drifted"))
+                               evaluated_at_version_seq=5, validity=_gv(overall="drifted"),
+                               connected_org_id=org)
     persist_grounding_validity(session, test_id=uuid4(), version_seq=1,
-                               evaluated_at_version_seq=5, validity=_gv(overall="broken"))
+                               evaluated_at_version_seq=5, validity=_gv(overall="broken"),
+                               connected_org_id=org)
     persist_grounding_validity(session, test_id=uuid4(), version_seq=1,
-                               evaluated_at_version_seq=5, validity=_gv(overall="intact"))
+                               evaluated_at_version_seq=5, validity=_gv(overall="intact"),
+                               connected_org_id=org)
     session.flush()
     items = retrieve_grounding_drift(None, session, _CTX)
     assert {it.data["overall"] for it in items} == {"drifted", "broken"}   # intact excluded
     assert all(it.source == "S8" and it.kind == "grounding_validity" for it in items)
+    assert all(it.data["connected_org_id"] == org for it in items)   # org rides the citation
 
 
 def test_impact_walks_object_inbound_edges(conn, seed):

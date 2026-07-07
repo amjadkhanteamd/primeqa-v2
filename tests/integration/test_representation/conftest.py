@@ -350,3 +350,19 @@ def _verify_substrate2_schema(engine, db_setup):
             f"after alembic upgrade head: {sorted(missing)}. "
             f"Inspect the migration output."
         )
+
+
+# ---------------------------------------------------------------------------
+# Per-org S8 grounding (3f): an org identity for org-keyed grounding writes
+# ---------------------------------------------------------------------------
+
+
+@pytest.fixture()
+def grounding_org(session):
+    """A ``connected_orgs`` row on the per-test rollback session —
+    ``persist_grounding_validity`` requires an org identity since the
+    3f per-org re-key. Returns the org id as text."""
+    return session.execute(text(
+        "INSERT INTO connected_orgs (org_type, sf_instance_url, label) "
+        "VALUES ('sandbox', 'https://s8.example', 's8-test-org') "
+        "RETURNING CAST(id AS text)")).scalar()

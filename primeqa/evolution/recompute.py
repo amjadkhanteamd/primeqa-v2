@@ -79,19 +79,23 @@ def load_current_artifacts(session) -> list[ArtifactRef]:
 
 
 def recompute_grounding(
-    session, artifact_refs, *, s1, at_seq: int, cap: int = _DEFAULT_CAP,
+    session, artifact_refs, *, s1, at_seq: int, connected_org_id,
+    cap: int = _DEFAULT_CAP,
 ) -> RecomputeResult:
     """Recompute + persist grounding-validity for the stale artifacts among
-    ``artifact_refs`` (the testable core — ``s1`` is the injected tri-port).
+    ``artifact_refs`` (the testable core — ``s1`` is the injected tri-port,
+    org-bound; ``connected_org_id`` keys the persisted verdicts to that org).
 
-    Per ref: **fresh** (a store row at ``at_seq``) → skip; **stale / absent** →
-    ground via :func:`grounding_validity` (``s1`` serves all three ports) +
-    :func:`persist_grounding_validity`, up to ``cap`` groundings. Stale refs left
-    past the cap are counted ``remaining`` (resumed next tick) — never silently
-    dropped."""
+    Per ref: **fresh** (a store row for this org at ``at_seq``) → skip;
+    **stale / absent** → ground via :func:`grounding_validity` (``s1`` serves
+    all three ports) + :func:`persist_grounding_validity`, up to ``cap``
+    groundings. Stale refs left past the cap are counted ``remaining``
+    (resumed next tick) — never silently dropped. The cap is per-org: each
+    org's grounding resumes independently."""
     grounded = skipped_fresh = remaining = 0
     for ref in artifact_refs:
-        existing = read_grounding_validity(session, ref.test_id, ref.version_seq)
+        existing = read_grounding_validity(session, ref.test_id, ref.version_seq,
+                                           connected_org_id=connected_org_id)
         if existing is not None and existing.evaluated_at_version_seq == at_seq:
             skipped_fresh += 1
             continue
@@ -102,7 +106,8 @@ def recompute_grounding(
             ref.artifact, subjects=s1, vrs=s1, picklists=s1)
         persist_grounding_validity(
             session, test_id=ref.test_id, version_seq=ref.version_seq,
-            evaluated_at_version_seq=at_seq, validity=validity)
+            evaluated_at_version_seq=at_seq, validity=validity,
+            connected_org_id=connected_org_id)
         grounded += 1
     if remaining:
         log.info("s8 recompute: %d grounded, %d deferred past cap=%d",
@@ -110,70 +115,71 @@ def recompute_grounding(
     return RecomputeResult(grounded, skipped_fresh, remaining)
 
 
-# 3f Slice 1 — the multi-org fail-loud guardrail. Today's recompute reads the
-# org-BLIND model (``SemanticOrgModel(conn)`` with no org), so a tenant with >1
-# connected org that has a model would silently ground claims against a BLEND of
-# all its orgs — wrong for any org-divergent claim (e.g. an object present in org A
-# but absent in org B grounds 'intact' off the union). Until per-org grounding
-# lands (3f Slices 2-3), refuse rather than blend.
-_ORG_COUNT_SQL = text(
-    "SELECT COUNT(DISTINCT connected_org_id) FROM entities "
-    "WHERE valid_to_seq IS NULL AND connected_org_id IS NOT NULL")
+# 3f Slices 2-3 — per-org grounding. Grounding is fundamentally per-org (a
+# claim's field/VR/picklist existence depends on ONE org's model), so the
+# recompute loops the orgs-with-model, grounding each claim against each org's
+# own model + latest seq and keying the verdict to that org. This replaces the
+# D-265 Slice-1 guardrail, which refused multi-org tenants outright (clearing
+# their rows every tick) — refusal was the stopgap; the loop is the fix.
+_ORGS_WITH_MODEL_SQL = text(
+    "SELECT DISTINCT CAST(connected_org_id AS text) FROM entities "
+    "WHERE valid_to_seq IS NULL AND connected_org_id IS NOT NULL ORDER BY 1")
+
+_PRUNE_DEPARTED_SQL = text(
+    "DELETE FROM s8_grounding_validity "
+    "WHERE CAST(connected_org_id AS text) != ALL(:orgs)")
 
 
-def _count_orgs_with_model(conn) -> int:
-    """How many connected orgs have a live model (active entities) in this tenant.
-    ``> 1`` ⇒ an org-blind grounding pass would BLEND them."""
-    return int(conn.execute(_ORG_COUNT_SQL).scalar() or 0)
+def _orgs_with_model(conn) -> list[str]:
+    """The connected orgs with a live model (active entities) in this tenant."""
+    return [r[0] for r in conn.execute(_ORGS_WITH_MODEL_SQL)]
 
 
-def _invalidate_blend_grounding(conn) -> int:
-    """Clear the tenant's grounding rows — on a multi-org tenant they were computed
-    org-blind (against the BLEND), so they're untrustworthy. DELETE (not an
-    out-of-domain ``overall='unknown'`` flag) keeps ``overall`` inside its declared
-    domain {intact,drifted,broken}; every consumer treats a MISSING row as 'not
-    grounded' gracefully (``read_grounding_validity`` → None, ``list`` omits it, the
-    decision engine's grounding read → PASS / no blocker). Returns rows cleared;
-    idempotent (a second call clears 0)."""
-    return int(conn.execute(text("DELETE FROM s8_grounding_validity")).rowcount or 0)
+def _prune_departed_org_grounding(conn, orgs) -> int:
+    """Drop verdicts keyed to an org that no longer has a live model — they are
+    unverifiable against anything (replaces D-265's blanket blend-clear).
+    Returns rows cleared; idempotent."""
+    if not orgs:
+        return int(conn.execute(
+            text("DELETE FROM s8_grounding_validity")).rowcount or 0)
+    return int(conn.execute(_PRUNE_DEPARTED_SQL, {"orgs": orgs}).rowcount or 0)
 
 
 def recompute_tenant_grounding(tenant_id: int, *, cap: int = _DEFAULT_CAP) -> int:
-    """The production wrapper: open a tenant-scoped connection, build the tri-port
-    reader pinned at the current S1 seq, and recompute. A tenant with no S1
-    versions yet (``VersionNotFoundError``) has nothing to ground → 0. Returns the
-    number (re)grounded. The connection context owns the commit.
-
-    **3f Slice 1 guardrail.** Before building the org-blind model: if the tenant has
-    >1 connected org with a model, REFUSE — clear the stale blend rows + return 0
-    without recomputing (the org-blind blend would be wrong for divergent claims,
-    and the decision engine reads this store). A single-org (or zero-org) tenant is
-    unaffected: grounding proceeds exactly as before."""
+    """The production wrapper: open a tenant-scoped connection and recompute
+    grounding PER ORG — for each org with a live model, an org-bound tri-port
+    reader pinned at THAT ORG's latest S1 seq grounds the tenant's claims and
+    persists org-keyed verdicts. Claims are tenant-level (org-independent), so
+    one artifact load serves every org. Verdicts for departed orgs are pruned
+    first. A tenant with no orgs-with-model grounds nothing (an org-less pass
+    would be exactly the blend D-265 refused). An org whose versions are gone
+    (``VersionNotFoundError``) is skipped. Returns the total (re)grounded; the
+    connection context owns the commit. ``cap`` applies per org — each org
+    resumes independently across ticks."""
     from sqlalchemy.orm import Session
 
     from primeqa.semantic.connection import get_tenant_connection
     from primeqa.semantic.query import SemanticOrgModel, VersionNotFoundError
 
     with get_tenant_connection(tenant_id) as conn:
-        org_count = _count_orgs_with_model(conn)
-        if org_count > 1:
-            cleared = _invalidate_blend_grounding(conn)
-            log.error(
-                "s8 grounding: tenant %s has %d orgs with a model — org-blind "
-                "grounding would blend them; REFUSING + cleared %d stale blend "
-                "row(s). Per-org grounding pending (3f Slices 2-3).",
-                tenant_id, org_count, cleared)
+        orgs = _orgs_with_model(conn)
+        _prune_departed_org_grounding(conn, orgs)
+        if not orgs:
             return 0
-        model = SemanticOrgModel(conn)
-        try:
-            at_seq = model.current_version_seq()
-        except VersionNotFoundError:
-            return 0
-        s1 = S8S1Reader(model, at_seq=at_seq)
         session = Session(bind=conn)
         refs = load_current_artifacts(session)
-        result = recompute_grounding(session, refs, s1=s1, at_seq=at_seq, cap=cap)
-        return result.grounded
+        total = 0
+        for org in orgs:
+            model = SemanticOrgModel(conn, connected_org_id=org)
+            try:
+                at_seq = model.current_version_seq()
+            except VersionNotFoundError:
+                continue                      # org has entities but no version
+            s1 = S8S1Reader(model, at_seq=at_seq)
+            result = recompute_grounding(session, refs, s1=s1, at_seq=at_seq,
+                                         connected_org_id=org, cap=cap)
+            total += result.grounded
+        return total
 
 
 def run_s8_grounding_tick(tenant_ids, *, cap: int = _DEFAULT_CAP) -> dict:

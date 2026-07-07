@@ -40,7 +40,7 @@ def _seed_run(session, *, claim_test_id, outcome, finished_at):
          "o": outcome, "f": finished_at})
 
 
-def test_assemble_release_substrate_rolls_up(session):
+def test_assemble_release_substrate_rolls_up(session, grounding_org):
     coord = SemanticTransactionCoordinator()
     cr = coord.write_claim(
         session, actor="s3", test_id=None,
@@ -51,7 +51,7 @@ def test_assemble_release_substrate_rolls_up(session):
         session, actor="s3", test_id=cr.test_id,
         external_system="jira", external_key="REL-1", link_kind="generated_from")
     persist_grounding_validity(
-        session, test_id=cr.test_id, version_seq=cr.version_seq,
+        session, connected_org_id=grounding_org, test_id=cr.test_id, version_seq=cr.version_seq,
         evaluated_at_version_seq=5, validity=_gv(overall="drifted", claim_verdict="broken"))
     # approve so the rollup grounds the APPROVED version (the 5a review fix), not
     # the newest (possibly-draft) version.
@@ -72,7 +72,7 @@ def test_assemble_release_substrate_rolls_up(session):
     assert a["evaluated_at_version_seq"] == 5      # grounded the APPROVED version
 
 
-def test_assemble_empty_for_unknown_key(session):
+def test_assemble_empty_for_unknown_key(session, grounding_org):
     out = _assemble_release_substrate(session, ["NO-SUCH-REL"])
     assert out["claim_count"] == 0 and out["at_risk"] == []
 
