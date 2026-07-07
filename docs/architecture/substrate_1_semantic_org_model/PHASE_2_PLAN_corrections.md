@@ -1455,6 +1455,36 @@ edge-count probe (0 → ~N; `Account.Industry` → its SVS; a value-
 customized field stays unlinked) is the slice exit-gate, before
 the phase merge.
 
+**UPDATE (D-334, 2026-07-07) — inline CUSTOM picklists are now
+CAPTURED, reversing the "true absence" carve-out above.** The §22
+analysis called an inline-picklist custom field a "true absence"
+("there is genuinely no PicklistValueSet to point at"). That
+conflated *not shared* with *does not exist*: an inline value set is
+field-LOCAL, not absent — the Tooling `CustomField.Metadata.
+valueSet.valueSetDefinition.value` list carries its values (live-
+verified on env-59's `Opportunity.Loan_Type__c` → Home / Personal /
+Business), and every accepted-values consumer (S3 grounding + the
+D-332 picklist bind, S4 k16 padding, S8 field-value grounding) needs
+those values regardless of sharing. Leaving them absent kept
+`field_details.picklist_value_set_entity_id` NULL for all 47 inline
+custom picklists on env-59, so the D-332 bind could never fire for
+them (req-302's two acceptance claims stayed red with
+`INVALID_OR_NULL_FOR_RESTRICTED_PICKLIST` — 'Home Loan' staged where
+the org holds 'Home'). `phase_field` now materializes a **field-local
+PicklistValueSet** anchor per inline picklist (external_id
+`INLINE:{Object}.{Field}`, `_source='CustomFieldInline'`) plus one
+PicklistValue child per `valueSetDefinition` value, then sets the
+SAME `_value_set_external_id` marker the §10 GVS path uses — so the
+detail column, the `HAS_PICKLIST_VALUES` edge, and every 2-hop read
+work identically to a GVS-backed field. The anchor payload is
+identity-only (`{FullName, _source}`) so its entity_id is stable
+across value edits; value adds/edits supersede only the PV children.
+The `custom=False` guard on the §22 SVS content-match still holds —
+inline customs carry the INLINE marker before that branch, and
+standard fields keep their SVS link. Only the "inline custom = no
+edge" clause is retired; the SVS content-match resolution (D-118)
+above is unchanged. See DECISIONS_LOG D-334.
+
 ## §23: Enrichment queue worker — RESOLVED
 
 Date: 2026-05-14

@@ -113,23 +113,22 @@ def _field_has_relationship_to_targets(normalized: dict) -> list[str]:
 
 
 def _field_has_picklist_values_targets(normalized: dict) -> list[str]:
-    """Field → PicklistValueSet when the field is a picklist whose
-    value-set is a named (GVS-backed) set.
+    """Field → PicklistValueSet when the field's value set is modeled.
 
     `phase_field` decorates each field payload with a
-    `_value_set_external_id` marker when the field's Tooling
-    CustomField Metadata.valueSet.valueSetName is populated — i.e.
-    the picklist draws on a GlobalValueSet (the PicklistValueSet
-    external_id is that GVS FullName, unprefixed). The marker
-    survives `_strip_volatile` (not in _VOLATILE_KEYS) and lands in
-    the normalized payload.
+    `_value_set_external_id` marker for three sources:
+      - GVS-backed custom picklists: Tooling CustomField
+        Metadata.valueSet.valueSetName (the GVS FullName, unprefixed)
+      - inline custom picklists: the field-local anchor phase_field
+        materializes itself ('INLINE:{Object}.{Field}')
+      - standard picklists content-matched to an SVS per D-118
+        ('SVS:'-prefixed)
+    The marker survives `_strip_volatile` (not in _VOLATILE_KEYS) and
+    lands in the normalized payload.
 
-    Fields with no marker get no edge:
-      - non-picklist fields (the marker is never set)
-      - inline-picklist fields (valueSetName is None → no shared
-        PicklistValueSet entity exists to point at — same scope
-        boundary §10 documents)
-      - standard picklist fields (SVS detection deferred per §22)
+    Fields with no marker get no edge: non-picklist fields, inline
+    custom picklists whose valueSetDefinition came back empty, and
+    standard picklists with no exact SVS content-match.
 
     Returns a single-element list or empty. One PicklistValueSet
     per picklist field — cardinality is 1:1, matching

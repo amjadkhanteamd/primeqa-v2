@@ -56,10 +56,12 @@ def _to_presentation_picklist_value_set(
 ) -> dict[str, Any]:
     """Map normalized PicklistValueSet to semantic_text input shape.
 
-    Substrate-1 unifies GlobalValueSet + StandardValueSet under one
-    PicklistValueSet entity_type (per corrections-log §8). The
-    `_source` marker on the normalized payload selects the branch:
-    `'GlobalValueSet'` (default) or `'StandardValueSet'`.
+    Substrate-1 unifies GlobalValueSet + StandardValueSet + field-local
+    inline value sets under one PicklistValueSet entity_type (per
+    corrections-log §8; inline added with the phase_field inline-capture
+    slice). The `_source` marker on the normalized payload selects the
+    branch: `'GlobalValueSet'` (default), `'CustomFieldInline'`, or
+    `'StandardValueSet'`.
 
     Field mapping (verified against substrate-1's
     _picklist_value_set_fixture + _to_text_picklist_value_set):
@@ -92,6 +94,25 @@ def _to_presentation_picklist_value_set(
             "is_restricted": True,
             "is_global_value_set": True,
             "description": normalized.get("Description"),
+        }
+    if source == "CustomFieldInline":
+        # Field-local inline value set (phase_field anchor): FullName is
+        # the qualified field api name — it doubles as the label (the
+        # identity-only anchor payload carries no MasterLabel). Not a
+        # global set; is_restricted keeps the GVS/SVS hardcode (the
+        # actual `restricted` flag is deliberately NOT in the anchor
+        # payload — it would churn the anchor's identity hash — and the
+        # describe-side restrictedPicklist already rides the Field
+        # entity).
+        return {
+            "name": normalized.get("FullName"),
+            "label": normalized.get("FullName"),
+            "is_restricted": True,
+            "is_global_value_set": False,
+            "description": (
+                "Inline (field-local) value set of custom picklist field "
+                f"{normalized.get('FullName')}"
+            ),
         }
     # StandardValueSet branch — FullName ≈ MasterLabel for catalog
     # entries; both surface in the Tooling response. Description is

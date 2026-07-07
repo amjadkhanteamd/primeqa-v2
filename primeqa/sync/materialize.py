@@ -333,10 +333,18 @@ def _extract_external_id(entity_type: str, raw: dict[str, Any]) -> str:
             (e.g., 'SVS:AccountSource'). The 'SVS:' prefix prevents
             collisions between a customer-named GVS (e.g.,
             'Industry') and the SVS catalog entry of the same name.
+          - CustomFieldInline: f"INLINE:{raw['FullName']}" where
+            FullName is the qualified field api name (e.g.,
+            'INLINE:Opportunity.Loan_Type__c') — a field-local value
+            set materialized by phase_field from the CustomField
+            Metadata.valueSet.valueSetDefinition. Same prefix
+            pattern as SVS: keeps the three sources' namespaces
+            disjoint.
     PicklistValue: composite — f"{parent_external_id}.{valueName}"
-        (e.g., 'SVS:AccountType.Analyst' or 'MyGVS.Banking').
+        (e.g., 'SVS:AccountType.Analyst' or 'MyGVS.Banking' or
+        'INLINE:Opportunity.Loan_Type__c.Home').
         Parent external_id is namespaced consistently with the
-        PVS source, so PicklistValue external_ids inherit GVS/SVS
+        PVS source, so PicklistValue external_ids inherit the
         collision-avoidance automatically.
 
     Other types added by their respective phase cycles. KeyError
@@ -348,6 +356,10 @@ def _extract_external_id(entity_type: str, raw: dict[str, Any]) -> str:
         source = raw.get("_source", "GlobalValueSet")
         if source == "GlobalValueSet":
             return raw["FullName"]
+        if source == "CustomFieldInline":
+            # Field-local inline value set — prefix keeps it disjoint
+            # from customer GVS names and the SVS: namespace.
+            return f"INLINE:{raw['FullName']}"
         # StandardValueSet — prefix to avoid GVS/SVS namespace collision.
         return f"SVS:{raw['FullName']}"
     if entity_type == "PicklistValue":

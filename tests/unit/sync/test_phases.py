@@ -875,10 +875,14 @@ class TestPhaseField:
             ['00N_tier'],
         )
 
-    def test_phase_field_no_marker_for_inline_picklist(self) -> None:
-        """§10: a custom picklist field whose Metadata.valueSet.
-        valueSetName is None (inline value set) gets NO marker — there
-        is no shared PicklistValueSet entity to point at."""
+    def test_phase_field_no_marker_for_inline_picklist_with_empty_definition(
+        self,
+    ) -> None:
+        """Inline capture: a custom picklist whose valueSetName is None
+        AND whose valueSetDefinition has no usable values gets NO marker
+        and NO anchor — there is nothing to materialize. (Inline
+        picklists WITH values get a field-local anchor — see
+        test_phase_field_materializes_inline_value_set.)"""
         ctx, conn = self._ctx_with_objects([('obj-acc', 'Account')])
         ctx.sf_client.fetch_fields_for_objects_bulk.return_value = {
             'Account': [{'name': 'Stage__c', 'type': 'picklist'}],
@@ -894,8 +898,62 @@ class TestPhaseField:
              patch('primeqa.sync.phases.materialize_edges_for_entities'):
             mock_bm.return_value = {'Account.Stage__c': 'fld-1'}
             phase_field(ctx, conn)
+        # Only the Field materialize ran — no PVS/PV anchor calls.
+        mock_bm.assert_called_once()
         payload = mock_bm.call_args.kwargs['raw_payloads'][0]
         assert '_value_set_external_id' not in payload
+
+    def test_phase_field_materializes_inline_value_set(self) -> None:
+        """Inline capture: a custom picklist whose valueSetName is None
+        but whose valueSetDefinition carries values gets (1) a
+        field-local PicklistValueSet anchor (identity-only payload,
+        _source='CustomFieldInline'), (2) one PicklistValue payload per
+        value with the INLINE:-prefixed parent marker, (3) the
+        _value_set_external_id marker on the field payload — in that
+        materialize order, so the Field detail mapper can resolve the
+        anchor. Shape mirrors the live env-59 Opportunity.Loan_Type__c
+        Tooling response."""
+        ctx, conn = self._ctx_with_objects([('obj-opp', 'Opportunity')])
+        ctx.sf_client.fetch_fields_for_objects_bulk.return_value = {
+            'Opportunity': [{'name': 'Loan_Type__c', 'type': 'picklist'}],
+        }
+        ctx.sf_client.fetch_custom_field_id_map.return_value = {
+            ('Opportunity', 'Loan_Type__c'): '00N_loan',
+        }
+        ctx.sf_client.fetch_custom_field_metadata.return_value = {
+            '00N_loan': {'valueSet': {
+                'valueSetName': None,
+                'restricted': True,
+                'valueSetDefinition': {'sorted': False, 'value': [
+                    {'valueName': 'Home', 'label': 'Home',
+                     'default': False, 'isActive': None},
+                    {'valueName': 'Personal', 'label': 'Personal',
+                     'default': False, 'isActive': None},
+                ]},
+            }},
+        }
+        with patch('primeqa.sync.phases.batched_materialize') as mock_bm, \
+             patch('primeqa.sync.phases.materialize_edges_for_entities'):
+            mock_bm.return_value = {'Opportunity.Loan_Type__c': 'fld-1'}
+            phase_field(ctx, conn)
+        calls = mock_bm.call_args_list
+        assert [c.kwargs['entity_type'] for c in calls] == [
+            'PicklistValueSet', 'PicklistValue', 'Field',
+        ]
+        anchor = calls[0].kwargs['raw_payloads'][0]
+        assert anchor == {'FullName': 'Opportunity.Loan_Type__c',
+                          '_source': 'CustomFieldInline'}
+        pv_payloads = calls[1].kwargs['raw_payloads']
+        assert [p['valueName'] for p in pv_payloads] == ['Home', 'Personal']
+        assert all(
+            p['_parent_external_id'] == 'INLINE:Opportunity.Loan_Type__c'
+            for p in pv_payloads
+        )
+        assert [p['_sort_order'] for p in pv_payloads] == [0, 1]
+        field_payload = calls[2].kwargs['raw_payloads'][0]
+        assert field_payload['_value_set_external_id'] == (
+            'INLINE:Opportunity.Loan_Type__c'
+        )
 
     def test_phase_field_standard_picklist_not_fetched(self) -> None:
         """§10 (1B filter): a standard picklist field doesn't appear in

@@ -659,6 +659,13 @@ class TestExtractExternalId:
          {"_source": "StandardValueSet",
           "FullName": "Industry"},  # collision-prone catalog name
          "SVS:Industry"),
+        # _source='CustomFieldInline' — namespaced with INLINE: prefix
+        # (field-local value set materialized by phase_field; FullName
+        # is the qualified field api name).
+        ("PicklistValueSet",
+         {"_source": "CustomFieldInline",
+          "FullName": "Opportunity.Loan_Type__c"},
+         "INLINE:Opportunity.Loan_Type__c"),
         # PicklistValue: composite external_id, parent prefix from
         # _parent_external_id marker (which already inherits SVS:
         # prefix for StandardValueSet sources).
@@ -666,6 +673,10 @@ class TestExtractExternalId:
          {"_parent_external_id": "SVS:AccountType",
           "valueName": "Analyst"},
          "SVS:AccountType.Analyst"),
+        ("PicklistValue",
+         {"_parent_external_id": "INLINE:Opportunity.Loan_Type__c",
+          "valueName": "Home"},
+         "INLINE:Opportunity.Loan_Type__c.Home"),
         ("PicklistValue",
          {"_parent_external_id": "MyCustomGVS",
           "valueName": "Banking"},

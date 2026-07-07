@@ -195,15 +195,18 @@ def _map_field_details(
       picklist_value_set_entity_id  ← resolved from the
                                       _value_set_external_id marker
                                       phase_field injects on
-                                      GVS-backed custom picklist
-                                      fields (corrections-log §10).
-                                      NULL for non-picklist fields,
-                                      inline-picklist fields, and
-                                      standard picklist fields (the
-                                      marker is only set when the
-                                      Tooling CustomField
-                                      Metadata.valueSet.valueSetName
-                                      is populated). Resolver returns
+                                      GVS-backed custom picklists
+                                      (corrections-log §10), inline
+                                      custom picklists (the
+                                      'INLINE:'-prefixed field-local
+                                      anchor phase_field
+                                      materializes), and SVS
+                                      content-matched standard
+                                      picklists (D-118). NULL for
+                                      non-picklist fields and for
+                                      picklists with no modeled set
+                                      (empty valueSetDefinition; no
+                                      SVS match). Resolver returns
                                       None if the PicklistValueSet
                                       isn't in the synced set — that's
                                       OK, the column is nullable and

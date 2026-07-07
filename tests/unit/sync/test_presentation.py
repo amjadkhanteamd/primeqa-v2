@@ -203,6 +203,22 @@ class TestToPresentationPicklistValueSet:
         assert presentation["is_global_value_set"] is False
         assert presentation["description"] is None
 
+    def test_to_presentation_picklist_value_set_inline_source(self) -> None:
+        """`_source='CustomFieldInline'` selects the field-local branch:
+        name AND label are the qualified field api name (the identity-only
+        anchor payload carries no MasterLabel), is_global_value_set=False,
+        and the description names the owning field."""
+        normalized = {
+            "_source": "CustomFieldInline",
+            "FullName": "Opportunity.Loan_Type__c",
+        }
+        presentation = _to_presentation_picklist_value_set(normalized)
+        assert presentation["name"] == "Opportunity.Loan_Type__c"
+        assert presentation["label"] == "Opportunity.Loan_Type__c"
+        assert presentation["is_restricted"] is True
+        assert presentation["is_global_value_set"] is False
+        assert "Opportunity.Loan_Type__c" in presentation["description"]
+
     def test_to_presentation_picklist_value_set_svs_ignores_description_in_payload(
         self,
     ) -> None:

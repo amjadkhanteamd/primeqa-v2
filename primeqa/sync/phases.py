@@ -448,10 +448,32 @@ def phase_field(ctx: SyncContext, conn: Any) -> PhaseResult:
     `_value_set_external_id` marker. _map_field_details reads the
     same marker into field_details.picklist_value_set_entity_id;
     the HAS_PICKLIST_VALUES edge extractor reads it for the edge.
-    Inline-picklist custom fields (valueSetName None) get no marker
-    → no edge (a true absence per §22). Standard picklist fields are
-    linked to their StandardValueSet by the §22 content-match (D-118,
-    step 2c-bis below) — exact set-equality, fail-closed.
+    Inline-picklist custom fields (valueSetName None,
+    valueSetDefinition populated) get a FIELD-LOCAL PicklistValueSet
+    materialized by THIS phase (step 2c / 2d below): an anchor
+    entity with external_id 'INLINE:{Object}.{Field}' plus one
+    PicklistValue child per valueSetDefinition value, then the same
+    _value_set_external_id marker — so the detail column, the edge,
+    and every 2-hop consumer (S3 grounding metadata, S4 k16 padding,
+    S8 field-value grounding) work identically to GVS-backed fields.
+    (Until this slice, inline values were fetched and DROPPED —
+    field_details.picklist_value_set_entity_id stayed NULL and the
+    D-332 picklist-value bind could never fire for them.) Standard
+    picklist fields are linked to their StandardValueSet by the §22
+    content-match (D-118, step 2c-bis below) — exact set-equality,
+    fail-closed.
+
+    Inline-anchor identity: the anchor payload is IDENTITY-ONLY
+    ({FullName, _source} — the values are NOT in the anchor payload),
+    so the anchor entity_id is stable across value edits. Value
+    adds/edits supersede only the PicklistValue children (whose
+    payloads carry valueName/label/isActive), and the Field's own
+    describe payload changes too (picklistValues is part of it), so
+    the field_details pointer re-resolves on the same run. A value
+    hard-DELETED from the org leaves a stale-active PV row — the
+    same known limitation as GVS/SVS values (no deletion reconcile
+    on synthetic-id types; sf_id IS NULL keeps them out of
+    reconcile_deletions_by_sf_id by design).
 
     High-cardinality phase: 146 Objects × ~30-150 fields each
     ≈ 4500-15000 Field entities + ≈ same BELONGS_TO + ~500-1500
@@ -543,7 +565,16 @@ def phase_field(ctx: SyncContext, conn: Any) -> PhaseResult:
             "that skipped the PicklistValueSet phase."
         )
 
+    from primeqa.integrations.sf_client import (
+        extract_picklist_value_payloads_from_metadata,
+    )
+
     field_payloads: list[dict[str, Any]] = []
+    # Inline (field-local) value sets discovered in this pass — anchors
+    # + their value children, materialized in step 2d BEFORE the Field
+    # materialize so make_parent_resolver can resolve the marker.
+    inline_pvs_payloads: list[dict[str, Any]] = []
+    inline_pv_payloads: list[dict[str, Any]] = []
     for object_api_name, fields in fields_by_object.items():
         for f in fields:
             f["_parent_object_api_name"] = object_api_name
@@ -555,13 +586,40 @@ def phase_field(ctx: SyncContext, conn: Any) -> PhaseResult:
                 value_set_name = value_set.get("valueSetName")
                 if value_set_name:
                     # GVS-backed: the value-set is a shared
-                    # GlobalValueSet. Inline picklists have
-                    # valueSetName None → no marker → no edge.
+                    # GlobalValueSet.
                     f["_value_set_external_id"] = value_set_name
-            # Standard picklist fields (custom=False, no GVS marker): try the
-            # §22 content-match. The custom guard excludes inline CUSTOM
-            # picklists — their values aren't a shared set (a "true absence"
-            # per §22), so they must never be false-linked to an SVS.
+                else:
+                    # Inline (field-local) value set: valueSetName is
+                    # None and the values live in Metadata.valueSet.
+                    # valueSetDefinition.value — same {valueName,
+                    # label, default, isActive} element shape as GVS
+                    # customValue (live-verified on env-59's
+                    # Opportunity.Loan_Type__c), so the GVS/SVS value
+                    # extractor is reused verbatim. Anchor external_id
+                    # is 'INLINE:'-prefixed (same collision-avoidance
+                    # pattern as 'SVS:'); the anchor payload is
+                    # identity-only so it never churns on value edits.
+                    qualified = f"{object_api_name}.{f.get('name')}"
+                    pv_payloads = (
+                        extract_picklist_value_payloads_from_metadata(
+                            parent_external_id=f"INLINE:{qualified}",
+                            metadata=value_set.get("valueSetDefinition")
+                            or {},
+                            value_list_key="value",
+                        )
+                    )
+                    if pv_payloads:
+                        inline_pvs_payloads.append({
+                            "FullName": qualified,
+                            "_source": "CustomFieldInline",
+                        })
+                        inline_pv_payloads.extend(pv_payloads)
+                        f["_value_set_external_id"] = f"INLINE:{qualified}"
+            # Standard picklist fields (custom=False, no GVS/inline marker):
+            # try the §22 content-match. Inline CUSTOM picklists already carry
+            # an INLINE: marker from the branch above, so the marker guard
+            # excludes them; the `custom=False` guard keeps this to STANDARD
+            # fields, whose values legitimately DO belong to a shared SVS.
             if (
                 "_value_set_external_id" not in f
                 and not f.get("custom", False)
@@ -576,6 +634,34 @@ def phase_field(ctx: SyncContext, conn: Any) -> PhaseResult:
 
     if not field_payloads:
         return result
+
+    # 2d. Materialize inline value-set anchors + their values BEFORE the
+    # Field materialize: the Field detail mapper resolves the
+    # _value_set_external_id marker against currently-active
+    # PicklistValueSet entities (make_parent_resolver), so the anchors
+    # must exist first — same intra-phase ordering the PVS→PV phases
+    # get from ENTITY_ORDER. INLINE:-namespaced external_ids are
+    # disjoint from the PVS/PV phases' GVS + SVS: namespaces, so the
+    # two write sites never contend over the same rows. Counters fold
+    # into this phase's (Field) result — sync_runs totals are
+    # increment-only aggregates, so attribution to the Field phase is
+    # the honest shape (these rows ARE Field-phase work).
+    if inline_pvs_payloads:
+        batched_materialize(
+            ctx=ctx,
+            conn=conn,
+            entity_type="PicklistValueSet",
+            raw_payloads=inline_pvs_payloads,
+            result=result,
+        )
+    if inline_pv_payloads:
+        batched_materialize(
+            ctx=ctx,
+            conn=conn,
+            entity_type="PicklistValue",
+            raw_payloads=inline_pv_payloads,
+            result=result,
+        )
 
     # 3. Materialize Field entities + field_details rows (the latter
     # via detail_mappers registry inside batched_materialize). Get
