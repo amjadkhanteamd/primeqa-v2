@@ -136,6 +136,24 @@ def _grid_status(rows) -> str:
     return "untested"
 
 
+def _group_blockers(blocking) -> list[dict]:
+    """Collapse the decision's per-claim blocking entries into one line per
+    (requirement keys, cause) for the hero list — N claims under the same
+    requirement with the same cause otherwise render N indistinguishable
+    lines (the template shows only the requirement keys). Presentation-layer
+    only: ``decision['blocking']`` itself stays per-claim for its other
+    consumers. Order preserved (the decision pre-sorts by requirement key)."""
+    grouped: dict = {}
+    for b in blocking:
+        key = (tuple(b.get("external_keys") or ()), b.get("cause"))
+        g = grouped.get(key)
+        if g is None:
+            grouped[key] = {**b, "count": 1}
+        else:
+            g["count"] += 1
+    return list(grouped.values())
+
+
 def _trends(session, environment_id: int) -> list[dict]:
     """Daily pass-rate buckets over s4 runs — last 5 distinct days with runs."""
     rows = session.execute(text(
@@ -174,7 +192,19 @@ def get_substrate_dashboard_data(environment_id: int, tenant_id: int,
         session = Session(bind=conn)
         try:
             keys = _corpus_keys(session)
-            evidence = _assemble_claim_evidence(session, keys, tenant_id=tenant_id)
+            # The page is env-scoped (an env is selected in the view), so the
+            # evidence must be too: runs filtered to this env, grounding read
+            # against THIS env's org — an org-blind read returns the worst
+            # verdict across every connected org (per-org S8), blending another
+            # org's drift into this env's verdict.
+            from primeqa.sync.credentials import (
+                get_connected_org_for_environment,
+            )
+            org_id = get_connected_org_for_environment(
+                session.connection(), environment_id)
+            evidence = _assemble_claim_evidence(
+                session, keys, tenant_id=tenant_id,
+                environment_id=environment_id, connected_org_id=org_id)
             by_key = _keys_to_test_ids(session, keys)
             trends = _trends(session, environment_id)
         finally:
@@ -239,7 +269,8 @@ def get_substrate_dashboard_data(environment_id: int, tenant_id: int,
         "risk": decision["risk"]["level"],
         "gates": [],
         "substrate_checks": decision["reasoning"],
-        "blockers": decision.get("blocking", []),   # D-237: explainable NO-GO
+        # D-237: explainable NO-GO — grouped per (requirement, cause) for render
+        "blockers": _group_blockers(decision.get("blocking", [])),
 
         "ticket_grid": grid,
         "ticket_counts": {

@@ -60,7 +60,7 @@
           {% if data.latest_run %}
             <span class="font-medium">{% if data.latest_run.id %}Run #{{ data.latest_run.id }}{% if data.latest_run.label %} · {{ data.latest_run.label }}{% endif %}{% else %}Current evidence{% endif %}</span>
             <span aria-hidden="true">·</span>
-            <span>Pass Rate: <span class="font-semibold">{{ data.latest_run.pass_rate|round|int if data.latest_run.pass_rate is not none else '—' }}%</span></span>
+            <span>Pass Rate: <span class="font-semibold">{{ data.latest_run.pass_rate|round(1) if data.latest_run.pass_rate is not none else '—' }}%</span></span>
             <span aria-hidden="true">·</span>
             <span>Risk: <span class="font-semibold">{{ data.risk }}</span></span>
           {% endif %}
@@ -101,7 +101,7 @@
                 <span class="mt-0.5 flex-shrink-0 text-red-600" aria-hidden="true">&#10007;</span>
                 <span>
                   <span class="font-semibold">Blocked by
-                    {{ b.external_keys | join(', ') if b.external_keys else b.test_id[:8] }}</span>{% if b.cause %} &mdash; {{ b.cause }}{% endif %}
+                    {{ b.external_keys | join(', ') if b.external_keys else b.test_id[:8] }}</span>{% if b.cause %} &mdash; {{ b.cause }}{% endif %}{% if b.count and b.count > 1 %} <span class="opacity-70">({{ b.count }} tests)</span>{% endif %}
                 </span>
               </li>
             {% endfor %}
