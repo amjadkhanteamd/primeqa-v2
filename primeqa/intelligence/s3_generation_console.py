@@ -849,6 +849,93 @@ def read_latest_generation_note(tenant_id: int, requirement_key: str) -> dict:
         return out
 
 
+# --- read: per-AC coverage from the latest generation (D-331) -----------------
+
+def _assemble_ac_coverage(raw_parameters, partial_refusals) -> list[dict]:
+    """Pure: join the propose call's declared ACs + intents with the outcome's
+    per-intent refusals into per-AC rows. Statuses (per AC, worst-first):
+    ``untestable`` (an intent declared no_admissible_test, with its reason),
+    ``refused`` (an intent refused at grounding, with the recorded reason),
+    ``proposed`` (>=1 intent, none refused), ``unaddressed`` (no intent carried
+    the ac_ref). Intent-level truth only — intent→claim linkage is not
+    persisted, so no claim mapping is invented here."""
+    rp = raw_parameters or {}
+    acs = rp.get("acceptance_criteria") or []
+    intents = rp.get("intent_descriptors") or []
+    refusals_by_ac: dict = {}
+    for entry in (partial_refusals or ()):
+        if isinstance(entry, dict) and entry.get("ac_ref") is not None:
+            refusals_by_ac.setdefault(entry["ac_ref"], []).append(
+                refusal_plain(entry.get("refusal_kind"), [entry]))
+    rows = []
+    for ac in acs:
+        if not isinstance(ac, dict) or ac.get("index") is None:
+            continue
+        idx = ac["index"]
+        mine = [i for i in intents
+                if isinstance(i, dict) and i.get("ac_ref") == idx]
+        untestable = [i for i in mine if i.get("no_admissible_test")]
+        refused = refusals_by_ac.get(idx, [])
+        if untestable:
+            status, reason = "untestable", (
+                untestable[0].get("no_admissible_test_reason") or "")
+        elif refused and len(refused) >= len(mine):
+            status, reason = "refused", (refused[0] or "")
+        elif refused:
+            status, reason = "partial", (refused[0] or "")
+        elif mine:
+            status, reason = "proposed", None
+        else:
+            status, reason = "unaddressed", None
+        rows.append({"index": idx, "label": ac.get("label") or f"AC{idx}",
+                     "status": status, "reason": reason,
+                     "intents": len(mine), "refused": len(refused)})
+    return rows
+
+
+def read_requirement_ac_coverage(tenant_id: int, requirement_key: str) -> dict:
+    """Best-effort: the per-acceptance-criterion coverage picture of the
+    requirement's LATEST generation (D-331) — the honest "why isn't X tested"
+    surface. The model's declared AC list (D-247, persisted verbatim on the
+    propose call's ``raw_parameters``) joined with its intents' ``ac_ref`` tags,
+    ``no_admissible_test`` declarations, and the outcome's per-intent partial
+    refusals (D-302, ``attempted_interpretation``). Never raises. Returns
+    ``{available, generated_at, rows}`` — ``rows`` empty when the latest
+    generation declared no AC list (freeform requirement)."""
+    out = {"available": True, "generated_at": None, "rows": []}
+    try:
+        from primeqa.semantic.connection import get_tenant_connection
+        with get_tenant_connection(tenant_id) as conn:
+            row = conn.execute(text(
+                "SELECT o.created_at, "
+                "       o.attempted_interpretation->'partial_refusals' AS prs, "
+                "       lc.raw_parameters "
+                "FROM generation_outcomes o "
+                "JOIN LATERAL ("
+                "  SELECT raw_parameters FROM llm_calls "
+                "  WHERE generation_outcome_id = o.outcome_id "
+                "    AND tool_name = 'propose_semantic_intent' "
+                "    AND raw_parameters ? 'intent_descriptors' "
+                "  ORDER BY created_at DESC LIMIT 1) lc ON true "
+                "WHERE o.requirement_ref->>'key' = :rk "
+                "ORDER BY o.created_at DESC LIMIT 1"),
+                {"rk": requirement_key}).mappings().first()
+        if row is None:
+            return out
+        rp = row["raw_parameters"]
+        if isinstance(rp, str):
+            import json as _json
+            rp = _json.loads(rp)
+        out["generated_at"] = _iso(row["created_at"])
+        out["rows"] = _assemble_ac_coverage(rp, row["prs"])
+        return out
+    except Exception as exc:
+        log.warning("read_requirement_ac_coverage unavailable for tenant %s "
+                    "key %s: %s", tenant_id, requirement_key, exc)
+        out["available"] = False
+        return out
+
+
 # --- read: per-requirement current-claim counts (the list chips) (2c/#143) ----
 
 def _count_claims_by_requirement(conn, keys) -> dict:

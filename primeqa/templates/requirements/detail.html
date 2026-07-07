@@ -265,6 +265,53 @@
   </div>
   {% endif %}
 
+  {# D-331: per-AC coverage of the LATEST generation — every acceptance
+     criterion with its proposed-test count, or the honest recorded reason it
+     is not tested (no_admissible_test / partial refusal). Answers "why isn't
+     X covered" in place instead of leaving a silent gap. #}
+  {% if ac_coverage and ac_coverage.available and ac_coverage.rows %}
+  <details class="bg-white shadow rounded-lg group" data-collapse-key="req-panel-ac-coverage">
+    <summary class="px-4 py-3 border-b cursor-pointer select-none flex items-center justify-between">
+      <h3 class="text-sm font-semibold text-gray-700">Coverage by acceptance criterion
+        <span class="text-gray-500 font-normal">({{ ac_coverage.rows | length }})</span>
+      </h3>
+      <span class="flex items-center gap-3">
+        <span class="text-xs text-gray-400">From the latest generation</span>
+        <span class="text-xs text-gray-400 group-open:hidden">Show &darr;</span>
+        <span class="text-xs text-gray-400 hidden group-open:inline">Hide &uarr;</span>
+      </span>
+    </summary>
+    <ul class="divide-y divide-gray-100">
+      {% for row in ac_coverage.rows %}
+      <li class="px-4 py-2.5 flex items-start gap-3 text-sm">
+        <span class="mt-0.5 inline-flex shrink-0 items-center px-2 py-0.5 rounded text-xs font-mono bg-gray-100 text-gray-600">AC{{ row.index }}</span>
+        <span class="flex-1 text-gray-700">{{ row.label }}
+          {% if row.reason %}
+          <span class="block mt-0.5 text-xs text-gray-500">{{ row.reason }}</span>
+          {% endif %}
+        </span>
+        {% if row.status == 'proposed' %}
+        <span class="inline-flex shrink-0 items-center px-2 py-0.5 rounded-full text-xs font-medium bg-green-100 text-green-800"
+              title="The latest generation proposed {{ row.intents }} test intent{{ '' if row.intents == 1 else 's' }} for this criterion">{{ row.intents }} test{{ '' if row.intents == 1 else 's' }}</span>
+        {% elif row.status == 'partial' %}
+        <span class="inline-flex shrink-0 items-center px-2 py-0.5 rounded-full text-xs font-medium bg-amber-100 text-amber-800"
+              title="Some of this criterion's proposed tests were declined — the reason is shown under the label">partly declined</span>
+        {% elif row.status == 'refused' %}
+        <span class="inline-flex shrink-0 items-center px-2 py-0.5 rounded-full text-xs font-medium bg-rose-100 text-rose-800"
+              title="Every proposed test for this criterion was declined — the reason is shown under the label">declined</span>
+        {% elif row.status == 'untestable' %}
+        <span class="inline-flex shrink-0 items-center px-2 py-0.5 rounded-full text-xs font-medium bg-gray-100 text-gray-600"
+              title="The engine declared no admissible test exists for this criterion — the reason is shown under the label">not testable</span>
+        {% else %}
+        <span class="inline-flex shrink-0 items-center px-2 py-0.5 rounded-full text-xs font-medium bg-rose-100 text-rose-800"
+              title="No test intent addressed this criterion in the latest generation">unaddressed</span>
+        {% endif %}
+      </li>
+      {% endfor %}
+    </ul>
+  </details>
+  {% endif %}
+
   {# D-317 slice 6: the live-chips poller slot. Run-all's htmx response swaps
      the active poller in here; it re-polls every 4s (OOB-updating the row
      chips) until no job is active. When the page loads with runs already in

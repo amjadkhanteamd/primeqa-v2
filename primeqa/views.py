@@ -2446,7 +2446,8 @@ def requirements_detail(req_id):
         from primeqa.intelligence.s3_enqueue import _requirement_to_ref
         from primeqa.intelligence.s3_generation_console import (
             read_requirement_claims, read_latest_s3_job,
-            read_latest_generation_note, read_generation_runs)
+            read_latest_generation_note, read_generation_runs,
+            read_requirement_ac_coverage)
         req_key = _requirement_to_ref(req)["key"]
         s2 = read_requirement_claims(tid, req_key)
         # Per-test last-run chip: one batched S4 read (latest run per test),
@@ -2482,6 +2483,10 @@ def requirements_detail(req_id):
         gen_total_cost = sum(
             (r.get("llm") or {}).get("cost_usd") or 0
             for r in (gen_runs.get("runs") or []))
+        # D-331: the per-AC coverage picture of the latest generation — each
+        # acceptance criterion with its intent count, or the honest recorded
+        # reason it is not tested (no_admissible_test / partial refusal).
+        ac_coverage = read_requirement_ac_coverage(tid, req_key)
 
         # Quarantined (flaky) tests — annotate the plan's claims so coverage
         # isn't overstated. One tenant-wide ledger query, best-effort.
@@ -2546,6 +2551,7 @@ def requirements_detail(req_id):
             approved_count=approved_count, gen_total_cost=gen_total_cost,
             quarantined_count=quarantined_count,
             runs_in_flight=bool(active_runs),
+            ac_coverage=ac_coverage,
         ))
     finally:
         db.close()
