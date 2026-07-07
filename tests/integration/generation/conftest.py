@@ -344,6 +344,26 @@ def seeded(db_setup) -> dict:
         loan_task = _entity(conn, "Object", "Loan_Task__c", v1)
         loan_task_lookup = _entity(conn, "Field", "Loan_Task__c.Loan__c", v1)
         _edge(conn, loan_task_lookup, loan_task, "BELONGS_TO", "STRUCTURAL", v1)
+        # D-337: an ISOLATED Rebate__c island (no other test touches it) — the
+        # authoring-time staged-state VR-conflict guard's fixture. An ACTIVE VR
+        # (Amount__c < 0) makes a staged Amount__c=-5 provably fire while 5
+        # provably does not; the Flow carries the automation-effect shapes and
+        # the SINGLE active approval carries the arc shape (the D-320 law).
+        rebate = _entity(conn, "Object", "Rebate__c", v1)
+        rebate_amount = _entity(conn, "Field", "Rebate__c.Amount__c", v1)
+        _edge(conn, rebate_amount, rebate, "BELONGS_TO", "STRUCTURAL", v1)
+        rebate_status = _entity(conn, "Field", "Rebate__c.Status__c", v1)
+        _edge(conn, rebate_status, rebate, "BELONGS_TO", "STRUCTURAL", v1)
+        rebate_vr = _entity(conn, "ValidationRule", "Rebate__c.NonNegativeAmount",
+                            v1, attrs={"formula_text": "Amount__c < 0"})
+        _edge(conn, rebate_vr, rebate, "APPLIES_TO", "BEHAVIOR", v1)
+        rebate_flow = _entity(conn, "Flow", "Stamp_Rebate_Status", v1)
+        _edge(conn, rebate_flow, rebate, "TRIGGERS_ON", "BEHAVIOR", v1)
+        rebate_appr = _entity(conn, "ApprovalProcess", "Rebate_Approval", v1,
+                              attrs={"_is_active": True,
+                                     "TableEnumOrId": "Rebate__c"})
+        _edge(conn, rebate_appr, rebate, "TRIGGERS_ON", "BEHAVIOR", v1)
+
         # D-318: a SECOND Flow that ALSO stamps Risk_Rating__c=Medium (only) — the
         # ambiguity fixture: two Flows produce the same effect -> the effect no
         # longer disambiguates, so the resolver must refuse-or-name. High/Low stay

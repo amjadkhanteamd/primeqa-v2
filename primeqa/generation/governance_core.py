@@ -69,6 +69,7 @@ from primeqa.semantic.edges import TIER_1_EDGES
 from primeqa.generation.verified_negative import _writable
 from primeqa.generation.formula_expectation import (
     as_decimal, verify_formula_expectation)
+from primeqa.generation.vr_conflict import find_staged_vr_conflict
 from primeqa.semantic.entity_attributes import (
     field_formula_text, field_is_calculated, field_treat_null_as_zero,
     flow_effects, vr_error_message, vr_formula_text, vr_is_active)
@@ -443,6 +444,34 @@ def _grounding_vr_messages(claim_kind: str, neighborhood: list) -> dict:
     for text in ambiguous:
         out.pop(text, None)
     return out
+
+
+def _staged_vr_conflict_detail(
+        neighborhood: list, staged_create: dict,
+        staged_update: Optional[dict] = None) -> Optional[str]:
+    """D-337: the authoring-time staged-state VR-conflict guard — the refusal
+    detail when the claim's OWN staged values provably fire one of the
+    subject's ACTIVE ValidationRules, else ``None``. Reads the same
+    (``APPLIES_TO``, ValidationRule) neighborhood rows as
+    :func:`_grounding_vr_formulas`, but for every STAGED-surface claim shape
+    (acceptance / approval-arc / automation-effect triggers) and
+    name-carrying, so the refusal names WHICH rule the staged state fires.
+    Kleene evaluation (``vr_conflict``): an unstaged field is unknown and
+    unknown never refuses — run-time R1 padding stays the owner of every
+    non-provable case. Active-only (D-301: an inactive rule cannot fire)."""
+    rules = []
+    for r in neighborhood:
+        if (r.edge_type != EDGE_VALIDATION_RULE
+                or r.entity.entity_type != "ValidationRule"):
+            continue
+        if not vr_is_active(r.entity.attributes):
+            continue
+        text = vr_formula_text(r.entity.attributes)
+        if text:
+            rules.append((r.entity.sf_api_name or "", text))
+    if not rules:
+        return None
+    return find_staged_vr_conflict(rules, staged_create, staged_update)
 
 
 def _claim_condition_fields(grounded_conds) -> frozenset[str]:
@@ -1452,6 +1481,24 @@ class GovernanceCore:
                         interpretation_delta=delta,
                         refusal=self._router.emission_deferred(
                             archetype, claim_kind, detail=arc_error))
+                # D-337: the arc's setup create must SUCCEED (the actions +
+                # the rejected attempted_change ARE the test) — staged
+                # conditions that provably fire ANY active VR, including the
+                # aligned one, bounce the create before the arc ever runs.
+                # attempted_change is deliberately not checked (it is the
+                # update under test), and no post-actions state is modeled
+                # (the approval rewrites the record — that is the arc's
+                # point).
+                conflict = _staged_vr_conflict_detail(
+                    neighborhood,
+                    {c.field.external_id: c.value for c in staged_conds
+                     if c.predicate == "equals"})
+                if conflict is not None:
+                    return IntentResolution(
+                        grounded_candidates=[], next_action=NextAction.REFUSE,
+                        interpretation_delta=delta,
+                        refusal=self._router.emission_deferred(
+                            archetype, claim_kind, detail=conflict))
                 _stash_grounding(state, GroundedNegative(
                     archetype=archetype, claim_kind=claim_kind,
                     operation_hint=hint.get("operation"), version_seq=at,
@@ -1778,6 +1825,26 @@ class GovernanceCore:
                                     "subject to bind (the D-320 enumeration "
                                     "law)")))
                 arc_actions = tuple(proposed_actions)
+            # D-337: an acceptance claim asserts the org ACCEPTS the staged
+            # state — staged values that provably fire an active VR are
+            # self-contradictory against org config (perma-red by
+            # construction). The update check evaluates the create ⊕ update
+            # overlay (the R3 epistemics), except on the arc: the approval
+            # actions rewrite the record between the phases, so no
+            # post-actions state is modelable — create-only there.
+            conflict = _staged_vr_conflict_detail(
+                neighborhood,
+                {c.field.external_id: c.value for c in grounded_conds
+                 if c.predicate == "equals"},
+                staged_update=(None if arc_actions else
+                               {c.field.external_id: c.value
+                                for c in grounded_upd}))
+            if conflict is not None:
+                return IntentResolution(
+                    grounded_candidates=[], next_action=NextAction.REFUSE,
+                    interpretation_delta=delta,
+                    refusal=self._router.emission_deferred(
+                        archetype, claim_kind, detail=conflict))
             _stash_grounding(state, GroundedAcceptance(
                 archetype=archetype, claim_kind=claim_kind, version_seq=at,
                 subject=_Endpoint(
@@ -2174,6 +2241,26 @@ class GovernanceCore:
                             detail=("a parent-stamp effect needs effect_field "
                                     "(the stamped field on the effect object) "
                                     "— without it the stamp is unobservable")))
+                # D-307: the entry gate is on the SUBJECT create in the
+                # parent-stamp shape too — without it the flow never stamps.
+                # Same D-299 rail (BELONGS_TO verify, drop-never-refuse); the
+                # subject BELONGS_TO map is the k16 guard (the stamped field
+                # lives on ANOTHER object, so it can never verify as a
+                # subject trigger) — the explicit exclude is defense-in-depth.
+                ps_triggers = _ground_trigger_fields(
+                    hint.get("trigger_fields"), neighborhood,
+                    exclude_field=hint.get("effect_field"))
+                # D-337: same staged-state VR-conflict guard as the other
+                # trigger shapes — a bounced subject create never stamps.
+                conflict = _staged_vr_conflict_detail(
+                    neighborhood,
+                    {ep.external_id: v for ep, v in ps_triggers})
+                if conflict is not None:
+                    return IntentResolution(
+                        grounded_candidates=[], next_action=NextAction.REFUSE,
+                        interpretation_delta=delta,
+                        refusal=self._router.emission_deferred(
+                            archetype, claim_kind, detail=conflict))
                 _stash_grounding(state, GroundedAutomationEffect(
                     archetype=archetype, claim_kind=claim_kind, version_seq=at,
                     subject=subj_ep, automation=flow_ep,
@@ -2184,16 +2271,7 @@ class GovernanceCore:
                     effect_via_lookup_field=_Endpoint(
                         entity_id=via_ent.id, entity_type=via_ent.entity_type,
                         external_id=via_ent.sf_api_name or str(via_ent.id)),
-                    # D-307: the entry gate is on the SUBJECT create in the
-                    # parent-stamp shape too — without it the flow never
-                    # stamps. Same D-299 rail (BELONGS_TO verify, drop-never-
-                    # refuse); the subject BELONGS_TO map is the k16 guard
-                    # (the stamped field lives on ANOTHER object, so it can
-                    # never verify as a subject trigger) — the explicit
-                    # exclude is defense-in-depth.
-                    trigger_fields=_ground_trigger_fields(
-                        hint.get("trigger_fields"), neighborhood,
-                        exclude_field=hint.get("effect_field")),
+                    trigger_fields=ps_triggers,
                     # D-308: the bound primitive (the same-record stash always
                     # passed it; the cross-object/parent-stamp stashes relied
                     # on the "flow" default — wrong the moment an approval
@@ -2260,6 +2338,20 @@ class GovernanceCore:
                                     "unvalued field effect is not verifiable (drop "
                                     "the field to assert only that the correlated "
                                     "record is created)")))
+                # D-337: the subject create carries the staged entry-gate
+                # values — if they provably fire one of the SUBJECT's active
+                # VRs the create bounces and no correlated record (presence
+                # or absence) is ever honestly observed. The effect object's
+                # own VRs are the org's concern, not the recipe's.
+                conflict = _staged_vr_conflict_detail(
+                    neighborhood,
+                    {ep.external_id: v for ep, v in xo_triggers})
+                if conflict is not None:
+                    return IntentResolution(
+                        grounded_candidates=[], next_action=NextAction.REFUSE,
+                        interpretation_delta=delta,
+                        refusal=self._router.emission_deferred(
+                            archetype, claim_kind, detail=conflict))
                 _stash_grounding(state, GroundedAutomationEffect(
                     archetype=archetype, claim_kind=claim_kind, version_seq=at,
                     subject=subj_ep, automation=flow_ep,
@@ -2493,6 +2585,26 @@ class GovernanceCore:
                                            != _fv.computed_final else "")
                                         + ") — note a percent field's API "
                                           "value is the formula result ×100")))
+                # D-337: the staged trigger state must SURVIVE the org's own
+                # validation rules — a create (or the create ⊕ update
+                # overlay) that provably fires an active VR is rejected
+                # before the automation could ever fire (the req-302 live
+                # catch: an LTV recompute whose staged update put
+                # Loan_Amount__c > Property_Value__c, bounced by the org's
+                # Loan_Exceeds_Property_Value rule). Kleene: unstaged fields
+                # are unknown and unknown never refuses (run-time R1 padding
+                # owns those).
+                conflict = _staged_vr_conflict_detail(
+                    neighborhood,
+                    {ep.external_id: v for ep, v in trigger_fields},
+                    staged_update={ep.external_id: v
+                                   for ep, v in update_trigger_fields})
+                if conflict is not None:
+                    return IntentResolution(
+                        grounded_candidates=[], next_action=NextAction.REFUSE,
+                        interpretation_delta=delta,
+                        refusal=self._router.emission_deferred(
+                            archetype, claim_kind, detail=conflict))
                 _stash_grounding(state, GroundedAutomationEffect(
                     archetype=archetype, claim_kind=claim_kind, version_seq=at,
                     subject=subj_ep, automation=flow_ep,
