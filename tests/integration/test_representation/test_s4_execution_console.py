@@ -64,8 +64,19 @@ def test_map_run_result_ran_with_verdict():
         evidence=SimpleNamespace(outcome="passed"),
         interpretation=SimpleNamespace(verdict="prohibition_enforced"))
     assert _map_run_result(result) == {
-        "ok": True, "ran": True, "recipe_id": str(rid),
+        "ok": True, "ran": True, "recipe_id": str(rid), "run_id": None,
         "outcome": "passed", "verdict": "prohibition_enforced"}
+
+
+def test_map_run_result_exposes_run_id():
+    # the persisted run's id rides the mapping so the route can land the
+    # caller on /runs/<run_id> (the evidence page) after a sync run.
+    run_id = uuid4()
+    result = SimpleNamespace(
+        ran=True, reason=None, selected_recipe_id=uuid4(),
+        evidence=SimpleNamespace(outcome="passed", run_id=run_id),
+        interpretation=None)
+    assert _map_run_result(result)["run_id"] == str(run_id)
 
 
 def test_map_run_result_ran_without_interpretation():

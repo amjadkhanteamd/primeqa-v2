@@ -148,6 +148,52 @@ def read_requirement_claims(tenant_id: int, requirement_key: str) -> dict:
         return {"available": False, "claims": []}
 
 
+def _read_test_sequence(session, requirement_key: str) -> list[dict]:
+    """Pure: the requirement's live test plan as an ORDERED lean sequence — the
+    walk-the-plan read (prev/next strips, live chips). Mirrors ``_read_claims``'
+    membership + sort exactly (``generated_from`` links, deprecated excluded,
+    archetype → claim_kind → test_id) so a position here IS a position on the
+    requirement page; skips recipes/labels/titles to stay cheap."""
+    from primeqa.test_representation.coordinator import SemanticTransactionCoordinator
+    coord = SemanticTransactionCoordinator()
+    matches = coord.list_tests_by_requirement(
+        session, external_system="jira", external_key=requirement_key,
+        link_kind="generated_from")
+    tests = []
+    for m in matches:
+        claim = coord.get_latest_claim(session, m.test_id)
+        if claim is None:
+            continue
+        if claim.status == "deprecated":              # D-269: live plan only
+            continue
+        tests.append({"test_id": str(m.test_id), "status": claim.status,
+                      "_sort": (claim.archetype or "", claim.claim_kind or "",
+                                str(m.test_id))})
+    tests.sort(key=lambda c: c["_sort"])
+    for t in tests:
+        del t["_sort"]
+    return tests
+
+
+def read_requirement_test_sequence(tenant_id: int, requirement_key: str) -> dict:
+    """Best-effort ordered test sequence for the requirement's live plan.
+    Never raises. Returns ``{available, tests}`` — each test ``{test_id, status}``."""
+    try:
+        from primeqa.semantic.connection import get_tenant_connection
+        from sqlalchemy.orm import Session
+        with get_tenant_connection(tenant_id) as conn:
+            session = Session(bind=conn)
+            try:
+                return {"available": True,
+                        "tests": _read_test_sequence(session, requirement_key)}
+            finally:
+                session.close()
+    except Exception as exc:
+        log.warning("read_requirement_test_sequence unavailable for tenant %s "
+                    "key %s: %s", tenant_id, requirement_key, exc)
+        return {"available": False, "tests": []}
+
+
 # --- read: the latest S3 job for the requirement (in-flight progress) --------
 
 def _read_latest_job(conn, requirement_key: str) -> dict | None:

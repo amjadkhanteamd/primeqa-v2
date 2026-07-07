@@ -2668,6 +2668,26 @@ def claims_inbox():
         active_page="test_library", data=data))
 
 
+def _plan_nav_for(tenant_id, requirement_key, test_id):
+    """The claim's position in its requirement's live plan + prev/next test ids
+    — the walk-the-plan strip on the claim + run pages. Best-effort: ``None``
+    when the key is missing, the sequence is unavailable, or the claim is not
+    in the live plan (e.g. deprecated)."""
+    if not requirement_key:
+        return None
+    from primeqa.intelligence.s3_generation_console import (
+        read_requirement_test_sequence)
+    seq = read_requirement_test_sequence(tenant_id, requirement_key)
+    ids = [t["test_id"] for t in (seq.get("tests") or [])]
+    sid = str(test_id)
+    if sid not in ids:
+        return None
+    i = ids.index(sid)
+    return {"position": i + 1, "total": len(ids),
+            "prev_id": ids[i - 1] if i > 0 else None,
+            "next_id": ids[i + 1] if i + 1 < len(ids) else None}
+
+
 @views_bp.route("/claims/<uuid:test_id>")
 @login_required
 def claims_detail(test_id):
@@ -2741,10 +2761,12 @@ def claims_detail(test_id):
         "source": ("manual" if _q_manual == "pinned" else "auto") if _q_active
         else None,
     }
+    plan_nav = _plan_nav_for(tid, req_key, test_id)
     return render_template("claims/detail.html", **ctx(
         active_page="test_library", detail=detail, siblings=siblings,
         runs=runs, environments=envs_data, quarantine=quarantine_state,
-        requirement=requirement, readable_phrasing=readable_phrasing))
+        requirement=requirement, readable_phrasing=readable_phrasing,
+        plan_nav=plan_nav))
 
 
 _MAX_FIELD_OVERRIDES = 50
@@ -2833,6 +2855,10 @@ def claims_run(test_id):
         ov = f" · {n} data override{'' if n == 1 else 's'} requested" if n else ""
         flash(f"Run complete — outcome: {res.get('outcome')}"
               + (f" · verdict: {v}" if v else "") + ov, "success")
+        # Land on the run that just happened — the evidence page IS the result.
+        # (Also fixes the run page's Re-run, which posts to this same route.)
+        if res.get("run_id"):
+            return redirect(f"/runs/{res['run_id']}")
     return redirect(f"/claims/{test_id}")
 
 
@@ -3257,10 +3283,16 @@ def s4_run_detail(run_id):
     if request.user["role"] in ("admin", "superadmin"):
         from primeqa.intelligence.repair_agent import open_proposal_for_run
         repair_proposal = open_proposal_for_run(request.user["tenant_id"], run_id)
+    # Walk-the-plan strip: this run's claim positioned in its requirement's
+    # live plan (prev/next link to the SIBLING TEST pages, not sibling runs).
+    plan_nav = (_plan_nav_for(request.user["tenant_id"],
+                              _run.get("requirement_key"),
+                              _run.get("claim_test_id"))
+                if _run.get("claim_test_id") else None)
     return render_template("runs/s4_detail.html", **ctx(
         active_page="test_library", detail=detail, repair_proposal=repair_proposal,
         environment=environment, requirement=requirement,
-        readable_run_phrasing=readable_run_phrasing))
+        readable_run_phrasing=readable_run_phrasing, plan_nav=plan_nav))
 
 
 @views_bp.route("/requirements/<int:req_id>/edit", methods=["POST"])

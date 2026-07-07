@@ -57,9 +57,12 @@ def _map_run_result(result) -> dict:
     ev = getattr(result, "evidence", None)
     interp = getattr(result, "interpretation", None)
     rid = getattr(result, "selected_recipe_id", None)
+    run_id = getattr(ev, "run_id", None) if ev is not None else None
     return {
         "ok": True, "ran": True,
         "recipe_id": str(rid) if rid else None,
+        # the persisted run's id — lets the caller land on /runs/<run_id>
+        "run_id": str(run_id) if run_id else None,
         "outcome": getattr(ev, "outcome", None) if ev is not None else None,
         # the semantic verdict lives on S6 (None if the best-effort interpret
         # step failed — the run outcome is still authoritative).
