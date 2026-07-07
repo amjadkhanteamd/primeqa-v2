@@ -50,6 +50,7 @@ _COUNTED_RUNS_SQL = (
     "FROM s4_execution_runs r "
     "LEFT JOIN s6_interpretations i ON i.run_id = r.run_id "
     "WHERE r.claim_test_id = CAST(:tid AS uuid) "
+    "AND (CAST(:env AS int) IS NULL OR r.environment_id = :env) "
     "AND (CAST(:seq AS int) IS NULL "
     "     OR r.claim_version_seq IS NULL OR r.claim_version_seq = :seq) "
     f"ORDER BY r.finished_at DESC LIMIT {_RAW_RUN_WINDOW}")
@@ -205,17 +206,24 @@ def _claim_quarantined(c) -> bool:
 _NEWER_SUPERSEDED_SQL = (
     "SELECT 1 FROM s4_execution_runs "
     "WHERE claim_test_id = CAST(:tid AS uuid) "
+    "AND (CAST(:env AS int) IS NULL OR environment_id = :env) "
     "AND claim_version_seq IS NOT NULL AND claim_version_seq != :seq "
     "AND finished_at > COALESCE(CAST(:after AS timestamptz), '-infinity') "
     "LIMIT 1")
 
 
-def _current_s1_seq(session):
-    """The tenant's current S1 version_seq, or None when no version exists yet
-    (tolerant — staleness is then unknowable, not an error)."""
+def _current_s1_seq(session, connected_org_id=None):
+    """The current S1 version_seq — the given org's latest when
+    ``connected_org_id`` is set, else the tenant-wide MAX (the single-org
+    read). ``None`` when no version exists yet (tolerant — staleness is then
+    unknowable, not an error). On a multi-org tenant the org-bound read is the
+    only correct staleness anchor: org A's grounding must not read stale just
+    because org B synced later."""
     from primeqa.semantic.query import SemanticOrgModel, VersionNotFoundError
     try:
-        return SemanticOrgModel(session.connection()).current_version_seq()
+        return SemanticOrgModel(
+            session.connection(),
+            connected_org_id=connected_org_id).current_version_seq()
     except VersionNotFoundError:
         return None
 
@@ -230,7 +238,46 @@ def _claim_grounding(session, coord, test_id, approved_seq):
     return rows[-1] if rows else None
 
 
-def _assemble_claim_evidence(session, external_keys, *, tenant_id=None) -> list[dict]:
+def _claim_test_ids(session, external_keys):
+    """The release's requirement keys → (ordered distinct claim test_ids,
+    ``{test_id: {requirement keys}}``) via the ``generated_from`` links."""
+    from primeqa.test_representation.coordinator import (
+        SemanticTransactionCoordinator,
+    )
+    coord = SemanticTransactionCoordinator()
+    test_ids, seen = [], set()
+    keys_by_tid: dict[str, set] = {}               # D-237: claim → its requirement key(s)
+    for key in external_keys:
+        for m in coord.list_tests_by_requirement(
+                session, external_system="jira", external_key=key,
+                link_kind="generated_from"):
+            sid = str(m.test_id)
+            keys_by_tid.setdefault(sid, set()).add(key)   # record even when shared
+            if sid not in seen:                    # a claim shared by 2 reqs
+                seen.add(sid)
+                test_ids.append(m.test_id)
+    return test_ids, keys_by_tid
+
+
+# The distinct environments the release's claims have run in — the per-env
+# decision loop's activation read (>= 2 ⇒ one verdict per env).
+_ENVS_WITH_EVIDENCE_SQL = (
+    "SELECT DISTINCT environment_id FROM s4_execution_runs "
+    "WHERE CAST(claim_test_id AS text) = ANY(:tids) "
+    "ORDER BY environment_id")
+
+
+def _environments_with_evidence(session, test_ids) -> list[int]:
+    if not test_ids:
+        return []
+    rows = session.execute(text(_ENVS_WITH_EVIDENCE_SQL),
+                           {"tids": [str(t) for t in test_ids]}).all()
+    return [r[0] for r in rows]
+
+
+def _assemble_claim_evidence(session, external_keys, *, tenant_id=None,
+                             environment_id=None, connected_org_id=None,
+                             manual_q=None) -> list[dict]:
     """The release's requirement keys → one decision-grade evidence row per distinct
     claim. Each row::
 
@@ -244,29 +291,25 @@ def _assemble_claim_evidence(session, external_keys, *, tenant_id=None) -> list[
     ``manual_quarantine`` (D-232) carries the operator's persisted pin/unpin (read
     via ``tenant_id`` when given) so the pure decision honors it — a MANUAL pin/lift
     WINS over the live ``flaky`` signal.
+
+    ``environment_id`` scopes every run read to one connected org (the per-env
+    decision path); ``connected_org_id`` (that env's org) anchors grounding
+    staleness to the org's own latest S1 version. Both ``None`` = the exact
+    single-org read this function always did. ``manual_q`` accepts the
+    quarantine map precomputed by a per-env loop (one read, not one per env).
     """
+    test_ids, keys_by_tid = _claim_test_ids(session, external_keys)
     from primeqa.test_representation.coordinator import (
         SemanticTransactionCoordinator,
     )
-
     coord = SemanticTransactionCoordinator()
-    test_ids, seen = [], set()
-    keys_by_tid: dict[str, set] = {}               # D-237: claim → its requirement key(s)
-    for key in external_keys:
-        for m in coord.list_tests_by_requirement(
-                session, external_system="jira", external_key=key,
-                link_kind="generated_from"):
-            sid = str(m.test_id)
-            keys_by_tid.setdefault(sid, set()).add(key)   # record even when shared
-            if sid not in seen:                    # a claim shared by 2 reqs
-                seen.add(sid)
-                test_ids.append(m.test_id)
 
-    current_seq = _current_s1_seq(session)
+    current_seq = _current_s1_seq(session, connected_org_id)
     # D-232: the persisted MANUAL quarantine overrides (own connection — never
     # poisons this session; empty without a tenant_id or before the migration).
-    from primeqa.intelligence import quarantine as _q
-    manual_q = _q.manual_states(tenant_id) if tenant_id is not None else {}
+    if manual_q is None:
+        from primeqa.intelligence import quarantine as _q
+        manual_q = _q.manual_states(tenant_id) if tenant_id is not None else {}
     out = []
     for tid in test_ids:
         # D-219: a deprecated claim is RETIRED from the corpus — its stale
@@ -287,7 +330,8 @@ def _assemble_claim_evidence(session, external_keys, *, tenant_id=None) -> list[
                          "evaluated_at_version_seq": gv.evaluated_at_version_seq}
 
         raw_rows = session.execute(text(_COUNTED_RUNS_SQL),
-                                   {"tid": str(tid), "seq": approved_seq}
+                                   {"tid": str(tid), "seq": approved_seq,
+                                    "env": environment_id}
                                    ).mappings().all()
         # D-300 review-fix B1: batches collapse to ONE logical run each (the
         # single path passes through byte-identical — batch_id NULL).
@@ -329,7 +373,7 @@ def _assemble_claim_evidence(session, external_keys, *, tenant_id=None) -> list[
         if approved_seq is not None:
             superseded_newer = session.execute(
                 text(_NEWER_SUPERSEDED_SQL),
-                {"tid": str(tid), "seq": approved_seq,
+                {"tid": str(tid), "seq": approved_seq, "env": environment_id,
                  "after": row["finished_at"] if row is not None else None},
             ).first() is not None
 
@@ -581,12 +625,88 @@ def compute_substrate_decision(claim_evidence, criteria=None, *, now=None) -> di
     }
 
 
+# Verdict severity for the multi-env roll-up: worst wins (mirrors the
+# composer's ordering — no_go < conditional_go < go).
+_ENV_SEVERITY = {"no_go": 0, "conditional_go": 1, "go": 2}
+_ENV_CONFIDENCE = {"no_go": 0.90, "conditional_go": 0.75, "go": 0.95}
+
+
+def _rollup_env_decisions(env_decisions) -> dict:
+    """Pure: per-environment decision dicts → ONE shape-compatible top-level
+    decision (worst-of). The composer / ledger / notify / CI read only the
+    top-level keys, so the roll-up preserves every one of them; the per-env
+    dicts ride along under ``environments`` for the verdict cards.
+
+    - ``recommendation``: worst across envs; ``confidence``: that verdict's
+      scheme constant.
+    - ``reasoning``: one ``environment`` check line per env (fail/warn/pass ←
+      no_go/conditional_go/go).
+    - ``blocking``: concatenation, each entry annotated with its
+      ``environment_id``.
+    - ``criteria_met``: per-check AND across envs.
+    - ``metrics``: counts summed; ``pass_rate`` = min; ``claim_count`` = max
+      (the same shared claims, not a sum); ``environments`` = the env ids.
+    - ``risk``: max score.
+    """
+    worst = min(env_decisions,
+                key=lambda d: _ENV_SEVERITY.get(d["recommendation"], 0))
+    recommendation = worst["recommendation"]
+    _status = {"no_go": "fail", "conditional_go": "warn", "go": "pass"}
+    reasoning = []
+    for d in env_decisions:
+        m = d["metrics"]
+        reasoning.append({
+            "check": "environment",
+            "status": _status.get(d["recommendation"], "warn"),
+            "detail": (f"Environment {d['environment_id']}: "
+                       f"{d['recommendation'].replace('_', ' ').upper()} — "
+                       f"{m['blockers']} blocker(s), {m['warnings']} "
+                       f"warning(s), pass rate {m['pass_rate']}%")})
+    blocking = []
+    for d in env_decisions:
+        for b in d.get("blocking", ()):
+            blocking.append({**b, "environment_id": d["environment_id"]})
+    all_keys = {k for d in env_decisions for k in d["criteria_met"]}
+    criteria_met = {k: all(d["criteria_met"].get(k, True)
+                           for d in env_decisions) for k in sorted(all_keys)}
+    sums = ("counted_runs", "passed", "failed", "errored", "never_run",
+            "quarantined", "blockers", "warnings")
+    metrics = {k: sum(d["metrics"][k] for d in env_decisions) for k in sums}
+    metrics["claim_count"] = max(d["metrics"]["claim_count"]
+                                 for d in env_decisions)
+    metrics["pass_rate"] = min(d["metrics"]["pass_rate"]
+                               for d in env_decisions)
+    metrics["grounding"] = {
+        k: sum(d["metrics"]["grounding"][k] for d in env_decisions)
+        for k in ("broken", "drifted", "stale")}
+    metrics["environments"] = [d["environment_id"] for d in env_decisions]
+    score = max(d["risk"]["score"] for d in env_decisions)
+    return {
+        "applicable": True,
+        "recommendation": recommendation,
+        "confidence": _ENV_CONFIDENCE.get(recommendation, 0.75),
+        "reasoning": reasoning,
+        "blocking": blocking,
+        "criteria_met": criteria_met,
+        "metrics": metrics,
+        "risk": {"score": score, "level": _risk_level(score)},
+        "environments": env_decisions,
+    }
+
+
 def get_release_substrate_decision(tenant_id: int, external_keys,
                                    criteria=None) -> dict:
     """Best-effort: assemble + compute in one tenant connection. Never raises —
     ``{available: False}`` on any read error; zero claims → ``{available: True,
     applicable: False}`` (the composer skips cleanly). The release_substrate_console
-    wrapper discipline."""
+    wrapper discipline.
+
+    Multi-org (3e): when the release's claims have run evidence in >= 2
+    environments, the decision is computed ONCE PER ENV (evidence + staleness
+    scoped to that env's org) and rolled up worst-of; the per-env dicts ride
+    under ``environments``. With 0-1 envs the single tenant-wide compute runs
+    exactly as before — ``environments`` is then the one-element echo (or
+    empty), so the template has a stable key either way."""
     keys = [k for k in (external_keys or []) if k]
     if not keys:
         return {"available": True, "applicable": False, "claim_count": 0}
@@ -594,11 +714,41 @@ def get_release_substrate_decision(tenant_id: int, external_keys,
         from sqlalchemy.orm import Session
 
         from primeqa.semantic.connection import get_tenant_connection
+        from primeqa.sync.credentials import get_connected_org_for_environment
         with get_tenant_connection(tenant_id) as conn:
             session = Session(bind=conn)
             try:
-                evidence = _assemble_claim_evidence(session, keys, tenant_id=tenant_id)
-                out = compute_substrate_decision(evidence, criteria)
+                test_ids, _ = _claim_test_ids(session, keys)
+                envs = _environments_with_evidence(session, test_ids)
+                if len(envs) <= 1:
+                    evidence = _assemble_claim_evidence(session, keys,
+                                                        tenant_id=tenant_id)
+                    out = compute_substrate_decision(evidence, criteria)
+                    out["available"] = True
+                    if out.get("applicable"):
+                        out["environments"] = ([{"environment_id": envs[0],
+                                                 **{k: v for k, v in out.items()
+                                                    if k != "environments"}}]
+                                               if envs else [])
+                    return out
+                from primeqa.intelligence import quarantine as _q
+                manual_q = _q.manual_states(tenant_id)
+                env_decisions = []
+                for env in envs:
+                    org = get_connected_org_for_environment(conn, env)
+                    evidence = _assemble_claim_evidence(
+                        session, keys, tenant_id=tenant_id,
+                        environment_id=env, connected_org_id=org,
+                        manual_q=manual_q)
+                    d = compute_substrate_decision(evidence, criteria)
+                    if not d.get("applicable"):
+                        continue        # e.g. every claim deprecated
+                    env_decisions.append({"environment_id": env,
+                                          "connected_org_id": org, **d})
+                if not env_decisions:
+                    return {"available": True, "applicable": False,
+                            "claim_count": 0}
+                out = _rollup_env_decisions(env_decisions)
                 out["available"] = True
                 return out
             finally:

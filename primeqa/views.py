@@ -4090,6 +4090,21 @@ def releases_detail(release_id):
             substrate_decision = get_release_substrate_decision(
                 tid, external_keys, release.get("decision_criteria") or {})
 
+        # Multi-org (3e): env names for the per-environment verdict cards.
+        # Direct Environment query, NOT the access-scoped repo list — the
+        # decision tab is a release sign-off surface; a non-admin reviewer
+        # still needs each verdict labelled with its org.
+        env_names = {}
+        if substrate_decision and substrate_decision.get("environments"):
+            _ids = [e.get("environment_id")
+                    for e in substrate_decision["environments"]
+                    if e.get("environment_id") is not None]
+            if _ids:
+                from primeqa.core.models import Environment
+                env_names = {e.id: e.name for e in db.query(Environment).filter(
+                    Environment.tenant_id == tid,
+                    Environment.id.in_(_ids)).all()}
+
         # D-221 R4: the D-212 parity view retired with D-220 (zero v1 corpus —
         # nothing to compare). The tab renders nothing.
         parity = None
@@ -4099,6 +4114,7 @@ def releases_detail(release_id):
             all_requirements=all_requirements,
             environments=envs_data, substrate=substrate,
             substrate_decision=substrate_decision, parity=parity,
+            env_names=env_names,
         ))
     finally:
         db.close()

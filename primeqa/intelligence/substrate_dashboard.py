@@ -252,11 +252,10 @@ def get_landing_substrate_stats(tenant_id: int, environment_id=None) -> dict:
     runs today, latest-per-claim pass rate, recent runs, flaky claims.
     Never raises — zeros/empties on any read error.
 
-    ``environment_id`` scopes the run-derived reads (runs today, recent runs)
-    to one connected org; ``None`` keeps the tenant-wide view. Claim counts are
-    always tenant-wide — claims are org-agnostic (authored once, run per org).
-    The evidence-derived pass_rate/flaky read is tenant-wide pending the
-    per-environment decision assembly."""
+    ``environment_id`` scopes the run-derived reads (runs today, recent runs,
+    and the evidence-derived pass_rate/flaky) to one connected org; ``None``
+    keeps the tenant-wide view. Claim counts are always tenant-wide — claims
+    are org-agnostic (authored once, run per org)."""
     from sqlalchemy.orm import Session
 
     from primeqa.intelligence.substrate_decision import (
@@ -286,8 +285,16 @@ def get_landing_substrate_stats(tenant_id: int, environment_id=None) -> dict:
                     "WHERE (CAST(:env AS int) IS NULL OR r.environment_id = :env) "
                     "ORDER BY r.finished_at DESC LIMIT 10"
                 ), {"env": environment_id}).mappings().all()
+                org_id = None
+                if environment_id is not None:
+                    from primeqa.sync.credentials import (
+                        get_connected_org_for_environment,
+                    )
+                    org_id = get_connected_org_for_environment(
+                        session.connection(), environment_id)
                 evidence = _assemble_claim_evidence(
-                    session, _corpus_keys(session), tenant_id=tenant_id)
+                    session, _corpus_keys(session), tenant_id=tenant_id,
+                    environment_id=environment_id, connected_org_id=org_id)
             finally:
                 session.close()
 

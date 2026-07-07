@@ -28,16 +28,17 @@ def _gv(*, overall, claim_verdict="intact"):
 
 
 def _seed_run(session, *, claim_test_id, outcome, finished_at,
-              claim_version_seq=None):
+              claim_version_seq=None, environment_id=7):
     session.execute(text(
         "INSERT INTO s4_execution_runs (run_id, recipe_id, recipe_version_seq, "
         "claim_test_id, claim_version_seq, environment_id, outcome, started_at, "
         "finished_at, evidence) "
-        "VALUES (CAST(:r AS uuid), CAST(:rec AS uuid), 1, CAST(:t AS uuid), :cvs, 7, "
+        "VALUES (CAST(:r AS uuid), CAST(:rec AS uuid), 1, CAST(:t AS uuid), :cvs, :env, "
         "CAST(:o AS run_outcome), CAST(:f AS timestamptz), CAST(:f AS timestamptz), "
         "CAST('{}' AS jsonb))"),
         {"r": str(uuid4()), "rec": str(uuid4()), "t": str(claim_test_id),
-         "cvs": claim_version_seq, "o": outcome, "f": finished_at})
+         "cvs": claim_version_seq, "o": outcome, "f": finished_at,
+         "env": environment_id})
 
 
 def _seed_s1_version(session, version_seq):
