@@ -581,7 +581,15 @@ def refusal_plain(refusal_kind: Optional[str],
     """The refusal as one plain sentence, with the substrate's recorded detail
     appended when present (e.g. WHICH claim kind was deferred, WHICH refs were
     missing). ``refusals`` is the outcome's typed refusal list
-    ``[{refusal_kind, payload}, ...]``. None when there is no refusal."""
+    ``[{refusal_kind, payload}, ...]``. None when there is no refusal.
+
+    When the recorded detail is itself a COMPLETE prose explanation
+    (capitalized, period-terminated — e.g. the model's "this criterion is a
+    restatement already covered by the discrete tests" declaration), it IS
+    the message: leading with the kind's generic template there misleads
+    (the AC19 finding — "references things that do not exist in the synced
+    org model" headlined a benign already-covered decline). Fragmenty
+    details keep the template-first form; they need the category context."""
     if not refusal_kind:
         return None
     base = _REFUSAL_PLAIN.get(refusal_kind,
@@ -600,6 +608,10 @@ def refusal_plain(refusal_kind: Optional[str],
     if detail:
         if isinstance(detail, (list, tuple)):
             detail = ", ".join(str(d) for d in detail)
+        detail = str(detail)
+        if (len(detail) > 60 and detail[:1].isupper()
+                and detail.rstrip().endswith(".")):
+            return detail.strip()
         return f"{base} ({detail})"
     return base
 

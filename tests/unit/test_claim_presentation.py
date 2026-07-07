@@ -713,3 +713,20 @@ def test_cross_field_exceeds_condition_renders_both_fields():
     assert claim_title("prohibition-claim", body, labels,
                        semantic_conditions=conds) == \
         "Rejects editing records on Opportunity when Loan Amount exceeds Property Value"
+
+
+def test_refusal_plain_prose_detail_leads_without_the_template():
+    # The AC19 finding: a self-explanatory recorded reason (capitalized,
+    # period-terminated prose) IS the message — headlining it with the kind's
+    # generic template ("references things that do not exist in the synced
+    # org model") misled on a benign already-covered decline.
+    from primeqa.intelligence.claim_presentation import refusal_plain
+    detail = ("This is a general restatement of AC1/AC2's individual "
+              "validation rules already covered by the discrete "
+              "prohibition-claims; it names no distinct rule or field state "
+              "of its own to ground a separate test.")
+    out = refusal_plain("no-relevant-context",
+                        [{"refusal_kind": "no-relevant-context",
+                          "payload": {"detail": detail}}])
+    assert out == detail
+    assert "synced org model" not in out
