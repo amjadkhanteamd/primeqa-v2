@@ -152,28 +152,32 @@ def suggest_repairs(verdict, cause_kind=None, vr_name=None,
         # the org-owned high-value cause (the grounding Flow was deactivated);
         # automation_effect_absent is recipe/claim-owned (the Flow exists but its
         # effect didn't land — entry condition or edited logic).
+        # Primitive-agnostic wording: the grounding automation can be a Flow,
+        # an approval process (D-308), a formula (D-304), … — never assert
+        # "the Flow ran" for a mechanism the evidence can't see running.
         by_cause = {
             "automation_inactive": [
-                _s("org", "Re-activate the grounding Flow",
-                   "The asserted effect did not materialize because no active "
-                   "Flow triggers on the record — the grounding automation was "
-                   "deactivated or removed. Re-activate it in the org, or "
-                   "deprecate the claim if the automation is intentionally gone."),
+                _s("org", "Re-activate the grounding automation",
+                   "The asserted effect did not materialize because the "
+                   "grounding automation no longer fires for this record — "
+                   "deactivated, removed, or retargeted. Re-activate it in "
+                   "the org, or deprecate the claim if the automation is "
+                   "intentionally gone."),
             ],
             "automation_effect_absent": [
-                _s("recipe", "The Flow ran but the effect didn't land",
-                   "An active Flow triggers on the record, yet the asserted "
-                   "effect was not observed — an entry condition the recipe's "
-                   "payload doesn't meet, or the Flow's logic changed. Enrich "
-                   "the payload to satisfy the entry condition, or regenerate "
-                   "the claim from the Flow's current behavior."),
+                _s("recipe", "The automation's effect didn't land",
+                   "The asserted effect was not observed — the test's payload "
+                   "may not meet the automation's entry conditions, or its "
+                   "logic changed since generation. Enrich the payload to "
+                   "satisfy the entry conditions, or regenerate the test from "
+                   "the automation's current behavior."),
             ],
         }
         return by_cause.get(cause_kind, [
             _s("org", "Asserted automation effect not observed — investigate",
                "The org did not produce the asserted automation/state effect "
                "and no deeper cause was attributed. Inspect the run evidence and "
-               "the Flows that trigger on the record."),
+               "the automations that fire on the record."),
         ])
 
     if verdict in ("asserted_metadata_absent", "asserted_value_differs"):

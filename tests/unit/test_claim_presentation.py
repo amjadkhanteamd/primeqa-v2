@@ -172,9 +172,45 @@ def test_automation_effect_title_blocked_and_side_effect():
         "An automation fires a side effect"
 
 
-def test_automation_effect_title_falls_back_when_no_effect():
+def test_automation_effect_title_falls_back_to_the_binding_when_no_effect():
+    # When the body states no concrete effect, the automation name is the only
+    # distinguishing fact left — an anonymous "An automation fires" title made
+    # every such test indistinguishable in the plan list. (The D-267 rule
+    # stands where an effect exists: the effect leads, never the flow name.)
     body = {"automation": {"external_id": "Some_Flow"}}
-    assert claim_title("automation-effect-claim", body) == "An automation fires"
+    assert claim_title("automation-effect-claim", body) == \
+        "The Some Flow automation fires"
+    assert claim_title("automation-effect-claim", {}) == "An automation fires"
+
+
+def test_automation_effect_title_approval_process_empty_effect():
+    # The D-308 approval claims carry an empty field_change (the effect IS the
+    # submission) — run 4b8cbe84's claim titled "An automation updates the
+    # record". The primitive + binding give the honest, distinguishing title.
+    body = {
+        "automation": {"external_id": "HL_High_Value_Loan"},
+        "automation_primitive": "approval_process",
+        "expected_effect": {"kind": "field_change",
+                            "changes": {"field_values": {}}},
+    }
+    assert claim_title("automation-effect-claim", body) == \
+        "Automatically submits for approval (HL High Value Loan)"
+
+
+def test_automation_effect_title_named_binding_empty_effect():
+    body = {
+        "automation": {"external_id": "HL_Auto_Risk_Rating"},
+        "automation_primitive": "flow",
+        "expected_effect": {"kind": "field_change",
+                            "changes": {"field_values": {}}},
+    }
+    assert claim_title("automation-effect-claim", body) == \
+        "The HL Auto Risk Rating automation makes its expected change"
+    # No binding at all keeps the legacy generic fallback.
+    nobind = {"expected_effect": {"kind": "field_change",
+                                  "changes": {"field_values": {}}}}
+    assert claim_title("automation-effect-claim", nobind) == \
+        "An automation updates the record"
 
 
 def test_capability_title_reads_granting_subject_not_grantee():

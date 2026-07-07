@@ -351,11 +351,13 @@ def _interpret_and_persist(session, evidence: RunEvidence) -> Optional[Interpret
                 evidence.environment_id, evidence.run_id)
             return None
         with session.begin_nested():
-            interpretation = interpret_run(
-                evidence, claim_kind=_claim_kind_of(session, evidence.claim_test_id))
+            claim_kind, claim_automation = _claim_context_of(
+                session, evidence.claim_test_id)
+            interpretation = interpret_run(evidence, claim_kind=claim_kind)
             s1_reader = S1ValidationRuleReader(
                 SemanticOrgModel(session.connection(), connected_org_id=org_id))
-            interpretation = attribute_run(interpretation, evidence, s1=s1_reader)
+            interpretation = attribute_run(interpretation, evidence, s1=s1_reader,
+                                           claim_automation=claim_automation)
             persist_interpretation(session, interpretation)
         return interpretation
     except Exception:
@@ -365,18 +367,36 @@ def _interpret_and_persist(session, evidence: RunEvidence) -> Optional[Interpret
         return None
 
 
-def _claim_kind_of(session, claim_test_id) -> Optional[str]:
-    """The claim's current kind — the interpreter's verdict-vocabulary selector
-    (D-210). Best-effort: any read failure returns None (the value-claim
-    default vocabulary), never blocks interpretation."""
+def _claim_context_of(session, claim_test_id):
+    """The claim's current kind + its automation binding, one read.
+
+    The kind is the interpreter's verdict-vocabulary selector (D-210). The
+    binding ``{name, primitive}`` (from the automation-effect body's pinned
+    ``automation`` ref + ``automation_primitive``) lets S6 attribution name
+    the automation the CLAIM grounds on instead of scanning S1 for any active
+    Flow on the object — the scan blamed an unrelated Flow on multi-flow
+    objects (run 4b8cbe84 blamed HL_Auto_Risk_Rating for an approval-process
+    claim). Best-effort: any read failure returns ``(None, None)`` (the
+    value-claim default vocabulary, scan-fallback attribution), never blocks
+    interpretation."""
     from sqlalchemy import text as _text
     try:
-        return session.execute(_text(
-            "SELECT claim_kind FROM test_claims "
+        row = session.execute(_text(
+            "SELECT claim_kind, "
+            "asserted_truth->'automation'->>'external_id' AS automation_name, "
+            "asserted_truth->>'automation_primitive' AS automation_primitive "
+            "FROM test_claims "
             "WHERE test_id = :tid AND valid_to IS NULL"
-        ), {"tid": str(claim_test_id)}).scalar()
+        ), {"tid": str(claim_test_id)}).mappings().first()
+        if row is None:
+            return None, None
+        automation = None
+        if row["automation_name"]:
+            automation = {"name": row["automation_name"],
+                          "primitive": row["automation_primitive"]}
+        return row["claim_kind"], automation
     except Exception:
-        return None
+        return None, None
 
 
 def run_recipe_execution_for_tenant(

@@ -174,6 +174,61 @@ def test_absence_claim_result_semantics():
     assert d["result_sentence"] == "no record appeared — as expected"
 
 
+def test_cross_object_empty_read_narrates_the_search():
+    # Run 4b8cbe84's messaging defect: the read targets a DIFFERENT object
+    # than the created subject (ProcessInstance after an Opportunity create).
+    # 0 rows there is the OBSERVATION of the missing effect — "Read the
+    # record back — nothing came back" implied the created record vanished.
+    steps = [
+        {"kind": "create", "sobject": "Opportunity", "success": True,
+         "matched": None, "field_values": {"Loan_Amount__c": 6000000}},
+        {"kind": "read", "sobject": "ProcessInstance", "soql": "S",
+         "row_count": 0, "fields_captured": ["Id"], "rows": []},
+        {"kind": "assert", "predicate": "exists", "held": False},
+    ]
+    s = build_readable_run(
+        claim_kind="automation-effect-claim", asserted_truth={},
+        outcome="failed", verdict_plain=None, steps=steps,
+        semantic_field_keys=["Loan_Amount__c"], labels=LABELS)
+    joined = " | ".join(st.narration for st in s.steps)
+    assert "Looked for related ProcessInstance records — found none" in joined
+    assert "Read the record back" not in joined
+
+
+def test_same_object_empty_read_keeps_the_record_back_phrase():
+    # A subject read-back genuinely returning nothing keeps the established
+    # honest phrase — only CROSS-object reads re-narrate.
+    steps = [
+        {"kind": "create", "sobject": "Opportunity", "success": True,
+         "matched": None, "field_values": {"Loan_Amount__c": 6000000}},
+        {"kind": "read", "sobject": "Opportunity", "soql": "S",
+         "row_count": 0, "fields_captured": ["Id"], "rows": []},
+        {"kind": "assert", "predicate": "exists", "held": False},
+    ]
+    s = build_readable_run(
+        claim_kind="automation-effect-claim", asserted_truth={},
+        outcome="failed", verdict_plain=None, steps=steps,
+        semantic_field_keys=["Loan_Amount__c"], labels=LABELS)
+    joined = " | ".join(st.narration for st in s.steps)
+    assert "Read the record back — nothing came back" in joined
+
+
+def test_cross_object_found_rows_narrates_the_find():
+    steps = [
+        {"kind": "create", "sobject": "Opportunity", "success": True,
+         "matched": None, "field_values": {"Amount": 500}},
+        {"kind": "read", "sobject": "Task", "soql": "S", "row_count": 1,
+         "fields_captured": ["Id"], "rows": [{"Id": "00Tx"}]},
+        {"kind": "assert", "predicate": "exists", "held": True},
+    ]
+    s = build_readable_run(
+        claim_kind="automation-effect-claim", asserted_truth={},
+        outcome="passed", verdict_plain=None, steps=steps,
+        semantic_field_keys=["Amount"], labels=LABELS)
+    joined = " | ".join(st.narration for st in s.steps)
+    assert "Found 1 related Task record" in joined
+
+
 # ---------------------------------------------------------------------------
 # Determinism, hashing, grounding
 # ---------------------------------------------------------------------------

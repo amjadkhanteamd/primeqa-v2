@@ -125,17 +125,23 @@ S1VrReader = S1AttributionReader
 
 def attribute_run(
     interpretation: Interpretation, evidence: RunEvidence, *,
-    s1: S1AttributionReader,
+    s1: S1AttributionReader, claim_automation: Optional[dict] = None,
 ) -> Interpretation:
     """Enrich a FAILED behavioral interpretation with a structured cause from
     S1. Negative verdicts read VR metadata; positive-vertical failures (D-229)
     read Flow / field metadata. Pass-through (unchanged) for any other verdict.
     Never mutates the carried outcome. The S1 read self-limits to the verdicts
-    that need it (no query for a passing or inspection verdict)."""
+    that need it (no query for a passing or inspection verdict).
+
+    ``claim_automation`` (``{name, primitive}`` from the automation-effect
+    claim body, or None) grounds the automation-absent cause on the automation
+    the CLAIM binds — without it the attribution can only scan S1 and cannot
+    know WHICH automation the assertion is about."""
     if interpretation.verdict in _NEGATIVE_ENRICHED:
         cause = _attribute_negative(interpretation.verdict, evidence, s1)
     elif interpretation.verdict in _POSITIVE_ENRICHED:
-        cause = _attribute_positive(interpretation.verdict, evidence, s1)
+        cause = _attribute_positive(interpretation.verdict, evidence, s1,
+                                    claim_automation=claim_automation)
     elif interpretation.verdict in _ACCEPTANCE_ENRICHED:
         cause = _attribute_acceptance_rejected(evidence, s1)
     else:
@@ -188,9 +194,11 @@ def _attribute_acceptance_rejected(evidence, s1) -> Optional[Cause]:
 # Positive-vertical failures (D-229) — automation/state (Flow) + value (field)
 # ---------------------------------------------------------------------------
 
-def _attribute_positive(verdict, evidence, s1) -> Optional[Cause]:
+def _attribute_positive(verdict, evidence, s1,
+                        claim_automation=None) -> Optional[Cause]:
     """The positive create-and-verify family's failures (incl. D-205 N-create
-    chains). automation/state grounds on the Flow that triggers on the TRIGGER
+    chains). automation/state grounds on the automation the CLAIM binds when
+    the body carries one, else on the Flow(s) that trigger on the TRIGGER
     record (the LAST create — per D-205 forward-ref ordering the trigger is
     created after the record it acts on); value-claim grounds on the
     createability of the asserted field on the READ-BACK object."""
@@ -199,12 +207,74 @@ def _attribute_positive(verdict, evidence, s1) -> Optional[Cause]:
     trigger = _last_create_step(evidence)
     if trigger is None:
         return None
-    return _attribute_automation_absent(trigger, s1)
+    return _attribute_automation_absent(trigger, s1, claim_automation)
 
 
-def _attribute_automation_absent(trigger, s1) -> Optional[Cause]:
-    """`automation_not_triggered` / `state_not_transitioned`: discriminate on
-    whether any ACTIVE Flow triggers on the TRIGGER record's object."""
+# The primitive's display noun (D-053 sub-discriminators; D-304 formula,
+# D-308 approval_process). Unknown/legacy primitives fall back to the
+# neutral "automation" — never assert "Flow" for a non-flow mechanism.
+_PRIMITIVE_NOUN = {
+    "flow": "Flow",
+    "process_builder": "process",
+    "apex_trigger": "Apex trigger",
+    "validation_rule": "validation rule",
+    "approval_process": "approval process",
+    "formula": "formula field",
+}
+
+
+def _attribute_automation_absent(trigger, s1, claim_automation=None) -> Optional[Cause]:
+    """`automation_not_triggered` / `state_not_transitioned`.
+
+    With the claim's automation binding (name + primitive), the cause names
+    THAT automation — the pre-fix scan named ``active[0]`` of the object's
+    Flows, blaming an unrelated Flow on multi-flow objects (run 4b8cbe84
+    blamed HL_Auto_Risk_Rating for an HL_High_Value_Loan approval claim).
+    A bound FLOW is additionally checked against S1 for activity (the
+    inactive/removed discrimination, now by ITS name). Non-flow primitives
+    have no S1 activity port — their cause stays evidence-honest (no
+    "active"/"ran" assertion). Without a binding (legacy bodies,
+    state-transition claims) the S1 flow-scan survives as the fallback,
+    phrased as the scan it is — never presenting one scanned Flow as THE
+    grounding automation."""
+    if claim_automation and claim_automation.get("name"):
+        name = claim_automation["name"]
+        primitive = claim_automation.get("primitive")
+        noun = _PRIMITIVE_NOUN.get(primitive or "", "automation")
+        if primitive == "flow":
+            flows = s1.flows_for_object(trigger.sobject)
+            match = next((f for f in flows if f.name == name), None)
+            if match is None:
+                return Cause(
+                    "automation_inactive",
+                    detail=(f"the Flow {name} this test grounds on no longer "
+                            f"triggers on {trigger.sobject} — removed or "
+                            f"retargeted since generation, so the asserted "
+                            f"effect could not fire"))
+            if not match.is_active:
+                return Cause(
+                    "automation_inactive",
+                    detail=(f"the Flow {name} this test grounds on is inactive "
+                            f"— deactivated since generation, so the asserted "
+                            f"effect could not fire"))
+            return Cause(
+                "automation_effect_absent",
+                detail=(f"the Flow {name} is active on {trigger.sobject}, but "
+                        f"the asserted effect was not observed — an entry "
+                        f"condition may be unmet, or its logic changed since "
+                        f"generation"))
+        if primitive == "approval_process":
+            return Cause(
+                "automation_effect_absent",
+                detail=(f"the {noun} {name} did not submit this record — no "
+                        f"approval request was created; an entry condition of "
+                        f"the submitting automation may be unmet, or the "
+                        f"process no longer fires on this path"))
+        return Cause(
+            "automation_effect_absent",
+            detail=(f"the {noun} {name} did not produce its asserted effect on "
+                    f"{trigger.sobject} — an entry condition may be unmet, or "
+                    f"its logic changed since generation"))
     flows = s1.flows_for_object(trigger.sobject)
     active = [f for f in flows if f.is_active]
     if not active:
@@ -213,11 +283,15 @@ def _attribute_automation_absent(trigger, s1) -> Optional[Cause]:
             detail=(f"no active Flow triggers on {trigger.sobject} — the grounding "
                     f"automation was deactivated or removed since generation, so "
                     f"the asserted effect could not fire"))
+    names = ", ".join(f.name for f in active[:3])
+    more = "…" if len(active) > 3 else ""
     return Cause(
         "automation_effect_absent",
-        detail=(f"an active Flow ({active[0].name}) triggers on {trigger.sobject}, "
-                f"but the asserted effect was not observed — an entry condition "
-                f"may be unmet, or the Flow's logic changed since generation"))
+        detail=(f"active automation exists on {trigger.sobject} "
+                f"({len(active)} active Flow{'s' if len(active) != 1 else ''}: "
+                f"{names}{more}), but the asserted effect was not observed — "
+                f"an entry condition may be unmet, or the logic changed since "
+                f"generation"))
 
 
 def _attribute_value_not_persisted(evidence, s1) -> Optional[Cause]:

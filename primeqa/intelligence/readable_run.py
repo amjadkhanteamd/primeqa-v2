@@ -212,25 +212,41 @@ def _narrate_mutation(step: dict, semantic_pairs: tuple, labels,
 
 
 def _narrate_data_read(step: dict, focus_key: Optional[str], labels,
-                       tokens: set):
+                       tokens: set, subject_sobject: Optional[str] = None):
     """'Read the record back — Loan-to-Value (%) = 50' (the assertion's field
-    when known, else the first captured field). Returns (narration, actual)."""
+    when known, else the first captured field). Returns (narration, actual).
+
+    "Read the record back" is only honest when the read targets the SUBJECT
+    that was created. A cross-object observation (the read's sobject differs
+    from the created subject's — e.g. ProcessInstance after an Opportunity
+    create) narrates as the search it is: 0 rows there is the OBSERVATION of
+    the missing (or correctly absent) effect, not the created record
+    vanishing. Phrasing stays direction-neutral — absence claims (D-307) walk
+    the same path, where finding nothing is the pass."""
     rows = step.get("rows")
     row = rows[0] if isinstance(rows, (list, tuple)) and rows \
         and isinstance(rows[0], dict) else None
+    read_obj = step.get("sobject")
+    cross = bool(read_obj and subject_sobject and read_obj != subject_sobject)
+    obj = _obj_label(step, labels) if cross else None
     if row is None:
+        if cross:
+            return f"Looked for related {obj} records — found none", None
         return "Read the record back — nothing came back", None
+    n = len(rows) if isinstance(rows, (list, tuple)) else 1
+    lead = (f"Found {n} related {obj} record{'' if n == 1 else 's'}"
+            if cross else "Read the record back")
     captured = [f for f in (step.get("fields_captured") or ()) if f != "Id"]
     bare_focus = _bare(focus_key) if focus_key else None
     field = bare_focus if bare_focus and bare_focus in row else (
         captured[0] if captured and captured[0] in row else None)
     if field is None:
-        return "Read the record back", None
+        return lead, None
     actual = row.get(field)
     label = _field_label(field, step.get("sobject"), labels)
     value = fmt_number(actual) if actual is not None else "blank"
     _add(tokens, label, value)
-    return f"Read the record back — {label} = {value}", actual
+    return f"{lead} — {label} = {value}", actual
 
 
 def _result_pieces(binding, actual, held, expected_absence: bool,
@@ -373,7 +389,8 @@ def build_readable_run(*, claim_kind, asserted_truth, outcome, verdict_plain,
                 narration = _narrate_mutation(s, test_data, labels, tokens)
             elif isinstance(s, dict) and _is_data_read(s):
                 narration, got = _narrate_data_read(
-                    s, binding[0] if binding else None, labels, tokens)
+                    s, binding[0] if binding else None, labels, tokens,
+                    subject_sobject=(mutation or {}).get("sobject"))
                 if s is data_read:
                     actual = got
             elif kind == "assert":

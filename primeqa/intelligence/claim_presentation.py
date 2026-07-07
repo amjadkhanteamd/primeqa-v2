@@ -57,6 +57,17 @@ def _ref_name(ref: Any, labels=None) -> Optional[str]:
     return None
 
 
+def _auto_display_name(body: dict) -> Optional[str]:
+    """The automation binding's display name for titles: the pinned ref's
+    API name with underscores humanized (automation names rarely have org
+    labels — 'HL_High_Value_Loan' reads as 'HL High Value Loan')."""
+    ref = body.get("automation")
+    api = ref.get("external_id") if isinstance(ref, dict) else None
+    if not api or not isinstance(api, str):
+        return None
+    return api.replace("_", " ").strip() or None
+
+
 def _object_label_of(field_key: Any, labels) -> Optional[str]:
     """The owning object's business label for an object-qualified field key
     (``Case_SLA__c.Status__c`` → ``Case SLA``), or None when the key carries no
@@ -301,6 +312,12 @@ def claim_title(claim_kind: str, asserted_truth: Optional[dict],
                 return "An automation correctly does nothing"
             effect = body.get("expected_effect") or {}
             ekind = effect.get("kind") if isinstance(effect, dict) else None
+            # When the body records no concrete effect values (e.g. the D-308
+            # approval claims carry an empty field_change — the effect IS the
+            # submission), fall back to the automation binding rather than
+            # the anonymous "An automation …": the name + primitive are the
+            # only distinguishing facts the body offers.
+            auto_name = _auto_display_name(body)
             if ekind == "field_change":
                 change = _first_field_change(effect.get("changes"))
                 if change:
@@ -309,11 +326,17 @@ def claim_title(claim_kind: str, asserted_truth: Optional[dict],
                     obj = _object_label_of(fkey, labels)
                     where = f"{obj} {field}" if obj else field
                     return f"Automatically sets {where} to {val}"
+                if body.get("automation_primitive") == "approval_process" and auto_name:
+                    return f"Automatically submits for approval ({auto_name})"
+                if auto_name:
+                    return f"The {auto_name} automation makes its expected change"
                 return "An automation updates the record"
             if ekind == "blocked_operation":
                 return "An automation blocks the change"
             if ekind == "side_effect":
                 return "An automation fires a side effect"
+            if auto_name:
+                return f"The {auto_name} automation fires"
             return "An automation fires"
     except Exception:
         pass
@@ -411,8 +434,10 @@ _VERDICT_PLAIN = {
         "Created the record — but Salesforce did NOT move it to the expected state",
     "automation_triggered":
         "Triggered the automation — it produced the expected result",
+    # Evidence-honest: a missing effect does NOT prove the automation ran —
+    # "Triggered the automation — but…" asserted the trigger it cannot know.
     "automation_not_triggered":
-        "Triggered the automation — but the expected result never appeared",
+        "The automation's expected result never appeared",
     "creation_accepted": "the org accepted the creation",
     "creation_rejected": "the org rejected a creation that must save",
     "change_accepted": "the org accepted the change",
@@ -776,9 +801,11 @@ _CAUSE_PLAIN = {
     "platform_constraint":
         "Blocked by a different rule than the one under test",
     "automation_inactive":
-        "The automation is turned off — no active flow fires",
+        "The automation is turned off or gone — nothing fires for this",
+    # Evidence-honest: the absent effect is what was observed — whether the
+    # automation "ran" is not knowable from the outside.
     "automation_effect_absent":
-        "The automation ran but didn't make the expected change",
+        "The expected change from the automation never appeared",
     "field_not_createable":
         "The test set a field the org won't accept on create",
 }

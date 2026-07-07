@@ -84,10 +84,23 @@ def test_automation_and_state_uncaused_still_get_a_suggestion():
     assert suggest_repairs("state_not_transitioned")[0]["owner"] == "org"
 
 
-def test_automation_inactive_is_org_owned_reactivate_flow():
+def test_automation_inactive_is_org_owned_reactivate():
+    # Primitive-agnostic (D-304 formula / D-308 approval_process ride the same
+    # cause): the suggestion names "the automation", never asserts "Flow".
     out = suggest_repairs("automation_not_triggered", cause_kind="automation_inactive")
     assert out[0]["owner"] == "org"
-    assert "Flow" in out[0]["title"] + out[0]["detail"]
+    assert "automation" in (out[0]["title"] + out[0]["detail"]).lower()
+    assert "Flow" not in out[0]["title"] + out[0]["detail"]
+
+
+def test_automation_effect_absent_never_claims_the_flow_ran():
+    # Evidence-honest: a missing effect doesn't prove the automation ran, and
+    # the mechanism may not be a Flow at all.
+    out = suggest_repairs("automation_not_triggered",
+                          cause_kind="automation_effect_absent")
+    assert out[0]["owner"] == "recipe"
+    text = out[0]["title"] + out[0]["detail"]
+    assert "Flow" not in text and " ran " not in f" {text} "
 
 
 def test_inspection_drift_and_errored_paths():

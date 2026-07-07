@@ -546,6 +546,70 @@ def test_state_not_transitioned_uses_the_same_flow_logic():
     assert interp.cause.cause_kind == "automation_inactive"
 
 
+# --- the claim's automation binding grounds the cause (run 4b8cbe84 fix) ----
+
+def _interp_pos_bound(ev_kind, s1, claim_automation):
+    ev, claim_kind = ev_kind
+    return attribute_run(interpret_run(ev, claim_kind=claim_kind), ev, s1=s1,
+                         claim_automation=claim_automation)
+
+
+def test_bound_approval_process_is_named_never_a_scanned_flow():
+    # Run 4b8cbe84's defect: the claim binds an approval process, but the
+    # scan blamed the object's first active Flow (HL_Auto_Risk_Rating). With
+    # the binding, the cause names THE bound automation, primitive-aware;
+    # the unrelated Flow never appears.
+    ek = _positive(sobject="Opportunity", claim_kind="automation-effect-claim")
+    s1 = _StubS1([], flows=[FlowMeta("HL_Auto_Risk_Rating", is_active=True),
+                            FlowMeta("HL_Auto_Submit_Approval", is_active=True)])
+    interp = _interp_pos_bound(ek, s1, {"name": "HL_High_Value_Loan",
+                                        "primitive": "approval_process"})
+    assert interp.cause.cause_kind == "automation_effect_absent"
+    assert "approval process HL_High_Value_Loan" in interp.cause.detail
+    assert "HL_Auto_Risk_Rating" not in interp.cause.detail
+    assert "no approval request was created" in interp.cause.detail
+
+
+def test_bound_flow_inactive_is_discriminated_by_its_own_name():
+    # A bound FLOW checks ITS activity — another flow being active must not
+    # mask the bound one's deactivation.
+    ek = _positive(sobject="Case", claim_kind="automation-effect-claim")
+    s1 = _StubS1([], flows=[FlowMeta("Other_Active", is_active=True),
+                            FlowMeta("Bound_Flow", is_active=False)])
+    interp = _interp_pos_bound(ek, s1, {"name": "Bound_Flow", "primitive": "flow"})
+    assert interp.cause.cause_kind == "automation_inactive"
+    assert "Bound_Flow" in interp.cause.detail
+
+
+def test_bound_flow_active_effect_absent_names_it():
+    ek = _positive(sobject="Case", claim_kind="automation-effect-claim")
+    s1 = _StubS1([], flows=[FlowMeta("Bound_Flow", is_active=True)])
+    interp = _interp_pos_bound(ek, s1, {"name": "Bound_Flow", "primitive": "flow"})
+    assert interp.cause.cause_kind == "automation_effect_absent"
+    assert "Bound_Flow" in interp.cause.detail
+
+
+def test_bound_flow_gone_from_org_is_inactive():
+    ek = _positive(sobject="Case", claim_kind="automation-effect-claim")
+    s1 = _StubS1([], flows=[FlowMeta("Different", is_active=True)])
+    interp = _interp_pos_bound(ek, s1, {"name": "Gone_Flow", "primitive": "flow"})
+    assert interp.cause.cause_kind == "automation_inactive"
+    assert "Gone_Flow" in interp.cause.detail
+
+
+def test_unbound_multiflow_scan_reports_the_scan_not_one_flow():
+    # Legacy no-binding fallback: with several active Flows the old text
+    # presented active[0] as THE grounding Flow — now it reports what it
+    # actually knows: a scan result.
+    ek = _positive(sobject="Opportunity", claim_kind="automation-effect-claim")
+    s1 = _StubS1([], flows=[FlowMeta("A_First", is_active=True),
+                            FlowMeta("B_Second", is_active=True)])
+    interp = _interp_pos(ek, s1)
+    assert interp.cause.cause_kind == "automation_effect_absent"
+    assert "2 active Flows" in interp.cause.detail
+    assert "A_First" in interp.cause.detail and "B_Second" in interp.cause.detail
+
+
 def test_value_not_persisted_field_not_createable():
     # The asserted field is not createable → SF dropped the posted value on insert.
     ek = _positive(sobject="Invoice__c", claim_kind="value-claim",
