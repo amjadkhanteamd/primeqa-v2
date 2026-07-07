@@ -108,7 +108,8 @@ def test_two_provenance_events_for_two_versions(session) -> None:
     )
     events = session.query(TestProvenance).filter(
         TestProvenance.claim_test_id == r1.test_id,
-    ).order_by(TestProvenance.event_at).all()
+    ).order_by(TestProvenance.event_at,
+               TestProvenance.event_data["new_version_seq"].as_integer()).all()
     assert [e.event_kind for e in events] == [
         "claim_created", "claim_edited",
     ]

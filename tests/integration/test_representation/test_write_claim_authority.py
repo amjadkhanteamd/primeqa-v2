@@ -162,7 +162,8 @@ def test_s3_hash_changed_creates_claim_regenerated_event(session) -> None:
     assert result2.status == "draft"
     events = session.query(TestProvenance).filter(
         TestProvenance.claim_test_id == result1.test_id,
-    ).order_by(TestProvenance.event_at).all()
+    ).order_by(TestProvenance.event_at,
+               TestProvenance.event_data["new_version_seq"].as_integer()).all()
     # v1 created + v2 regenerated.
     assert [e.event_kind for e in events] == [
         "claim_created", "claim_regenerated",

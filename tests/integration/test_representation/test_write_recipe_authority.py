@@ -90,7 +90,8 @@ def test_human_edit_produces_recipe_edited_event(session) -> None:
     assert r2.status == "generated_unapproved"
     events = session.query(TestProvenance).filter(
         TestProvenance.recipe_id == r1.recipe_id,
-    ).order_by(TestProvenance.event_at).all()
+    ).order_by(TestProvenance.event_at,
+               TestProvenance.event_data["new_version_seq"].as_integer()).all()
     assert [e.event_kind for e in events] == [
         "recipe_created", "recipe_edited",
     ]
@@ -110,7 +111,8 @@ def test_s3_edit_produces_recipe_edited_event(session) -> None:
     assert r2.version_seq == 2
     events = session.query(TestProvenance).filter(
         TestProvenance.recipe_id == r1.recipe_id,
-    ).order_by(TestProvenance.event_at).all()
+    ).order_by(TestProvenance.event_at,
+               TestProvenance.event_data["new_version_seq"].as_integer()).all()
     assert [e.event_kind for e in events] == [
         "recipe_created", "recipe_edited",
     ]
@@ -131,7 +133,8 @@ def test_s8_rewrite_produces_recipe_s8_rewrite_event(session) -> None:
     assert r2.status == "generated_unapproved"
     events = session.query(TestProvenance).filter(
         TestProvenance.recipe_id == r1.recipe_id,
-    ).order_by(TestProvenance.event_at).all()
+    ).order_by(TestProvenance.event_at,
+               TestProvenance.event_data["new_version_seq"].as_integer()).all()
     assert [e.event_kind for e in events] == [
         "recipe_created", "recipe_s8_rewrite",
     ]
