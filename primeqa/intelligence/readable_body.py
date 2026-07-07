@@ -477,7 +477,14 @@ def _expected_result(claim_kind: str, asserted: dict, labels, tokens: set) -> Op
             return "The automation updates the record"
         if ekind == "blocked_operation":
             return "The change is blocked."
-        # side_effect: description is free-form prose → omit rather than echo it.
+        if ekind == "side_effect":
+            # The D-308+ approval emission (the effect IS the submission) —
+            # state it in business words; the primitive discriminates (D-053).
+            # Other side effects keep the omit-don't-echo posture: their
+            # descriptions carry API names, which never enter the spine (D-267).
+            if asserted.get("automation_primitive") == "approval_process":
+                return "The record is submitted for approval."
+            return None
         return None
     return None
 

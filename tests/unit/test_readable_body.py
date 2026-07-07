@@ -241,6 +241,42 @@ def test_automation_effect_field_change():
     assert "HL_Auto_Risk_Rating" not in _all_strings(skel)
 
 
+def test_automation_effect_approval_side_effect():
+    # The honest S3 approval emission (SideEffect — the effect IS the
+    # submission): the Expected-result line states it in business words;
+    # the description's API names never reach the spine (D-267).
+    asserted = {"kind": "automation-effect-claim",
+                "automation": _ref("HL_High_Value_Loan"),
+                "automation_primitive": "approval_process",
+                "triggering_action": {"trigger_kind": "data-mutation-trigger",
+                                      "description": "creating a Loan"},
+                "expected_effect": {"kind": "side_effect",
+                                    "description": "the record is submitted "
+                                                   "for approval — a "
+                                                   "ProcessInstance approval "
+                                                   "request is created"},
+                "affected_fields": []}
+    skel = _build("automation-effect-claim", asserted)
+    assert skel.expected_result == "The record is submitted for approval."
+    assert "ProcessInstance" not in _all_strings(skel)
+
+
+def test_automation_effect_generic_side_effect_omits_expected():
+    # Non-approval side effects keep the omit-don't-echo posture.
+    asserted = {"kind": "automation-effect-claim",
+                "automation": _ref("Case_Email_Alert"),
+                "automation_primitive": "flow",
+                "triggering_action": {"trigger_kind": "data-mutation-trigger",
+                                      "description": "creating a Case"},
+                "expected_effect": {"kind": "side_effect",
+                                    "description": "a correlated Task record "
+                                                   "is created (linked via "
+                                                   "WhatId)"},
+                "affected_fields": []}
+    skel = _build("automation-effect-claim", asserted)
+    assert skel.expected_result is None
+
+
 def test_automation_absence_v2():
     asserted = {"kind": "automation-effect-claim", "body_schema_version": 2,
                 "automation": _ref("HL_Auto_Risk_Rating"),

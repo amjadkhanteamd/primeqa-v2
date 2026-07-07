@@ -298,6 +298,12 @@ def test_automation_effect_cross_object(seeded):
     assert read.target.external_id == "Order_Log__c"
     assert "WHERE Order__c = '$create-record.id'" in read.soql
     assert steps[2].predicate.predicate == "exists"
+    # The effect is stated as what it IS: the correlated record's creation —
+    # a SideEffect, never an empty field_change (which stated no effect).
+    body = r.emission.asserted_truth
+    assert body.expected_effect.kind == "side_effect"
+    assert "Order_Log__c record is created" in body.expected_effect.description
+    assert body.affected_fields == []
 
 
 def test_automation_effect_cross_object_with_field(seeded):
@@ -939,6 +945,11 @@ def test_named_approval_process_binds_presence(seeded):
     body = r.emission.asserted_truth
     assert body.automation.external_id == "Order_High_Value"
     assert body.automation_primitive == "approval_process"
+    # The effect states the submission (SideEffect) — the S3 improvement that
+    # replaced the empty field_change (titles/expected-lines had nothing to
+    # say; run 4b8cbe84's claim read "An automation updates the record").
+    assert body.expected_effect.kind == "side_effect"
+    assert "submitted for approval" in body.expected_effect.description
     steps = r.emission.observation_realization.steps
     assert steps[0].field_values == {"Order__c.Subtotal__c": 5000001}
     assert "WHERE TargetObjectId = '$create-record.id'" in steps[1].soql

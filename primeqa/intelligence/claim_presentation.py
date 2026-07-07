@@ -334,6 +334,13 @@ def claim_title(claim_kind: str, asserted_truth: Optional[dict],
             if ekind == "blocked_operation":
                 return "An automation blocks the change"
             if ekind == "side_effect":
+                # The honest D-308+ approval emission (SideEffect — the
+                # effect IS the submission); primitive discriminates, per
+                # D-053 the mechanism never gets its own effect kind.
+                if body.get("automation_primitive") == "approval_process" and auto_name:
+                    return f"Automatically submits for approval ({auto_name})"
+                if auto_name:
+                    return f"The {auto_name} automation fires a side effect"
                 return "An automation fires a side effect"
             if auto_name:
                 return f"The {auto_name} automation fires"

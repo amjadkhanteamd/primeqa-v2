@@ -161,7 +161,11 @@ def test_automation_effect_title_field_change():
 
 
 def test_automation_effect_title_blocked_and_side_effect():
-    # D-267: no Flow name in the spine — these read off the effect kind alone.
+    # blocked_operation reads off the effect kind alone (the block IS the
+    # effect); a side effect has no stateable effect in the body, so the
+    # humanized binding name disambiguates (same rationale as the
+    # empty-effect fallback — an anonymous title made every such test
+    # indistinguishable in the plan list).
     blocked = {"automation": {"external_id": "Amount_Guard"},
                "expected_effect": {"kind": "blocked_operation", "reason": "too big"}}
     assert claim_title("automation-effect-claim", blocked) == \
@@ -169,6 +173,10 @@ def test_automation_effect_title_blocked_and_side_effect():
     side = {"automation": {"external_id": "Case_Email_Alert"},
             "expected_effect": {"kind": "side_effect"}}
     assert claim_title("automation-effect-claim", side) == \
+        "The Case Email Alert automation fires a side effect"
+    # No binding → the anonymous fallback survives.
+    assert claim_title("automation-effect-claim",
+                       {"expected_effect": {"kind": "side_effect"}}) == \
         "An automation fires a side effect"
 
 
@@ -195,6 +203,32 @@ def test_automation_effect_title_approval_process_empty_effect():
     }
     assert claim_title("automation-effect-claim", body) == \
         "Automatically submits for approval (HL High Value Loan)"
+
+
+def test_automation_effect_title_side_effect_approval():
+    # The honest S3 emission (SideEffect — the effect IS the submission);
+    # same specific title as the legacy empty-field_change fallback, so old
+    # and new approval bodies read identically in every list.
+    body = {
+        "automation": {"external_id": "HL_High_Value_Loan"},
+        "automation_primitive": "approval_process",
+        "expected_effect": {"kind": "side_effect",
+                            "description": "the record is submitted for "
+                                           "approval — a ProcessInstance "
+                                           "approval request is created"},
+    }
+    assert claim_title("automation-effect-claim", body) == \
+        "Automatically submits for approval (HL High Value Loan)"
+
+
+def test_automation_effect_title_side_effect_named_binding():
+    body = {
+        "automation": {"external_id": "Case_Email_Alert"},
+        "automation_primitive": "flow",
+        "expected_effect": {"kind": "side_effect", "description": "x"},
+    }
+    assert claim_title("automation-effect-claim", body) == \
+        "The Case Email Alert automation fires a side effect"
 
 
 def test_automation_effect_title_named_binding_empty_effect():

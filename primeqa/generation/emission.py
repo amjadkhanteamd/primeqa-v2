@@ -95,6 +95,7 @@ from primeqa.test_representation.models.primitives import (
     NullValue,
     RejectionExpectation,
     RejectionSignal,
+    SideEffect,
     StateDescriptor,
 )
 from primeqa.test_representation.models.recipes.data_recipe import (
@@ -1794,7 +1795,21 @@ def _author_automation_effect(g: GroundedAutomationEffect) -> EmissionBundle:
                        f"Flow-created record carries "
                        f"{field_bare}={g.effect_value!r}")
         else:
-            effect = FieldChangeEffect(changes=StateDescriptor(field_values={}))
+            # No effect field: the effect IS the correlated record's creation
+            # — a SideEffect ("outside the target record's own field values"),
+            # never an empty field_change (which stated no effect at all: the
+            # D-308 approval claims all landed here and titled/read as "An
+            # automation updates the record"). The description is built from
+            # grounded facts only — it is identity-bearing (feeds the
+            # canonical hash), so it must stay deterministic per emission.
+            if g.automation_primitive == "approval_process":
+                effect = SideEffect(description=(
+                    f"the record is submitted for approval — a {effect_api} "
+                    f"approval request is created"))
+            else:
+                effect = SideEffect(description=(
+                    f"a correlated {effect_api} record is created "
+                    f"(linked via {lookup_bare})"))
             affected = []
             select = f"SELECT Id FROM {effect_api}"
             assert_pred = AssertionPredicate(
