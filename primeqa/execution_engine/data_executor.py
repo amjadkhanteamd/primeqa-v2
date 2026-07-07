@@ -38,6 +38,7 @@ setup failure is ``errored`` (the prohibition was never exercised), never
 from __future__ import annotations
 
 import html
+import logging
 import re
 import time
 from dataclasses import replace
@@ -52,6 +53,7 @@ from primeqa.execution_engine.errors import (
     UnsupportedPredicateError,
 )
 from primeqa.execution_engine.evidence import (
+    ApprovalActionEvidence,
     AssertEvidence,
     CleanupRecord,
     CreateAttemptEvidence,
@@ -63,6 +65,7 @@ from primeqa.execution_engine.evidence import (
 )
 from primeqa.execution_engine.plan import (
     DataRecipePlan,
+    PlannedApprovalAction,
     PlannedCreate,
     PlannedUpdate,
 )
@@ -77,6 +80,8 @@ from primeqa.execution_engine.world import (
 )
 from primeqa.integrations.exceptions import SFClientError
 from primeqa.integrations.failure_taxonomy import FailureCategory, category_for
+
+log = logging.getLogger(__name__)
 
 # A Salesforce **business** rejection (validation rule, required-field,
 # duplicate, …) surfaces as HTTP 400 with a structured error body. Any other
@@ -274,7 +279,9 @@ def _run_negative_with_setup(
     """
     run_id = uuid4()
     started = _now()
-    setup, mutation = plan.steps
+    setup, *middle, mutation = plan.steps
+    # D-333: the approval-action arc rides between setup and mutation.
+    arc = tuple(s for s in middle if isinstance(s, PlannedApprovalAction))
     sobject = setup.target_object.external_id
     semantic_fields = set(setup.field_values)
 
@@ -344,6 +351,31 @@ def _run_negative_with_setup(
     c_end = _now()
     tracker.record(sobject, record_id)      # the subject joins after its parents
 
+    # 2b. D-333: the approval-action arc — staging, between setup and the
+    #     prohibited mutation. Any arc break is `errored` (the prohibition
+    #     was never exercised); a pending instance is RECALLED before
+    #     teardown (a pending approval locks the record — leak otherwise).
+    arc_evs: tuple = ()
+    arc_pending = False
+    if arc:
+        arc_evs, arc_pending, arc_err = _run_approval_arc(
+            arc, sobject, record_id, client, ordinal_base=1)
+        if arc_err is not None:
+            if arc_pending:
+                recall = _recall_pending_approval(client, record_id)
+                arc_evs = arc_evs[:-1] + (
+                    replace(arc_evs[-1], recall=recall),)
+            tracker.teardown(client, _best_effort_delete)
+            return _result(plan, run_id, started, environment_id,
+                           (_evidence(
+                               setup, sobject, c_start, c_end,
+                               http_status=http_status, success=True,
+                               rejection_body=(), matched=None,
+                               cleanup=CleanupRecord(attempted=False),
+                               field_values=field_values),) + arc_evs,
+                           "errored", arc_err,
+                           created_records=tracker.records)
+
     # 3. The prohibited mutation — the same 4-way grading as the 1-step negative.
     mut_ev, outcome, top_error = _run_mutation_attempt(
         mutation, sobject, record_id, client)
@@ -352,14 +384,20 @@ def _run_negative_with_setup(
     #    subject's CleanupRecord rides the setup create's evidence — the step
     #    that created the record (the established convention). A subject a
     #    wrongly-successful delete already removed 404s here; best-effort
-    #    records that, never raises.
+    #    records that, never raises. D-333: a still-pending approval is
+    #    recalled FIRST (its lock would refuse the delete).
+    if arc_pending:
+        recall = _recall_pending_approval(client, record_id)
+        if arc_evs:
+            arc_evs = arc_evs[:-1] + (replace(arc_evs[-1], recall=recall),)
     cleanup = tracker.teardown(client, _best_effort_delete)[0]
     setup_ev = _evidence(
         setup, sobject, c_start, c_end, http_status=http_status, success=True,
         rejection_body=(), matched=None, cleanup=cleanup,
         field_values=field_values)
 
-    return _result(plan, run_id, started, environment_id, (setup_ev, mut_ev),
+    return _result(plan, run_id, started, environment_id,
+                   (setup_ev,) + arc_evs + (mut_ev,),
                    outcome, top_error, created_records=tracker.records)
 
 
@@ -453,6 +491,141 @@ def _mutation_evidence(mutation, sobject, record_id, changes, start, end, *,
     return DeleteAttemptEvidence(**common)
 
 
+# --- D-333: the approval-action arc ----------------------------------------
+
+def _approval_result(env) -> dict:
+    """The first per-request result/error entry of an approval-REST envelope
+    body (the endpoint takes one request, returns a one-element list — or an
+    error list on 4xx). ``{}`` when the body is not list-shaped."""
+    body = env["api_response"]["body"]
+    if isinstance(body, list) and body and isinstance(body[0], dict):
+        return body[0]
+    return {}
+
+
+def _run_approval_arc(arc, sobject, record_id, client, *, ordinal_base):
+    """Run the D-333 approval actions against the setup record, in order.
+
+    Returns ``(evidences, pending, error)``. The arc is STAGING — any
+    transport raise or org refusal means the assertion downstream was never
+    reached, so the caller renders ``errored`` (never ``failed``). ``pending``
+    is True when the arc leaves a ProcessInstance in ``Pending`` (the caller
+    must RECALL before teardown — a pending approval locks the record,
+    D-308.1's watch item). Workitem ids thread submit → approve/reject via
+    the submit response's ``newWorkitemIds``; a missing id falls back to a
+    live ``ProcessInstanceWorkitem`` query."""
+    evidences: list = []
+    workitem_ids: tuple = ()
+    pending = False
+    for i, step in enumerate(arc):
+        start = _now()
+        if step.action == "submit":
+            request = {"actionType": "Submit", "contextId": record_id}
+        else:
+            wi = workitem_ids[-1] if workitem_ids else None
+            if wi is None:
+                try:
+                    rows = client.query(
+                        "SELECT Id FROM ProcessInstanceWorkitem "
+                        f"WHERE ProcessInstance.TargetObjectId = '{record_id}'")
+                    wi = rows[0]["Id"] if rows else None
+                except SFClientError as e:
+                    err = ErrorSurface("approval_action", type(e).__name__,
+                                       f"workitem lookup failed: {e}")
+                    evidences.append(ApprovalActionEvidence(
+                        step_id=step.step_id, ordinal=ordinal_base + i,
+                        action=step.action, sobject=sobject,
+                        record_id=record_id, http_status=None, success=False,
+                        instance_id=None, instance_status=None,
+                        comment=step.comment, started_at=start,
+                        finished_at=_now(), error=err))
+                    return tuple(evidences), pending, err
+            if wi is None:
+                err = ErrorSurface(
+                    "approval_action", "NoPendingWorkitem",
+                    f"{step.action} found no pending approval workitem for "
+                    f"record {record_id} — was the submit action skipped or "
+                    f"already resolved?")
+                evidences.append(ApprovalActionEvidence(
+                    step_id=step.step_id, ordinal=ordinal_base + i,
+                    action=step.action, sobject=sobject, record_id=record_id,
+                    http_status=None, success=False, instance_id=None,
+                    instance_status=None, comment=step.comment,
+                    started_at=start, finished_at=_now(), error=err))
+                return tuple(evidences), pending, err
+            request = {"actionType": step.action.capitalize(), "contextId": wi}
+        if step.comment:
+            request["comments"] = step.comment
+
+        try:
+            env = client.approval_action(request)
+        except SFClientError as e:
+            err = ErrorSurface("approval_action", type(e).__name__, str(e))
+            evidences.append(ApprovalActionEvidence(
+                step_id=step.step_id, ordinal=ordinal_base + i,
+                action=step.action, sobject=sobject, record_id=record_id,
+                http_status=None, success=False, instance_id=None,
+                instance_status=None, comment=step.comment, started_at=start,
+                finished_at=_now(), error=err))
+            return tuple(evidences), pending, err
+
+        result = _approval_result(env)
+        ok = bool(env["success"]) and result.get("success", True)
+        status = result.get("instanceStatus")
+        new_wi = tuple(result.get("newWorkitemIds") or ())
+        if new_wi:
+            workitem_ids = new_wi
+        pending = (status == "Pending") if status is not None else (
+            pending if step.action != "submit" else ok)
+        err = None
+        if not ok:
+            err = ErrorSurface(
+                "approval_action", "ApprovalActionRefused",
+                (f"the org refused the {step.action} action (HTTP "
+                 f"{env['http_status']}): the arc could not be staged — "
+                 f"the assertion under test was never reached"))
+        evidences.append(ApprovalActionEvidence(
+            step_id=step.step_id, ordinal=ordinal_base + i, action=step.action,
+            sobject=sobject, record_id=record_id,
+            http_status=env["http_status"], success=ok,
+            instance_id=result.get("instanceId"), instance_status=status,
+            workitem_ids=new_wi,
+            body=_as_error_tuple(env["api_response"]["body"]),
+            comment=step.comment, started_at=start, finished_at=_now(),
+            error=err))
+        if err is not None:
+            return tuple(evidences), pending, err
+    return tuple(evidences), pending, None
+
+
+def _recall_pending_approval(client, record_id) -> CleanupRecord:
+    """Best-effort recall (actionType ``Removed``) of every pending approval
+    workitem on ``record_id`` — a pending instance LOCKS the record and its
+    delete would leak (D-308.1's watch item). A failed recall is a LOGGED
+    LEAK recorded on the returned CleanupRecord, never a raise."""
+    try:
+        rows = client.query(
+            "SELECT Id FROM ProcessInstanceWorkitem "
+            f"WHERE ProcessInstance.TargetObjectId = '{record_id}'")
+        if not rows:
+            return CleanupRecord(attempted=False, record_id=record_id)
+        ok = True
+        for row in rows:
+            env = client.approval_action(
+                {"actionType": "Removed", "contextId": row["Id"]})
+            result = _approval_result(env)
+            ok = ok and bool(env["success"]) and result.get("success", True)
+        if not ok:
+            log.warning(
+                "approval recall LEAK: pending workitem(s) on %s could not be "
+                "recalled — the record's delete will be refused", record_id)
+        return CleanupRecord(attempted=True, succeeded=ok, record_id=record_id)
+    except SFClientError as e:
+        log.warning("approval recall LEAK on %s: %s", record_id, e)
+        return CleanupRecord(attempted=True, succeeded=False,
+                             record_id=record_id)
+
+
 # Predicates the positive ground step can faithfully evaluate. Side A emits
 # `equals` (field == V) and `exists` (the read found a row — the cross-object
 # automation-effect assert, D-210); others are deferred (fail-loud until built).
@@ -497,7 +670,11 @@ def _run_positive(plan: DataRecipePlan, *, client, environment_id: int, s1=None,
     # D-306: split the optional positive update (the trigger phase) off the
     # create chain — the bridge guarantees at most one, create-adjacent.
     update = head[-1] if head and isinstance(head[-1], PlannedUpdate) else None
-    creates = head[:-1] if update is not None else head
+    mid = head[:-1] if update is not None else head
+    # D-333: the approval-action arc rides between the creates and the update
+    # (the bridge guarantees contiguity + the update's presence when arc ≠ ()).
+    arc = tuple(s for s in mid if isinstance(s, PlannedApprovalAction))
+    creates = [s for s in mid if isinstance(s, PlannedCreate)]
 
     # D-306.1 (adversarial-review SF-4, the k16 chokepoint): a dispatch-time
     # override must never PLANT an observed value. For observe-the-org shapes
@@ -523,16 +700,28 @@ def _run_positive(plan: DataRecipePlan, *, client, environment_id: int, s1=None,
     create_evs: list = []
     record_ids: list = []           # parallel to create_evs (None = not created)
 
+    arc_state = {"evs": (), "pending": False}
+
     def _torn_down() -> tuple:
         """Teardown everything built (reverse order — children before parents,
         across all creates) and attach each create's CleanupRecord to its
         evidence BY RECORD ID (D-205 — provisioned parents interleave with the
-        chain's creates, so index arithmetic would mis-attribute)."""
+        chain's creates, so index arithmetic would mis-attribute). D-333: a
+        still-pending approval on the subject is RECALLED first (its lock
+        would refuse the delete — a logged leak otherwise), the recall
+        recorded on the arc's last evidence."""
+        if arc_state["pending"] and record_ids and record_ids[-1]:
+            recall = _recall_pending_approval(client, record_ids[-1])
+            arc_state["pending"] = False
+            if arc_state["evs"]:
+                arc_state["evs"] = arc_state["evs"][:-1] + (
+                    replace(arc_state["evs"][-1], recall=recall),)
         cleanups = tracker.teardown(client, _best_effort_delete)
         by_id = {c.record_id: c for c in cleanups if c.record_id}
         return tuple(
             replace(ev, cleanup=by_id[rid]) if rid in by_id else ev
-            for ev, rid in zip(create_evs, record_ids))
+            for ev, rid in zip(create_evs, record_ids)
+        ) + arc_state["evs"]
 
     for ordinal, create in enumerate(creates):
         sobject = create.target_object.external_id
@@ -670,6 +859,22 @@ def _run_positive(plan: DataRecipePlan, *, client, environment_id: int, s1=None,
             field_values=field_values, ordinal=ordinal))
         record_ids.append(record_id)
 
+    # 4a. D-333: the approval-action arc — staging against the TERMINAL
+    #     create's record, before the accepted update. Any arc break is
+    #     ``errored`` (the acceptance under test was never reached); the
+    #     recall-before-teardown rides ``_torn_down`` via ``arc_state``.
+    if arc:
+        a_record_id = state.get(arc[0].setup_step_id, {}).get("id")
+        arc_evs, arc_pending, arc_err = _run_approval_arc(
+            arc, creates[-1].target_object.external_id, a_record_id, client,
+            ordinal_base=len(creates))
+        arc_state["evs"] = arc_evs
+        arc_state["pending"] = arc_pending
+        if arc_err is not None:
+            return _result(plan, run_id, started, environment_id,
+                           _torn_down(), "errored", arc_err,
+                           created_records=tracker.records)
+
     # 4b. D-306: the positive update — the trigger phase of update-then-
     #     observe. Mutates the record the TERMINAL create made (the bridge
     #     binds setup_step_id there), then falls through to the same observe →
@@ -707,7 +912,7 @@ def _run_positive(plan: DataRecipePlan, *, client, environment_id: int, s1=None,
             update_ev = _mutation_evidence(
                 update, u_sobject, u_record_id, changes, u_start, _now(),
                 http_status=None, success=False, rejection_body=(),
-                matched=None, error=err, ordinal=len(creates))
+                matched=None, error=err, ordinal=len(creates) + len(arc))
             return _result(plan, run_id, started, environment_id,
                            _torn_down() + (update_ev,), "errored", err,
                            created_records=tracker.records)
@@ -724,7 +929,7 @@ def _run_positive(plan: DataRecipePlan, *, client, environment_id: int, s1=None,
                     update, u_sobject, u_record_id, changes, u_start, u_end,
                     http_status=u_status, success=False,
                     rejection_body=u_rejection, matched=None,
-                    ordinal=len(creates))
+                    ordinal=len(creates) + len(arc))
                 return _result(plan, run_id, started, environment_id,
                                _torn_down() + (update_ev,), "failed", None,
                                created_records=tracker.records)
@@ -739,14 +944,14 @@ def _run_positive(plan: DataRecipePlan, *, client, environment_id: int, s1=None,
                 update, u_sobject, u_record_id, changes, u_start, u_end,
                 http_status=u_status, success=False,
                 rejection_body=u_rejection, matched=None, error=err,
-                ordinal=len(creates))
+                ordinal=len(creates) + len(arc))
             return _result(plan, run_id, started, environment_id,
                            _torn_down() + (update_ev,), "errored", err,
                            created_records=tracker.records)
         update_ev = _mutation_evidence(
             update, u_sobject, u_record_id, changes, u_start, u_end,
             http_status=u_status, success=True, rejection_body=(),
-            matched=None, ordinal=len(creates))
+            matched=None, ordinal=len(creates) + len(arc))
 
     mid = (update_ev,) if update_ev is not None else ()
     base = len(creates) + len(mid)

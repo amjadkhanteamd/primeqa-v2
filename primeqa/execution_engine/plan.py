@@ -204,16 +204,38 @@ class PlannedDelete:
     kind: Literal["delete"] = "delete"
 
 
+@dataclass(frozen=True)
+class PlannedApprovalAction:
+    """A planned approval action against the setup record (D-333 — the
+    approval-action arc).
+
+    Narrowed from the recipe's ``ApprovalActionStep``. ``setup_step_id`` is
+    the same positional binding as :class:`PlannedUpdate` — the action acts
+    on the record the plan's (terminal) setup create made. The action is
+    STAGING, not the assertion: a rejected/failed action is an ``errored``
+    run (the arc was never realized — nothing to grade), exactly the
+    setup-rejection posture."""
+
+    step_id: str
+    action: Literal["submit", "approve", "reject"]
+    setup_step_id: str
+    comment: Optional[str] = None
+    kind: Literal["approval_action"] = "approval_action"
+
+
 DataPlanStep = Union[
-    PlannedCreate, PlannedDataRead, PlannedAssertion, PlannedUpdate, PlannedDelete]
+    PlannedCreate, PlannedDataRead, PlannedAssertion, PlannedUpdate,
+    PlannedDelete, PlannedApprovalAction]
 """One ordered step of a data-recipe plan: a create, a read-back, an assertion,
-or a rejected mutation. The behavioral negative is a single
+a rejected mutation, or an approval action. The behavioral negative is a single
 :class:`PlannedCreate` (``expect_rejection`` set, D-110.2) **or** a setup
-:class:`PlannedCreate` followed by a :class:`PlannedUpdate` /
-:class:`PlannedDelete` (D-203); the positive create-and-verify (D-115) is a
-:class:`PlannedCreate` (no ``expect_rejection``) → :class:`PlannedDataRead` →
-:class:`PlannedAssertion`. ``isinstance`` dispatch in the executor; ``kind`` is
-the explicit serialization label."""
+:class:`PlannedCreate` followed by :class:`PlannedApprovalAction` × K (K ≥ 0,
+D-333) and a :class:`PlannedUpdate` / :class:`PlannedDelete` (D-203); the
+positive create-and-verify (D-115) is ``PlannedCreate × N`` →
+``PlannedApprovalAction × K`` (K ≥ 0, arc requires the update) →
+``[PlannedUpdate]`` → :class:`PlannedDataRead` → :class:`PlannedAssertion`.
+``isinstance`` dispatch in the executor; ``kind`` is the explicit serialization
+label."""
 
 
 @dataclass(frozen=True)

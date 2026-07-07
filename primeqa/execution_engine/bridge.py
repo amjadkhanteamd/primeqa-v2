@@ -26,6 +26,7 @@ from primeqa.execution_engine.errors import PlanTranslationError
 from primeqa.execution_engine.plan import (
     DataRecipePlan,
     MetadataInspectionPlan,
+    PlannedApprovalAction,
     PlannedAssertion,
     PlannedCreate,
     PlannedDataRead,
@@ -39,6 +40,7 @@ from primeqa.test_representation.models.environment import (
     ExecutionEnvironmentBody,
 )
 from primeqa.test_representation.models.recipes.data_recipe import (
+    ApprovalActionStep,
     AssertStep as DataAssertStep,
     CreateStep,
     DataRecipeBody,
@@ -329,8 +331,8 @@ def build_data_recipe_plan(recipe: RecipeRead) -> DataRecipePlan:
 
 
 def _project_negative(steps, *, recipe_id) -> tuple:
-    """Project a behavioral negative — exactly two shapes, every other fails
-    loud:
+    """Project a behavioral negative — exactly two shapes (plus the D-333
+    approval-arc interposition), every other fails loud:
 
       - **1-step** (D-110.2): a single ``CreateStep`` carrying
         ``expect_rejection`` → ``(PlannedCreate,)``;
@@ -339,6 +341,10 @@ def _project_negative(steps, *, recipe_id) -> tuple:
         ``(PlannedCreate, PlannedUpdate|PlannedDelete)``. The mutation's
         ``target`` must name the same object as the setup's ``target_object``
         (the positional binding the executor resolves — D-203).
+      - **D-333**: the 2-step shape may interpose ``ApprovalActionStep × K``
+        (K ≥ 1, contiguous) between the setup create and the rejected
+        mutation — the approval-action arc. Each projects to a
+        :class:`PlannedApprovalAction` bound to the setup create.
 
     ``steps[0]`` is already validated as a ``CreateStep`` on a ``LogicalRef``.
     """
@@ -360,23 +366,32 @@ def _project_negative(steps, *, recipe_id) -> tuple:
             ),
         )
 
-    if len(steps) != 2:
+    # D-333: peel the approval-action arc — contiguous ApprovalActionSteps
+    # immediately after the setup create, before the rejected mutation.
+    arc = []
+    n = 1
+    while n < len(steps) and isinstance(steps[n], ApprovalActionStep):
+        arc.append(steps[n])
+        n += 1
+
+    if len(steps) != n + 1:
         shape = ", ".join(type(s).__name__ for s in steps)
         raise PlanTranslationError(
-            f"a behavioral negative is 1 step (create-rejected) or 2 steps "
-            f"(setup create -> rejected update/delete); got {len(steps)} "
-            f"steps [{shape}] (N-step negatives are deferred, 5b-2)",
+            f"a behavioral negative is 1 step (create-rejected) or a setup "
+            f"create -> [ApprovalActionStep x K, D-333] -> rejected "
+            f"update/delete; got {len(steps)} steps [{shape}] (N-step "
+            f"negatives are deferred, 5b-2)",
             recipe_id=recipe_id,
         )
 
-    # 2-step: the flag must sit on the mutation, not the setup create.
+    # The flag must sit on the mutation, not the setup create.
     if create.expect_rejection is not None:
         raise PlanTranslationError(
             f"a create-rejected negative is single-step; a 2-step negative's "
             f"setup create {create.step_id!r} must not carry expect_rejection",
             recipe_id=recipe_id,
         )
-    mutation = steps[1]
+    mutation = steps[n]
     if not isinstance(mutation, (UpdateStep, DeleteStep)):
         raise PlanTranslationError(
             f"step 2 of a 2-step behavioral negative must be an UpdateStep or "
@@ -410,9 +425,15 @@ def _project_negative(steps, *, recipe_id) -> tuple:
         field_values=dict(create.field_values),
         expect_rejection=None,
     )
+    planned_arc = tuple(
+        PlannedApprovalAction(
+            step_id=a.step_id, action=a.action, comment=a.comment,
+            setup_step_id=create.step_id)
+        for a in arc)
     if isinstance(mutation, UpdateStep):
         return (
             planned_setup,
+            *planned_arc,
             PlannedUpdate(
                 step_id=mutation.step_id,
                 target_object=mutation.target,
@@ -423,6 +444,7 @@ def _project_negative(steps, *, recipe_id) -> tuple:
         )
     return (
         planned_setup,
+        *planned_arc,
         PlannedDelete(
             step_id=mutation.step_id,
             target_object=mutation.target,
@@ -462,12 +484,31 @@ def _project_positive(steps, *, recipe_id) -> tuple:
             )
         n += 1
 
+    creates_end = n
+    terminal = steps[creates_end - 1] if creates_end > 0 else None
+
+    # D-333: an optional approval-action arc — contiguous ApprovalActionSteps
+    # after the creates, bound to the TERMINAL create (the record under
+    # observation). The arc requires the positive update that follows it (an
+    # arc with nothing to accept afterwards observes nothing).
+    arc = []
+    while n < len(steps) and isinstance(steps[n], ApprovalActionStep):
+        arc.append(steps[n])
+        n += 1
+    if arc and (n >= len(steps) or not isinstance(steps[n], UpdateStep)):
+        raise PlanTranslationError(
+            f"an approval-action arc in a positive recipe must be followed by "
+            f"the accepted UpdateStep (D-333); got "
+            f"{type(steps[n]).__name__ if n < len(steps) else 'nothing'} after "
+            f"{len(arc)} action step(s)",
+            recipe_id=recipe_id,
+        )
+
     # D-306: an optional single positive update between the creates and the
     # read — the trigger phase of update-then-observe.
     update = None
     if n < len(steps) and isinstance(steps[n], UpdateStep):
         update = steps[n]
-        terminal = steps[n - 1] if n > 0 else None
         if update.expect_rejection is not None:
             # Unreachable via build_data_recipe_plan (same reason as above).
             raise PlanTranslationError(
@@ -500,14 +541,14 @@ def _project_positive(steps, *, recipe_id) -> tuple:
             )
         n += 1
 
-    tail = int(update is not None)
-    if (n - tail == 0 or len(steps) != n + 2
+    if (creates_end == 0 or len(steps) != n + 2
             or not isinstance(steps[n], ReadStep)
             or not isinstance(steps[n + 1], DataAssertStep)):
         shape = ", ".join(type(s).__name__ for s in steps) or "(empty)"
         raise PlanTranslationError(
             f"positive data-recipe must be CreateStep x N (N >= 1) -> "
-            f"[UpdateStep x 0..1] -> ReadStep -> AssertStep; got [{shape}]",
+            f"[ApprovalActionStep x K, D-333] -> [UpdateStep x 0..1] -> "
+            f"ReadStep -> AssertStep; got [{shape}]",
             recipe_id=recipe_id,
         )
     read, assertion = steps[n], steps[n + 1]
@@ -517,6 +558,13 @@ def _project_positive(steps, *, recipe_id) -> tuple:
             f"name); got a {type(read.target).__name__}",
             recipe_id=recipe_id,
         )
+    # D-333: the arc binds to the TERMINAL create (the record the actions and
+    # the accepted update act on).
+    planned_arc = tuple(
+        PlannedApprovalAction(
+            step_id=a.step_id, action=a.action, comment=a.comment,
+            setup_step_id=terminal.step_id)
+        for a in arc)
     planned_update = () if update is None else (
         PlannedUpdate(
             step_id=update.step_id,
@@ -524,7 +572,7 @@ def _project_positive(steps, *, recipe_id) -> tuple:
             field_changes=dict(update.field_changes),
             expect_rejection=None,
             # binds to the TERMINAL create — the record under observation.
-            setup_step_id=steps[n - tail - 1].step_id,
+            setup_step_id=terminal.step_id,
             # D-305.1 (review B1) applied forward: the flag must SURVIVE
             # projection or the update leg's defining failure grade is dead code.
             expect_acceptance=getattr(update, "expect_acceptance", False),
@@ -540,8 +588,8 @@ def _project_positive(steps, *, recipe_id) -> tuple:
             # dropping it made the archetype's defining failure grade dead code.
             expect_acceptance=getattr(c, "expect_acceptance", False),
         )
-        for c in steps[:n - tail]
-    ) + planned_update + (
+        for c in steps[:creates_end]
+    ) + planned_arc + planned_update + (
         PlannedDataRead(
             step_id=read.step_id,
             target=read.target,

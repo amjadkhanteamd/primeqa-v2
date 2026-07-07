@@ -95,8 +95,10 @@ EXPECTED_REGISTRATIONS = (
     ("automation-effect-claim", 1),
     ("automation-effect-claim", 2),         # D-307 — the absence case
     ("prohibition-claim", 1),
+    ("prohibition-claim", 2),         # D-333 — the approval-action arc
     ("acceptance-claim", 1),                # D-305
     ("acceptance-claim", 2),                # D-306.1 — the update case (update_state)
+    ("acceptance-claim", 3),                # D-333 — the approval-action arc
     # Configuration claim bodies (D-098 — the C debut; existence + property D-122)
     ("metadata-relationship-claim", 1),
     ("existence-claim", 1),

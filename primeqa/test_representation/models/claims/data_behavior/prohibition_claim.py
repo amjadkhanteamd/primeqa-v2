@@ -22,11 +22,11 @@ Use cases:
 """
 from __future__ import annotations
 
-from typing import Literal
+from typing import Annotated, Literal
 
-from pydantic import ConfigDict
+from pydantic import ConfigDict, Field
 
-from primeqa.test_representation.models.common import BodyBase
+from primeqa.test_representation.models.common import ArraySemantics, BodyBase
 from primeqa.test_representation.models.primitives import RejectionSignal
 from primeqa.test_representation.models.references import IdentityBearingRef
 from primeqa.test_representation.models.registry import register_body
@@ -87,3 +87,61 @@ class ProhibitionClaimBody(BodyBase):
     error_message_pattern / error_field MUST be set (enforced by
     RejectionSignal's own validator) — otherwise the claim is
     unverifiable by any recipe."""
+
+
+@register_body("prohibition-claim", 2)
+class ProhibitionClaimArcBody(BodyBase):
+    """The prohibition-claim body shape (v2) — the APPROVAL-ACTION ARC
+    (D-333). "After these approval actions run against the subject record,
+    the platform REJECTS this operation."
+
+    Why a new version, not a v1 field (the D-306.1 precedent):
+    canonicalization includes every model field, so adding a slot to v1
+    would re-key every existing prohibition claim. And the arc MUST be
+    identity-bearing: "the move to Approved is rejected while approval is
+    pending" (actions=[submit]) and the plain "the move is rejected" are
+    DIFFERENT assertions over the same conditions — without the arc in the
+    body they would hash identical.
+
+    ``attempted_change`` (field → value) is identity-bearing too: it IS the
+    operation under test ("Stage → Approved"), stated by the requirement,
+    not derived from a VR formula (the arc's rejection premise is realized
+    by the org's own approval state after the actions run — never staged).
+    """
+
+    model_config = ConfigDict(extra="forbid", frozen=False)
+
+    body_schema_version: Literal[2] = 2
+    kind: Literal["prohibition-claim"] = "prohibition-claim"
+
+    target: IdentityBearingRef
+    """The S1 entity the prohibited operation would act on. Pinned per
+    D-058 §5."""
+
+    operation: Literal["modify_field", "modify_record"]
+    """v2 is the arc's rejected-update case only; every other operation
+    stays v1."""
+
+    prohibition_mechanism: Literal[
+        "validation_rule",
+        "apex_trigger",
+        "system_enforced",
+    ]
+
+    expected_rejection: RejectionSignal
+
+    approval_actions: Annotated[
+        list[Literal["submit", "approve", "reject"]],
+        ArraySemantics.ORDERED,
+    ] = Field(min_length=1)
+    """The ordered approval actions run against the subject record BEFORE
+    the rejected mutation is attempted (``["submit"]`` = the
+    pending-blocks case; ``["submit", "reject"]`` = the rejected-approval
+    case). ORDERED per D-059 §6.3.4 — submit-then-reject and
+    reject-then-submit are different arcs."""
+
+    attempted_change: dict[str, str]
+    """The single ``{qualified_field_api: value}`` update the org must
+    REJECT after the arc (e.g. ``{"Opportunity.StageName": "Approved"}``).
+    Exactly one entry (model-validated at the grounding layer); values are
+    identity-safe scalars per SPEC §6.3.2."""

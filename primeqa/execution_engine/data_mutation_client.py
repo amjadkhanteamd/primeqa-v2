@@ -92,6 +92,27 @@ class DataMutationClient:
             raise SFRequestError(f"Network error during delete: {e}") from e
         return self._envelope(resp, "DELETE", url, None)
 
+    def approval_action(self, request: dict) -> dict:
+        """POST `/process/approvals/` with one approval request (D-333 — the
+        approval-action arc): ``{"requests": [request]}`` where ``request``
+        is the SF shape (``actionType`` Submit / Approve / Reject / Removed,
+        ``contextId`` the record id for Submit or the workitem id for the
+        rest, optional ``comments``). Same envelope semantics as
+        :meth:`create` — an HTTP error *response* is captured data (an org
+        refusing a submit IS evidence); raises :class:`SFRequestError` only
+        on a transport/network failure. The response body is a LIST of
+        per-request results (``instanceId`` / ``instanceStatus`` /
+        ``newWorkitemIds`` / ``success`` / ``errors``); ``record_id`` in the
+        envelope stays ``None`` — the executor reads the body."""
+        url = f"{self._base}/process/approvals/"
+        payload = {"requests": [request]}
+        try:
+            resp = self._session.post(url, json=payload, timeout=_TIMEOUT)
+        except requests.RequestException as e:
+            raise SFRequestError(
+                f"Network error during approval action: {e}") from e
+        return self._envelope(resp, "POST", url, payload)
+
     def query(self, soql: str) -> list[dict]:
         """Run a data-REST SOQL read, walking the pagination cursor to
         completion; return the aggregated records (the read-back for the positive

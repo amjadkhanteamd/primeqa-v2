@@ -22,11 +22,11 @@ Use cases:
 """
 from __future__ import annotations
 
-from typing import Literal
+from typing import Annotated, Literal
 
-from pydantic import ConfigDict
+from pydantic import ConfigDict, Field
 
-from primeqa.test_representation.models.common import BodyBase
+from primeqa.test_representation.models.common import ArraySemantics, BodyBase
 from primeqa.test_representation.models.primitives import StateDescriptor
 from primeqa.test_representation.models.references import IdentityBearingRef
 from primeqa.test_representation.models.registry import register_body
@@ -100,3 +100,41 @@ class AcceptanceClaimUpdateBody(BodyBase):
     update stages and the org must ACCEPT. Values are
     ``LiteralValue``-wrapped, ``_identity_safe``-coerced at
     grounding (no floats per SPEC §6.3.2)."""
+
+
+@register_body("acceptance-claim", 3)
+class AcceptanceClaimArcBody(BodyBase):
+    """The acceptance-claim body shape (v3) — the APPROVAL-ACTION ARC
+    (D-333). "After these approval actions run against the subject record,
+    the CHANGE to ``update_state`` is ACCEPTED."
+
+    v2's update case plus the identity-bearing ``approval_actions``: "the
+    move to Approved is accepted AFTER approval" and the plain "the move is
+    accepted" are different assertions over the same conditions +
+    update_state — a new version so neither v2 claims re-key nor the arc
+    erases (the D-306.1 lesson applied to the approval phase).
+    """
+
+    model_config = ConfigDict(extra="forbid", frozen=False)
+
+    body_schema_version: Literal[3] = 3
+    kind: Literal["acceptance-claim"] = "acceptance-claim"
+
+    target: IdentityBearingRef
+    """The S1 entity the accepted operation acts on. Pinned per D-058 §5."""
+
+    operation: Literal["update"]
+    """v3 is the arc's update case only (an arc needs a record to submit,
+    so the create-accepted case cannot carry one)."""
+
+    update_state: StateDescriptor
+    """The destination state the org must ACCEPT after the arc — same
+    contract as v2 (LiteralValue-wrapped, identity-safe)."""
+
+    approval_actions: Annotated[
+        list[Literal["submit", "approve", "reject"]],
+        ArraySemantics.ORDERED,
+    ] = Field(min_length=1)
+    """The ordered approval actions run BEFORE the accepted update
+    (``["submit", "approve"]`` = the granted case). ORDERED per D-059
+    §6.3.4."""

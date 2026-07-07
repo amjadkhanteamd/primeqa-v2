@@ -125,6 +125,26 @@ class DeleteStep(_StepBase):
     expect_rejection: Optional[RejectionExpectation] = None
 
 
+class ApprovalActionStep(_StepBase):
+    """Perform an approval action on the recipe's subject record (D-333,
+    the approval-action arc).
+
+    ``submit`` submits the record for approval (creates a ProcessInstance);
+    ``approve`` / ``reject`` act on the record's pending workitem. The
+    subject record binds POSITIONALLY — the record the recipe's setup
+    (terminal) create made, exactly like the D-203 rejected-mutation
+    binding — so the step carries no target of its own. ``comment`` rides
+    the action verbatim (evidence context; never asserted on).
+
+    Operational only: the arc's IDENTITY lives on the claim body
+    (``approval_actions`` — prohibition-claim v2 / acceptance-claim v3);
+    this step realizes it."""
+
+    kind: Literal["approval_action"] = "approval_action"
+    action: Literal["submit", "approve", "reject"]
+    comment: Optional[str] = None
+
+
 class AssertStep(_StepBase):
     """Assert a predicate over a prior step's captured output."""
 
@@ -148,11 +168,14 @@ class ApexStep(_StepBase):
 DataRecipeStep = Annotated[
     Union[
         CreateStep, ReadStep, UpdateStep, DeleteStep,
-        AssertStep, ApexStep,
+        AssertStep, ApexStep, ApprovalActionStep,
     ],
     Field(discriminator="kind"),
 ]
-"""Discriminated union over the six data-recipe step variants."""
+"""Discriminated union over the seven data-recipe step variants.
+``ApprovalActionStep`` (D-333) widens v1 additively — persisted
+pre-D-333 recipes carry none, so they decode byte-identically (the
+D-203 ``expect_rejection`` / D-305 ``expect_acceptance`` precedent)."""
 
 
 # ---------------------------------------------------------------------------

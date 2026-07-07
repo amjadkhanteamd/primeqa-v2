@@ -28,7 +28,7 @@ class ErrorSurface:
     ``error_type`` is the exception class name, not an interpreted category."""
 
     phase: Literal["translate", "read", "assert", "create", "construct",
-                   "update", "delete"]
+                   "update", "delete", "approval_action"]
     error_type: str
     message: str
 
@@ -221,9 +221,46 @@ class DeleteAttemptEvidence:
     field_diff: None = None
 
 
+@dataclass(frozen=True)
+class ApprovalActionEvidence:
+    """Evidence for one approval action (D-333 — the approval-action arc).
+
+    The action is STAGING (never the graded assertion): a refused/failed
+    action surfaces as an ``errored`` run with this evidence explaining the
+    arc's break. ``instance_status`` is the org's post-action ProcessInstance
+    status (``Pending`` / ``Approved`` / ``Rejected``); ``workitem_ids`` the
+    workitems the action produced (a submit) or consumed (an approve/reject).
+    The pending-instance RECALL at teardown is reported on ``recall`` —
+    ``None`` = no recall needed; a failed recall is a LOGGED LEAK (the
+    D-308.1 watch item), recorded here, never raised."""
+
+    step_id: str
+    ordinal: int
+    action: str                      # submit | approve | reject
+    sobject: str
+    record_id: Optional[str]         # the subject record (setup create's)
+    http_status: Optional[int]
+    success: bool                    # did the org perform the action?
+    instance_id: Optional[str]
+    instance_status: Optional[str]
+    workitem_ids: tuple = ()
+    body: tuple = ()                 # the FULL per-request result/error body
+    comment: Optional[str] = None
+    started_at: Optional[datetime] = None
+    finished_at: Optional[datetime] = None
+    duration_ms: int = 0
+    kind: Literal["approval_action"] = "approval_action"
+    error: Optional[ErrorSurface] = None
+    recall: Optional[CleanupRecord] = None
+    # mutation N/As, reserved:
+    before_state: None = None
+    after_state: None = None
+    field_diff: None = None
+
+
 StepEvidence = Union[
     ReadEvidence, AssertEvidence, CreateAttemptEvidence, DataReadEvidence,
-    UpdateAttemptEvidence, DeleteAttemptEvidence]
+    UpdateAttemptEvidence, DeleteAttemptEvidence, ApprovalActionEvidence]
 
 
 @dataclass(frozen=True)
