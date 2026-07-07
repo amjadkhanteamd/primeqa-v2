@@ -1,0 +1,137 @@
+{# Requirement-workspace drawer panel — one test case, plain-language first
+   (D-317). A FRAGMENT (no base.html): rendered into #test-drawer-body by
+   GET /claims/<test_id>/panel. Deterministic Stage-1 readable body only (the
+   flag-gated LLM phrasing stays on the full test-case page). Never flash()
+   here — fragments surface their own inline messages. #}
+
+{% from 'components/_buttons.html' import btn_success %}
+{% set c = detail.claim if detail else None %}
+{# Out-of-band row-chip update — rides fragment responses to POSTs (approve)
+   so the list row behind the drawer flips without a reload. #}
+{% if oob_chip and c %}
+<span id="claim-status-chip-{{ c.test_id }}" hx-swap-oob="true"
+      class="inline-flex items-center px-2 py-0.5 rounded-full text-xs font-medium
+      {% if c.status == 'approved' %}bg-blue-100 text-blue-800
+      {% elif c.status == 'draft' %}bg-gray-100 text-gray-700
+      {% else %}bg-amber-100 text-amber-800{% endif %}">{{ c.status }}</span>
+{% endif %}
+{% if not detail or not detail.available %}
+<div class="px-5 py-6 text-sm text-gray-400">Test case unavailable right now.</div>
+{% elif not detail.found or not c %}
+<div class="px-5 py-6 text-sm text-gray-500">Test case not found &mdash; it may have been superseded or removed.</div>
+{% else %}
+<div class="px-5 py-4 space-y-4" data-claim-panel="{{ c.test_id }}">
+
+  <div>
+    <div class="flex items-center gap-2 flex-wrap">
+      <span class="inline-flex items-center px-2 py-0.5 rounded text-xs font-medium
+        {% if c.depth == 'behavioral' %}bg-emerald-100 text-emerald-800{% else %}bg-slate-100 text-slate-600{% endif %}"
+        title="{{ 'Actually exercises the org (creates/edits records and observes the response)' if c.depth == 'behavioral' else 'Checks the configuration exists — does not exercise enforcement' }}">
+        {{ 'behavioral' if c.depth == 'behavioral' else 'config check' }}</span>
+      <span class="inline-flex items-center px-2 py-0.5 rounded-full text-xs font-medium
+        {% if c.status == 'approved' %}bg-blue-100 text-blue-800
+        {% elif c.status == 'draft' %}bg-gray-100 text-gray-700
+        {% elif c.status == 'deprecated' %}bg-slate-100 text-slate-500
+        {% else %}bg-amber-100 text-amber-800{% endif %}">{{ c.status }}</span>
+      <span class="text-xs text-gray-400">v{{ c.version_seq }}</span>
+    </div>
+    <h2 class="mt-2 text-base font-semibold text-gray-900">{{ c.title or c.claim_kind.replace('-', ' ') }}</h2>
+  </div>
+
+  {% set rb = c.readable_body %}
+  {% if rb %}
+  <div class="space-y-4">
+    {% set readable_phrasing = None %}
+    {% include 'claims/_readable_body.html' %}
+  </div>
+  {% endif %}
+
+  <!-- Approve — a draft is not runnable until approved (mirrors the claim
+       page's gating: deprecated never re-approves from a generic button). -->
+  {% if c.status == 'deprecated' %}
+  <div class="rounded-md bg-slate-50 border border-slate-200 p-3">
+    <p class="text-xs text-slate-700">This test case is <strong>deprecated</strong> &mdash; a recorded human decision. Regenerate the requirement to get a fresh test case.</p>
+  </div>
+  {% elif c.status != 'approved' and user.role in ['admin', 'tester', 'superadmin'] %}
+  <div class="rounded-md bg-amber-50 border border-amber-100 p-3 flex items-center justify-between gap-3">
+    <p class="text-xs text-amber-800">This test case is a <strong>{{ c.status }}</strong> &mdash; approve it to make it runnable.</p>
+    <form hx-post="/claims/{{ c.test_id }}/approve"
+          hx-target="closest [data-claim-panel]" hx-swap="outerHTML"
+          hx-disabled-elt="find button" class="flex-shrink-0">
+      {{ csrf_input | safe }}
+      <button type="submit" class="rounded-md bg-blue-600 px-3 py-1.5 text-sm font-semibold text-white hover:bg-blue-500 whitespace-nowrap">Approve</button>
+    </form>
+  </div>
+  {% endif %}
+
+  <!-- Run — async through the s4 job queue with live progress (D-317). The
+       form posts to run-async; the result slot below carries the poller,
+       then the result card. Production here is Admin-only (enqueue-time
+       dispatch rule); the confirm checkbox reveals via drawer.js's
+       delegated [data-run-env] listener. -->
+  {% if c.status == 'approved' and user.role in ['admin', 'tester', 'superadmin'] %}
+  <div class="border-t border-gray-100 pt-3">
+    <h3 class="text-xs font-semibold text-gray-500 uppercase tracking-wide mb-2">Run this test case</h3>
+    {% if environments %}
+    <form hx-post="/claims/{{ c.test_id }}/run-async"
+          hx-target="#run-result-{{ c.test_id }}" hx-swap="innerHTML"
+          hx-disabled-elt="find button">
+      {{ csrf_input | safe }}
+      <div class="flex items-center gap-2 flex-wrap">
+        <select name="environment_id" data-run-env required
+                class="rounded-md border border-gray-300 px-2 py-1.5 text-sm">
+          <option value="">Run env&hellip;</option>
+          {% for env in environments %}
+          <option value="{{ env.id }}" data-is-production="{{ 'true' if env.is_production else 'false' }}"
+                  {% if not env.has_connection %}disabled{% endif %}>
+            {{ env.name }}{% if not env.has_connection %} &mdash; no connection{% elif env.is_production %} (production){% endif %}
+          </option>
+          {% endfor %}
+        </select>
+        {{ btn_success('&#9654; Run' | safe, type='submit', size='sm') }}
+      </div>
+      <span data-prodgate class="hidden mt-2 inline-flex items-center gap-1.5 text-xs text-red-700">
+        <input type="checkbox" name="confirm_production" id="panel-run-confirm-{{ c.test_id }}"
+               class="h-4 w-4 rounded border-gray-300 text-red-600 focus:ring-red-500">
+        <label for="panel-run-confirm-{{ c.test_id }}">I confirm running against <strong>production</strong>.</label>
+      </span>
+    </form>
+    <div id="run-result-{{ c.test_id }}" class="mt-3 empty:mt-0"></div>
+    {% if c.depth == 'behavioral' %}
+    <p class="mt-2 text-xs text-gray-400">Need custom test data? <a href="/claims/{{ c.test_id }}" data-drawer-ignore class="text-indigo-600 hover:underline">Run from the full test case page</a>.</p>
+    {% endif %}
+    {% else %}
+    <p class="text-xs text-gray-400">No environments available to run against.</p>
+    {% endif %}
+  </div>
+  {% endif %}
+
+  <!-- Recent runs — the latest outcomes, linking to the evidence pages. -->
+  {% if runs %}
+  <div class="border-t border-gray-100 pt-3">
+    <h3 class="text-xs font-semibold text-gray-500 uppercase tracking-wide mb-1">Recent runs</h3>
+    <ul class="space-y-1">
+      {% for r in runs %}
+      <li class="flex items-center justify-between gap-2 text-xs">
+        <span class="flex items-center gap-2 min-w-0">
+          <span class="inline-flex items-center px-2 py-0.5 rounded-full font-medium flex-shrink-0
+            {% if r.outcome == 'passed' %}bg-green-100 text-green-800
+            {% elif r.outcome == 'failed' %}bg-red-100 text-red-800
+            {% elif r.outcome == 'errored' %}bg-amber-100 text-amber-800
+            {% else %}bg-gray-100 text-gray-700{% endif %}">{{ r.outcome }}</span>
+          <span class="text-gray-600 truncate" {% if r.verdict %}title="{{ r.verdict }}"{% endif %}>{{ r.plain or '' }}</span>
+        </span>
+        <a href="/runs/{{ r.run_id }}" class="text-indigo-600 hover:underline flex-shrink-0" data-drawer-ignore>view &rarr;</a>
+      </li>
+      {% endfor %}
+    </ul>
+  </div>
+  {% endif %}
+
+  <p class="border-t border-gray-100 pt-3 text-xs">
+    <a href="/claims/{{ c.test_id }}" class="text-indigo-600 hover:underline" data-drawer-ignore>Open full test case &rarr;</a>
+    <span class="text-gray-400"> &mdash; custom test data, quarantine and technical details live there.</span>
+  </p>
+
+</div>
+{% endif %}

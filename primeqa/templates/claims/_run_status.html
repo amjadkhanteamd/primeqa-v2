@@ -1,0 +1,62 @@
+{# Workspace run-progress fragment (D-317) — rendered into the panel's
+   #run-result-<test_id> slot. Three states:
+     active  — spinner + self-poller (hx-trigger every 3s → run-status; the
+               terminal responses carry no hx-trigger, so polling stops by
+               swap). job_status: queued | running.
+     refused — an inline notice (gate refusal, enqueue failure, dead job).
+               tone: warn (amber, human-confirm style) | error (red).
+     done    — the result card + an OOB update of the row's last-run chip.
+   Fragments never flash(). #}
+
+{% if state == 'active' %}
+<div hx-get="/claims/{{ test_id }}/run-status/{{ job_id }}"
+     hx-trigger="every 3s" hx-swap="outerHTML">
+  <p class="text-xs text-gray-500 flex items-center gap-2">
+    <svg class="animate-spin h-3.5 w-3.5 text-indigo-500" viewBox="0 0 24 24" fill="none" aria-hidden="true">
+      <circle class="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" stroke-width="4"></circle>
+      <path class="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8v4a4 4 0 00-4 4H4z"></path>
+    </svg>
+    {% if job_status == 'queued' %}Queued &mdash; a worker will pick it up&hellip;{% else %}Running against Salesforce &mdash; creating records, reading the result&hellip;{% endif %}
+  </p>
+</div>
+
+{% elif state == 'refused' %}
+<div class="rounded-md border p-3 text-xs
+     {% if tone == 'warn' %}bg-amber-50 border-amber-200 text-amber-800{% else %}bg-red-50 border-red-100 text-red-700{% endif %}">
+  {{ message }}
+</div>
+
+{% elif state == 'done' %}
+{% if run %}
+<div class="rounded-md border p-3
+     {% if run.outcome == 'passed' %}bg-green-50 border-green-100
+     {% elif run.outcome == 'failed' %}bg-red-50 border-red-100
+     {% else %}bg-amber-50 border-amber-100{% endif %}">
+  <p class="flex items-center gap-2">
+    <span class="inline-flex items-center px-2 py-0.5 rounded-full text-xs font-medium
+      {% if run.outcome == 'passed' %}bg-green-100 text-green-800
+      {% elif run.outcome == 'failed' %}bg-red-100 text-red-800
+      {% else %}bg-amber-100 text-amber-800{% endif %}">{{ run.outcome }}</span>
+    <span class="text-xs text-gray-700">{{ run.plain or '' }}</span>
+  </p>
+  <p class="mt-1.5 text-xs">
+    <a href="/runs/{{ run.run_id }}" data-drawer-ignore
+       class="font-medium text-indigo-600 hover:underline">View full evidence &rarr;</a>
+  </p>
+</div>
+{# OOB: flip the list row's last-run chip behind the drawer. #}
+<span id="claim-run-chip-{{ test_id }}" hx-swap-oob="true" class="inline-flex">
+  <a href="/runs/{{ run.run_id }}" data-drawer-ignore
+     title="Last run just now — view what happened"
+     class="inline-flex items-center px-2 py-0.5 rounded-full text-xs font-medium hover:underline
+     {% if run.outcome == 'passed' %}bg-emerald-100 text-emerald-800
+     {% elif run.outcome in ('failed', 'errored') %}bg-red-100 text-red-800
+     {% else %}bg-gray-100 text-gray-600{% endif %}">{{ run.outcome }}</a>
+</span>
+{% else %}
+<div class="rounded-md bg-gray-50 border border-gray-200 p-3 text-xs text-gray-600">
+  The run finished but its evidence row could not be resolved &mdash; see
+  <a href="/claims/{{ test_id }}" data-drawer-ignore class="text-indigo-600 hover:underline">the test case's recent runs</a>.
+</div>
+{% endif %}
+{% endif %}

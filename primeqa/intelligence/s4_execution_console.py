@@ -622,6 +622,75 @@ def approve_claim(tenant_id: int, test_id) -> dict:
         return {"ok": False, "error": str(exc)}
 
 
+_LATEST_RUN_FOR_SQL = (
+    "SELECT CAST(r.run_id AS text) AS run_id, r.outcome::text AS outcome, "
+    "r.failure_category, r.finished_at, i.verdict::text AS verdict "
+    "FROM s4_execution_runs r "
+    "LEFT JOIN s6_interpretations i ON i.run_id = r.run_id "
+    "WHERE r.claim_test_id = CAST(:tid AS uuid) "
+    "AND r.environment_id = :eid "
+    "AND (CAST(:since AS timestamptz) IS NULL OR r.started_at >= CAST(:since AS timestamptz)) "
+    "ORDER BY r.finished_at DESC LIMIT 1")
+
+
+def read_latest_run_for(tenant_id: int, test_id, environment_id: int,
+                        since=None) -> dict:
+    """Best-effort: the claim's NEWEST run on this environment, optionally
+    started at/after ``since`` — the workspace's job→run resolution (D-317).
+    There is no job→run FK; the s4 job queue's active-job partial-unique
+    (one active job per (test, env)) makes 'newest run since the job was
+    created' deterministic. Never raises. Returns ``{available, run}`` —
+    ``run`` None when no row matches (e.g. the job died pre-persist)."""
+    try:
+        from primeqa.semantic.connection import get_tenant_connection
+        with get_tenant_connection(tenant_id) as conn:
+            row = conn.execute(text(_LATEST_RUN_FOR_SQL), {
+                "tid": str(test_id), "eid": int(environment_id),
+                "since": since,
+            }).mappings().first()
+        run = None
+        if row is not None:
+            run = {"run_id": row["run_id"], "outcome": row["outcome"],
+                   "failure_category": row["failure_category"],
+                   "verdict": row["verdict"],
+                   "finished_at": _iso(row["finished_at"])}
+        return {"available": True, "run": run}
+    except Exception as exc:
+        log.warning("read_latest_run_for unavailable for tenant %s test %s "
+                    "env %s: %s", tenant_id, test_id, environment_id, exc)
+        return {"available": False, "run": None}
+
+
+def approve_claims(tenant_id: int, test_ids) -> dict:
+    """Best-effort BATCH approve — the workspace's Approve-all-drafts (D-317).
+    One tenant session/transaction for the whole batch (never N connections).
+    A claim ``_approve_claim`` refuses with a dict (deprecated, missing) is
+    counted ``skipped`` and never aborts the rest; an abnormal exception aborts
+    the whole batch atomically (``get_tenant_connection`` only commits on clean
+    exit). Returns ``{ok, approved, skipped}`` or ``{ok: False, error}``."""
+    try:
+        from primeqa.semantic.connection import get_tenant_connection
+        from sqlalchemy.orm import Session
+        approved, skipped = 0, 0
+        with get_tenant_connection(tenant_id) as conn:
+            session = Session(bind=conn)
+            try:
+                for tid_ in (test_ids or []):
+                    out = _approve_claim(session, tid_)
+                    if out.get("ok"):
+                        approved += 1
+                    else:
+                        skipped += 1
+                session.flush()
+            finally:
+                session.close()
+        return {"ok": True, "approved": approved, "skipped": skipped}
+    except Exception as exc:
+        log.warning("approve_claims failed for tenant %s (%s ids): %s",
+                    tenant_id, len(test_ids or []), exc)
+        return {"ok": False, "error": str(exc)}
+
+
 def _deprecate_claim(session, test_id, reason: str) -> dict:
     """Pure: deprecate the current claim version with a REQUIRED human reason
     (D-228 / F3 — supersession is a human judgment, never auto-derived). The

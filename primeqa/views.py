@@ -2401,6 +2401,18 @@ def requirements_detail(req_id):
             tid, [c["test_id"] for c in s2.get("claims", [])])
         for c in s2.get("claims", []):
             c["last_run"] = last_runs.get(c["test_id"])
+        # D-317 slice 6: in-flight S4 jobs → live row chips. Best-effort (one
+        # batched query); when any run is active the page's #test-plan-status
+        # poller starts on load, so a reload mid-runs keeps the chips live.
+        active_runs = {}
+        try:
+            from primeqa.execution_engine.jobs import ExecutionJobStore
+            active_runs = ExecutionJobStore(tid).active_jobs_for_tests(
+                [c["test_id"] for c in s2.get("claims", [])])
+        except Exception:
+            pass
+        for c in s2.get("claims", []):
+            c["active_status"] = active_runs.get(c["test_id"])
         s3_job = read_latest_s3_job(tid, req_key)
         # D-206: surface a dedup honestly — "Generate matched an existing test"
         # instead of looking like it silently did nothing.
@@ -2465,6 +2477,7 @@ def requirements_detail(req_id):
             req_releases=req_releases, jira_connections=jira_conns,
             approved_count=approved_count, gen_total_cost=gen_total_cost,
             quarantined_count=quarantined_count,
+            runs_in_flight=bool(active_runs),
         ))
     finally:
         db.close()
@@ -2523,8 +2536,27 @@ def requirements_run_substrate(req_id):
     """Run this requirement's approved test cases — the detail-page counterpart
     of the /run picker's per-requirement enqueue. Same gating as /run: env must
     be in the caller's accessible set (D-245 Phase 3) and non-production; the
-    execution chokepoint (intake's gate_enqueue) still gates every claim."""
+    execution chokepoint (intake's gate_enqueue) still gates every claim.
+
+    D-317 slice 6: an htmx submit stays ON the page — the response is the
+    live-chips poller fragment (+ a toast); refusals toast instead of flash.
+    The no-JS form keeps the classic flash + redirect behavior."""
+    import json
     from flask import flash
+    is_hx = bool(request.headers.get("HX-Request"))
+
+    def _hx_notice(message, kind="error"):
+        # The htmx response must still satisfy the #test-plan-status swap —
+        # return the (idle or live) fragment with the message as a toast.
+        status_ctx = _test_plan_status_context(req_id) or {
+            "req_id": req_id, "tests": [], "any_active": False,
+            "active_count": 0}
+        resp = make_response(render_template(
+            "requirements/_test_plan_status.html", **ctx(**status_ctx)))
+        resp.headers["HX-Trigger"] = json.dumps(
+            {"toast": {"message": message, "kind": kind}})
+        return resp
+
     env_id = request.form.get("environment_id", type=int)
     db = next(get_db())
     try:
@@ -2532,17 +2564,24 @@ def requirements_run_substrate(req_id):
         tid = request.user["tenant_id"]
         req = RequirementRepository(db).get_requirement(req_id, tid)
         if not req:
+            if is_hx:
+                return _hx_notice("Requirement not found.")
             flash("Requirement not found", "error")
             return redirect("/requirements")
         repo = EnvironmentRepository(db)
         if not (env_id and repo.is_environment_accessible(
                 tid, request.user["id"], request.user["role"], env_id)):
+            if is_hx:
+                return _hx_notice("Pick an environment you have access to.")
             flash("Pick an environment you have access to.", "error")
             return redirect(f"/requirements/{req_id}")
         env = repo.get_environment(env_id, tid)
         if env.is_production:
-            flash("Substrate runs are sandbox-only — production "
-                  "environments cannot be targeted here.", "error")
+            msg = ("Substrate runs are sandbox-only — production "
+                   "environments cannot be targeted here.")
+            if is_hx:
+                return _hx_notice(msg)
+            flash(msg, "error")
             return redirect(f"/requirements/{req_id}")
         from primeqa.intelligence.s3_enqueue import _requirement_to_ref
         req_key = _requirement_to_ref(req)["key"]
@@ -2554,15 +2593,112 @@ def requirements_run_substrate(req_id):
         tenant_id=tid, external_keys=[req_key], environment_id=env_id,
         created_by=request.user["id"])
     count = result["enqueued"]
+    skipped = result.get("skipped_unexecutable") or 0
     if count == 0:
+        if is_hx:
+            return _hx_notice("No approved test cases to run for this "
+                              "requirement.")
         flash("No approved test cases to run for this requirement.", "error")
         return redirect(f"/requirements/{req_id}")
-    skipped = result.get("skipped_unexecutable") or 0
+    if is_hx:
+        return _hx_notice(
+            f"{count} run{'s' if count != 1 else ''} queued"
+            + (f" — {skipped} skipped (not yet executable)" if skipped else "")
+            + " — watching live.", kind="success")
     flash(f"{count} substrate run{'s' if count != 1 else ''} queued"
           + (f" — {skipped} test case{'s' if skipped != 1 else ''} skipped "
              f"(not yet executable)" if skipped else ""),
           "success")
     return redirect("/runs/substrate")
+
+
+def _test_plan_status_context(req_id):
+    """Render context for the live-chips fragment (D-317 slice 6): the plan's
+    ordered tests, each with its last run + any in-flight s4 job. Batched —
+    one sequence read, one latest-runs read, one active-jobs read. Returns
+    None when the requirement doesn't resolve."""
+    db = next(get_db())
+    try:
+        from primeqa.test_management.repository import RequirementRepository
+        tid = request.user["tenant_id"]
+        req = RequirementRepository(db).get_requirement(req_id, tid)
+        if not req:
+            return None
+        from primeqa.intelligence.s3_enqueue import _requirement_to_ref
+        req_key = _requirement_to_ref(req)["key"]
+    finally:
+        db.close()
+    from primeqa.execution_engine.jobs import ExecutionJobStore
+    from primeqa.intelligence.s3_generation_console import (
+        read_requirement_test_sequence)
+    from primeqa.intelligence.s4_execution_console import latest_runs_by_test
+    tests = read_requirement_test_sequence(tid, req_key).get("tests") or []
+    ids = [t["test_id"] for t in tests]
+    last = latest_runs_by_test(tid, ids) if ids else {}
+    active = {}
+    if ids:
+        try:
+            active = ExecutionJobStore(tid).active_jobs_for_tests(ids)
+        except Exception:
+            active = {}
+    rows = [{**t, "last_run": last.get(t["test_id"]),
+             "active_status": active.get(t["test_id"])} for t in tests]
+    return {"req_id": req_id, "tests": rows,
+            "any_active": bool(active), "active_count": len(active)}
+
+
+@views_bp.route("/requirements/<int:req_id>/test-plan-status")
+@login_required
+def requirements_test_plan_status(req_id):
+    """The live-chips poll fragment (D-317 slice 6). Self-perpetuating while
+    any of the plan's s4 jobs is active; inert once quiet."""
+    status_ctx = _test_plan_status_context(req_id)
+    if status_ctx is None:
+        return render_template("requirements/_test_plan_status.html", **ctx(
+            req_id=req_id, tests=[], any_active=False, active_count=0))
+    return render_template("requirements/_test_plan_status.html",
+                           **ctx(**status_ctx))
+
+
+@views_bp.route("/requirements/<int:req_id>/approve-drafts", methods=["POST"])
+@role_required("admin", "ba", "tester", "superadmin")
+def requirements_approve_drafts(req_id):
+    """D-317 workspace: approve EVERY draft test in this requirement's live
+    plan in one click — the batch replacement for visiting each claim page.
+    Same role gate as the per-claim approve; one tenant session for the batch
+    (approve_claims). Full-page redirect: many rows change at once."""
+    from flask import flash
+    db = next(get_db())
+    try:
+        from primeqa.test_management.repository import RequirementRepository
+        tid = request.user["tenant_id"]
+        req = RequirementRepository(db).get_requirement(req_id, tid)
+        if not req:
+            flash("Requirement not found", "error")
+            return redirect("/requirements")
+        from primeqa.intelligence.s3_enqueue import _requirement_to_ref
+        req_key = _requirement_to_ref(req)["key"]
+    finally:
+        db.close()
+    from primeqa.intelligence.s3_generation_console import (
+        read_requirement_test_sequence)
+    from primeqa.intelligence.s4_execution_console import approve_claims
+    seq = read_requirement_test_sequence(tid, req_key)
+    draft_ids = [t["test_id"] for t in (seq.get("tests") or [])
+                 if t["status"] == "draft"]
+    if not draft_ids:
+        flash("No draft test cases to approve.", "info")
+        return redirect(f"/requirements/{req_id}")
+    res = approve_claims(tid, draft_ids)
+    if res.get("ok"):
+        n = res.get("approved", 0)
+        skipped = res.get("skipped", 0)
+        flash(f"{n} test case{'s' if n != 1 else ''} approved"
+              + (f" — {skipped} skipped" if skipped else "")
+              + ". Run them from here when you're ready.", "success")
+    else:
+        flash(f"Could not approve: {res.get('error', 'unknown error')}", "error")
+    return redirect(f"/requirements/{req_id}")
 
 
 @views_bp.route("/requirements/<int:req_id>/generation-runs/<uuid:request_id>")
@@ -2769,6 +2905,44 @@ def claims_detail(test_id):
         plan_nav=plan_nav))
 
 
+def _claim_panel_context(tid, test_id):
+    """The drawer panel's render context — shared by the panel GET and the
+    fragment-returning POSTs (approve, run) so every response IS the panel.
+    One claim, its latest 3 runs, and the caller's runnable environments."""
+    from primeqa.intelligence.claim_presentation import verdict_plain
+    from primeqa.intelligence.s3_generation_console import read_claim_detail
+    from primeqa.intelligence.s4_execution_console import read_claim_runs
+    detail = read_claim_detail(tid, test_id)
+    runs = (read_claim_runs(tid, test_id).get("runs") or [])[:3]
+    for r in runs:
+        r["plain"] = verdict_plain(r.get("verdict"), r.get("outcome"),
+                                   r.get("failure_category"))
+    db = next(get_db())
+    try:
+        envs = EnvironmentRepository(db).list_environments(
+            tid, request.user["id"], request.user["role"])
+        envs_data = [{"id": e.id, "name": e.name,
+                      "is_production": bool(getattr(e, "is_production", False)),
+                      "has_connection": bool(getattr(e, "connection_id", None))}
+                     for e in envs]
+    finally:
+        db.close()
+    return {"detail": detail, "runs": runs, "environments": envs_data}
+
+
+@views_bp.route("/claims/<uuid:test_id>/panel")
+@login_required
+def claims_panel(test_id):
+    """Requirement-workspace drawer fragment (D-317): ONE claim's plain-language
+    panel — readable body, status, latest runs, run controls — rendered into
+    the drawer by the requirement page. Loads a single claim (never the whole
+    plan) so the workspace stays lazy; skips the flag-gated LLM phrasing
+    (deterministic + fast). Fragments never flash()."""
+    tid = request.user["tenant_id"]
+    return render_template("claims/_panel.html", **ctx(
+        **_claim_panel_context(tid, test_id)))
+
+
 _MAX_FIELD_OVERRIDES = 50
 
 
@@ -2862,6 +3036,98 @@ def claims_run(test_id):
     return redirect(f"/claims/{test_id}")
 
 
+@views_bp.route("/claims/<uuid:test_id>/run-async", methods=["POST"])
+@role_required("admin", "tester", "superadmin")
+def claims_run_async(test_id):
+    """D-317 workspace: enqueue THIS claim on the chosen environment (the async
+    counterpart of the sync /claims/<id>/run) and return the live-progress
+    fragment that polls the job. Gates mirror ``api_s4_execution_enqueue``
+    exactly: env-scope (D-245 Phase 3), the production dispatch rule decided
+    at ENQUEUE time (the worker runs as system, so fail closed — Admin+ only
+    for production here; the sync claim-page path keeps non-Admin read-only
+    inspection), and the production-confirm human gate. Fragments never
+    flash() — every refusal renders inline."""
+    environment_id = request.form.get("environment_id", type=int)
+    confirm_production = request.form.get("confirm_production") in ("on", "1", "true")
+    tid = request.user["tenant_id"]
+
+    def _refused(message, tone="error"):
+        return render_template("claims/_run_status.html", **ctx(
+            state="refused", message=message, tone=tone, test_id=str(test_id)))
+
+    if not environment_id:
+        return _refused("Pick an environment to run against.")
+    db = next(get_db())
+    try:
+        repo = EnvironmentRepository(db)
+        if not repo.is_environment_accessible(
+                tid, request.user["id"], request.user["role"], environment_id):
+            return _refused("Pick an environment you have access to.")
+        env = repo.get_environment(environment_id, tid)
+        if env is None:
+            return _refused("Environment not found.")
+        if env.is_production and rank(request.user["role"]) < Tier.ADMIN:
+            return _refused("Running against a production environment from "
+                            "here requires the Admin role — the test case "
+                            "page's sync run allows a read-only inspection.")
+        from primeqa.runs.bulk import environment_can_bulk_run
+        ok, msg = environment_can_bulk_run(env, confirm_production)
+        if not ok:
+            return _refused(msg, tone="warn")
+    finally:
+        db.close()
+
+    from primeqa.execution_engine.intake import enqueue_s4_execution
+    try:
+        job = enqueue_s4_execution(tenant_id=tid, test_id=str(test_id),
+                                   environment_id=environment_id,
+                                   created_by=request.user["id"])
+    except Exception as e:
+        return _refused(f"Cannot run: {e}")
+    return render_template("claims/_run_status.html", **ctx(
+        state="active", job_status=job.status, job_id=job.id,
+        test_id=str(test_id)))
+
+
+@views_bp.route("/claims/<uuid:test_id>/run-status/<int:job_id>")
+@login_required
+def claims_run_status(test_id, job_id):
+    """Poll fragment for a workspace run (D-317). Active job → the same
+    fragment again (htmx keeps polling); terminal → the result card. The run
+    is resolved as the claim's newest run on the job's environment started
+    at/after the job's creation — no job→run FK exists; the active-job
+    partial-unique makes this deterministic — with an honest fallback when no
+    run row exists (the job died before persisting one)."""
+    from primeqa.execution_engine.jobs import ExecutionJobStore
+    tid = request.user["tenant_id"]
+    job = ExecutionJobStore(tid).get_job(job_id)
+    if job is None or str(job.test_id) != str(test_id):
+        return render_template("claims/_run_status.html", **ctx(
+            state="refused", message="Run not found.", tone="error",
+            test_id=str(test_id)))
+    if job.status in ("queued", "claimed", "running"):
+        return render_template("claims/_run_status.html", **ctx(
+            state="active",
+            job_status="running" if job.status == "claimed" else job.status,
+            job_id=job.id, test_id=str(test_id)))
+    if job.status in ("failed", "cancelled"):
+        return render_template("claims/_run_status.html", **ctx(
+            state="refused", tone="error", test_id=str(test_id),
+            message=(job.error_message
+                     or f"The run {job.status} before it could execute.")))
+    # completed → resolve the evidence row this job produced.
+    from primeqa.intelligence.claim_presentation import verdict_plain
+    from primeqa.intelligence.s4_execution_console import read_latest_run_for
+    res = read_latest_run_for(tid, test_id, job.environment_id,
+                              since=job.created_at)
+    run = res.get("run")
+    if run:
+        run["plain"] = verdict_plain(run.get("verdict"), run.get("outcome"),
+                                     run.get("failure_category"))
+    return render_template("claims/_run_status.html", **ctx(
+        state="done", run=run, test_id=str(test_id)))
+
+
 @views_bp.route("/claims/<uuid:test_id>/approve", methods=["POST"])
 @role_required("admin", "ba", "tester", "superadmin")
 def claims_approve(test_id):
@@ -2871,6 +3137,21 @@ def claims_approve(test_id):
     from flask import flash
     from primeqa.intelligence.s4_execution_console import approve_claim
     res = approve_claim(request.user["tenant_id"], str(test_id))
+    # D-317 workspace: an htmx approve (the drawer panel) gets the re-rendered
+    # panel back — the flipped status IS the feedback — plus a toast and an
+    # out-of-band swap of the row's status chip. Fragments never flash().
+    if request.headers.get("HX-Request"):
+        import json
+        pctx = _claim_panel_context(request.user["tenant_id"], test_id)
+        msg = ("Test case approved — run it from here when you're ready."
+               if res.get("ok")
+               else f"Could not approve: {res.get('error', 'unknown error')}")
+        resp = make_response(render_template(
+            "claims/_panel.html", **ctx(oob_chip=True, **pctx)))
+        resp.headers["HX-Trigger"] = json.dumps(
+            {"toast": {"message": msg,
+                       "kind": "success" if res.get("ok") else "error"}})
+        return resp
     if res.get("ok"):
         # Approval is decision-only (the D-199 auto-verify trigger was removed
         # 2026-07-07) — say so, and point at the explicit run paths.

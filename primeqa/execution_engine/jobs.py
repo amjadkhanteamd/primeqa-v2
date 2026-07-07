@@ -265,3 +265,21 @@ class ExecutionJobStore:
                 "WHERE job_id = :jid ORDER BY attempt_no"
             ), {"jid": job_id}).mappings().all()
             return [{**r, "request_id": str(r["request_id"])} for r in rows]
+
+    def active_jobs_for_tests(self, test_ids) -> dict:
+        """``{test_id_str: status}`` for every ACTIVE job among ``test_ids`` —
+        one batched query (the workspace's live-chips poll, D-317). At most
+        one active job exists per (test, env) by the partial-unique; if a
+        test somehow has active jobs on several envs, the busier status wins
+        (running > claimed > queued is irrelevant to the chip — any row
+        means 'in flight')."""
+        ids = [str(t) for t in (test_ids or []) if t]
+        if not ids:
+            return {}
+        with get_tenant_connection(self._tenant_id) as conn:
+            rows = conn.execute(text(
+                f"SELECT CAST(test_id AS text) AS test_id, status "
+                f"FROM s4_execution_jobs WHERE {_ACTIVE} "
+                f"AND test_id = ANY(CAST(:ids AS uuid[]))"
+            ), {"ids": ids}).mappings().all()
+            return {r["test_id"]: r["status"] for r in rows}

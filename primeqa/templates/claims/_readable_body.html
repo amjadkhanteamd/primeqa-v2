@@ -1,0 +1,64 @@
+{# The plain-language projection of a claim's readable body — single-sourced
+   for the test-case page AND the requirement-workspace drawer panel (D-317).
+   Context: `rb` (the readable_body dict), optional `readable_phrasing`
+   (grounded LLM re-phrasing; pass None to render the deterministic Stage 1). #}
+
+{# "In plain terms" — the grounded LLM phrasing when present, else the
+   deterministic one-line "what this checks". #}
+{% if readable_phrasing and readable_phrasing.plain_terms %}
+<p class="text-sm text-gray-700">{{ readable_phrasing.plain_terms }}</p>
+{% elif rb.checks %}
+<p class="text-sm text-gray-700">{{ rb.checks }}</p>
+{% endif %}
+
+{% if rb.preconditions %}
+<div>
+  <h3 class="text-xs font-semibold text-gray-500 uppercase tracking-wide mb-1">Preconditions</h3>
+  <ul class="list-disc list-inside text-sm text-gray-700 space-y-0.5">
+    {% for p in rb.preconditions %}<li>{{ p }}</li>{% endfor %}
+  </ul>
+</div>
+{% endif %}
+
+{% if rb.test_data %}
+<div>
+  <h3 class="text-xs font-semibold text-gray-500 uppercase tracking-wide mb-1">Test data</h3>
+  <dl class="text-sm text-gray-700 space-y-0.5">
+    {% for pair in rb.test_data %}
+    <div class="sm:flex sm:gap-3">
+      <dt class="text-gray-500 sm:min-w-[12rem] shrink-0">{{ pair[0] }}</dt>
+      <dd class="text-gray-800 min-w-0">{{ pair[1] }}</dd>
+    </div>
+    {% endfor %}
+  </dl>
+</div>
+{% endif %}
+
+{% if rb.steps %}
+<div>
+  <h3 class="text-xs font-semibold text-gray-500 uppercase tracking-wide mb-1">Steps</h3>
+  <ol class="list-decimal list-inside text-sm text-gray-700 space-y-0.5">
+    {% for st in rb.steps %}
+    <li>{% if readable_phrasing and readable_phrasing.step_narration and readable_phrasing.step_narration|length > loop.index0 %}{{ readable_phrasing.step_narration[loop.index0] }}{% else %}{{ st.narration }}{% endif %}</li>
+    {% endfor %}
+  </ol>
+</div>
+{% endif %}
+
+{% if rb.probes %}
+<div>
+  <h3 class="text-xs font-semibold text-gray-500 uppercase tracking-wide mb-1">Boundary cases</h3>
+  <ul class="text-sm text-gray-700 space-y-0.5">
+    {% for pr in rb.probes %}
+    <li><span class="text-gray-500">{{ pr.label }}:</span> {{ pr.input_value }} &rarr; {{ pr.expected }}</li>
+    {% endfor %}
+  </ul>
+</div>
+{% endif %}
+
+{% if rb.expected_result %}
+<div>
+  <h3 class="text-xs font-semibold text-gray-500 uppercase tracking-wide mb-1">Expected result</h3>
+  <p class="text-sm text-gray-700">{{ rb.expected_result }}</p>
+</div>
+{% endif %}
