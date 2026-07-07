@@ -2234,12 +2234,38 @@ class GovernanceCore:
                                     "a padding-only create would grade the "
                                     "absence green regardless of the org's "
                                     "actual behavior")))
+                # D-335: a PRESENCE cross-object effect that NAMES a field must
+                # carry its expected value — mirror the same-record guard below
+                # ("automation-effect needs field_name + expected_value"). An
+                # unvalued named-field effect is not a verifiable claim: emission's
+                # cross-object arm renders `read-effect.{field} equals {value}`, and
+                # a None value makes AssertionPredicate raise (crashing the WHOLE
+                # batch, not just this intent). The parent-stamp `not_null` fallback
+                # is deliberately NARROW (dynamic $Flow.CurrentDate stamps with "no
+                # stable literal") — extending it here would silently emit a WEAKER
+                # claim than the requirement stated. effect_field=None stays valid:
+                # the effect IS the correlated record's creation (the SideEffect arm
+                # in emission). Refuse (invent-nothing) → the model re-proposes with
+                # a value or drops the field; D-302 surfaces it as a partial refusal.
+                xo_effect_value = _identity_safe(hint.get("effect_value"))
+                if not expected_absence and eff_field_ep is not None \
+                        and xo_effect_value is None:
+                    return IntentResolution(
+                        grounded_candidates=[], next_action=NextAction.REFUSE,
+                        interpretation_delta=delta,
+                        refusal=self._router.emission_deferred(
+                            archetype, claim_kind,
+                            detail=("a cross-object automation effect that names "
+                                    "an effect_field needs its expected_value — an "
+                                    "unvalued field effect is not verifiable (drop "
+                                    "the field to assert only that the correlated "
+                                    "record is created)")))
                 _stash_grounding(state, GroundedAutomationEffect(
                     archetype=archetype, claim_kind=claim_kind, version_seq=at,
                     subject=subj_ep, automation=flow_ep,
                     requirement_excerpt=excerpt,
                     effect_field=eff_field_ep,
-                    effect_value=_identity_safe(hint.get("effect_value")),
+                    effect_value=xo_effect_value,
                     effect_object=eff_ep, effect_lookup_field=lookup_ep,
                     trigger_fields=xo_triggers,
                     automation_primitive=primitive,     # D-308 (see above)

@@ -118,6 +118,23 @@ def test_cross_object_binds_the_flow_that_creates_the_object(seeded):
     assert r.emission.asserted_truth.automation.external_id == "HL_Auto_Risk_Rating"
 
 
+def test_cross_object_named_field_without_value_refuses(seeded):
+    # D-335: a PRESENCE cross-object effect that NAMES an effect_field but gives
+    # no effect_value is not a verifiable claim — refuse (per-intent), mirroring
+    # the same-record guard. Pre-D-335 this reached emission's cross-object arm,
+    # which built AssertionPredicate(equals, value=None) and RAISED — crashing the
+    # WHOLE batch, not just this intent. (Loan_Task__c.Loan__c is the only seeded
+    # field on the effect object; naming it as the effect_field with no value
+    # exercises the guard — the effect_field-less form still DRAFTS, above.)
+    r = _run(seeded, _intent(effect_object="Loan_Task__c",
+                             effect_lookup_field="Loan_Task__c.Loan__c",
+                             effect_field="Loan_Task__c.Loan__c",  # no effect_value
+                             automation_name="HighRiskTaskCreation"),
+             expect_emit=False)
+    assert r.outcome.outcome_kind == OutcomeKind.REFUSAL
+    assert "expected_value" in r.outcome.refusals[0].payload["detail"]
+
+
 def test_ambiguous_effect_refuses_and_asks_for_the_name(seeded):
     # Two Flows stamp Risk_Rating__c=Medium — the effect no longer disambiguates;
     # refuse (never bind the wrong automation).
