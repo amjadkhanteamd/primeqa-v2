@@ -349,6 +349,32 @@ def test_vr_satisfaction_never_touches_a_staged_field_k16():
     assert "Credit_Score__c" not in res.filler   # OR needs ALL arms falsified
 
 
+def test_vr_satisfaction_staged_arm_already_false_skips_not_bails():
+    # R1.1 (the req-302 Task.Subject re-mint wrong-red): the staged
+    # Credit_Score=600 already falsifies ISBLANK(Credit_Score__c), so the OR
+    # must SKIP that arm (no demand needed) and still pad KYC_Complete=True —
+    # the old code bailed the whole OR at the k16 leaf, KYC stayed unpadded,
+    # and the armed VR rejected the create (AmbiguousRejection).
+    res = _pad_vals(_kyc_stub(), semantic=("StageName", "Credit_Score__c"),
+                    values={"StageName": "Credit Assessment",
+                            "Credit_Score__c": 600})
+    assert res.filler["KYC_Complete__c"] is True
+    assert "Credit_Score__c" not in res.filler   # staged — never padded
+
+
+def test_vr_satisfaction_all_arms_already_false_demands_nothing():
+    # Both OR arms are falsified by the staged state itself — the VR cannot
+    # fire; no demand is needed (and none may touch the staged fields).
+    res = _pad_vals(_kyc_stub(),
+                    semantic=("StageName", "KYC_Complete__c",
+                              "Credit_Score__c"),
+                    values={"StageName": "Credit Assessment",
+                            "KYC_Complete__c": True,
+                            "Credit_Score__c": 600})
+    assert "KYC_Complete__c" not in res.filler
+    assert "Credit_Score__c" not in res.filler
+
+
 def test_vr_satisfaction_comparison_pin_arms_too():
     vr = ('AND(StageName = "Credit Assessment", NOT(KYC_Complete__c))')
     res = _pad_vals(_kyc_stub(vrs=[{"api": "G", "formula": vr}]),

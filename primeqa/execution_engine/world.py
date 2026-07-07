@@ -568,6 +568,38 @@ def _pin_true(node, staged_bare: dict) -> bool:
 _PIN_MISS = object()
 
 
+def _already_false(node, staged_bare: dict) -> bool:
+    """Is this subtree provably FALSE under the staged semantic values alone?
+    The falsifier's counterpart of :func:`_pin_true` (R1.1): an OR arm that
+    the staged state already falsifies needs NO padding demand — refusing it
+    at the k16 leaf minted wrong-reds (req-302: staged Credit_Score=600
+    already falsifies ``ISBLANK(Credit_Score__c)``, but the whole
+    ``OR(NOT(KYC_Complete__c), ISBLANK(Credit_Score__c))`` bailed on that arm,
+    KYC never got padded, and the armed VR rejected the create). Conservative:
+    only the shapes :func:`_pin_true` models, provable from staged values."""
+    if isinstance(node, _FFunctionCall) and node.name in ("ISBLANK", "ISNULL"):
+        if (len(node.args) == 1 and isinstance(node.args[0], _FFieldRef)
+                and not node.args[0].is_dotted):
+            staged = staged_bare.get(node.args[0].path[0].lower(), _PIN_MISS)
+            return staged is not _PIN_MISS and staged not in (None, "")
+        return False
+    if isinstance(node, _FFunctionCall) and node.name == "ISPICKVAL":
+        if (len(node.args) == 2 and isinstance(node.args[0], _FFieldRef)
+                and not node.args[0].is_dotted
+                and isinstance(node.args[1], _FLiteral)):
+            staged = staged_bare.get(node.args[0].path[0].lower(), _PIN_MISS)
+            return staged is not _PIN_MISS and staged != node.args[1].value
+        return False
+    if isinstance(node, _FFieldRef) and not node.is_dotted:
+        staged = staged_bare.get(node.path[0].lower(), _PIN_MISS)
+        return staged is not _PIN_MISS and staged is False
+    if isinstance(node, _FNot) and isinstance(node.operand, _FFieldRef) \
+            and not node.operand.is_dotted:
+        staged = staged_bare.get(node.operand.path[0].lower(), _PIN_MISS)
+        return staged is not _PIN_MISS and staged is True
+    return False
+
+
 def _falsify(node, staged_bare: dict, paddable_index: dict, *,
              s1, at_seq: int, formulas):
     """``{bare: (qualified_api, value)}`` that makes this subtree FALSE using
@@ -596,15 +628,26 @@ def _falsify(node, staged_bare: dict, paddable_index: dict, *,
     if isinstance(node, _FOr):
         merged: dict = {}
         for op in node.operands:
+            # R1.1: an arm ALREADY provably false under the staged values
+            # needs no demand — refusing at k16 for it minted wrong-reds
+            # (req-302: staged Credit_Score=600 already falsifies
+            # ISBLANK(Credit_Score__c); the old code bailed the whole OR
+            # instead of skipping the arm, so KYC never got padded and the
+            # armed VR rejected the create).
+            if _already_false(op, staged_bare):
+                continue
             sub = _falsify(op, staged_bare, paddable_index,
                            s1=s1, at_seq=at_seq, formulas=formulas)
             if sub is None:
-                return None                       # every OR arm must falsify
+                return None                       # every live OR arm must falsify
             for bare, pair in sub.items():
                 if bare in merged and merged[bare][1] != pair[1]:
                     return None                   # self-conflicting — bail
                 merged[bare] = pair
-        return merged or None
+        # {} when every arm is already false / demand-free — the conjunct is
+        # SAFE with no demands (the caller's falsy-check skips it), distinct
+        # from None (unfalsifiable — the caller tries the next conjunct).
+        return merged
     if isinstance(node, _FAnd):
         for op in node.operands:                  # one false conjunct suffices
             sub = _falsify(op, staged_bare, paddable_index,

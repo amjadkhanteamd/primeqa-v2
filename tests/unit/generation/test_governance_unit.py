@@ -831,3 +831,53 @@ def test_ground_rejection_conditions_compared_to_on_v1_predicate_is_invalid():
         [{"field": "Opportunity.Loan_Amount__c", "predicate": "equals",
           "value": 5, "compared_to": "Opportunity.Property_Value__c"}], nb, 7)
     assert grounded == [] and invalid and "forbids compared_to" in invalid[0]
+
+
+# --- D-332: picklist-value binding on staged clauses --------------------------
+
+def _pl_cond(field, value):
+    from primeqa.generation.emission import _Endpoint, _GroundedCondition
+    return _GroundedCondition(
+        field=_Endpoint(entity_id=uuid4(), entity_type="Field",
+                        external_id=field),
+        predicate="equals", value=value)
+
+
+_PL_META = {"Loan_Type__c": {"field_type": "picklist",
+                             "picklist_values": ["Home", "Personal", "Business"]}}
+
+
+def test_bind_picklist_word_prefix_substitutes_org_value():
+    # The req-302 live finding: the requirement's label "Home Loan" binds to
+    # the org's actual value "Home" (unique word-prefix).
+    bound, invalid = gc._bind_picklist_values(
+        [_pl_cond("Opportunity.Loan_Type__c", "Home Loan")], _PL_META)
+    assert invalid == [] and bound[0].value == "Home"
+
+
+def test_bind_picklist_exact_and_case_insensitive():
+    bound, invalid = gc._bind_picklist_values(
+        [_pl_cond("Opportunity.Loan_Type__c", "Personal")], _PL_META)
+    assert invalid == [] and bound[0].value == "Personal"
+    bound, invalid = gc._bind_picklist_values(
+        [_pl_cond("Opportunity.Loan_Type__c", "personal")], _PL_META)
+    assert invalid == [] and bound[0].value == "Personal"
+
+
+def test_bind_picklist_no_unique_match_is_invalid_with_valid_values():
+    bound, invalid = gc._bind_picklist_values(
+        [_pl_cond("Opportunity.Loan_Type__c", "Mortgage")], _PL_META)
+    assert bound == [] and invalid
+    assert "Mortgage" in invalid[0] and "Home" in invalid[0]
+
+
+def test_bind_picklist_non_picklist_and_non_equals_pass_through():
+    from primeqa.generation.emission import _Endpoint, _GroundedCondition
+    plain = _pl_cond("Opportunity.Name__c", "anything")   # no rail entry
+    isnull = _GroundedCondition(
+        field=_Endpoint(entity_id=uuid4(), entity_type="Field",
+                        external_id="Opportunity.Loan_Amount__c"),
+        predicate="is_null", value=None)
+    bound, invalid = gc._bind_picklist_values([plain, isnull], _PL_META)
+    assert invalid == [] and bound[0].value == "anything"
+    assert bound[1].predicate == "is_null"

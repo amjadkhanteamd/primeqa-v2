@@ -26,6 +26,7 @@ Engine discipline (D-096):
 from __future__ import annotations
 
 from dataclasses import dataclass, field
+from dataclasses import replace as _dc_replace
 from typing import Any, Optional
 from uuid import uuid4
 
@@ -227,6 +228,44 @@ def _ground_rejection_conditions(proposed, neighborhood: list, version_seq: int)
         grounded.append(_GroundedCondition(
             field=_endpoint(ent), predicate=predicate, value=value))
     return grounded, invalid
+
+
+def _bind_picklist_values(grounded, field_metadata):
+    """D-332: bind staged ``equals`` values on picklist fields to the org's
+    ACTUAL picklist values (the D-294 rail). The requirement speaks labels
+    ("Home Loan"); the org speaks values ("Home") — an unbound label stages a
+    create a restricted picklist rejects (INVALID_OR_NULL_FOR_RESTRICTED_
+    PICKLIST), failing the acceptance for a STAGING reason, not the asserted
+    behavior (the req-302 live finding). Deterministic bind, certainty bar:
+    exact → keep; unique case-insensitive → the org's casing; unique
+    word-prefix in either direction ("Home Loan" ↔ "Home") → the org value;
+    zero or ≥2 candidates → invalid (refuse, naming the valid values).
+    Applied ONLY on STAGED-value paths (acceptance / update clauses) —
+    prohibition conditions are identity/display, never staged, and rebinding
+    them would re-key every existing prohibition for no run-time gain."""
+    out, invalid = [], []
+    for gc in grounded:
+        if gc.predicate != "equals" or gc.value is None:
+            out.append(gc)
+            continue
+        bare = gc.field.external_id.rsplit(".", 1)[-1]
+        vals = ((field_metadata or {}).get(bare) or {}).get("picklist_values")
+        if not vals or gc.value in vals:
+            out.append(gc)
+            continue
+        pw = str(gc.value).lower().split()
+        cands = []
+        for v in vals:
+            vw = str(v).lower().split()
+            if pw == vw or pw[:len(vw)] == vw or vw[:len(pw)] == pw:
+                cands.append(v)
+        if len(cands) == 1:
+            out.append(_dc_replace(gc, value=cands[0]))
+        else:
+            invalid.append(
+                f"'{gc.value}' is not an active picklist value for "
+                f"{gc.field.external_id} (valid: {', '.join(map(str, vals))})")
+    return out, invalid
 
 
 def _identity_safe(value):
@@ -1452,6 +1491,21 @@ class GovernanceCore:
             def _bare(ext):
                 return ext.split(".", 1)[-1]
 
+            # D-332: staged equals-values on picklist fields bind to the
+            # org's ACTUAL picklist values ("Home Loan" → "Home") — an
+            # unbound label stages a create a restricted picklist rejects,
+            # failing the acceptance for a staging reason. No unique bind →
+            # refuse, naming the valid values.
+            grounded_conds, unbindable = _bind_picklist_values(
+                grounded_conds, cond_meta)
+            if unbindable:
+                return IntentResolution(
+                    grounded_candidates=[], next_action=NextAction.REFUSE,
+                    interpretation_delta=delta,
+                    refusal=self._router.emission_deferred(
+                        archetype, claim_kind,
+                        detail="; ".join(unbindable)))
+
             # D-305.1 (review S5): a create-only operation needs CREATEABLE
             # specifically (not the createable-OR-updateable floor).
             nonwritable = sorted(
@@ -1519,6 +1573,17 @@ class GovernanceCore:
                         refusal=self._router.emission_deferred(
                             archetype, claim_kind,
                             detail="; ".join(upd_invalid)))
+                # D-332: the staged update values bind to the org's picklist
+                # values too (the PATCH stages them exactly like the create).
+                upd_conds, upd_unbindable = _bind_picklist_values(
+                    upd_conds, cond_meta)
+                if upd_unbindable:
+                    return IntentResolution(
+                        grounded_candidates=[], next_action=NextAction.REFUSE,
+                        interpretation_delta=delta,
+                        refusal=self._router.emission_deferred(
+                            archetype, claim_kind,
+                            detail="; ".join(upd_unbindable)))
                 non_equals = sorted({c.predicate for c in upd_conds
                                      if c.predicate != "equals"})
                 if non_equals or not upd_conds:
