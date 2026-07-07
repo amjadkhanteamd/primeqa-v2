@@ -41,6 +41,21 @@ from dataclasses import dataclass
 from datetime import date, datetime, timezone
 from typing import Any, Optional
 
+# The shared D-107 formula AST (R1's VR-satisfaction pass). Aliased so the
+# node names can't collide with S4's own vocabulary; using the parser from S4
+# is not a new seam — world.py already reads primeqa.semantic
+# (entity_attributes) for the picklist gate.
+from primeqa.semantic.formula import (
+    And as _FAnd,
+    Comparison as _FComparison,
+    FieldRef as _FFieldRef,
+    FunctionCall as _FFunctionCall,
+    Literal as _FLiteral,
+    Not as _FNot,
+    NotParsed as _FNotParsed,
+    Or as _FOr,
+)
+
 _BELONGS_TO = "BELONGS_TO"
 _APPLIES_TO = "APPLIES_TO"    # ValidationRule → Object (the VR-gating read)
 
@@ -113,6 +128,7 @@ class WorldPlan:
 
 def resolve_operational_padding(
     object_api: str, semantic_fields: set[str], *, s1, at_seq: int,
+    semantic_values: Optional[dict] = None,
 ) -> PaddingResult:
     """Compute the operational padding for a create on ``object_api`` whose
     recipe-set fields are ``semantic_fields`` (k16 — never padded, so S4 cannot
@@ -124,7 +140,17 @@ def resolve_operational_padding(
     object — that surfaces as an empty filler (the create attempt against the
     live org then yields the real outcome, captured as evidence); only a genuine
     S1 read error propagates.
-    """
+
+    ``semantic_values`` (req-302 robustness, R1 — the D-119 "plan-time
+    evaluator" DEFERRED_ITEM armed): the staged ``{qualified_field: value}``
+    pairs of the create. When given, a VR-SATISFACTION pass runs after the
+    filler is built: an active VR that is ARMED by the staged state (its
+    formula pins a staged value) and rejects for a parseable padding-owned
+    deficiency — a bare boolean, an ISBLANK'd blank field — gets that
+    deficiency satisfied (KYC_Complete__c True, Credit_Score__c filled) so the
+    create is not rejected for PADDING's shortfall (the AmbiguousRejection /
+    setup_rejection class). ``None`` (every legacy caller) disables the pass —
+    byte-identical behavior."""
     objs = s1.get_entities(
         "Object", at_seq=at_seq, filters={"sf_api_name": object_api})
     if not objs:
@@ -145,6 +171,11 @@ def resolve_operational_padding(
     filler: dict[str, Any] = {}
     unfillable: list[str] = []
     required_refs: list[tuple[str, str]] = []
+    # R1: every WRITABLE non-semantic scalar, keyed by its bare lower-cased
+    # name (formulas speak bare names) — including the NILLABLE fields the
+    # requiredness loop skips (a VR may demand an optional field be populated:
+    # Credit_Score__c is exactly that case).
+    paddable_index: dict[str, tuple[str, dict]] = {}
     for r in fields:
         fld = r.entity
         if fld.entity_type != "Field":
@@ -153,6 +184,10 @@ def resolve_operational_padding(
         if not api or api in semantic_fields:     # k16 — never a recipe-set field
             continue
         details = s1.get_entity_details(fld.id, at_seq=at_seq) or {}
+        if (not details.get("is_calculated", False)
+                and details.get("is_createable", True)
+                and details.get("references_object_entity_id") is None):
+            paddable_index[api.rsplit(".", 1)[-1].lower()] = (api, details)
         # Required-on-create (REST) = NOT nillable. The page-layout is_required is
         # UI-only and does not gate an API create.
         if details.get("is_nillable", True):
@@ -175,6 +210,11 @@ def resolve_operational_padding(
             unfillable.append(api)
         else:
             filler[api] = value
+
+    if semantic_values:
+        filler.update(_vr_satisfaction_filler(
+            gated_formulas, semantic_values, paddable_index,
+            s1=s1, at_seq=at_seq))
 
     return PaddingResult(
         filler=filler, unfillable=tuple(sorted(unfillable)),
@@ -201,6 +241,7 @@ def _sf_fields(field_values: dict, sobject: str) -> dict:
 
 def plan_world(
     object_api: str, semantic_fields: set[str], *, s1, at_seq: int,
+    semantic_values: Optional[dict] = None,
     _visited=frozenset(), _depth: int = 0,
 ) -> WorldPlan:
     """Pre-resolve the operational world for a create on ``object_api`` into a
@@ -213,7 +254,8 @@ def plan_world(
     subtree that is itself unbuildable) and omits the Salesforce-defaulted refs
     (User/Group). Makes ONLY S1 reads through ``s1`` — no ``client``, no creates."""
     padding = resolve_operational_padding(
-        object_api, semantic_fields, s1=s1, at_seq=at_seq)
+        object_api, semantic_fields, s1=s1, at_seq=at_seq,
+        semantic_values=semantic_values)
     unfillable = list(padding.unfillable)
     parent_plans: list = []
 
@@ -291,6 +333,7 @@ def build_world(world_plan: WorldPlan, *, client, tracker):
 
 def construct_world(
     object_api: str, semantic_fields: set[str], *, s1, client, tracker, at_seq: int,
+    semantic_values: Optional[dict] = None,
     _visited=frozenset(), _depth: int = 0,
 ):
     """Construct the full operational world for a create on ``object_api`` and
@@ -322,6 +365,7 @@ def construct_world(
     the reads under the select bracket and build with no DB connection held."""
     return build_world(
         plan_world(object_api, semantic_fields, s1=s1, at_seq=at_seq,
+                   semantic_values=semantic_values,
                    _visited=_visited, _depth=_depth),
         client=client, tracker=tracker)
 
@@ -431,6 +475,158 @@ def _active_vr_formulas(object_entity_id, *, s1, at_seq: int) -> tuple:
         return tuple(out)
     except Exception:
         return ()
+
+
+def _vr_satisfaction_filler(formulas, semantic_values: dict,
+                            paddable_index: dict, *, s1, at_seq: int) -> dict:
+    """R1 (req-302 robustness): ``{qualified_api: value}`` demands that keep
+    the staged create from being rejected for a PADDING-owned deficiency.
+
+    For each active VR formula (sorted — deterministic), parsed with the
+    shared D-107 parser:
+      - the VR must be AND-rooted and ARMED by the staged state — at least
+        one conjunct provably TRUE from the semantic values alone
+        (``ISPICKVAL(StageName, 'Credit Assessment')`` with that exact staged
+        value; an ``=`` comparison; a staged bare boolean). Never satisfy a
+        rule the staged create does not arm.
+      - the first non-pin conjunct that is FALSIFIABLE on padding-owned
+        fields yields the demands: a bare boolean → its non-firing polarity
+        (the VR's own structure names the value — metadata-derived, never
+        invented); ``ISBLANK(f)``/``ISNULL(f)`` → the existing type-derived
+        ``_fill_value`` constant; ``OR(...)`` needs ALL its operands
+        falsified; a nested ``AND(...)`` needs any ONE.
+    k16 hard guard: a demand on a semantically staged field is refused at the
+    leaf — padding never writes the value under test. Cross-VR conflicts drop
+    the field entirely (an honest setup_rejection beats a guess). Anything
+    unparseable / unfalsifiable → no demand — today's behavior, the org's own
+    rejection message stays the honest surface."""
+    from primeqa.semantic.formula import parse as _parse
+
+    staged_bare = {str(k).rsplit(".", 1)[-1].lower(): v
+                   for k, v in (semantic_values or {}).items()}
+    demands: dict[str, tuple[str, Any]] = {}
+    dropped: set[str] = set()
+    for text in sorted(formulas or ()):
+        try:
+            ast = _parse(text)
+            if isinstance(ast, _FNotParsed) or not isinstance(ast, _FAnd):
+                continue
+            if not any(_pin_true(c, staged_bare) for c in ast.operands):
+                continue
+            fix = None
+            for c in ast.operands:
+                if _pin_true(c, staged_bare):
+                    continue
+                fix = _falsify(c, staged_bare, paddable_index,
+                               s1=s1, at_seq=at_seq, formulas=formulas)
+                if fix is not None:
+                    break
+            if not fix:
+                continue
+            for bare, (api, val) in fix.items():
+                if bare in dropped:
+                    continue
+                prev = demands.get(bare)
+                if prev is not None and prev[1] != val:
+                    demands.pop(bare, None)       # conflicting demands — fall
+                    dropped.add(bare)             # back to the blind default
+                    continue
+                demands[bare] = (api, val)
+        except Exception:
+            continue                              # best-effort, never blocks
+    return {api: val for api, val in demands.values()}
+
+
+def _pin_true(node, staged_bare: dict) -> bool:
+    """Is this conjunct provably TRUE from the staged semantic values alone?
+    (The 'armed by the staged state' check.)"""
+    if isinstance(node, _FFunctionCall) and node.name == "ISPICKVAL":
+        if (len(node.args) == 2 and isinstance(node.args[0], _FFieldRef)
+                and not node.args[0].is_dotted
+                and isinstance(node.args[1], _FLiteral)):
+            staged = staged_bare.get(node.args[0].path[0].lower(), _PIN_MISS)
+            return staged is not _PIN_MISS and staged == node.args[1].value
+        return False
+    if isinstance(node, _FComparison) and node.op == "=":
+        pair = None
+        if isinstance(node.left, _FFieldRef) and isinstance(node.right, _FLiteral):
+            pair = (node.left, node.right)
+        elif isinstance(node.right, _FFieldRef) and isinstance(node.left, _FLiteral):
+            pair = (node.right, node.left)
+        if pair is None or pair[0].is_dotted:
+            return False
+        staged = staged_bare.get(pair[0].path[0].lower(), _PIN_MISS)
+        return staged is not _PIN_MISS and staged == pair[1].value
+    if isinstance(node, _FFieldRef) and not node.is_dotted:
+        return staged_bare.get(node.path[0].lower()) is True
+    if isinstance(node, _FNot) and isinstance(node.operand, _FFieldRef) \
+            and not node.operand.is_dotted:
+        return staged_bare.get(node.operand.path[0].lower()) is False
+    return False
+
+
+_PIN_MISS = object()
+
+
+def _falsify(node, staged_bare: dict, paddable_index: dict, *,
+             s1, at_seq: int, formulas):
+    """``{bare: (qualified_api, value)}`` that makes this subtree FALSE using
+    only padding-owned fields, or ``None`` when it can't be done safely."""
+    if isinstance(node, _FFieldRef) and not node.is_dotted:
+        return _bool_demand(node.path[0], False, staged_bare, paddable_index)
+    if isinstance(node, _FNot) and isinstance(node.operand, _FFieldRef) \
+            and not node.operand.is_dotted:
+        return _bool_demand(node.operand.path[0], True, staged_bare,
+                            paddable_index)
+    if isinstance(node, _FFunctionCall) and node.name in ("ISBLANK", "ISNULL"):
+        if (len(node.args) == 1 and isinstance(node.args[0], _FFieldRef)
+                and not node.args[0].is_dotted):
+            bare = node.args[0].path[0].lower()
+            if bare in staged_bare:               # k16 — never touch staged
+                return None
+            meta = paddable_index.get(bare)
+            if meta is None:
+                return None
+            api, details = meta
+            value = _fill_value(details, s1, at_seq, gated_formulas=formulas)
+            if value is _UNFILLABLE:
+                return None
+            return {bare: (api, value)}
+        return None
+    if isinstance(node, _FOr):
+        merged: dict = {}
+        for op in node.operands:
+            sub = _falsify(op, staged_bare, paddable_index,
+                           s1=s1, at_seq=at_seq, formulas=formulas)
+            if sub is None:
+                return None                       # every OR arm must falsify
+            for bare, pair in sub.items():
+                if bare in merged and merged[bare][1] != pair[1]:
+                    return None                   # self-conflicting — bail
+                merged[bare] = pair
+        return merged or None
+    if isinstance(node, _FAnd):
+        for op in node.operands:                  # one false conjunct suffices
+            sub = _falsify(op, staged_bare, paddable_index,
+                           s1=s1, at_seq=at_seq, formulas=formulas)
+            if sub is not None:
+                return sub
+        return None
+    return None                                   # comparisons, ISPICKVAL, …
+
+
+def _bool_demand(field_name: str, value: bool, staged_bare: dict,
+                 paddable_index: dict):
+    bare = field_name.lower()
+    if bare in staged_bare:                       # k16 — never touch staged
+        return None
+    meta = paddable_index.get(bare)
+    if meta is None:
+        return None
+    api, details = meta
+    if (details.get("field_type") or "").lower() != "boolean":
+        return None
+    return {bare: (api, value)}
 
 
 def _vr_gated(value: str, formulas) -> bool:

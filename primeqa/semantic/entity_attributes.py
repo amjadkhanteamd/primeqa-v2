@@ -495,12 +495,27 @@ def field_is_calculated(attributes: Optional[dict]) -> bool:
 def field_formula_text(attributes: Optional[dict]) -> Optional[str]:
     """The calculated field's formula source — two-shape tolerant: designed
     ``formula`` OR the raw describe ``calculatedFormula`` (the live env-59
-    shape, probe-verified). ``None`` when absent/uncaptured. D-304: retained
-    UNUSED by production — the input-verification filter was rejected at impl
-    (the condition parser cannot parse value formulas, and non-input triggers
-    are legitimate VR-survival staging); probes/diagnostics read it."""
+    shape, probe-verified). ``None`` when absent/uncaptured. D-304 retained it
+    unused (the vr-dialect parser could not parse value formulas); the req-302
+    robustness arc armed it — governance's formula-expectation verification
+    parses it in the VALUE dialect."""
     attrs = attributes or {}
     return attrs.get("formula") or attrs.get("calculatedFormula")
+
+
+def field_treat_null_as_zero(attributes: Optional[dict]) -> bool:
+    """The calculated field's ``formulaTreatNullNumberAsZero`` describe flag —
+    the same two-shape-tolerant idiom (D-203.1); the raw describe serializes
+    it as the STRING ``"True"``/``"False"`` in the live capture. Missing →
+    False (the conservative read: an absent flag never turns nulls into
+    zeros)."""
+    attrs = attributes or {}
+    v = attrs.get("formulaTreatNullNumberAsZero")
+    if isinstance(v, bool):
+        return v
+    if isinstance(v, str):
+        return v.strip().lower() == "true"
+    return False
 
 
 def vr_is_active(attributes: Optional[dict]) -> bool:

@@ -17,9 +17,11 @@ from __future__ import annotations
 from .eval import NonEvaluable, evaluate
 from .nodes import (
     And,
+    Arithmetic,
     Comparison,
     FieldRef,
     FunctionCall,
+    If,
     Literal,
     Node,
     Not,
@@ -41,6 +43,8 @@ __all__ = [
     "FieldRef",
     "FunctionCall",
     "Comparison",
+    "Arithmetic",
+    "If",
     "And",
     "Or",
     "Not",

@@ -66,8 +66,11 @@ from primeqa.generation.protocol import (
 )
 from primeqa.semantic.edges import TIER_1_EDGES
 from primeqa.generation.verified_negative import _writable
+from primeqa.generation.formula_expectation import (
+    as_decimal, verify_formula_expectation)
 from primeqa.semantic.entity_attributes import (
-    field_is_calculated, flow_effects, vr_error_message, vr_formula_text, vr_is_active)
+    field_formula_text, field_is_calculated, field_treat_null_as_zero,
+    flow_effects, vr_error_message, vr_formula_text, vr_is_active)
 from primeqa.semantic.formula import Comparison, FieldRef, is_parsed, parse, walk
 from primeqa.semantic.query import Entity, SemanticOrgModel
 
@@ -579,6 +582,52 @@ def _effect_values_equal(flow_val, claim_val) -> bool:
         return float(flow_val) == float(claim_val)
     except (TypeError, ValueError):
         return False
+
+
+_NUMERIC_FIELD_TYPES = frozenset({"int", "integer", "double", "currency",
+                                  "percent"})
+
+
+def _field_num_meta(field_ent, s1, at_seq) -> tuple:
+    """``(field_type, scale)`` for a Field entity — designed ``field_details``
+    row first (the D-294 idiom), raw describe ``attributes`` fallback (the
+    live capture serializes ``type``/``scale`` as strings). Best-effort:
+    ``(None, None)`` on any read surprise."""
+    ftype, scale = None, None
+    try:
+        details = s1.get_entity_details(field_ent.id, at_seq=at_seq) or {}
+        ftype = details.get("field_type")
+        scale = details.get("scale")
+    except Exception:
+        pass
+    attrs = getattr(field_ent, "attributes", None) or {}
+    if not ftype:
+        ftype = attrs.get("type")
+    if scale is None:
+        scale = attrs.get("scale")
+    try:
+        scale = int(scale) if scale is not None else None
+    except (TypeError, ValueError):
+        scale = None
+    return ((ftype or "").lower() or None), scale
+
+
+def _numeric_effect_guard(field_ent, effect_value, s1, at_seq):
+    """R2 (req-302 robustness): the plain-language refusal detail when a
+    NUMERIC effect field carries a non-numeric-parseable expected value — the
+    D-268 placeholder family in the effect-value lane (claim e15f7c91 shipped
+    the literal string ``"<computed>"`` into an approved percent-field claim).
+    ``None`` = pass. Fail-open on unknown/non-numeric field types — only a
+    provably-numeric field refuses a non-number."""
+    ftype, _ = _field_num_meta(field_ent, s1, at_seq)
+    if ftype not in _NUMERIC_FIELD_TYPES:
+        return None
+    if as_decimal(effect_value) is None:
+        return (f"expected_value {effect_value!r} is not a number, but "
+                f"{field_ent.sf_api_name} is a {ftype} field — state the "
+                f"actual numeric value the automation produces (placeholders "
+                f"like '<computed>' cannot ground a test)")
+    return None
 
 
 def _flows_producing_effect(flow_entities, field_hint, expected_value, effect_object):
@@ -1950,6 +1999,17 @@ class GovernanceCore:
                                     "effect: field_name + expected_value on "
                                     "the subject, or effect_object + "
                                     "effect_lookup_field")))
+                # R2 (req-302 robustness): a numeric effect field refuses a
+                # non-numeric expected value HERE — the "<computed>"
+                # placeholder class never reaches a claim body again.
+                _num_detail = _numeric_effect_guard(
+                    field_ent, effect_value, self._s1, at)
+                if _num_detail is not None:
+                    return IntentResolution(
+                        grounded_candidates=[], next_action=NextAction.REFUSE,
+                        interpretation_delta=delta,
+                        refusal=self._router.emission_deferred(
+                            archetype, claim_kind, detail=_num_detail))
                 # D-304.1 (review B2): the automation binding and the observed
                 # field must COHERE — three crossed bindings close here:
                 # (i) a formula automation observes ITSELF (field_name must be
@@ -2088,6 +2148,62 @@ class GovernanceCore:
                                 detail=("every update trigger pair duplicates "
                                         "the staged initial value — a no-op "
                                         "change cannot witness a recompute")))
+                # R3 (req-302 robustness — the D-304 deferred piece armed):
+                # for the formula primitive, VERIFY the LLM's expected value
+                # against the field's own calculatedFormula evaluated on the
+                # intent's OWN staged inputs — the create state and, when the
+                # D-306 update phase exists, the post-update state. Claim
+                # 7649c167 asserted the PRE-update LTV (62.5) while the org
+                # correctly recomputed 75.0 — now refused at generation with
+                # the correct value in the detail. match / not_evaluable
+                # (unparseable formula, unstaged formula input — padding is
+                # invisible here, fail-open is load-bearing) pass through to
+                # the honest run-time loop. The verifier never writes a value
+                # into the claim (k16) — the detail CITES it, the human/LLM
+                # re-proposes.
+                if primitive == "formula":
+                    _ftype, _scale = _field_num_meta(field_ent, self._s1, at)
+                    _fv = verify_formula_expectation(
+                        formula_text=field_formula_text(field_ent.attributes),
+                        expected_value=effect_value,
+                        create_inputs={ep.external_id: v
+                                       for ep, v in trigger_fields},
+                        update_inputs={ep.external_id: v
+                                       for ep, v in update_trigger_fields},
+                        field_type=_ftype, scale=_scale,
+                        treat_null_as_zero=field_treat_null_as_zero(
+                            field_ent.attributes))
+                    if _fv.status == "pre_update_match":
+                        return IntentResolution(
+                            grounded_candidates=[],
+                            next_action=NextAction.REFUSE,
+                            interpretation_delta=delta,
+                            refusal=self._router.emission_deferred(
+                                archetype, claim_kind,
+                                detail=(f"expected_value {effect_value!r} "
+                                        f"matches the PRE-update state only — "
+                                        f"after the update phase the formula "
+                                        f"{field_ent.sf_api_name} computes "
+                                        f"{_fv.computed_final}; assert the "
+                                        f"post-update value")))
+                    if _fv.status == "mismatch":
+                        return IntentResolution(
+                            grounded_candidates=[],
+                            next_action=NextAction.REFUSE,
+                            interpretation_delta=delta,
+                            refusal=self._router.emission_deferred(
+                                archetype, claim_kind,
+                                detail=(f"expected_value {effect_value!r} "
+                                        f"does not match what the formula "
+                                        f"{field_ent.sf_api_name} computes "
+                                        f"from the staged inputs "
+                                        f"({_fv.computed_final}"
+                                        + (f" after the update; "
+                                           f"{_fv.computed_create} before"
+                                           if _fv.computed_create
+                                           != _fv.computed_final else "")
+                                        + ") — note a percent field's API "
+                                          "value is the formula result ×100")))
                 _stash_grounding(state, GroundedAutomationEffect(
                     archetype=archetype, claim_kind=claim_kind, version_seq=at,
                     subject=subj_ep, automation=flow_ep,

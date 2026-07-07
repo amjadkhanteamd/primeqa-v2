@@ -286,3 +286,108 @@ def test_picklist_gating_is_deterministic():
         {"api": "Gate", "formula": 'ISPICKVAL(StageName, "Credit Assessment")'}])
     picks = {_pad(s1).filler["Stage__c"] for _ in range(5)}
     assert picks == {"Needs Analysis"}
+
+
+# ---------------------------------------------------------------------------
+# req-302 robustness R1: the VR-satisfaction pass (semantic_values-gated)
+# ---------------------------------------------------------------------------
+# The live shape: 3 state-transition claims staged StageName='Credit
+# Assessment' and padding chose KYC_Complete__c=False + omitted the nillable
+# Credit_Score__c — the org's VR ("KYC must be complete and Credit Score must
+# be populated before moving to Credit Assessment") rejected every create
+# (AmbiguousRejection / setup_rejection).
+
+_KYC_VR = ('AND(ISPICKVAL(StageName, "Credit Assessment"), '
+           'OR(NOT(KYC_Complete__c), ISBLANK(Credit_Score__c)))')
+
+
+def _kyc_stub(vrs=None):
+    return _StubS1("Opportunity", [
+        {"api": "StageName", "field_type": "picklist"},
+        {"api": "Name", "field_type": "string", "is_nillable": False},
+        {"api": "KYC_Complete__c", "field_type": "boolean",
+         "is_nillable": False},
+        {"api": "Credit_Score__c", "field_type": "double",
+         "is_nillable": True},
+    ], vrs=vrs if vrs is not None else [
+        {"api": "HL_Stage_Gate", "formula": _KYC_VR, "active": True}])
+
+
+def _pad_vals(s1, semantic=("StageName",), values=None):
+    return resolve_operational_padding(
+        "Opportunity", set(semantic), s1=s1,
+        at_seq=s1.current_version_seq(), semantic_values=values)
+
+
+def test_vr_satisfaction_fills_the_req302_shape():
+    # Armed by the staged stage → the boolean flips True AND the nillable
+    # VR-required field gets the type filler.
+    res = _pad_vals(_kyc_stub(), values={"StageName": "Credit Assessment"})
+    assert res.filler["KYC_Complete__c"] is True
+    assert res.filler["Credit_Score__c"] == 1
+
+
+def test_vr_satisfaction_unarmed_state_is_untouched():
+    res = _pad_vals(_kyc_stub(), values={"StageName": "Needs Analysis"})
+    assert res.filler["KYC_Complete__c"] is False
+    assert "Credit_Score__c" not in res.filler
+
+
+def test_vr_satisfaction_disabled_without_values_is_byte_identical():
+    res = _pad_vals(_kyc_stub(), values=None)
+    assert res.filler == {"Name": "PQA", "KYC_Complete__c": False}
+
+
+def test_vr_satisfaction_never_touches_a_staged_field_k16():
+    # The deficiency field is SEMANTIC (recipe-staged) → padding must not
+    # override it, even though the VR will fire — the honest rejection is
+    # the claim's own business.
+    res = _pad_vals(_kyc_stub(), semantic=("StageName", "KYC_Complete__c"),
+                    values={"StageName": "Credit Assessment",
+                            "KYC_Complete__c": False})
+    assert "KYC_Complete__c" not in res.filler
+    assert "Credit_Score__c" not in res.filler   # OR needs ALL arms falsified
+
+
+def test_vr_satisfaction_comparison_pin_arms_too():
+    vr = ('AND(StageName = "Credit Assessment", NOT(KYC_Complete__c))')
+    res = _pad_vals(_kyc_stub(vrs=[{"api": "G", "formula": vr}]),
+                    values={"StageName": "Credit Assessment"})
+    assert res.filler["KYC_Complete__c"] is True
+
+
+def test_vr_satisfaction_bare_boolean_conjunct_falsifies_to_false():
+    vr = 'AND(ISPICKVAL(StageName, "Closed"), Escalated__c)'
+    s1 = _StubS1("Opportunity", [
+        {"api": "StageName", "field_type": "picklist"},
+        {"api": "Escalated__c", "field_type": "boolean", "is_nillable": False},
+    ], vrs=[{"api": "G", "formula": vr}])
+    res = _pad_vals(s1, values={"StageName": "Closed"})
+    assert res.filler["Escalated__c"] is False
+
+
+def test_vr_satisfaction_skips_unparseable_and_or_rooted():
+    for formula in ("REGEX(Phone, '[0-9]+')",
+                    "OR(NOT(KYC_Complete__c), ISBLANK(Credit_Score__c))"):
+        res = _pad_vals(_kyc_stub(vrs=[{"api": "G", "formula": formula}]),
+                        values={"StageName": "Credit Assessment"})
+        assert res.filler["KYC_Complete__c"] is False
+        assert "Credit_Score__c" not in res.filler
+
+
+def test_vr_satisfaction_conflicting_demands_drop_the_field():
+    vr_a = 'AND(ISPICKVAL(StageName, "Credit Assessment"), KYC_Complete__c)'
+    vr_b = ('AND(ISPICKVAL(StageName, "Credit Assessment"), '
+            'NOT(KYC_Complete__c))')
+    res = _pad_vals(_kyc_stub(vrs=[{"api": "A", "formula": vr_a},
+                                   {"api": "B", "formula": vr_b}]),
+                    values={"StageName": "Credit Assessment"})
+    # Contradictory rules — no guess; the blind default stays.
+    assert res.filler["KYC_Complete__c"] is False
+
+
+def test_vr_satisfaction_inactive_vr_never_arms():
+    res = _pad_vals(_kyc_stub(vrs=[
+        {"api": "G", "formula": _KYC_VR, "active": False}]),
+        values={"StageName": "Credit Assessment"})
+    assert res.filler["KYC_Complete__c"] is False

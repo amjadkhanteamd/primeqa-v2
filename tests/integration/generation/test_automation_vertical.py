@@ -1107,3 +1107,74 @@ def test_naming_one_of_the_ambiguous_approvals_binds_it(seeded):
                                               "value": 5000001}]))
     assert r.outcome.outcome_kind == OutcomeKind.DRAFT
     assert r.emission.asserted_truth.automation.external_id == "Deal_Finance_Approval"
+
+
+# ---------------------------------------------------------------------------
+# req-302 robustness R2+R3: the effect-value guards on the formula primitive
+# (the live defects: claim e15f7c91 shipped the literal "<computed>" into an
+# approved percent-field claim; claim 7649c167 asserted the PRE-update LTV)
+# ---------------------------------------------------------------------------
+
+def test_formula_placeholder_expected_value_refuses(seeded):
+    # R2: a numeric effect field refuses a non-numeric expected value — the
+    # placeholder family (D-268's {{...}} class in the effect-value lane)
+    # never reaches a claim body.
+    r = _run(seeded, _intent("automation-effect-claim", "positive", "Order__c",
+                             field_name="Order__c.Total_With_Tax__c",
+                             expected_value="<computed>",
+                             automation_name="Order__c.Total_With_Tax__c",
+                             trigger_fields=[{"field_name": "Order__c.Subtotal__c",
+                                              "value": 100}]),
+             expect_emit=False)
+    assert r.outcome.outcome_kind == OutcomeKind.REFUSAL
+    d = r.outcome.refusals[0].payload["detail"]
+    assert "<computed>" in d and "currency" in d
+
+
+def test_formula_pre_update_expected_value_refuses_naming_final(seeded):
+    # R3: the claim-7649c167 class — an update-then-observe formula claim
+    # whose expected value matches the CREATE state only. Refused at
+    # generation, the correct post-update value in the plain detail.
+    r = _run(seeded, _intent("automation-effect-claim", "positive", "Order__c",
+                             field_name="Order__c.Total_With_Tax__c",
+                             expected_value=110,
+                             automation_name="Order__c.Total_With_Tax__c",
+                             trigger_fields=[{"field_name": "Order__c.Subtotal__c",
+                                              "value": 100}],
+                             update_trigger_fields=[
+                                 {"field_name": "Order__c.Subtotal__c",
+                                  "value": 200}]),
+             expect_emit=False)
+    assert r.outcome.outcome_kind == OutcomeKind.REFUSAL
+    d = r.outcome.refusals[0].payload["detail"]
+    assert "PRE-update" in d and "220" in d
+
+
+def test_formula_post_update_expected_value_grounds(seeded):
+    # R3 accept path: the SAME shape asserting the post-update value drafts.
+    r = _run(seeded, _intent("automation-effect-claim", "positive", "Order__c",
+                             field_name="Order__c.Total_With_Tax__c",
+                             expected_value=220,
+                             automation_name="Order__c.Total_With_Tax__c",
+                             trigger_fields=[{"field_name": "Order__c.Subtotal__c",
+                                              "value": 100}],
+                             update_trigger_fields=[
+                                 {"field_name": "Order__c.Subtotal__c",
+                                  "value": 200}]))
+    assert r.outcome.outcome_kind == OutcomeKind.DRAFT
+    body = r.emission.asserted_truth
+    assert body.automation_primitive == "formula"
+
+
+def test_formula_wrong_math_refuses_naming_computed(seeded):
+    # R3: an expected value matching NEITHER state — the Percent-x100 /
+    # wrong-arithmetic class caught at generation instead of run time.
+    r = _run(seeded, _intent("automation-effect-claim", "positive", "Order__c",
+                             field_name="Order__c.Total_With_Tax__c",
+                             expected_value=999,
+                             automation_name="Order__c.Total_With_Tax__c",
+                             trigger_fields=[{"field_name": "Order__c.Subtotal__c",
+                                              "value": 100}]),
+             expect_emit=False)
+    assert r.outcome.outcome_kind == OutcomeKind.REFUSAL
+    assert "110" in r.outcome.refusals[0].payload["detail"]

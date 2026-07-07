@@ -196,7 +196,8 @@ def _world_for(create, *, s1, client, tracker, at_seq, world_plans, recipe_id=No
         return build_world(wp, client=client, tracker=tracker)
     return construct_world(
         create.target_object.external_id, set(create.field_values),
-        s1=s1, client=client, tracker=tracker, at_seq=at_seq)
+        s1=s1, client=client, tracker=tracker, at_seq=at_seq,
+        semantic_values=dict(create.field_values))
 
 
 def plan_data_recipe_world(plan: DataRecipePlan, s1) -> dict:
@@ -213,7 +214,8 @@ def plan_data_recipe_world(plan: DataRecipePlan, s1) -> dict:
                 and getattr(step, "expect_rejection", None) is None):
             plans[step.step_id] = plan_world(
                 step.target_object.external_id, set(step.field_values),
-                s1=s1, at_seq=at_seq)
+                s1=s1, at_seq=at_seq,
+                semantic_values=dict(step.field_values))
     return plans
 
 

@@ -58,6 +58,29 @@ class Comparison:
 
 
 @dataclass(frozen=True)
+class Arithmetic:
+    """A numeric operation — ``Loan_Amount__c / Property_Value__c``,
+    ``Amount * 1.18``. Value-dialect only (calc-field verification —
+    the D-304 deferred piece): VR formulas rarely carry arithmetic,
+    calculatedFormula almost always does. ``op`` is one of ``+ - * /``."""
+
+    op: str
+    left: "Node"
+    right: "Node"
+
+
+@dataclass(frozen=True)
+class If:
+    """``IF(cond, then, else)`` — the value-formula conditional
+    (value-dialect only). ``cond`` is a boolean subtree; the branches are
+    value subtrees."""
+
+    cond: "Node"
+    then: "Node"
+    els: "Node"
+
+
+@dataclass(frozen=True)
 class And:
     operands: tuple["Node", ...]    # >= 2; `a && b` and `AND(a, b)` both land here
 
@@ -80,7 +103,8 @@ class NotParsed:
     reason: str
 
 
-Node = Union[Literal, FieldRef, FunctionCall, Comparison, And, Or, Not]
+Node = Union[Literal, FieldRef, FunctionCall, Comparison, Arithmetic, If,
+             And, Or, Not]
 
 
 def walk(node: Node) -> Iterator[Node]:
@@ -93,9 +117,13 @@ def walk(node: Node) -> Iterator[Node]:
             yield from walk(op)
     elif isinstance(node, Not):
         yield from walk(node.operand)
-    elif isinstance(node, Comparison):
+    elif isinstance(node, (Comparison, Arithmetic)):
         yield from walk(node.left)
         yield from walk(node.right)
+    elif isinstance(node, If):
+        yield from walk(node.cond)
+        yield from walk(node.then)
+        yield from walk(node.els)
     elif isinstance(node, FunctionCall):
         for a in node.args:
             yield from walk(a)

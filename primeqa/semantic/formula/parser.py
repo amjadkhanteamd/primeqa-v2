@@ -7,20 +7,33 @@ Fail-loud: any genuinely unrecognized construct — unknown function, REGEX,
 VLOOKUP, date math, CASE, malformed syntax — returns :class:`NotParsed` rather
 than a partial or guessed AST.
 
+Value dialect (the D-304 deferred piece — calc-field verification): opt-in via
+``parse(text, dialect="value")`` — arithmetic ``+ - * /`` (with unary minus),
+``IF(cond, a, b)`` (the :class:`If` node), and the ``NULL`` literal, so a
+calculatedFormula like
+``IF(Property_Value__c > 0, Loan_Amount__c / Property_Value__c, null)`` parses.
+The default ``"vr"`` dialect is byte-identical to the pre-dialect parser —
+every existing consumer (D-295 VR selection, S8 evaluation, verified-negative
+derivation) sees exactly the ASTs it always saw; a value-dialect construct in
+vr dialect still yields :class:`NotParsed` (as trailing/unexpected tokens).
+
 Operator precedence (lowest -> highest): ``||`` < ``&&`` < unary ``!`` <
-comparison < primary. AND/OR/NOT also have function forms, normalized to the
-same :class:`And` / :class:`Or` / :class:`Not` nodes.
+comparison < additive < multiplicative < unary ``-`` < primary (the arithmetic
+tiers exist in the value dialect only). AND/OR/NOT also have function forms,
+normalized to the same :class:`And` / :class:`Or` / :class:`Not` nodes.
 """
 from __future__ import annotations
 
 from typing import Union
 
 from .nodes import (
-    And, Comparison, FieldRef, FunctionCall, Literal, Node, Not, NotParsed, Or,
+    And, Arithmetic, Comparison, FieldRef, FunctionCall, If, Literal, Node,
+    Not, NotParsed, Or,
 )
 
 # Recognized non-structural functions (AND/OR/NOT/TRUE/FALSE are structural,
-# handled directly). Anything outside this set -> NotParsed.
+# handled directly). Anything outside this set -> NotParsed. IF is
+# value-dialect only (handled in _function on the dialect flag).
 _RECOGNIZED_FUNCS = frozenset(
     {"ISBLANK", "ISNULL", "ISPICKVAL", "PRIORVALUE", "ISCHANGED", "ISNEW"}
 )
@@ -84,7 +97,7 @@ def _tokenize(s: str) -> list[tuple[str, object]]:
             toks.append(("OP", two))
             i += 2
             continue
-        if c in "=<>!(),.":
+        if c in "=<>!(),.+-*/":
             toks.append(("OP", c))
             i += 1
             continue
@@ -98,9 +111,10 @@ def _tokenize(s: str) -> list[tuple[str, object]]:
 # --------------------------------------------------------------------------
 
 class _Parser:
-    def __init__(self, toks: list[tuple[str, object]]):
+    def __init__(self, toks: list[tuple[str, object]], dialect: str = "vr"):
         self.toks = toks
         self.i = 0
+        self.value_dialect = dialect == "value"
 
     def _peek(self) -> tuple[str, object]:
         return self.toks[self.i]
@@ -154,13 +168,41 @@ class _Parser:
         return self._parse_comparison()
 
     def _parse_comparison(self) -> Node:
-        left = self._parse_primary()
+        left = self._parse_additive()
         k, v = self._peek()
         if k == "OP" and v in _COMPARE_OPS:
             self._next()
-            right = self._parse_primary()
+            right = self._parse_additive()
             return Comparison(_COMPARE_NORMALIZE.get(v, v), left, right)
         return left
+
+    def _parse_additive(self) -> Node:
+        # Arithmetic tiers exist in the VALUE dialect only — in vr dialect this
+        # is a pass-through to primary, byte-identical to the pre-dialect parser
+        # (a stray '+' surfaces as a trailing/unexpected token -> NotParsed).
+        if not self.value_dialect:
+            return self._parse_primary()
+        left = self._parse_multiplicative()
+        while self._at_op("+", "-"):
+            _, op = self._next()
+            left = Arithmetic(str(op), left, self._parse_multiplicative())
+        return left
+
+    def _parse_multiplicative(self) -> Node:
+        left = self._parse_unary_minus()
+        while self._at_op("*", "/"):
+            _, op = self._next()
+            left = Arithmetic(str(op), left, self._parse_unary_minus())
+        return left
+
+    def _parse_unary_minus(self) -> Node:
+        if self._at_op("-"):
+            self._next()
+            inner = self._parse_unary_minus()
+            if isinstance(inner, Literal) and inner.kind == "number":
+                return Literal(-inner.value, "number")
+            return Arithmetic("-", Literal(0, "number"), inner)
+        return self._parse_primary()
 
     def _parse_primary(self) -> Node:
         k, v = self._peek()
@@ -182,6 +224,8 @@ class _Parser:
             up = str(v).upper()
             if up in ("TRUE", "FALSE"):
                 return Literal(up == "TRUE", "boolean")
+            if up == "NULL" and self.value_dialect:
+                return Literal(None, "null")
             path = [str(v)]                              # field ref (bare/dotted)
             while self._at_op("."):
                 self._next()
@@ -218,19 +262,27 @@ class _Parser:
             if args:
                 raise _ParseError(f"{up}() takes no arguments")
             return Literal(up == "TRUE", "boolean")
+        if up == "IF" and self.value_dialect:
+            if len(args) != 3:
+                raise _ParseError("IF() requires exactly 3 arguments")
+            return If(args[0], args[1], args[2])
         if up in _RECOGNIZED_FUNCS:
             return FunctionCall(up, tuple(args))
         raise _ParseError(f"unknown function {name!r}")
 
 
-def parse(formula: str) -> Union[Node, NotParsed]:
-    """Parse a validation-rule formula into a typed AST, or return
-    :class:`NotParsed` (fail-loud) for anything v1 does not fully recognize.
-    Never returns a partial AST."""
+def parse(formula: str, *, dialect: str = "vr") -> Union[Node, NotParsed]:
+    """Parse a formula into a typed AST, or return :class:`NotParsed`
+    (fail-loud) for anything the dialect does not fully recognize. Never
+    returns a partial AST.
+
+    ``dialect="vr"`` (default) is the validation-rule grammar — byte-identical
+    to the pre-dialect parser. ``dialect="value"`` adds arithmetic, ``IF`` and
+    ``NULL`` for calculatedFormula verification (D-304's deferred piece)."""
     if not formula or not formula.strip():
         return NotParsed("empty formula")
     try:
-        p = _Parser(_tokenize(formula))
+        p = _Parser(_tokenize(formula), dialect)
         node = p.parse_expression()
         p.expect_eof()
         return node
