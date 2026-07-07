@@ -140,6 +140,7 @@ def _is_permission_rejection(rejection_body) -> bool:
 def execute_data_recipe(
     plan: DataRecipePlan, *, client, environment_id: int, s1=None,
     world_plans=None, record_sink=None, field_overrides=None,
+    null_asserted_fields=None,
 ) -> RunEvidence:
     """Execute a data-recipe plan against ``client``; dispatch on the first
     step's ``expect_rejection``.
@@ -159,7 +160,19 @@ def execute_data_recipe(
     ``field_overrides`` (D-235, run-time test-data injection) is an optional
     ``{bare_field_name: value}`` map applied ONLY to the positive vertical's subject
     create (merged last — override-wins); negative recipes never receive it (an
-    override would flip their rejection premise)."""
+    override would flip their rejection premise).
+
+    ``null_asserted_fields`` (D-338) is the claim's ``is_null``-conditioned
+    field external_ids (qualified, from ``semantic_conditions`` — the run path
+    resolves them; see ``run._null_asserted_fields_of``). The claim asserts the
+    org's behavior over a state where these fields are BLANK, and the recipe
+    deliberately stages them by ABSENCE (D-305), so ``field_values`` alone
+    cannot mark them semantic. They join the k16 set: never padded, never
+    demanded by the R1 VR-satisfaction pass, stripped from the final create
+    payload — a filled value would silently swap the executed state out from
+    under the claim's identity (a wrong-green). ``None``/empty → no such
+    conditions — byte-identical behavior."""
+    nulls = frozenset(null_asserted_fields or ())
     flagged = next(
         (s for s in plan.steps
          if getattr(s, "expect_rejection", None) is not None), None)
@@ -178,19 +191,37 @@ def execute_data_recipe(
         return _run_negative_with_setup(
             plan, client=client, environment_id=environment_id, s1=s1,
             world_plans=world_plans, record_sink=record_sink,
-            field_overrides=field_overrides)
+            field_overrides=field_overrides, null_asserted_fields=nulls)
     return _run_positive(
         plan, client=client, environment_id=environment_id, s1=s1,
         world_plans=world_plans, record_sink=record_sink,
-        field_overrides=field_overrides)
+        field_overrides=field_overrides, null_asserted_fields=nulls)
 
 
-def _world_for(create, *, s1, client, tracker, at_seq, world_plans, recipe_id=None):
+def _nulls_for(sobject: str, null_asserted_fields) -> frozenset:
+    """The claim's ``is_null``-conditioned fields that live on ``sobject``
+    (D-338) — qualified names matched by their ``{Object}.`` prefix. A bare
+    name (no dot) cannot be attributed to an object, so it conservatively
+    applies to every create (blocking a fill is the safe direction)."""
+    return frozenset(
+        f for f in (null_asserted_fields or ())
+        if "." not in f or f.startswith(f"{sobject}."))
+
+
+def _world_for(create, *, s1, client, tracker, at_seq, world_plans,
+               recipe_id=None, null_fields=frozenset()):
     """Resolve one create's operational world → ``(scalar_filler, parent_filler,
     unfillable)`` (D-230.2). With a pre-resolved ``world_plans`` map (async) it
-    BUILDS from the detached ``WorldPlan`` (no S1 read); otherwise (sync) it reads
-    S1 live via :func:`construct_world` exactly as before. A missing plan for a
-    create that needs one is a planning defect — fail loud."""
+    BUILDS from the detached ``WorldPlan`` (no S1 read — ``null_fields`` was
+    already honored at plan time); otherwise (sync) it reads S1 live via
+    :func:`construct_world` exactly as before. A missing plan for a create that
+    needs one is a planning defect — fail loud.
+
+    ``null_fields`` (D-338): the claim's asserted-blank fields on THIS create's
+    object. They join the k16 semantic set (never padded, never R1-demanded)
+    and enter ``semantic_values`` as ``None`` so the R1 falsifier's staged-state
+    reasoning sees them as staged-blank (``ISPICKVAL(f, 'X')`` on a blank field
+    is provably false; a demand on ``f`` is refused at the k16 leaf)."""
     if world_plans is not None:
         wp = world_plans.get(create.step_id)
         if wp is None:
@@ -200,27 +231,38 @@ def _world_for(create, *, s1, client, tracker, at_seq, world_plans, recipe_id=No
                 f"ordinary create)", recipe_id=recipe_id)
         return build_world(wp, client=client, tracker=tracker)
     return construct_world(
-        create.target_object.external_id, set(create.field_values),
+        create.target_object.external_id,
+        set(create.field_values) | set(null_fields),
         s1=s1, client=client, tracker=tracker, at_seq=at_seq,
-        semantic_values=dict(create.field_values))
+        semantic_values={**dict(create.field_values),
+                         **{f: None for f in null_fields}})
 
 
-def plan_data_recipe_world(plan: DataRecipePlan, s1) -> dict:
+def plan_data_recipe_world(plan: DataRecipePlan, s1,
+                           null_asserted_fields=None) -> dict:
     """Pre-resolve every ordinary create's operational world (D-230.2) into a
     detached ``{step_id: WorldPlan}`` map, reading S1 once (``at_seq`` pinned) under
     the caller's connection — the async SELECT bracket — so the execute bracket holds
     none. Covers the positive chain's creates AND the 2-step negative's setup create
     (a :class:`PlannedCreate` with no ``expect_rejection``); the 1-step
-    create-rejected negative constructs no world (empty map)."""
+    create-rejected negative constructs no world (empty map).
+
+    ``null_asserted_fields`` (D-338): the claim's ``is_null``-conditioned field
+    external_ids — honored HERE (the async k16/R1 guard is baked into the
+    detached plans; the execute bracket cannot re-derive it, no DB)."""
     at_seq = s1.current_version_seq()
     plans: dict = {}
     for step in plan.steps:
         if (isinstance(step, PlannedCreate)
                 and getattr(step, "expect_rejection", None) is None):
+            nulls = _nulls_for(
+                step.target_object.external_id, null_asserted_fields)
             plans[step.step_id] = plan_world(
-                step.target_object.external_id, set(step.field_values),
+                step.target_object.external_id,
+                set(step.field_values) | nulls,
                 s1=s1, at_seq=at_seq,
-                semantic_values=dict(step.field_values))
+                semantic_values={**dict(step.field_values),
+                                 **{f: None for f in nulls}})
     return plans
 
 
@@ -256,6 +298,7 @@ def _execute_negative(
 def _run_negative_with_setup(
     plan: DataRecipePlan, *, client, environment_id: int, s1=None,
     world_plans=None, record_sink=None, field_overrides=None,
+    null_asserted_fields=frozenset(),
 ) -> RunEvidence:
     """The 2-step behavioral negative (D-203): construct-world → setup
     create-expect-success → attempt the prohibited update/delete → grade the
@@ -283,7 +326,10 @@ def _run_negative_with_setup(
     # D-333: the approval-action arc rides between setup and mutation.
     arc = tuple(s for s in middle if isinstance(s, PlannedApprovalAction))
     sobject = setup.target_object.external_id
-    semantic_fields = set(setup.field_values)
+    # D-338: the claim's asserted-blank fields on the setup's object — the
+    # prohibition's premise is partly defined by what is NOT set; a filled
+    # value would stage a different premise than the one under test.
+    nulls = _nulls_for(sobject, null_asserted_fields)
 
     # 1. Construct the operational world for the setup create — the same
     #    machinery as the positive vertical (padding + parents + tracker, F6).
@@ -293,7 +339,8 @@ def _run_negative_with_setup(
     try:
         scalar_filler, parent_filler, unfillable = _world_for(
             setup, s1=s1, client=client, tracker=tracker, at_seq=at_seq,
-            world_plans=world_plans, recipe_id=plan.recipe_id)
+            world_plans=world_plans, recipe_id=plan.recipe_id,
+            null_fields=nulls)
     except Exception as e:
         tracker.teardown(client, _best_effort_delete)
         err = ErrorSurface("construct", type(e).__name__, str(e))
@@ -315,6 +362,13 @@ def _run_negative_with_setup(
     field_values = _sf_fields(
         {**scalar_filler, **parent_filler, **(field_overrides or {}),
          **setup.field_values}, sobject)
+    # D-338: the asserted-blank fields never reach the payload — the same
+    # staged-state-wins law as above, where the staged value is ABSENCE (no
+    # filler and no override may realize a premise the claim excludes).
+    if nulls:
+        null_bare = {_sf_field(f, sobject) for f in nulls}
+        field_values = {k: v for k, v in field_values.items()
+                        if k not in null_bare}
 
     # 2. The setup create — expect success.
     c_start = _now()
@@ -651,7 +705,8 @@ def _sf_soql(soql: str, sobject: str) -> str:
 
 def _run_positive(plan: DataRecipePlan, *, client, environment_id: int, s1=None,
                   world_plans=None, record_sink=None,
-                  field_overrides=None) -> RunEvidence:
+                  field_overrides=None,
+                  null_asserted_fields=frozenset()) -> RunEvidence:
     """The positive create-and-verify path (D-115; N-create chains D-205;
     the update-then-observe phase D-306): per create — construct-world →
     resolve cross-step refs → create-expect-success → thread state — then the
@@ -725,7 +780,11 @@ def _run_positive(plan: DataRecipePlan, *, client, environment_id: int, s1=None,
 
     for ordinal, create in enumerate(creates):
         sobject = create.target_object.external_id
-        semantic_fields = set(create.field_values)      # the recipe-set keys (k16)
+        # D-338: the claim's asserted-blank fields on THIS object join the
+        # recipe-set keys — blankness is staged state (D-305: is_null clauses
+        # stay ABSENT from field_values), so the keys alone under-count k16.
+        nulls = _nulls_for(sobject, null_asserted_fields)
+        semantic_fields = set(create.field_values) | nulls   # k16
 
         # 1. Construct the operational world for THIS create — pad required
         #    scalars + recursively build required lookup/master-detail PARENTS
@@ -733,7 +792,8 @@ def _run_positive(plan: DataRecipePlan, *, client, environment_id: int, s1=None,
         try:
             scalar_filler, parent_filler, unfillable = _world_for(
                 create, s1=s1, client=client, tracker=tracker, at_seq=at_seq,
-                world_plans=world_plans, recipe_id=plan.recipe_id)
+                world_plans=world_plans, recipe_id=plan.recipe_id,
+                null_fields=nulls)
         except Exception as e:
             # ANY failure mid-construct (transport OR an S1 read raise) tears
             # down everything already built — including earlier chain creates.
@@ -805,6 +865,15 @@ def _run_positive(plan: DataRecipePlan, *, client, environment_id: int, s1=None,
                                 **staged}
             else:
                 field_values = {**field_values, **_sf_fields(field_overrides, sobject)}
+
+        # D-338: the asserted-blank fields never reach the payload — blankness
+        # is staged state, so this is the same staged-wins law as above with
+        # the staged value being ABSENCE (guards the R1 demands AND a
+        # dispatch-time override naming such a field).
+        if nulls:
+            null_bare = {_sf_field(f, sobject) for f in nulls}
+            field_values = {k: v for k, v in field_values.items()
+                            if k not in null_bare}
 
         # 3. Create — expect success.
         c_start = _now()

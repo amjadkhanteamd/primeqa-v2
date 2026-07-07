@@ -219,7 +219,8 @@ def run_recipe_execution(
 
     evidence = _execute_for_kind(
         recipe, session, environment_id, client, record_sink=record_sink,
-        field_overrides=field_overrides, caller_tier=caller_tier)
+        field_overrides=field_overrides, caller_tier=caller_tier,
+        coordinator=coord)
     state = finalize_run(session, evidence, coordinator=coord)
     interpretation = _interpret_and_persist(session, evidence)
 
@@ -249,7 +250,8 @@ def _resolve_run_org(session, environment_id: int) -> str:
 
 def _execute_for_kind(recipe, session, environment_id: int, client,
                       record_sink=None, world_plans=None, field_overrides=None,
-                      *, env_gate=None, caller_tier=None):
+                      *, env_gate=None, caller_tier=None,
+                      null_asserted_fields=None, coordinator=None):
     """Dispatch on ``recipe.recipe_kind`` → the matching bridge + executor.
 
     The inspection path (``metadata-recipe``) is unchanged from D-108.4; the
@@ -280,6 +282,19 @@ def _execute_for_kind(recipe, session, environment_id: int, client,
     if recipe.recipe_kind == _DATA_RECIPE_KIND:
         plan = build_data_recipe_plan(recipe)
         data_client = client or resolve_data_mutation_client(session, environment_id)
+        # D-338: resolve the claim's asserted-blank fields (SYNC — session
+        # open) — only for plans that stage an ordinary create (positive +
+        # 2-step negative; the 1-step create-rejected negative stages nothing,
+        # so the set has no consumer). ASYNC passes them pre-resolved from its
+        # select bracket; a direct caller with neither (unit seams) gets the
+        # empty set.
+        if null_asserted_fields is None:
+            null_asserted_fields = (
+                _null_asserted_fields_of(session, recipe,
+                                         coordinator=coordinator)
+                if session is not None
+                and plan.steps[0].expect_rejection is None
+                else frozenset())
         # Any plan that begins with an ORDINARY create constructs a world and
         # so needs S1 requiredness (k16 padding): the positive vertical (D-115)
         # and the 2-step negative's setup create (D-203). Only the 1-step
@@ -296,7 +311,8 @@ def _execute_for_kind(recipe, session, environment_id: int, client,
         return execute_data_recipe(
             plan, client=data_client, environment_id=environment_id, s1=s1,
             world_plans=world_plans, record_sink=record_sink,
-            field_overrides=field_overrides)
+            field_overrides=field_overrides,
+            null_asserted_fields=null_asserted_fields)
 
     raise PlanTranslationError(
         f"run path has no executor for recipe_kind={recipe.recipe_kind!r} "
@@ -397,6 +413,36 @@ def _claim_context_of(session, claim_test_id):
         return row["claim_kind"], automation
     except Exception:
         return None, None
+
+
+def _null_asserted_fields_of(session, recipe, coordinator=None) -> frozenset:
+    """The claim's ``is_null``-conditioned field external_ids (D-338) — the
+    business state the claim asserts as BLANK.
+
+    The recipe cannot carry these: D-305 stages ``is_null`` clauses by ABSENCE
+    (``field_values`` holds only the equals clauses), so the executor's k16
+    semantic set — derived from the staged keys — under-counts the claim's
+    identity, and the R1 VR-satisfaction filler (world.py) could DEMAND a value
+    for an asserted-blank nillable field to satisfy an armed VR: the executed
+    record then no longer matches the claim's state — a wrong-green. The set is
+    read from the claim itself through the S2 coordinator, pinned to the
+    recipe's ``claim_version_seq`` (latest when unpinned).
+
+    A missing claim row → empty set (hand-built recipes; the pre-D-338
+    behavior). A read/decode failure PROPAGATES: the run surfaces ``errored``
+    pre-create — the executor never guesses, and failing open would silently
+    reopen the wrong-green hole this closes."""
+    coord = coordinator or SemanticTransactionCoordinator()
+    claim = (coord.get_claim_version(
+                 session, recipe.claim_test_id, recipe.claim_version_seq)
+             if recipe.claim_version_seq is not None
+             else coord.get_latest_claim(session, recipe.claim_test_id))
+    if claim is None:
+        return frozenset()
+    conditions = getattr(claim.semantic_conditions, "conditions", None) or ()
+    return frozenset(
+        c.subject.external_id for c in conditions
+        if c.predicate == "is_null" and c.subject.external_id)
 
 
 def run_recipe_execution_for_tenant(
@@ -525,14 +571,15 @@ def run_recipe_execution_async(
             available_environment=available_environment or _MIN_AVAILABLE_ENV,
             replay_mode="live",
         )
-        prep = (_prepare_async_execute(recipe, session, environment_id, client)
+        prep = (_prepare_async_execute(recipe, session, environment_id, client,
+                                       coordinator=coord)
                 if recipe is not None else None)
         # D-245 Phase 4: resolve the env policy HERE (session open) so the
         # execute bracket — which holds no connection — can gate without a read.
         env_gate = _resolve_env_gate(session, environment_id)
     if recipe is None:
         return RunPathResult(ran=False, reason="no_eligible_recipe")
-    resolved_client, world_plans = prep
+    resolved_client, world_plans, null_asserted = prep
 
     # 2. execute — NO DB connection held across the live read (the invariant). The
     #    write-ahead durability sink (D-230) writes in its own per-call transactions,
@@ -541,7 +588,8 @@ def run_recipe_execution_async(
     evidence = _execute_for_kind(
         recipe, None, environment_id, resolved_client,
         record_sink=sink, world_plans=world_plans,
-        env_gate=env_gate, caller_tier=caller_tier)
+        env_gate=env_gate, caller_tier=caller_tier,
+        null_asserted_fields=null_asserted)
 
     # 3. persist + posture + interpret — a fresh brief transaction.
     with scope(tenant_id) as session:
@@ -557,29 +605,39 @@ def run_recipe_execution_async(
     )
 
 
-def _prepare_async_execute(recipe, session, environment_id: int, client):
+def _prepare_async_execute(recipe, session, environment_id: int, client,
+                           coordinator=None):
     """Bracket-1 prep for the async execute (D-230.2): resolve the client kind-aware
     and, for a data recipe with an ordinary create, pre-resolve the operational world
     into a detached ``{step_id: WorldPlan}`` map — all under the (open) select-bracket
-    connection, so the execute bracket needs none. Returns ``(client, world_plans)``:
-    ``world_plans`` is ``None`` for a metadata recipe, ``{}`` for a 1-step
-    create-rejected data recipe (no world to build), else the pre-resolved map. An
+    connection, so the execute bracket needs none. Returns ``(client, world_plans,
+    null_asserted_fields)``: ``world_plans`` is ``None`` for a metadata recipe, ``{}``
+    for a 1-step create-rejected data recipe (no world to build), else the
+    pre-resolved map; ``null_asserted_fields`` (D-338) is the claim's asserted-blank
+    field set, resolved HERE (the execute bracket holds no connection) — both baked
+    into the WorldPlans and returned for the executor's k16 grading/strip. An
     injected ``client`` is honored; a missing one is resolved by kind. An unknown kind
     fails loud (same surface as the sync :func:`_execute_for_kind`)."""
     if recipe.recipe_kind == _METADATA_RECIPE_KIND:
-        return (client or resolve_tooling_client(session, environment_id), None)
+        return (client or resolve_tooling_client(session, environment_id), None,
+                frozenset())
     if recipe.recipe_kind == _DATA_RECIPE_KIND:
         data_client = client or resolve_data_mutation_client(session, environment_id)
         plan = build_data_recipe_plan(recipe)
         if plan.steps[0].expect_rejection is None:
             from primeqa.semantic.query import SemanticOrgModel
+            null_asserted = _null_asserted_fields_of(session, recipe,
+                                                     coordinator=coordinator)
             # per-org Slice 3a: scope the pre-resolved world S1 read to the run's org.
             org_id = _resolve_run_org(session, environment_id)
             world_plans = plan_data_recipe_world(
-                plan, SemanticOrgModel(session.connection(), connected_org_id=org_id))
+                plan, SemanticOrgModel(session.connection(), connected_org_id=org_id),
+                null_asserted_fields=null_asserted)
         else:
-            world_plans = {}    # 1-step create-rejected — no world, but async-prepared
-        return (data_client, world_plans)
+            # 1-step create-rejected — no world, no staged create, and so no
+            # consumer for the asserted-blank set; still async-prepared.
+            world_plans, null_asserted = {}, frozenset()
+        return (data_client, world_plans, null_asserted)
     raise PlanTranslationError(
         f"run path has no executor for recipe_kind={recipe.recipe_kind!r} "
         f"(only metadata-recipe + data-recipe are wired)",
@@ -809,7 +867,7 @@ def run_all_recipes_execution(
                     evidence = execute(
                         recipe, session, environment_id, client,
                         record_sink=record_sink, field_overrides=field_overrides,
-                        caller_tier=caller_tier)
+                        caller_tier=caller_tier, coordinator=coord)
                 except Exception as exc:               # execute failed → errored probe
                     evidence = _synthesize_errored_evidence(recipe, environment_id, exc)
                 finalize_run(session, evidence, coordinator=coord,
@@ -874,7 +932,8 @@ def run_all_recipes_execution_async(
         preps = []
         for recipe in recipes:
             try:
-                preps.append(_prepare_async_execute(recipe, session, environment_id, client))
+                preps.append(_prepare_async_execute(
+                    recipe, session, environment_id, client, coordinator=coord))
             except Exception as exc:           # a per-recipe prep failure must NOT
                 preps.append(_PrepError(exc))  # abort the batch — defer it to its probe
     if not recipes:
@@ -897,12 +956,13 @@ def run_all_recipes_execution_async(
         if isinstance(prep, _PrepError):
             evidence = _synthesize_errored_evidence(recipe, environment_id, prep.exc)
         else:
-            resolved_client, world_plans = prep
+            resolved_client, world_plans, null_asserted = prep
             try:
                 evidence = execute(
                     recipe, None, environment_id, resolved_client,
                     record_sink=sink, world_plans=world_plans,
-                    env_gate=env_gate, caller_tier=caller_tier)
+                    env_gate=env_gate, caller_tier=caller_tier,
+                    null_asserted_fields=null_asserted)
             except Exception as exc:
                 evidence = _synthesize_errored_evidence(recipe, environment_id, exc)
         # 3. persist + posture + interpret — a FRESH brief TX per probe, so a

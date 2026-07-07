@@ -1410,3 +1410,43 @@ def test_override_still_wins_on_value_claims():
         _plan(), client=client, environment_id=_ENV_ID, s1=_s1(),
         field_overrides={"Status__c": "Hijacked"})
     assert client.creates[0][1]["Status__c"] == "Hijacked"
+
+
+# ---------------------------------------------------------------------------
+# D-338: the claim's asserted-blank (is_null-conditioned) fields
+# ---------------------------------------------------------------------------
+
+def test_null_asserted_field_never_reaches_the_create_payload():
+    # The claim asserts Extra__c BLANK; a dispatch-time override naming it
+    # must not reach the payload — blankness is staged state, the D-305.1
+    # staged-wins law with the staged value being ABSENCE.
+    client = _StubClient(create_result=_success(),
+                         query_result=[{"Status__c": "Active"}])
+    ev = execute_data_recipe(
+        _plan(), client=client, environment_id=_ENV_ID, s1=_s1(),
+        field_overrides={"Extra__c": "boom"},
+        null_asserted_fields={"Account.Extra__c"})
+    _, payload = client.creates[0]
+    assert "Extra__c" not in payload
+    assert ev.outcome == "passed"
+
+
+def test_rejection_naming_a_null_asserted_field_grades_failed():
+    # The org refused the create citing the asserted-blank field — that is
+    # the claim's own state being rejected (the finding, D-115.2 "the value
+    # is not achievable"), not padding's operational shortfall.
+    client = _StubClient(create_result=_rejected(fields=["Blank__c"]))
+    ev = execute_data_recipe(
+        _plan(), client=client, environment_id=_ENV_ID, s1=_s1(),
+        null_asserted_fields={"Account.Blank__c"})
+    assert ev.outcome == "failed"
+
+
+def test_null_asserted_fields_scope_by_object_prefix():
+    # A null-asserted field on ANOTHER object neither strips nor re-grades
+    # this create — the set is qualified and scoped per create.
+    client = _StubClient(create_result=_rejected(fields=["Blank__c"]))
+    ev = execute_data_recipe(
+        _plan(), client=client, environment_id=_ENV_ID, s1=_s1(),
+        null_asserted_fields={"Contact.Blank__c"})
+    assert ev.outcome == "errored"      # padding-field rejection — unchanged

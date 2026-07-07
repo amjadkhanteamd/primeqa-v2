@@ -554,3 +554,20 @@ def test_grade_rejected_create_default_path_byte_identical():
     out, err = _grade_rejected_create(
         400, [{"errorCode": "X", "message": "no", "fields": []}], {"Amount"})
     assert out == "errored" and err.error_type == "AmbiguousRejection"
+
+
+# ---------------------------------------------------------------------------
+# D-338: the prohibition's premise includes what is asserted BLANK
+# ---------------------------------------------------------------------------
+
+def test_setup_override_on_null_asserted_field_is_stripped():
+    # The 2-step negative's premise is partly defined by ABSENCE — no
+    # override (nor filler) may realize a premise state the claim excludes.
+    client = _StubClient(create_result=_created(), update_result=_rejected())
+    ev = execute_data_recipe(
+        _update_plan(), client=client, environment_id=_ENV_ID, s1=_s1(),
+        field_overrides={"Risk__c": "High"},
+        null_asserted_fields={"Opportunity.Risk__c"})
+    _, payload = client.creates[0]
+    assert "Risk__c" not in payload
+    assert ev.outcome == "passed"

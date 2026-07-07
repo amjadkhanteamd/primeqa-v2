@@ -417,3 +417,90 @@ def test_vr_satisfaction_inactive_vr_never_arms():
         {"api": "G", "formula": _KYC_VR, "active": False}]),
         values={"StageName": "Credit Assessment"})
     assert res.filler["KYC_Complete__c"] is False
+
+
+# ---------------------------------------------------------------------------
+# D-338: the claim's is_null-conditioned fields are k16 (asserted-blank state)
+# ---------------------------------------------------------------------------
+# An acceptance/prohibition state is partly defined by ABSENCE — D-305 stages
+# is_null clauses by leaving them out of field_values — so the run path
+# threads them in as semantic keys with staged value None. A VR armed by the
+# staged equals values may demand one via ISBLANK; the demand must be REFUSED:
+# a filled value would green a create whose state the claim excludes.
+
+
+def test_null_asserted_field_is_never_demanded_by_r1():
+    # The claim: "the org accepts Stage='Credit Assessment' with
+    # Credit_Score__c BLANK". The KYC VR is armed by the staged stage and
+    # demands the blank field via ISBLANK — refused at k16, which kills the
+    # whole OR (every live arm must falsify), so R1 makes no demands at all
+    # and the org's own rejection stays the honest surface.
+    res = _pad_vals(_kyc_stub(), semantic=("StageName", "Credit_Score__c"),
+                    values={"StageName": "Credit Assessment",
+                            "Credit_Score__c": None})
+    assert "Credit_Score__c" not in res.filler
+    assert res.filler["KYC_Complete__c"] is False   # blind default — no demand
+
+
+def test_null_asserted_picklist_arm_reads_already_false():
+    # A staged-blank picklist provably falsifies ISPICKVAL(f, 'X') — the OR
+    # arm is skipped (R1.1's _already_false) and the OTHER arm's demand
+    # still lands; the blank field itself is never filled.
+    vr = ('AND(ISPICKVAL(StageName, "Credit Assessment"), '
+          'OR(ISPICKVAL(Loan_Type__c, "Home"), NOT(KYC_Complete__c)))')
+    s1 = _StubS1("Opportunity", [
+        {"api": "StageName", "field_type": "picklist"},
+        {"api": "Loan_Type__c", "field_type": "picklist"},
+        {"api": "KYC_Complete__c", "field_type": "boolean",
+         "is_nillable": False},
+    ], vrs=[{"api": "G", "formula": vr}])
+    res = _pad_vals(s1, semantic=("StageName", "Loan_Type__c"),
+                    values={"StageName": "Credit Assessment",
+                            "Loan_Type__c": None})
+    assert res.filler["KYC_Complete__c"] is True
+    assert "Loan_Type__c" not in res.filler
+
+
+def test_plan_world_bakes_the_null_asserted_guard_into_detached_plans():
+    # The async bracket resolves worlds up front (D-230.2) — the guard must
+    # ride the detached WorldPlan, because the execute bracket holds no DB
+    # connection and cannot re-derive the claim's asserted-blank set.
+    from uuid import uuid4
+    from primeqa.execution_engine.data_executor import plan_data_recipe_world
+    from primeqa.execution_engine.plan import DataRecipePlan, PlannedCreate
+    from primeqa.test_representation.models.references import LogicalRef
+
+    kyc_vr = ('AND(ISPICKVAL(StageName, "Credit Assessment"), '
+              'OR(NOT(KYC_Complete__c), ISBLANK(Credit_Score__c)))')
+
+    def _s1_qualified():
+        # The real S1 convention: object-qualified field api names.
+        return _StubS1("Opportunity", [
+            {"api": "Opportunity.StageName", "field_type": "picklist"},
+            {"api": "Opportunity.KYC_Complete__c", "field_type": "boolean",
+             "is_nillable": False},
+            {"api": "Opportunity.Credit_Score__c", "field_type": "double",
+             "is_nillable": True},
+        ], vrs=[{"api": "HL_Stage_Gate", "formula": kyc_vr, "active": True}])
+
+    def _acceptance_plan():
+        target = LogicalRef(entity_type="Object", external_id="Opportunity")
+        return DataRecipePlan(
+            recipe_id=uuid4(), recipe_version_seq=1, claim_test_id=uuid4(),
+            claim_version_seq=None, api_choice="rest",
+            steps=(PlannedCreate(
+                step_id="create-record", target_object=target,
+                field_values={"Opportunity.StageName": "Credit Assessment"},
+                expect_rejection=None, expect_acceptance=True),))
+
+    # Unguarded (no is_null conditions): R1 fills the VR's demand — the
+    # exact wrong-green shape when the claim asserts the field BLANK.
+    unguarded = plan_data_recipe_world(_acceptance_plan(), _s1_qualified())
+    assert unguarded["create-record"].scalar_filler[
+        "Opportunity.Credit_Score__c"] == 1
+
+    guarded = plan_data_recipe_world(
+        _acceptance_plan(), _s1_qualified(),
+        null_asserted_fields={"Opportunity.Credit_Score__c"})
+    assert ("Opportunity.Credit_Score__c"
+            not in guarded["create-record"].scalar_filler)
