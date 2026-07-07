@@ -15,7 +15,10 @@ from primeqa.core.repository import (
     UserRepository, RefreshTokenRepository, EnvironmentRepository,
     ConnectionRepository, GroupRepository,
 )
-from primeqa.core.service import AuthService, EnvironmentService, ConnectionService, GroupService
+from primeqa.core.service import (
+    AuthService, EnvironmentService, ConnectionService, GroupService,
+    ProductionConfirmationRequired, production_signals,
+)
 from primeqa.core.authz import AuthorizationError, Tier, authorize, floor_tier, rank
 from primeqa.core.auth import require_tier_api
 from primeqa.release.repository import ReleaseRepository
@@ -767,6 +770,7 @@ def environments_list():
             "id": e.id, "name": e.name, "env_type": e.env_type,
             "sf_instance_url": e.sf_instance_url, "capture_mode": e.capture_mode,
             "execution_policy": e.execution_policy, "max_execution_slots": e.max_execution_slots,
+            "is_production": e.is_production,
         } for e in envs]
         return render_template("environments/list.html", **ctx(
             active_page="settings_environments", settings_page="environments", environments=envs_data,
@@ -821,6 +825,8 @@ def environments_create():
             connection_id=connection_id or None,
             jira_connection_id=jira_connection_id or None,
             llm_connection_id=llm_connection_id or None,
+            is_production="is_production" in request.form,
+            confirm_not_production="confirm_not_production" in request.form,
         )
         return redirect("/environments")
     except ValueError as e:
@@ -838,6 +844,9 @@ def environments_create():
             active_page="settings_environments", settings_page="environments",
             sf_connections=sf_conns, jira_connections=jira_conns,
             llm_connections=llm_conns, error=str(e),
+            # no-JS fallback: statically render the "NOT production" confirm
+            # checkbox after the guard tripped.
+            show_not_production_confirm=isinstance(e, ProductionConfirmationRequired),
         ))
     finally:
         db.close()
@@ -857,6 +866,7 @@ def environments_detail(env_id):
             "capture_mode": env.capture_mode, "execution_policy": env.execution_policy,
             "max_execution_slots": env.max_execution_slots,
             "cleanup_mandatory": env.cleanup_mandatory,
+            "is_production": env.is_production,
         }
 
         # R3: per-category sync status for the current meta_version
@@ -1037,11 +1047,24 @@ def environments_edit(env_id):
             "id": env.id, "name": env.name, "env_type": env.env_type,
             "capture_mode": env.capture_mode, "execution_policy": env.execution_policy,
             "max_execution_slots": env.max_execution_slots, "cleanup_mandatory": env.cleanup_mandatory,
+            "is_production": env.is_production,
         }
+        # Production-guard context: the linked connection's declared org_type
+        # (plaintext config, no SF call) + the signals for the saved state, so
+        # the "NOT production" confirm panel renders without JS when it already
+        # applies.
+        conn_org_type = None
+        if env.connection_id:
+            conn = ConnectionRepository(db).get_connection(
+                env.connection_id, request.user["tenant_id"])
+            if conn is not None and conn.connection_type == "salesforce":
+                conn_org_type = (conn.config or {}).get("org_type")
+        prod_signals = production_signals(env.name, env.env_type, conn_org_type)
         return render_template("environments/edit.html", **ctx(
             active_page="settings_environments", settings_page="environments",
             breadcrumb_section="Environments", breadcrumb_item=f"Edit {env.name}",
             env=env_data, error=None,
+            conn_org_type=conn_org_type, prod_signals=prod_signals,
         ))
     finally:
         db.close()
@@ -1053,7 +1076,7 @@ def environments_update(env_id):
     from flask import flash
     db = next(get_db())
     try:
-        svc = EnvironmentService(EnvironmentRepository(db))
+        svc = EnvironmentService(EnvironmentRepository(db), ConnectionRepository(db))
         svc.update_environment(env_id, request.user["tenant_id"], {
             "name": request.form.get("name"),
             "env_type": request.form.get("env_type"),
@@ -1061,7 +1084,9 @@ def environments_update(env_id):
             "execution_policy": request.form.get("execution_policy"),
             "max_execution_slots": int(request.form.get("max_execution_slots", 2)),
             "cleanup_mandatory": "cleanup_mandatory" in request.form,
-        })
+            "is_production": "is_production" in request.form,
+            "confirm_not_production": "confirm_not_production" in request.form,
+        }, actor_user_id=request.user["id"])
         flash("Environment updated successfully", "success")
         return redirect(f"/environments/{env_id}")
     except ValueError as e:

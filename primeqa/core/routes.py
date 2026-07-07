@@ -12,7 +12,10 @@ from primeqa.core.repository import (
     UserRepository, RefreshTokenRepository, EnvironmentRepository,
     ConnectionRepository, GroupRepository,
 )
-from primeqa.core.service import AuthService, EnvironmentService, ConnectionService, GroupService
+from primeqa.core.service import (
+    AuthService, EnvironmentService, ConnectionService, GroupService,
+    ProductionConfirmationRequired,
+)
 from primeqa.shared.api import json_error
 
 core_bp = Blueprint("core", __name__)
@@ -28,7 +31,9 @@ def _get_auth_service():
 def _get_env_service():
     db = next(get_db())
     env_repo = EnvironmentRepository(db)
-    return EnvironmentService(env_repo), db
+    # conn_repo so the production guard can read the linked connection's
+    # declared org_type (plaintext config) on create/update.
+    return EnvironmentService(env_repo, ConnectionRepository(db)), db
 
 
 # --- Auth ---
@@ -209,9 +214,15 @@ def create_environment():
             capture_mode=data.get("capture_mode", "smart"),
             max_execution_slots=data.get("max_execution_slots", 2),
             created_by=request.user["id"],
+            confirm_not_production=bool(data.get("confirm_not_production", False)),
+            # presence-conditional (like cleanup_mandatory) so an omitted key
+            # keeps the service default: env_type='production' → flag on.
+            **({} if "is_production" not in data else {"is_production": bool(data["is_production"])}),
             **({} if "cleanup_mandatory" not in data else {"cleanup_mandatory": data["cleanup_mandatory"]}),
         )
         return jsonify(env), 201
+    except ProductionConfirmationRequired as e:
+        return json_error("CONFIRM_NOT_PRODUCTION_REQUIRED", str(e), http=400)
     except ValueError as e:
         return json_error("VALIDATION_ERROR", str(e), http=400)
     finally:
@@ -237,8 +248,11 @@ def update_environment(env_id):
     data = request.get_json(silent=True) or {}
     svc, db = _get_env_service()
     try:
-        env = svc.update_environment(env_id, request.user["tenant_id"], data)
+        env = svc.update_environment(env_id, request.user["tenant_id"], data,
+                                     actor_user_id=request.user["id"])
         return jsonify(env), 200
+    except ProductionConfirmationRequired as e:
+        return json_error("CONFIRM_NOT_PRODUCTION_REQUIRED", str(e), http=400)
     except ValueError as e:
         return json_error("VALIDATION_ERROR", str(e), http=400)
     finally:

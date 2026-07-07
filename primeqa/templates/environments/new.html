@@ -12,7 +12,7 @@
         <a href="/connections/new" class="mt-3 inline-block rounded-md bg-indigo-600 px-4 py-2 text-sm font-semibold text-white hover:bg-indigo-500">Add Connection</a>
     </div>
     {% else %}
-    <form method="POST" action="/environments" class="bg-white shadow rounded-lg p-6 space-y-6">
+    <form method="POST" action="/environments" id="env-form" class="bg-white shadow rounded-lg p-6 space-y-6">
             {{ csrf_input | safe }}
         <div>
             <label class="block text-sm font-medium text-gray-700">Salesforce Connection</label>
@@ -69,6 +69,25 @@
             </select>
         </div>
 
+        <div class="rounded-lg border-2 border-red-300 bg-red-50 p-4">
+            <label class="flex items-start gap-3 cursor-pointer">
+                <input type="checkbox" name="is_production" id="is-production" class="mt-0.5 h-5 w-5 rounded border-red-400 text-red-600 focus:ring-red-500">
+                <span>
+                    <span class="block text-sm font-semibold text-red-800">This is a PRODUCTION org</span>
+                    <span class="block mt-1 text-xs text-red-700">Turns on the production protections: excluded from run pickers and scheduled runs, only Admins can dispatch record-writing test runs, bulk runs need an extra confirmation, and the fix agent never auto-applies changes here. If this org holds real customer data, tick this.</span>
+                </span>
+            </label>
+        </div>
+
+        <div id="not-prod-confirm" class="{% if not show_not_production_confirm %}hidden {% endif %}rounded-lg border border-amber-400 bg-amber-50 p-4">
+            <p class="text-sm font-semibold text-amber-800">This environment looks like production</p>
+            <p class="mt-1 text-xs text-amber-700" id="not-prod-reasons">Its name, type, or connection points at a production org, but the production toggle above is off.</p>
+            <label class="mt-2 flex items-center gap-2 cursor-pointer">
+                <input type="checkbox" name="confirm_not_production" id="confirm-not-production" class="rounded border-amber-400 text-amber-600 focus:ring-amber-500">
+                <span class="text-sm font-medium text-amber-800">I confirm this is NOT a production org</span>
+            </label>
+        </div>
+
         <div class="border-t pt-4">
             <h3 class="text-sm font-medium text-gray-500 mb-3">Salesforce Details (from connection)</h3>
             <div class="grid grid-cols-2 gap-4">
@@ -112,7 +131,52 @@
         document.getElementById('sf-version').value = opt.dataset.apiVersion || '59.0';
         const orgType = opt.dataset.orgType || 'sandbox';
         document.getElementById('env-type').value = orgType;
+        // A production connection defaults the production toggle ON; the
+        // server guard demands explicit confirmation if it's turned off.
+        document.getElementById('is-production').checked = (orgType === 'production');
+        prodGuardRefresh();
     }
+
+    // Mirrors PROD_NAME_RX in core/service.py — the server guard is the
+    // enforcement; this only reveals the confirm panel before the round-trip.
+    const PROD_NAME_RX = /(?<![a-z])(production|prod|live)(?![a-z])/i;
+    function prodSignals() {
+        const signals = [];
+        if (PROD_NAME_RX.test(document.querySelector('input[name="name"]').value))
+            signals.push("its name matches a production pattern (prod/production/live)");
+        if (document.getElementById('env-type').value === 'production')
+            signals.push("its type is 'production'");
+        const opt = document.getElementById('conn-select').selectedOptions[0];
+        if (opt && opt.dataset.orgType === 'production')
+            signals.push("the selected connection is a production org (login.salesforce.com)");
+        return signals;
+    }
+    function prodGuardRefresh() {
+        const signals = prodSignals();
+        const show = !document.getElementById('is-production').checked && signals.length > 0;
+        const panel = document.getElementById('not-prod-confirm');
+        panel.classList.toggle('hidden', !show);
+        if (show) {
+            document.getElementById('not-prod-reasons').textContent =
+                'Signals: ' + signals.join('; ') + '. To save it without production protections, confirm below.';
+        } else {
+            document.getElementById('confirm-not-production').checked = false;
+        }
+    }
+    document.querySelector('input[name="name"]').addEventListener('input', prodGuardRefresh);
+    document.getElementById('env-type').addEventListener('change', prodGuardRefresh);
+    document.getElementById('is-production').addEventListener('change', prodGuardRefresh);
+    document.getElementById('env-form').addEventListener('submit', function (e) {
+        prodGuardRefresh();
+        const panel = document.getElementById('not-prod-confirm');
+        if (!panel.classList.contains('hidden')
+                && !document.getElementById('confirm-not-production').checked) {
+            e.preventDefault();
+            const btn = this.querySelector('button[type=submit]');
+            if (window.PrimeQA && window.PrimeQA.unlockButton) window.PrimeQA.unlockButton(btn);
+            panel.scrollIntoView({behavior: 'smooth', block: 'center'});
+        }
+    });
     updateFromConnection();
     </script>
     {% endif %}
