@@ -129,6 +129,18 @@ _ONTOLOGY_GAP_CLAIM_KINDS = {"automation-effect-claim"}
 # Inherently-negative claim kinds (D-083c): the claim_kind IS the negative.
 _INHERENTLY_NEGATIVE = {"prohibition-claim"}
 
+# The LLM's "I cannot name a concrete value" sentinel (see the automation-name
+# rebind paths below). It is NOT a value: it must never cross into an executable
+# recipe (a create/assert of the literal "<UNKNOWN>" is a runtime type error on a
+# typed field). The tactical first instance of the broader execution-boundary
+# invariant — no UNRESOLVED value crosses into an executable recipe.
+_UNKNOWN_SENTINEL = "<UNKNOWN>"
+
+# Salesforce DescribeField.type values that carry a numeric value (must parse as
+# a Decimal to be an executable value on that field).
+_NUMERIC_FIELD_TYPES = frozenset(
+    {"int", "integer", "long", "double", "currency", "percent"})
+
 # data-behavior claim_kinds meaningful on an Object subject (Layer-B
 # meaningfulness floor; D-087 Guardrail 1 substantive).
 _DATA_BEHAVIOR_CLAIM_KINDS = {
@@ -659,6 +671,30 @@ def _prohibition_refusal_detail(
         f"from the grounding validation rule(s) (non-numeric formula, or a "
         f"non-rejectable operation); refusing rather than degrading to a metadata "
         f"inspection (D-293)")
+
+
+def _value_type_invalid(value: Any, meta: Optional[dict]) -> Optional[str]:
+    """A human reason iff ``value`` is not a type-valid concrete value for the
+    field described by ``meta`` (the D-115 value floor), else ``None`` — valid, or
+    metadata absent (the certainty bar passes it through, matching
+    :func:`_grounding_field_metadata`). A value-claim CREATEs the field with this
+    value and asserts it back, so a numeric field needs a decimal-parseable value
+    and a known picklist needs one of its active values; anything else is
+    unexecutable (a create the org rejects for a parse/format reason, never the
+    behaviour under test)."""
+    if not meta:
+        return None
+    ftype = (meta.get("field_type") or "").lower()
+    if ftype in _NUMERIC_FIELD_TYPES:
+        if as_decimal(value) is None:
+            return (f"the value {value!r} is not a valid number for this "
+                    f"{ftype} field — there is no real value to create and assert")
+    elif ftype == "picklist":
+        pv = meta.get("picklist_values")
+        if pv and value not in pv:
+            return (f"the value {value!r} is not one of the field's picklist "
+                    f"values {sorted(pv)} — there is no real value to create and assert")
+    return None
 
 
 def _grounding_field_metadata(neighborhood: list, s1, at_seq: int) -> dict:
@@ -1570,11 +1606,31 @@ class GovernanceCore:
                  if r.edge_type == EDGE_BELONGS and r.entity.entity_type == "Field"
                  and r.entity.sf_api_name == hint.get("field_name")), None)
             expected_value = _identity_safe(hint.get("expected_value"))
-            if field_ent is None or expected_value is None:
+            # No concrete value → grounded-then-deferred (D-115 §2). The LLM's
+            # "<UNKNOWN>" sentinel is NOT a value — it must never cross into an
+            # executable recipe (it would create/assert the literal "<UNKNOWN>",
+            # a runtime type error on a typed field). Refuse at grounding.
+            if (field_ent is None or expected_value is None
+                    or expected_value == _UNKNOWN_SENTINEL):
                 return IntentResolution(
                     grounded_candidates=[], next_action=NextAction.REFUSE,
                     interpretation_delta=delta,
                     refusal=self._router.emission_deferred(archetype, claim_kind))
+            # Type-validity floor: a value-claim CREATEs the field with this value
+            # and asserts it back, so a non-type-valid value is unexecutable —
+            # refuse rather than emit a create the org rejects for a parse/format
+            # reason (never the behaviour under test). Absent metadata → pass
+            # (the certainty bar, matching _grounding_field_metadata).
+            _vc_meta = _grounding_field_metadata(neighborhood, self._s1, at)
+            _vc_reason = _value_type_invalid(
+                expected_value,
+                _vc_meta.get((field_ent.sf_api_name or "").rsplit(".", 1)[-1]))
+            if _vc_reason is not None:
+                return IntentResolution(
+                    grounded_candidates=[], next_action=NextAction.REFUSE,
+                    interpretation_delta=delta,
+                    refusal=self._router.emission_deferred(
+                        archetype, claim_kind, detail=_vc_reason))
             _stash_grounding(state, GroundedPositive(
                 archetype=archetype, claim_kind=claim_kind, version_seq=at,
                 target_object=_Endpoint(
@@ -1937,6 +1993,38 @@ class GovernanceCore:
                         entity_type=trig_ent.entity_type,
                         external_id=trig_ent.sf_api_name or str(trig_ent.id))
                     trig_value = _identity_safe(hint.get("trigger_value"))
+            # Claim fidelity (T4): a create-scoped state-transition asserts the
+            # ORG'S AUTOMATION sets the to-state on create (the recipe creates
+            # WITHOUT the field and asserts the org produced it). If no grounded
+            # automation actually produces it — a Flow whose effect is
+            # field=to_value, or an active approval process — the test is a
+            # permanent false-fail (a bare create leaves the field blank), so
+            # refuse rather than author a transition the org never performs.
+            # Decided by CAUSALITY (is there a producer?), never by requirement
+            # vocabulary; a manual "mark/set X" capability should re-propose as an
+            # acceptance-claim. Scoped to the pure create-scoped shape — a
+            # cross-object (D-227) or staged (D-222) trigger is a separately
+            # verified shape and is left unchanged.
+            if trig_obj_ep is None and trig_field_ep is None:
+                _st_flows = [r.entity for r in neighborhood
+                             if r.edge_type == EDGE_FLOW
+                             and r.entity.entity_type == "Flow"]
+                _st_producers = _flows_producing_effect(
+                    _st_flows, field_ent.sf_api_name, to_value, None)
+                if not _st_producers and not _active_approvals(neighborhood):
+                    return IntentResolution(
+                        grounded_candidates=[], next_action=NextAction.REFUSE,
+                        interpretation_delta=delta,
+                        refusal=self._router.emission_deferred(
+                            archetype, claim_kind,
+                            detail=(
+                                f"no org automation produces "
+                                f"{field_ent.sf_api_name}={to_value!r} on create "
+                                f"(no Flow with that effect, no active approval "
+                                f"process) — the org would never perform this "
+                                f"transition. If this is a manual capability, "
+                                f"assert it as an acceptance-claim (set the value, "
+                                f"expect it to be accepted).")))
             _stash_grounding(state, GroundedStateTransition(
                 archetype=archetype, claim_kind=claim_kind, version_seq=at,
                 subject=_Endpoint(
@@ -2824,6 +2912,38 @@ class GovernanceCore:
                                     "detail": "asserted relationship not present in the org",
                                     "edge_type": edge_type, "source": subject_refs[0], "target": subject_refs[1]}))
 
+    def _field_governed_by_active_vr(self, field_entity, at: int) -> bool:
+        """True iff an ACTIVE validation rule on the field's parent Object
+        references this field (the T7 evidence-strength guard). Parent Object via
+        the field's object-qualified api name; its APPLIES_TO neighbourhood carries
+        the object's VRs. Formula parsed via the D-107 parser (walk for the field's
+        bare name); a raw-substring fallback when the formula does not parse, so an
+        unparseable rule (e.g. a REGEX format rule) still counts as governing."""
+        api = field_entity.sf_api_name or ""
+        if "." not in api:
+            return False
+        object_api = api.split(".", 1)[0]
+        bare_l = api.rsplit(".", 1)[-1].lower()
+        objs = self._admit.resolve_subject("Object", object_api, at)
+        if not objs:
+            return False
+        for r in self._admit.scoped_neighborhood(objs[0], at):
+            if (r.edge_type != EDGE_VALIDATION_RULE
+                    or r.entity.entity_type != "ValidationRule"
+                    or not vr_is_active(r.entity.attributes)):
+                continue
+            text = vr_formula_text(r.entity.attributes)
+            if not text:
+                continue
+            ast = parse(text)
+            if is_parsed(ast):
+                if any(isinstance(n, FieldRef) and n.path
+                       and n.path[-1].lower() == bare_l for n in walk(ast)):
+                    return True
+            elif bare_l in text.lower():
+                return True
+        return False
+
     def _resolve_existence(self, intent_input: dict, excerpt: str, at: int, state: Any) -> IntentResolution:
         """existence-claim (D-122): the asserted S1 entity exists (Layer-1-complete,
         D-079). A non-empty resolve grounds it; absent -> the org lacks it ->
@@ -2844,6 +2964,23 @@ class GovernanceCore:
                                     refusal=self._router.no_relevant_context(
                                         f"{entity_type} {api!r} does not exist in the org"))
         e = matches[0]
+        # Evidence strength (T7): a bare existence read on a field that an ACTIVE
+        # validation rule GOVERNS is structural evidence masquerading as
+        # behavioural coverage — "the field exists" never exercises the rule (e.g.
+        # a format rule's regex), yet the AC would be tallied covered. Refuse so
+        # the coverage map does not credit it; the recovery hop re-drives the model
+        # toward a prohibition that provokes the rule.
+        if e.entity_type == "Field" and self._field_governed_by_active_vr(e, at):
+            cand.dismissal_reason = "insufficient_grounding"
+            return IntentResolution([], NextAction.REFUSE, self._delta([], [cand]),
+                                    refusal=self._router.emission_deferred(
+                                        "configuration", "existence-claim",
+                                        detail=(
+                                            f"the field {e.sf_api_name} is governed by "
+                                            f"an active validation rule; asserting only "
+                                            f"that it exists does not exercise that rule "
+                                            f"— refusing rather than count a metadata "
+                                            f"read as behavioural coverage")))
         cand.status, cand.admissibility_layer = "admissibly_grounded", AdmissibilityLayer.LAYER_1.value
         if state is not None:
             _stash_grounding(state, GroundedExistence(
