@@ -349,6 +349,7 @@ _HISTORY_SQL = (
     "entities_inserted, entities_superseded, entities_unchanged, edges_inserted, "
     "embeddings_generated, summaries_generated, describe_calls, "
     "failure_category, sf_error_code, permission_gaps, "
+    "attempt_passes, active_seconds, "
     "(error_message IS NOT NULL) AS has_error "
     "FROM sync_runs WHERE source_org_id = CAST(:org AS uuid) "
     "ORDER BY started_at DESC LIMIT :limit OFFSET :offset")
@@ -374,6 +375,10 @@ def _shape_history_run(row, cost) -> dict:
         "started_at": _iso(row["started_at"]),
         "completed_at": _iso(row["completed_at"]),
         "duration_s": _duration_s(row["started_at"], row["completed_at"]),
+        # D-341 pass accounting: attempt_passes=0 marks a pre-migration row
+        # (the UI then falls back to the wall-clock duration_s).
+        "attempt_passes": row["attempt_passes"],
+        "active_seconds": row["active_seconds"],
         "skipped": bool(row["skipped"]),
         "entities_inserted": row["entities_inserted"],
         "entities_superseded": row["entities_superseded"],
@@ -455,7 +460,8 @@ _RUN_DETAIL_SQL = (
     "entities_inserted, entities_superseded, entities_unchanged, "
     "edges_inserted, edges_superseded, embeddings_generated, summaries_generated, "
     "summaries_failed, describe_calls, failure_category, sf_error_code, "
-    "permission_gaps, gap_details, error_message "
+    "permission_gaps, gap_details, error_message, "
+    "attempt_passes, active_seconds "
     "FROM sync_runs "
     "WHERE id = CAST(:run_id AS uuid) "
     "  AND source_org_id = (SELECT id FROM connected_orgs WHERE environment_id = :eid)")
@@ -475,6 +481,8 @@ def _shape_run_detail(row, cost) -> dict:
         "started_at": _iso(row["started_at"]),
         "completed_at": _iso(row["completed_at"]),
         "duration_s": _duration_s(row["started_at"], row["completed_at"]),
+        "attempt_passes": row["attempt_passes"],
+        "active_seconds": row["active_seconds"],
         "skipped": bool(row["skipped"]),
         "phase": row["phase"],
         "last_completed_phase": row["last_completed_phase"],

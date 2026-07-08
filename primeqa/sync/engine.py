@@ -22,10 +22,11 @@ doc §6, implemented in primeqa/worker.py:enrichment_tick (§23).
 from __future__ import annotations
 
 import logging
+import time
 from contextlib import contextmanager
 from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
-from typing import Any, Iterator
+from typing import Any, Callable, Iterator
 
 from sqlalchemy import text
 
@@ -33,6 +34,7 @@ from primeqa.sync.context import SyncContext
 from primeqa.sync.exceptions import (
     EntityOrderViolation,
     PhaseExecutionError,
+    SyncAlreadyRunningError,
     SyncEngineError,
 )
 from primeqa.sync.fk_assertion import (
@@ -124,6 +126,9 @@ class SyncEngine:
         self,
         connected_org_id: str,
         resume_sync_run_id: str | None = None,
+        *,
+        should_abort: Callable[[], str | None] | None = None,
+        on_run_started: Callable[[str], None] | None = None,
     ) -> str:
         """Run a sync_run end-to-end.
 
@@ -134,24 +139,84 @@ class SyncEngine:
                 resume. If provided, the engine reads
                 last_completed_phase from that row and starts from the
                 next phase. If None, a fresh sync_run row is created.
+            should_abort: optional fence probe (D-341), consulted before
+                each phase. Returning a non-None reason aborts the run
+                cleanly — no failure stamp, the run stays resumable. The
+                consumer wires this to "is my job still the active
+                claimant?" so a reaped zombie stops at the next phase
+                boundary instead of racing its own resume.
+            on_run_started: optional callback invoked with the sync_run_id
+                as soon as the run row exists (fresh or resumed) — the
+                consumer stamps the job's resume anchor up front so a
+                mid-run shutdown requeues a resumable job (D-341).
 
         Returns:
             The sync_run_id (whether newly created or resumed).
 
         Raises:
+            SyncAlreadyRunningError: another live session holds this
+                org's sync advisory lock (a concurrent run is in flight).
+                Raised before any row is written.
             SyncEngineError: fatal failure (DB connectivity, etc.).
                 Per-phase failures do NOT raise here — they're
                 captured in sync_run.status and error_message.
         """
-        # 1. Create or resume sync_run row.
-        if resume_sync_run_id is None:
-            sync_run_id, logical_version_seq = self._create_sync_run_row(
-                connected_org_id,
-            )
-        else:
-            sync_run_id = resume_sync_run_id
-            logical_version_seq = self._get_logical_version_seq(sync_run_id)
+        # D-341 layer 1: org-scoped advisory lock, acquired BEFORE any row
+        # is written (a refused run leaves zero droppings). Held on a
+        # dedicated session for the whole run: lock lifetime = session
+        # lifetime = process liveness, so a dead worker's lock auto-releases
+        # while a live zombie's lock refuses the concurrent resume.
+        lock_conn = self._acquire_org_lock(connected_org_id)
+        sync_run_id: str | None = None
+        pass_t0 = time.monotonic()
+        try:
+            # 1. Create or resume sync_run row.
+            if resume_sync_run_id is None:
+                sync_run_id, logical_version_seq = self._create_sync_run_row(
+                    connected_org_id,
+                )
+            else:
+                sync_run_id = resume_sync_run_id
+                logical_version_seq = self._get_logical_version_seq(
+                    sync_run_id)
 
+            if on_run_started is not None:
+                # Best-effort: the anchor stamp must never fail the run.
+                try:
+                    on_run_started(sync_run_id)
+                except Exception as e:  # noqa: BLE001
+                    logger.warning(
+                        "on_run_started callback failed for sync_run=%s: %s",
+                        sync_run_id, e,
+                    )
+
+            self._begin_pass(sync_run_id)
+            return self._run_structural_pass(
+                sync_run_id, logical_version_seq, connected_org_id,
+                resume=resume_sync_run_id is not None,
+                should_abort=should_abort,
+            )
+        finally:
+            # Pass accounting (D-341): one finally covers every exit —
+            # skip-gate return, structural-complete, phase-failure, fenced
+            # abort, and raises (incl. KeyboardInterrupt on shutdown).
+            if sync_run_id is not None:
+                self._record_pass_seconds(
+                    sync_run_id, int(time.monotonic() - pass_t0))
+            self._release_org_lock(lock_conn)
+
+    def _run_structural_pass(
+        self,
+        sync_run_id: str,
+        logical_version_seq: int,
+        connected_org_id: str,
+        *,
+        resume: bool,
+        should_abort: Callable[[], str | None] | None = None,
+    ) -> str:
+        """Steps 2–5 of a run_sync pass (context, skip gate, phases,
+        finalize). Split out of :meth:`run_sync` so the advisory lock +
+        pass accounting wrap it in one try/finally (D-341)."""
         # 2. Build context.
         ctx = self._build_context(
             sync_run_id, connected_org_id, logical_version_seq,
@@ -191,7 +256,7 @@ class SyncEngine:
         # FAIL SAFE: any error / missing watermark / ambiguity → run the full sync
         # (the gate never skips on uncertainty).
         setup_audit_server_time: datetime | None = None
-        if resume_sync_run_id is None:
+        if not resume:
             decision = self._evaluate_skip_gate(ctx, connected_org_id)
             setup_audit_server_time = decision.server_time
             if decision.skip:
@@ -224,6 +289,20 @@ class SyncEngine:
         first_error: PhaseExecutionError | None = None
 
         for phase_name in ENTITY_ORDER[start_index:]:
+            if should_abort is not None:
+                reason = should_abort()
+                if reason:
+                    # D-341 layer 2: fenced abort. NO failure stamp, NO
+                    # structural-complete — status stays 'running' and
+                    # last_completed_phase stays at the last committed
+                    # phase, exactly the resumable shape the enqueuer's
+                    # carry-forward targets.
+                    logger.warning(
+                        "sync_run=%s org=%s ABORTED before phase %r: %s "
+                        "(leaving run resumable)",
+                        sync_run_id, connected_org_id, phase_name, reason,
+                    )
+                    return sync_run_id
             try:
                 with self._phase_transaction(
                     sync_run_id, phase_name,
@@ -285,6 +364,98 @@ class SyncEngine:
             )
 
         return sync_run_id
+
+    # ------------------------------------------------------------------
+    # Internal: org advisory lock + pass accounting (D-341)
+    # ------------------------------------------------------------------
+
+    def _acquire_org_lock(self, connected_org_id: str) -> Any:
+        """Acquire the org's sync advisory lock on a dedicated AUTOCOMMIT
+        connection and return that connection (held for the whole run).
+
+        AUTOCOMMIT matters: the connection sits idle for the duration of
+        the run; without it the SELECT would open an implicit transaction
+        and the session would sit idle-in-transaction for minutes.
+        Advisory locks are session-scoped, so AUTOCOMMIT is safe.
+
+        Raises SyncAlreadyRunningError when another live session holds
+        the lock (a concurrent run_sync for this org is in flight).
+        """
+        lock_conn = self.db.connect().execution_options(
+            isolation_level="AUTOCOMMIT")
+        try:
+            acquired = lock_conn.execute(text(
+                "SELECT pg_try_advisory_lock("
+                "hashtextextended('s1_sync:' || CAST(:org AS text), 0))"
+            ), {"org": str(connected_org_id)}).scalar()
+        except Exception:
+            lock_conn.invalidate()
+            raise
+        if not acquired:
+            lock_conn.close()  # nothing held — safe to return to the pool
+            raise SyncAlreadyRunningError(
+                f"org {connected_org_id}: sync advisory lock held by "
+                f"another session — a concurrent sync is in flight"
+            )
+        return lock_conn
+
+    def _release_org_lock(self, lock_conn: Any) -> None:
+        """Release the org lock and return the connection to the pool.
+
+        On ANY release error, invalidate the connection (closes the DBAPI
+        socket → the server ends the session → the lock drops) and swallow
+        with a warning — a release failure must never mask the run's own
+        outcome, and a lock-holding session must never re-enter the pool
+        (the pool's checkin hook resets GUCs, not advisory locks).
+        """
+        try:
+            lock_conn.execute(text("SELECT pg_advisory_unlock_all()"))
+            lock_conn.close()
+        except Exception as e:  # noqa: BLE001
+            logger.warning(
+                "could not cleanly release the org sync lock (%s) — "
+                "invalidating the connection so the session ends", e,
+            )
+            try:
+                lock_conn.invalidate()
+            except Exception:  # noqa: BLE001
+                pass
+
+    def _begin_pass(self, sync_run_id: str) -> None:
+        """Count this engine pass on the run (fresh AND resume). Best-effort
+        telemetry on the describe_calls pattern — a tenant missing the
+        attempt_passes column (migration 20260708_0010 not yet applied)
+        degrades to "not counted" rather than failing the sync."""
+        try:
+            with self._connect() as conn:
+                conn.execute(text(
+                    "UPDATE sync_runs "
+                    "SET attempt_passes = attempt_passes + 1 "
+                    "WHERE id = :id"
+                ), {"id": sync_run_id})
+        except Exception as e:  # noqa: BLE001
+            logger.warning(
+                "could not count pass for sync_run=%s (%s) — migration "
+                "20260708_0010 may not be applied to this schema yet",
+                sync_run_id, e,
+            )
+
+    def _record_pass_seconds(self, sync_run_id: str, seconds: int) -> None:
+        """Accumulate this pass's wall time into sync_runs.active_seconds
+        (the honest duration — excludes reaper dead time between passes).
+        Best-effort telemetry, never load-bearing."""
+        try:
+            with self._connect() as conn:
+                conn.execute(text(
+                    "UPDATE sync_runs "
+                    "SET active_seconds = active_seconds + :s "
+                    "WHERE id = :id"
+                ), {"s": max(0, int(seconds)), "id": sync_run_id})
+        except Exception as e:  # noqa: BLE001
+            logger.warning(
+                "could not record pass seconds for sync_run=%s (%s)",
+                sync_run_id, e,
+            )
 
     # ------------------------------------------------------------------
     # Internal: sync_run row lifecycle

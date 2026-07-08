@@ -23,7 +23,7 @@ from primeqa.sync.consumer import (
     run_s1_sync_consumer_tick,
 )
 from primeqa.sync.credentials import ensure_connected_org_for_environment
-from primeqa.sync.exceptions import SyncEngineError
+from primeqa.sync.exceptions import SyncAlreadyRunningError, SyncEngineError
 
 TENANT = 1
 
@@ -58,18 +58,29 @@ def _insert_sync_run(org_id, *, status: str = "running",
 class _FakeEngine:
     """Stand-in for SyncEngine. ``run_sync`` writes a controllable ``sync_run``
     row (so the consumer's status-read has something to read) and returns its id,
-    or raises a configured exception. Records its call args."""
+    or raises a configured exception. Records its call args.
+
+    D-341 contract mimicry: calls ``on_run_started(sync_run_id)`` right after
+    the row exists; probes ``should_abort()`` twice (a two-phase engine) with
+    the ``mid_run`` test hook between the probes, returning early (row left
+    as-is, resumable) when a probe returns a reason. ``raise_after_start``
+    raises AFTER ``on_run_started`` — the shutdown-mid-run shape."""
 
     def __init__(self, *, status: str = "running", error_message=None,
-                 last_completed_phase: str = "Flow", raise_exc=None):
+                 last_completed_phase: str = "Flow", raise_exc=None,
+                 raise_after_start=None, mid_run=None):
         self.status = status
         self.error_message = error_message
         self.last_completed_phase = last_completed_phase
         self.raise_exc = raise_exc
+        self.raise_after_start = raise_after_start
+        self.mid_run = mid_run
         self.calls: list[dict] = []
+        self.probes: list = []
         self.returned_id = None
 
-    def run_sync(self, connected_org_id, resume_sync_run_id=None):
+    def run_sync(self, connected_org_id, resume_sync_run_id=None, *,
+                 should_abort=None, on_run_started=None):
         self.calls.append({"org": str(connected_org_id),
                            "resume": resume_sync_run_id})
         if self.raise_exc is not None:
@@ -84,6 +95,20 @@ class _FakeEngine:
                 "lcp": self.last_completed_phase,
                 "em": self.error_message}).scalar()
         self.returned_id = str(sr_id)
+        if on_run_started is not None:
+            on_run_started(self.returned_id)
+        if self.raise_after_start is not None:
+            raise self.raise_after_start
+        if should_abort is not None:
+            self.probes.append(should_abort())
+            if self.probes[-1]:
+                return self.returned_id
+        if self.mid_run is not None:
+            self.mid_run(self)
+        if should_abort is not None:
+            self.probes.append(should_abort())
+            if self.probes[-1]:
+                return self.returned_id
         return self.returned_id
 
 
@@ -156,17 +181,100 @@ def test_carry_forward_seeds_anchor_and_consumer_resumes(store):
 
 
 def test_carry_forward_skips_complete_sync_run(store):
-    # structurally-complete (last_completed_phase='Flow') → not resumable → fresh
+    # structurally-complete (last_completed_phase == FINAL_PHASE) → not
+    # resumable → fresh. FINAL_PHASE, not a literal: the hardcoded 'Flow'
+    # went stale when D-308 appended ApprovalProcess (the D-308.1 lesson).
+    from primeqa.sync.fk_assertion import FINAL_PHASE
+
     org = _seed_org(990105)
-    _insert_sync_run(org, status="running", last_completed_phase="Flow")
+    _insert_sync_run(org, status="running", last_completed_phase=FINAL_PHASE)
     job = store.create_or_get_job(connected_org_id=org, environment_id=990105)
     assert job.last_sync_run_id is None
 
     # terminal-success → also skipped
     org2 = _seed_org(990106)
-    _insert_sync_run(org2, status="success", last_completed_phase="Flow")
+    _insert_sync_run(org2, status="success", last_completed_phase=FINAL_PHASE)
     job2 = store.create_or_get_job(connected_org_id=org2, environment_id=990106)
     assert job2.last_sync_run_id is None
+
+
+# --- D-341: fence / lock / shutdown ------------------------------------------
+
+def test_fenced_abort_leaves_run_resumable(store):
+    """The zombie-race fix: the reaper terminalizes the job mid-run → the
+    engine's next fence probe aborts → the consumer touches NOTHING (job stays
+    failed, run stays 'running' + unstamped), and the carry-forward still
+    targets the resumable run."""
+    org = _seed_org(990108)
+    job = store.create_or_get_job(connected_org_id=org, environment_id=990108)
+
+    def mid_run(fake):
+        # simulate the reaper firing between two phases
+        store.fail(job.id, error_code="stale_timeout", error_message="reaped")
+
+    fake = _FakeEngine(status="running", mid_run=mid_run)
+    out = process_sync_job_for_tenant(
+        TENANT, sf_client_resolver=_stub_resolver, engine_factory=_factory(fake))
+
+    assert out == job.id
+    assert fake.probes[0] is None                  # pre-reap: still active
+    assert fake.probes[1]                          # post-reap: fenced
+    after = store.get_job(job.id)
+    assert after.status == "failed"                # NOT resurrected
+    assert after.error_code == "stale_timeout"     # NOT clobbered
+    with get_tenant_connection(TENANT) as conn:
+        row = conn.execute(text(
+            "SELECT status, error_message FROM sync_runs "
+            "WHERE id = CAST(:i AS uuid)"), {"i": fake.returned_id}
+        ).mappings().first()
+    assert row["status"] == "running"              # resumable, no failure stamp
+    assert row["error_message"] is None
+    again = store.create_or_get_job(connected_org_id=org, environment_id=990108)
+    assert again.id != job.id
+    assert again.last_sync_run_id == fake.returned_id   # carry-forward resumes it
+
+
+def test_concurrent_sync_refused_via_lock(store):
+    """SyncAlreadyRunningError (the advisory lock refused) → the job fails
+    with 'concurrent_sync'; the enqueuer retries later."""
+    org = _seed_org(990110)
+    job = store.create_or_get_job(connected_org_id=org, environment_id=990110)
+    fake = _FakeEngine(raise_exc=SyncAlreadyRunningError("lock held"))
+
+    out = process_sync_job_for_tenant(
+        TENANT, sf_client_resolver=_stub_resolver, engine_factory=_factory(fake))
+
+    assert out == job.id
+    after = store.get_job(job.id)
+    assert after.status == "failed"
+    assert after.error_code == "concurrent_sync"
+
+
+def test_shutdown_interrupt_requeues_with_anchor(store):
+    """Worker shutdown (SIGTERM→KI) mid-run: the job goes straight back to
+    queued with the anchor stamped (on_run_started), and the next tick resumes
+    the SAME sync_run."""
+    org = _seed_org(990109)
+    job = store.create_or_get_job(connected_org_id=org, environment_id=990109)
+    fake = _FakeEngine(status="running",
+                       raise_after_start=KeyboardInterrupt("SIGTERM 15"))
+
+    with pytest.raises(KeyboardInterrupt):
+        process_sync_job_for_tenant(
+            TENANT, sf_client_resolver=_stub_resolver,
+            engine_factory=_factory(fake))
+
+    after = store.get_job(job.id)
+    assert after.status == "queued"
+    assert after.claimed_at is None
+    assert after.last_sync_run_id == fake.returned_id   # stamped BEFORE the KI
+
+    fake2 = _FakeEngine(status="running")
+    out = process_sync_job_for_tenant(
+        TENANT, sf_client_resolver=_stub_resolver, engine_factory=_factory(fake2))
+    assert out == job.id                                 # same row, reclaimed
+    assert fake2.calls[0]["resume"] == fake.returned_id  # resumes the run
+    assert store.get_job(job.id).status == "completed"
 
 
 # --- tick: isolation + lifecycle -------------------------------------------

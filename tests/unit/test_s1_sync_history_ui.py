@@ -52,7 +52,8 @@ def _hrow(**over):
         skipped=False, entities_inserted=5, entities_superseded=3,
         entities_unchanged=10, edges_inserted=7, embeddings_generated=4,
         summaries_generated=2, describe_calls=12, failure_category=None,
-        sf_error_code=None, permission_gaps=0, has_error=False)
+        sf_error_code=None, permission_gaps=0, has_error=False,
+        attempt_passes=1, active_seconds=115)
     base.update(over)
     return base
 
@@ -96,6 +97,18 @@ def test_history_run_typed_failure_passthrough():
 
 # --- _history_envelope (pagination math) -------------------------------------
 
+def test_history_run_pass_accounting_passthrough():
+    """D-341: attempt_passes + active_seconds ride through to the UI; a
+    legacy pre-migration row (attempt_passes=0) keeps them at zero so the
+    template falls back to wall-clock duration_s."""
+    out = _shape_history_run(_hrow(attempt_passes=2, active_seconds=497), None)
+    assert out["attempt_passes"] == 2
+    assert out["active_seconds"] == 497
+    assert out["duration_s"] == 120           # wall clock still reported
+    legacy = _shape_history_run(_hrow(attempt_passes=0, active_seconds=0), None)
+    assert legacy["attempt_passes"] == 0 and legacy["active_seconds"] == 0
+
+
 def test_envelope_pagination_math():
     env = _history_envelope(runs=[1, 2], total=45, page=2, per_page=20)
     assert env["available"] is True and env["provisioned"] is True
@@ -122,7 +135,7 @@ def _drow(**over):
         permission_gaps=1, gap_details=[{"site": "fetch_users", "category": "permission",
                                          "sf_error_code": "INSUFFICIENT_ACCESS",
                                          "context": {"dropped": "edges"}}],
-        error_message=None)
+        error_message=None, attempt_passes=1, active_seconds=170)
     base.update(over)
     return base
 

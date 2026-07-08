@@ -159,3 +159,80 @@ def test_fail_does_not_clobber_completed(store):
     after = store.get_job(job.id)
     assert after.status == "completed"        # guarded: NOT IN terminal
     assert after.error_code is None
+
+
+def test_complete_does_not_clobber_failed(store):
+    """D-341 (the S4 CORR-2 port): a zombie worker returning after the reaper
+    failed its job must not resurrect it to completed."""
+    job = store.create_or_get_job(connected_org_id=uuid4(), environment_id=8)
+    store.claim_next_queued_job()
+    store.mark_running(job.id)
+    store.fail(job.id, error_code="stale_timeout", error_message="reaped")
+    store.complete(job.id)                    # the zombie's late complete()
+    after = store.get_job(job.id)
+    assert after.status == "failed"           # guarded: NOT IN terminal
+    assert after.error_code == "stale_timeout"
+
+
+# --- heartbeat fencing (D-341) ----------------------------------------------
+
+def test_heartbeat_active_returns_true(store):
+    job = store.create_or_get_job(connected_org_id=uuid4(), environment_id=3)
+    store.claim_next_queued_job()
+    store.mark_running(job.id)
+    assert store.heartbeat(job.id) is True
+    assert store.get_job(job.id).heartbeat_at is not None
+
+
+def test_heartbeat_rejected_on_reaped_job(store):
+    """A rejected beat is the zombie's 'I've been reaped' signal — and must
+    never resurrect heartbeat_at on the terminal row."""
+    job = store.create_or_get_job(connected_org_id=uuid4(), environment_id=3)
+    store.claim_next_queued_job()
+    store.mark_running(job.id)
+    store.fail(job.id, error_code="stale_timeout", error_message="reaped")
+    before = store.get_job(job.id).heartbeat_at
+    assert store.heartbeat(job.id) is False
+    assert store.get_job(job.id).heartbeat_at == before
+
+
+# --- requeue (graceful shutdown, D-341) ---------------------------------------
+
+def test_requeue_running_job_keeps_anchor(store):
+    job = store.create_or_get_job(connected_org_id=uuid4(), environment_id=5)
+    store.claim_next_queued_job()
+    store.mark_running(job.id)
+    sr = uuid4()
+    store.set_sync_run(job.id, sr)
+    store.heartbeat(job.id)
+
+    assert store.requeue(job.id) is True
+    after = store.get_job(job.id)
+    assert after.status == "queued"
+    assert after.claimed_at is None
+    assert after.heartbeat_at is None
+    assert after.last_sync_run_id == str(sr)  # the resume anchor survives
+    assert after.attempt_count == 1           # attempts are history, kept
+
+
+def test_requeue_does_not_resurrect_failed(store):
+    job = store.create_or_get_job(connected_org_id=uuid4(), environment_id=5)
+    store.claim_next_queued_job()
+    store.mark_running(job.id)
+    store.fail(job.id, error_code="stale_timeout", error_message="reaped")
+    assert store.requeue(job.id) is False
+    assert store.get_job(job.id).status == "failed"
+
+
+def test_requeued_job_is_the_orgs_single_active_row(store):
+    """A requeued row stays inside the active partial-unique set — the org
+    still has exactly one active job, and create_or_get returns it."""
+    oid = uuid4()
+    job = store.create_or_get_job(connected_org_id=oid, environment_id=5)
+    store.claim_next_queued_job()
+    store.mark_running(job.id)
+    store.requeue(job.id)
+    again = store.create_or_get_job(connected_org_id=oid, environment_id=5)
+    assert again.id == job.id
+    reclaimed = store.claim_next_queued_job()
+    assert reclaimed.id == job.id             # claimable again after requeue

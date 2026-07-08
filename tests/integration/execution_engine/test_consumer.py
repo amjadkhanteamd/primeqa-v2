@@ -94,6 +94,25 @@ def test_run_raise_fails_job_with_classified_code():
     assert s.get_attempts(job.id)[-1]["status"] == "failed"
 
 
+def test_shutdown_interrupt_fails_job_and_propagates():
+    """D-341: SIGTERM→KeyboardInterrupt mid-run must fail the job NOW (honest
+    'worker_shutdown', attempt finalized) and PROPAGATE — no requeue (an S4
+    re-run could double-execute Salesforce mutations)."""
+    import pytest
+
+    s = _store()
+    job = s.create_or_get_job(test_id=uuid4(), environment_id=7)
+    run = _RecordingRun(raises=KeyboardInterrupt("SIGTERM 15"))
+
+    with pytest.raises(KeyboardInterrupt):
+        process_execution_job_for_tenant(
+            TEST_TENANT_ID, client_resolver=_stub_client_resolver, run_fn=run)
+
+    j = s.get_job(job.id)
+    assert j.status == "failed" and j.error_code == "worker_shutdown"
+    assert s.get_attempts(job.id)[-1]["status"] == "failed"
+
+
 def test_client_resolver_raise_fails_with_credential_code():
     s = _store()
     job = s.create_or_get_job(test_id=uuid4(), environment_id=7)

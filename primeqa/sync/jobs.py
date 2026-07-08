@@ -172,20 +172,28 @@ class SyncJobStore:
             ), {"sr": str(sync_run_id), "jid": job_id})
 
     # -- Heartbeat + terminal transitions --------------------------------
-    def heartbeat(self, job_id: int) -> None:
-        """Liveness ping (the reaper reads ``heartbeat_at``)."""
+    def heartbeat(self, job_id: int) -> bool:
+        """Liveness ping (the reaper reads ``heartbeat_at``). Updates ONLY
+        active rows and returns ``False`` when the job is no longer active
+        (reaped/terminal) — the beat thread's "I've been reaped" signal. Never
+        resurrects ``heartbeat_at`` on a terminal row (D-341)."""
         with get_tenant_connection(self._tenant_id) as conn:
-            conn.execute(text(
+            res = conn.execute(text(
                 "UPDATE s1_sync_jobs SET heartbeat_at = NOW(), "
-                "updated_at = NOW() WHERE id = :jid"
+                f"updated_at = NOW() WHERE id = :jid AND {_ACTIVE}"
             ), {"jid": job_id})
+            return res.rowcount == 1
 
     def complete(self, job_id: int) -> None:
-        """Terminal success: job ``completed``."""
+        """Terminal success: job ``completed``. Guarded ``status NOT IN
+        (terminal)`` (the S4 CORR-2 port, D-341) so a zombie worker returning
+        after the reaper failed the job can never clobber ``failed`` →
+        ``completed`` — which would strand the resume chain."""
         with get_tenant_connection(self._tenant_id) as conn:
             conn.execute(text(
                 "UPDATE s1_sync_jobs SET status = 'completed', "
-                "completed_at = NOW(), updated_at = NOW() WHERE id = :jid"
+                "completed_at = NOW(), updated_at = NOW() "
+                f"WHERE id = :jid AND status NOT IN {_TERMINAL}"
             ), {"jid": job_id})
 
     def fail(self, job_id: int, *, error_code: Optional[str] = None,
@@ -201,6 +209,23 @@ class SyncJobStore:
                 "completed_at = NOW(), error_code = :ec, error_message = :em, "
                 f"updated_at = NOW() WHERE id = :jid AND status NOT IN {_TERMINAL}"
             ), {"jid": job_id, "ec": error_code, "em": error_message})
+
+    def requeue(self, job_id: int) -> bool:
+        """Graceful-shutdown handoff (D-341): ``claimed``/``running`` →
+        ``queued`` so the next consumer tick resumes the sync in seconds
+        instead of waiting out the reaper window. Clears ``claimed_at`` +
+        ``heartbeat_at``; KEEPS ``last_sync_run_id`` (the resume anchor),
+        ``attempt_count``, and ``started_at``. Guarded to the active
+        claimed/running set so a reaper-failed row is never resurrected.
+        The row stays the org's single active row, so the partial-unique
+        ``uq_s1_sync_jobs_active`` holds. Returns ``True`` iff requeued."""
+        with get_tenant_connection(self._tenant_id) as conn:
+            res = conn.execute(text(
+                "UPDATE s1_sync_jobs SET status = 'queued', "
+                "claimed_at = NULL, heartbeat_at = NULL, updated_at = NOW() "
+                "WHERE id = :jid AND status IN ('claimed', 'running')"
+            ), {"jid": job_id})
+            return res.rowcount == 1
 
     # -- Reaper: fail jobs stuck past the heartbeat timeout ---------------
     def reap_stale_jobs(self, *, stale_minutes: int = 45) -> int:

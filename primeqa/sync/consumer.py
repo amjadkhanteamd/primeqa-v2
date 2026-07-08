@@ -20,9 +20,10 @@ with two engine-driven divergences (see DECISIONS_LOG D-152):
 ``sf_client_resolver`` + ``engine_factory`` are **injected** (the generation
 ``api_key_resolver`` decoupling pattern) so the substrate consumer stays decoupled
 from the v1 connection store + the heavy ``SyncEngine``, and is governance-testable
-with a stub SF client + a fake engine. Heartbeat is a single beat at
-``mark_running`` (the engine exposes no progress hook); the resume path makes a
-rare over-window reap cheap, so the daemon-thread periodic beat is deferred.
+with a stub SF client + a fake engine. A daemon thread beats every
+``_HEARTBEAT_INTERVAL_S`` while ``run_sync`` runs (D-178); a rejected beat (the
+job is no longer active — reaped) flips the D-341 fence so the engine aborts at
+the next phase boundary instead of racing its own resume.
 """
 from __future__ import annotations
 
@@ -37,6 +38,7 @@ from primeqa.semantic.connection import (
     get_engine,
     get_tenant_connection,
 )
+from primeqa.sync.exceptions import SyncAlreadyRunningError
 from primeqa.sync.jobs import SyncJobStore
 
 log = logging.getLogger(__name__)
@@ -96,10 +98,18 @@ def process_sync_job_for_tenant(
 
     Flow: claim (``SKIP LOCKED``) → ``mark_running`` + one heartbeat → resolve the
     SF client (injected) → build the engine (injected factory) → ``run_sync``
-    (passing the job's ``last_sync_run_id`` as ``resume_sync_run_id``, D-152) →
-    terminal:
+    (passing the job's ``last_sync_run_id`` as ``resume_sync_run_id``, D-152;
+    the engine stamps the anchor back via ``on_run_started`` so a mid-run
+    shutdown requeues a resumable job, D-341) → terminal:
+      - ``run_sync`` raises ``SyncAlreadyRunningError`` (another live session
+        holds the org's sync lock, D-341) → ``fail('concurrent_sync')`` — the
+        enqueuer retries once the holder's session ends.
+      - ``KeyboardInterrupt`` (worker shutdown, D-341) → ``requeue`` so the
+        next tick resumes in seconds instead of the reaper window → re-raise.
       - ``run_sync`` **raises** (fatal infra / credential) → ``fail`` with a
         classified ``error_code``.
+      - fenced abort (the reaper terminalized this job mid-run, D-341) → the
+        row is already terminal; touch nothing, leave the run resumable.
       - else read ``sync_runs.status``: ``'failure'`` → ``fail('sync_failed')`` +
         the row's message; otherwise → ``set_sync_run`` (provenance) + ``complete``.
 
@@ -117,13 +127,45 @@ def process_sync_job_for_tenant(
     # own connection (SyncJobStore.heartbeat), so it is thread-safe alongside the
     # engine's per-phase transactions. Best-effort: a failed beat never crashes the sync.
     _stop_beat = threading.Event()
+    # D-341 fence state, shared by the beat thread (producer), the engine's
+    # per-phase probe (producer + consumer), and the terminal logic below.
+    _abort = threading.Event()
+    _abort_reason: dict[str, Optional[str]] = {"value": None}
 
     def _beat():
+        misses = 0
         while not _stop_beat.wait(_HEARTBEAT_INTERVAL_S):
             try:
-                store.heartbeat(job.id)
+                if not store.heartbeat(job.id):
+                    # The job is no longer active — the reaper terminalized
+                    # it. Flag the fence and stop beating a dead job.
+                    log.warning(
+                        "s1 sync job %s heartbeat rejected — job no longer "
+                        "active (reaped?); flagging abort", job.id)
+                    _abort_reason["value"] = (
+                        "job no longer active (heartbeat rejected)")
+                    _abort.set()
+                    return
+                misses = 0
             except Exception as exc:                # noqa: BLE001 — liveness ping is best-effort
-                log.debug("s1 sync heartbeat failed for job %s: %s", job.id, exc)
+                misses += 1
+                log.warning("s1 sync heartbeat failed for job %s "
+                            "(%d consecutive): %s", job.id, misses, exc)
+
+    def _should_abort() -> Optional[str]:
+        """The engine's per-phase fence probe (D-341): abort when this job is
+        no longer the active claimant. Fast path is the shared event (the
+        beat thread already saw the reap); the row read is authoritative."""
+        if _abort.is_set():
+            return _abort_reason["value"] or "aborted"
+        cur = store.get_job(job.id)
+        if cur is None or cur.status not in ("claimed", "running"):
+            _abort_reason["value"] = (
+                f"job {job.id} "
+                f"status={'missing' if cur is None else cur.status} — fenced")
+            _abort.set()
+            return _abort_reason["value"]
+        return None
 
     _beater = threading.Thread(
         target=_beat, name=f"s1-sync-beat-{job.id}", daemon=True)
@@ -133,7 +175,28 @@ def process_sync_job_for_tenant(
         engine = engine_factory(
             get_engine(), sf_client, _resolve_schema_name(tenant_id))
         sync_run_id = engine.run_sync(
-            job.connected_org_id, resume_sync_run_id=job.last_sync_run_id)
+            job.connected_org_id, resume_sync_run_id=job.last_sync_run_id,
+            should_abort=_should_abort,
+            on_run_started=lambda sr: store.set_sync_run(job.id, sr))
+    except SyncAlreadyRunningError as exc:
+        log.warning("s1 sync job %s: concurrent sync detected: %s",
+                    job.id, exc)
+        store.fail(job.id, error_code="concurrent_sync",
+                   error_message=str(exc)[:500])
+        return job.id
+    except KeyboardInterrupt:
+        # Worker shutdown (SIGTERM→KI, D-341): hand the job straight back to
+        # the queue — the next consumer tick resumes the sync in seconds
+        # instead of waiting out the reaper window. The anchor was stamped
+        # via on_run_started, so the resume targets this run.
+        log.warning("s1 sync job %s interrupted (worker shutdown) — "
+                    "requeueing", job.id)
+        try:
+            store.requeue(job.id)
+        except Exception:       # noqa: BLE001
+            log.exception("requeue failed for job %s; reaper will recover",
+                          job.id)
+        raise
     except Exception as exc:
         log.warning("s1 sync job %s failed (run): %s", job.id, exc)
         store.fail(job.id, error_code=_classify_error(exc),
@@ -141,6 +204,15 @@ def process_sync_job_for_tenant(
         return job.id
     finally:
         _stop_beat.set()        # stop the beater on success, failure, or raise
+
+    if _abort.is_set():
+        # D-341 fenced abort: the reaper already terminalized this row (the
+        # fence fired because the job stopped being the active claimant), and
+        # the engine left the run resumable. Touch nothing — complete() would
+        # be a lie and fail() would clobber the reaper's classification.
+        log.warning("s1 sync job %s aborted (fenced): %s — sync_run %s left "
+                    "resumable", job.id, _abort_reason["value"], sync_run_id)
+        return job.id
 
     outcome = _read_sync_run_outcome(tenant_id, sync_run_id)
     status = outcome["status"] if outcome else None

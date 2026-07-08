@@ -247,7 +247,13 @@
                   {% else %}bg-gray-100 text-gray-700{% endif %}">{{ r.status }}</span>
               </td>
               <td class="px-3 py-2 text-gray-600 whitespace-nowrap">
-                {% if r.duration_s is not none %}{{ r.duration_s // 60 }}m {{ r.duration_s % 60 }}s{% else %}<span class="text-gray-400">—</span>{% endif %}
+                {# D-341: attempt_passes > 0 means the engine accounted this run's
+                   active time; show it instead of wall-clock (which spans reaper
+                   dead time when a run was interrupted + resumed). Legacy rows
+                   (attempt_passes == 0) keep the wall-clock fallback. #}
+                {% if r.attempt_passes %}
+                  {{ r.active_seconds // 60 }}m {{ r.active_seconds % 60 }}s{% if r.attempt_passes > 1 %} <span class="text-xs text-gray-400" title="This sync was interrupted and resumed; active time excludes the dead time between passes (wall clock: {% if r.duration_s is not none %}{{ r.duration_s // 60 }}m {{ r.duration_s % 60 }}s{% else %}—{% endif %}).">&middot; resumed &times;{{ r.attempt_passes - 1 }}</span>{% endif %}
+                {% elif r.duration_s is not none %}{{ r.duration_s // 60 }}m {{ r.duration_s % 60 }}s{% else %}<span class="text-gray-400">—</span>{% endif %}
               </td>
               <td class="px-3 py-2">
                 {% if r.skipped %}

@@ -304,6 +304,22 @@ def run_scheduler():
     print("Scheduler starting...")
     ctx = create_scheduler_context()
 
+    # D-341: Railway sends SIGTERM on deploy/restart; without a handler the
+    # default disposition hard-kills the process mid-tick and the clean
+    # KeyboardInterrupt path below never runs. Same pattern as the worker
+    # (worker.run_worker).
+    import signal
+
+    def _sigterm(signum, frame):
+        log.warning("scheduler_lifecycle=sigterm signal=%s", signum)
+        raise KeyboardInterrupt(f"SIGTERM {signum}")
+
+    signal.signal(signal.SIGTERM, _sigterm)
+    try:
+        signal.signal(signal.SIGHUP, _sigterm)
+    except (AttributeError, ValueError):
+        pass  # Windows / non-main-thread
+
     try:
         while True:
             # D-178: a single tick failure (a transient DB blip, an unguarded tick

@@ -19,6 +19,17 @@ class EntityOrderViolation(SyncEngineError):
     """
 
 
+class SyncAlreadyRunningError(SyncEngineError):
+    """Another live DB session holds this org's sync advisory lock — a
+    concurrent ``run_sync`` for the same connected_org is in flight (D-341).
+
+    Subclasses :class:`SyncEngineError` deliberately: a caller that doesn't
+    special-case it still fails the job (fail-safe); the consumer catches it
+    first to stamp ``error_code='concurrent_sync'`` and let the enqueuer
+    retry once the holder's session ends.
+    """
+
+
 class PhaseExecutionError(SyncEngineError):
     """A phase function raised an exception.
 

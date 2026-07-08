@@ -1073,3 +1073,157 @@ class TestStructuralCompleteGapFlushFailsLoud:
         eng, finalize = self._harness(monkeypatch, record_raises=False)
         eng._mark_sync_run_structural_complete("run-1", "org-1")
         finalize.assert_called_once()
+
+
+# ----------------------------------------------------------------------
+# D-341: org lock, per-phase fence, on_run_started, pass accounting
+# ----------------------------------------------------------------------
+
+from primeqa.sync.exceptions import SyncAlreadyRunningError  # noqa: E402
+
+
+def _engine_d341() -> SyncEngine:
+    """Mocked-helper engine with the D-341 seams also mocked."""
+    engine = _engine_with_mocked_helpers()
+    engine._acquire_org_lock = MagicMock(return_value="lock-conn")
+    engine._release_org_lock = MagicMock()
+    engine._begin_pass = MagicMock()
+    engine._record_pass_seconds = MagicMock()
+    engine._evaluate_skip_gate = MagicMock(
+        return_value=_SkipDecision(False, "changes detected", _T))
+    return engine
+
+
+def _full_registry(count: int = 1):
+    registry = {et: _success_phase_fn(et, count=count) for et in ENTITY_ORDER}
+    return patch("primeqa.sync.engine.get_phase_function",
+                 side_effect=lambda et: registry[et])
+
+
+class TestD341OrgLock:
+    def test_lock_refused_raises_before_any_row(self) -> None:
+        engine = _engine_with_mocked_helpers()
+        engine._acquire_org_lock = MagicMock(
+            side_effect=SyncAlreadyRunningError("lock held"))
+        with pytest.raises(SyncAlreadyRunningError):
+            engine.run_sync(connected_org_id="org-1")
+        engine._create_sync_run_row.assert_not_called()
+
+    def test_lock_released_on_success(self) -> None:
+        engine = _engine_d341()
+        with _full_registry():
+            engine.run_sync(connected_org_id="org-1")
+        engine._release_org_lock.assert_called_once_with("lock-conn")
+
+    def test_lock_released_on_phase_failure(self) -> None:
+        engine = _engine_d341()
+        registry = {et: _success_phase_fn(et) for et in ENTITY_ORDER}
+        registry["Field"] = _failure_phase_fn("Field", "boom")
+        with patch("primeqa.sync.engine.get_phase_function",
+                   side_effect=lambda et: registry[et]):
+            engine.run_sync(connected_org_id="org-1")
+        engine._mark_sync_run_failed.assert_called_once()
+        engine._release_org_lock.assert_called_once_with("lock-conn")
+
+    def test_lock_released_when_run_raises(self) -> None:
+        engine = _engine_d341()
+        engine._get_last_completed_phase = MagicMock(return_value="NotAPhase")
+        with pytest.raises(SyncEngineError):
+            engine.run_sync(connected_org_id="org-1",
+                            resume_sync_run_id="run-1")
+        engine._release_org_lock.assert_called_once_with("lock-conn")
+
+
+class TestD341Fence:
+    def test_fence_abort_leaves_run_unstamped(self) -> None:
+        """A probe flipping mid-run aborts the loop: no failure stamp, no
+        structural-complete, exactly the committed phases advanced."""
+        engine = _engine_d341()
+        probes = iter([None, None, "fenced by reaper"])
+        with _full_registry():
+            result = engine.run_sync(connected_org_id="org-1",
+                                     should_abort=lambda: next(probes))
+        assert result == "run-1"
+        assert engine._advance_last_completed_phase.call_count == 2
+        engine._mark_sync_run_failed.assert_not_called()
+        engine._mark_sync_run_structural_complete.assert_not_called()
+        engine._release_org_lock.assert_called_once()
+
+    def test_no_probe_runs_all_phases(self) -> None:
+        engine = _engine_d341()
+        with _full_registry():
+            engine.run_sync(connected_org_id="org-1")
+        assert (engine._advance_last_completed_phase.call_count
+                == len(ENTITY_ORDER))
+        engine._mark_sync_run_structural_complete.assert_called_once()
+
+
+class TestD341OnRunStarted:
+    def test_callback_receives_run_id_fresh_and_resume(self) -> None:
+        engine = _engine_d341()
+        seen: list[str] = []
+        with _full_registry():
+            engine.run_sync(connected_org_id="org-1",
+                            on_run_started=seen.append)
+            engine.run_sync(connected_org_id="org-1",
+                            resume_sync_run_id="existing-run",
+                            on_run_started=seen.append)
+        assert seen == ["run-1", "existing-run"]
+
+    def test_callback_exception_never_fails_the_run(self) -> None:
+        engine = _engine_d341()
+
+        def boom(sr):
+            raise RuntimeError("stamp failed")
+
+        with _full_registry():
+            result = engine.run_sync(connected_org_id="org-1",
+                                     on_run_started=boom)
+        assert result == "run-1"
+        engine._mark_sync_run_structural_complete.assert_called_once()
+
+
+class TestD341PassAccounting:
+    def _assert_one_pass(self, engine) -> None:
+        engine._begin_pass.assert_called_once_with("run-1")
+        engine._record_pass_seconds.assert_called_once()
+        assert engine._record_pass_seconds.call_args.args[0] == "run-1"
+
+    def test_counted_on_success(self) -> None:
+        engine = _engine_d341()
+        with _full_registry():
+            engine.run_sync(connected_org_id="org-1")
+        self._assert_one_pass(engine)
+
+    def test_counted_on_phase_failure(self) -> None:
+        engine = _engine_d341()
+        registry = {et: _success_phase_fn(et) for et in ENTITY_ORDER}
+        registry["Object"] = _failure_phase_fn("Object", "boom")
+        with patch("primeqa.sync.engine.get_phase_function",
+                   side_effect=lambda et: registry[et]):
+            engine.run_sync(connected_org_id="org-1")
+        self._assert_one_pass(engine)
+
+    def test_counted_on_skip(self) -> None:
+        engine = _engine_d341()
+        engine._evaluate_skip_gate = MagicMock(
+            return_value=_SkipDecision(True, "no changes", _T))
+        with _full_registry():
+            engine.run_sync(connected_org_id="org-1")
+        engine._mark_sync_run_skipped.assert_called_once()
+        self._assert_one_pass(engine)
+
+    def test_counted_on_fenced_abort(self) -> None:
+        engine = _engine_d341()
+        with _full_registry():
+            engine.run_sync(connected_org_id="org-1",
+                            should_abort=lambda: "fenced")
+        self._assert_one_pass(engine)
+
+    def test_counted_on_raise(self) -> None:
+        engine = _engine_d341()
+        engine._get_last_completed_phase = MagicMock(return_value="NotAPhase")
+        with pytest.raises(SyncEngineError):
+            engine.run_sync(connected_org_id="org-1",
+                            resume_sync_run_id="run-1")
+        self._assert_one_pass(engine)

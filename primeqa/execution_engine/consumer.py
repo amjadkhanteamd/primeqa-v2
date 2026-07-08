@@ -110,6 +110,16 @@ def process_execution_job_for_tenant(
         log.info("s4 execution job %s done (ran=%s, outcome=%s)",
                  job.id, result.ran, outcome)
         store.complete(job.id)
+    except KeyboardInterrupt:
+        # D-341: worker shutdown (SIGTERM→KI) mid-run. Fail the job NOW with
+        # an honest code instead of leaving it 'running' until the reaper.
+        # No requeue — S4 runs are not resumable and a re-run could
+        # double-execute Salesforce mutations.
+        log.warning("s4 execution job %s interrupted (worker shutdown)",
+                    job.id)
+        store.fail(job.id, error_code="worker_shutdown",
+                   error_message="Worker received shutdown mid-run")
+        raise
     except Exception as exc:
         log.warning("s4 execution job %s failed: %s", job.id, exc)
         store.fail(job.id, error_code=_classify_error(exc),
