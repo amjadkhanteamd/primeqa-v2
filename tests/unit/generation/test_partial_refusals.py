@@ -172,7 +172,9 @@ def _acs(n):
 def test_followup_turn_refusal_lands_on_the_draft_outcome():
     """Turn 1 grounds AC1; the re-prompt turn's AC2 intent wholly refuses. The
     directive never routes (a claim still drafts) — it must land on the
-    outcome's attempted_interpretation, and coverage_map stays input-steered."""
+    outcome's attempted_interpretation. D-340: coverage_map is grounding-aware,
+    so the refused-and-never-grounded AC2 records ungrounded_after_reprompt
+    (pre-D-340 tag semantics called it "covered")."""
     req = make_request(texts=["freeform requirement, no list markers"])
     gov = _SeqGov([_grounded_res("p1"), _refused_res()])
     turns = [
@@ -191,7 +193,9 @@ def test_followup_turn_refusal_lands_on_the_draft_outcome():
     assert prs[0]["ac_ref"] == 2
     assert prs[0]["refusal_kind"] == "emission-deferred"
     cmap = _ai_extra(r.outcome, "coverage_map")
-    assert cmap["2"]["status"] == "covered"   # D-247 contract unchanged
+    # D-340: proposed-but-never-grounded is not coverage — the honest verdict.
+    assert cmap["2"]["status"] == "refused"
+    assert cmap["2"]["reason"] == "ungrounded_after_reprompt"
 
 
 def test_reprompt_bypassed_refusal_is_recorded():

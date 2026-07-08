@@ -38,6 +38,8 @@ from enum import Enum
 from typing import Any, Callable, Optional, Protocol
 from uuid import UUID, uuid4
 
+import logging
+
 from primeqa.generation.enums import LlmCallOutcome, RefusalKind
 from primeqa.generation.governance import (
     ConversationContext,
@@ -50,6 +52,9 @@ from primeqa.generation.prompts import registry as prompts_registry
 from primeqa.generation import coverage as _coverage
 from primeqa.generation import tools as _tools
 from primeqa.generation.tools import TOOLS, TOOL_EMIT, TOOL_PROPOSE, TOOL_SELECT
+
+
+log = logging.getLogger(__name__)
 
 
 # Default cap on Layer-A corrections within a single logical tool emission
@@ -324,6 +329,16 @@ class RequirementState:
     coverage_refused: dict = field(default_factory=dict)
     coverage_reprompted: bool = False
     coverage_map: dict = field(default_factory=dict)
+    # D-340: grounded-per-AC accounting — "covered" now requires a GROUNDED
+    # intent, not merely a tagged one (a tagged intent whose grounding refused
+    # left the AC untested; the tag-only metric reported it covered and the
+    # recovery hop never fired for it). ``coverage_grounded`` accumulates the
+    # ac_refs that achieved >=1 admissibly-grounded candidate, attributed via
+    # the D-207 path-id contract (see _coverage_ground). ``coverage_recovery``
+    # is telemetry: what the recovery hop asked for and what it yielded,
+    # persisted onto attempted_interpretation (JSONB, additive — no migration).
+    coverage_grounded: set = field(default_factory=set)
+    coverage_recovery: dict = field(default_factory=dict)
 
     def merge_interpretation(self, delta: Optional[dict]) -> None:
         """Store a governance-authored semantic-provenance fragment. The spine
@@ -480,6 +495,15 @@ class GenerationRuntime:
                 # first propose turn; record which ACs this turn addresses.
                 self._coverage_capture(state, ctx, tu.input)
                 self._coverage_tag(state, tu.input)
+                # D-340: this turn IS the recovery hop iff the re-prompt already
+                # fired (the flag flips at send time, one hop ever).
+                is_recovery_turn = state.coverage_reprompted
+                # D-340: governance reindexes this call's paths past the
+                # candidate_paths accumulated so far (resolve_intent's offset).
+                # Read the same count HERE — before the merge below — so this
+                # call's grounded path ids map back to its descriptor slots.
+                path_offset = len(
+                    state.attempted_interpretation.get("candidate_paths") or [])
                 res = seam.resolve_intent(intent_input=tu.input, ctx=ctx, state=state)
                 state.merge_interpretation(res.interpretation_delta)
                 state.candidates_proposed += 1
@@ -487,9 +511,18 @@ class GenerationRuntime:
                 # Accumulate grounded candidates across the (single) re-prompt hop.
                 state.presented_candidates = (
                     list(state.presented_candidates) + list(res.grounded_candidates))
-                # D-247: re-prompt ONCE for unaddressed ACs (or to re-enumerate if
-                # the floor suspects under-declaration). Skip the SELECT path
-                # (highest-specificity single-intent) — orthogonal to coverage.
+                # D-340: grounded-per-AC accounting ("covered" = grounded).
+                self._coverage_ground(
+                    state, tu.input, res.grounded_candidates, path_offset)
+                if is_recovery_turn:
+                    self._coverage_record_recovery(
+                        state, tu.input, res.grounded_candidates)
+                # D-247/D-340: re-prompt ONCE for ACs without a GROUNDED intent
+                # or an explicit no_admissible_test (D-340 recovery: ungrounded
+                # + unattempted; a tagged-but-refused AC is no longer "covered"),
+                # or to re-enumerate if the floor suspects under-declaration.
+                # Skip the SELECT path (highest-specificity single-intent) —
+                # orthogonal to coverage.
                 if (res.next_action != NextAction.AWAIT_SELECTION
                         and self._coverage_should_reprompt(state)):
                     state.coverage_reprompted = True
@@ -619,27 +652,132 @@ class GenerationRuntime:
                 state.coverage_refused[ref] = (
                     d.get("no_admissible_test_reason") or "no admissible test")
 
+    def _coverage_ground(self, state: RequirementState, propose_input: dict,
+                         grounded: list, path_offset: int) -> None:
+        """D-340: record which declared ACs achieved a GROUNDED intent this
+        turn. Attribution derives from the resolution result itself via the
+        D-207 path-id contract — intent ``i`` of this propose call grounds as
+        path ``c{path_offset + i}`` (governance reindexes every call past the
+        already-accumulated candidate_paths; ``path_offset`` is that same count,
+        read before the merge). No parallel bookkeeping in governance — nothing
+        to drift.
+
+        Graceful degradation: a seam that does not speak c-indexed path ids
+        (legacy/custom providers, unit-test mocks) gives no per-intent
+        attribution — fall back to D-247 v1 tag semantics for that turn (every
+        tagged, non-refused intent counts grounded). Strictly no MORE re-prompts
+        than pre-D-340 for such seams; the real governance always conforms
+        (drift-guarded by test_governance_resolve_intent_offsets_followup_paths)."""
+        if not grounded:
+            return
+        descs = self._descriptors(propose_input)
+
+        def _ref(d: dict):
+            r = d.get("ac_ref")
+            ok = isinstance(r, int) and not isinstance(r, bool) and r > 0
+            return r if ok else None
+
+        pids = [getattr(c, "path_id", None) for c in grounded]
+        if not all(isinstance(p, str) and p[:1] == "c" and p[1:].isdigit()
+                   for p in pids):
+            for d in descs:   # fallback: tag semantics (v1) for this turn
+                r = _ref(d)
+                if r is not None and not d.get("no_admissible_test"):
+                    state.coverage_grounded.add(r)
+            return
+        for p in pids:
+            i = int(p[1:]) - path_offset
+            if 0 <= i < len(descs):
+                r = _ref(descs[i])
+                if r is not None:
+                    state.coverage_grounded.add(r)
+
+    def _coverage_record_recovery(self, state: RequirementState,
+                                  propose_input: dict, grounded: list) -> None:
+        """D-340 telemetry: the recovery turn's raw yield (intents returned /
+        grounded). Newly-covered vs zero-progress resolve at finalize, after
+        this turn's tags and grounding have landed."""
+        state.coverage_recovery["recovery_intents"] = len(
+            self._descriptors(propose_input))
+        state.coverage_recovery["recovery_grounded"] = len(grounded or [])
+
+    def _coverage_uncovered(self, state: RequirementState) -> list[int]:
+        """D-340: the ACs still needing recovery — declared minus GROUNDED
+        minus explicitly-refused. Both UNGROUNDED (tagged, nothing grounded)
+        and UNATTEMPTED (never tagged) land here; COVERED (grounded) and
+        REFUSED (no_admissible_test) do not."""
+        declared = {a["index"] for a in state.coverage_acs}
+        return _coverage.compute_uncovered(
+            declared, state.coverage_grounded | set(state.coverage_refused))
+
     def _coverage_should_reprompt(self, state: RequirementState) -> bool:
         if not state.coverage_acs or state.coverage_reprompted:
             return False
-        declared = {a["index"] for a in state.coverage_acs}
-        uncovered = _coverage.compute_uncovered(declared, state.coverage_tagged)
-        shortfall = _coverage.floor_shortfall(len(declared), state.coverage_floor)
-        return bool(uncovered) or shortfall > 0
+        shortfall = _coverage.floor_shortfall(
+            len(state.coverage_acs), state.coverage_floor)
+        return bool(self._coverage_uncovered(state)) or shortfall > 0
+
+    def _grounding_feedback(self, state: RequirementState,
+                            refs: set) -> dict[int, str]:
+        """D-340: ac_ref -> one concise grounding-failure line, read from the
+        accumulated ``partial_refusals`` (D-302 records every non-routed
+        refusal there, with its ac_ref). First refusal per AC wins; detail is
+        truncated. Empty when a seam records no partial refusals."""
+        fb: dict[int, str] = {}
+        for pr in (state.attempted_interpretation.get("partial_refusals") or []):
+            r = pr.get("ac_ref")
+            if r in refs and r not in fb:
+                detail = ""
+                payload = pr.get("payload")
+                if isinstance(payload, dict):
+                    detail = str(payload.get("detail") or payload.get("reason")
+                                 or "")[:160]
+                fb[r] = ((pr.get("refusal_kind") or "refused")
+                         + (f": {detail}" if detail else ""))
+        return fb
 
     def _coverage_reprompt_text(self, state: RequirementState) -> str:
         labels = {a["index"]: a.get("label", "") for a in state.coverage_acs}
-        uncovered = _coverage.compute_uncovered(set(labels), state.coverage_tagged)
+        uncovered = self._coverage_uncovered(state)
+        shortfall = _coverage.floor_shortfall(len(labels), state.coverage_floor)
+        # D-340 telemetry: what this recovery hop is asking for (persisted onto
+        # attempted_interpretation at finalize; AC indices only, no prose).
+        state.coverage_recovery = {
+            "declared": len(labels),
+            "grounded_first_pass": sorted(
+                state.coverage_grounded & set(labels)),
+            "refused_first_pass": sorted(
+                set(state.coverage_refused) & set(labels)),
+            "ungrounded_refs": [i for i in uncovered
+                                if i in state.coverage_tagged],
+            "unattempted_refs": [i for i in uncovered
+                                 if i not in state.coverage_tagged],
+            "requested_refs": list(uncovered),
+            "floor_shortfall": shortfall,
+        }
         parts: list[str] = []
         if uncovered:
-            listed = "\n".join(f"  - AC{i}: {labels.get(i, '')}" for i in uncovered)
+            fb = self._grounding_feedback(state, set(uncovered))
+
+            def _line(i: int) -> str:
+                base = f"  - AC{i}: {labels.get(i, '')}"
+                if i in fb:
+                    return base + f" — grounding failed ({fb[i]})"
+                if i in state.coverage_tagged:
+                    return base + " — proposed, but no intent grounded"
+                return base + " — no intent proposed yet"
+
+            listed = "\n".join(_line(i) for i in uncovered)
             parts.append(
-                "These acceptance criteria have no intent yet. Address EACH in a "
-                "new propose call: either an intent tagged with its ac_ref, or an "
-                "intent with no_admissible_test=true + no_admissible_test_reason "
-                "if the org genuinely cannot ground a test for it. Do not invent a "
-                "claim the requirement does not state.\n" + listed)
-        shortfall = _coverage.floor_shortfall(len(labels), state.coverage_floor)
+                "These acceptance criteria do not yet have a successfully "
+                "grounded test intent. Return ONLY additional intents for the "
+                "criteria listed below — do not re-send intents you already "
+                "proposed (the substrate retains the ones that grounded). "
+                "Where grounding feedback is shown, propose a DIFFERENT "
+                "testable framing for that criterion; if the org genuinely "
+                "cannot ground a test for it, address it with "
+                "no_admissible_test=true + no_admissible_test_reason. Do not "
+                "invent a claim the requirement does not state.\n" + listed)
         if shortfall > 0:
             parts.append(
                 f"Also: the requirement text appears to contain at least "
@@ -650,9 +788,16 @@ class GenerationRuntime:
 
     def _coverage_finalize(self, state: RequirementState) -> None:
         """Build the per-AC coverage_map onto attempted_interpretation (rides the
-        existing JSONB — no migration). Every declared AC gets one verdict:
-        covered (an intent addressed it), refused (model declared no admissible
-        test), or untagged_after_reprompt (the silent-omission backstop)."""
+        existing JSONB — no migration). Every declared AC gets one verdict —
+        the D-340 grounded semantics, expressed in the EXISTING public status
+        vocabulary {covered, refused} (consumers switching on status keep
+        working; the new state rides a new ``reason`` string):
+          covered  — >=1 intent for this AC admissibly GROUNDED (D-340: tagged
+                     alone no longer suffices);
+          refused / <model reason>        — explicit no_admissible_test;
+          refused / ungrounded_after_reprompt — intents proposed, none grounded
+                     (NEW, D-340: the tag-only metric called this "covered");
+          refused / untagged_after_reprompt   — the silent-omission backstop."""
         if not state.coverage_acs:
             return
         cmap: dict = {}
@@ -661,8 +806,11 @@ class GenerationRuntime:
             if idx in state.coverage_refused:
                 cmap[str(idx)] = {"status": "refused", "label": label,
                                   "reason": state.coverage_refused[idx]}
-            elif idx in state.coverage_tagged:
+            elif idx in state.coverage_grounded:
                 cmap[str(idx)] = {"status": "covered", "label": label}
+            elif idx in state.coverage_tagged:
+                cmap[str(idx)] = {"status": "refused", "label": label,
+                                  "reason": "ungrounded_after_reprompt"}
             else:
                 cmap[str(idx)] = {"status": "refused", "label": label,
                                   "reason": "untagged_after_reprompt"}
@@ -671,6 +819,44 @@ class GenerationRuntime:
         shortfall = _coverage.floor_shortfall(len(state.coverage_acs), state.coverage_floor)
         if shortfall > 0:
             state.attempted_interpretation["coverage_floor_shortfall"] = shortfall
+        # D-340 telemetry: close out the recovery record (what the hop asked
+        # for vs what it resolved) + one counts-only log line (AC indices and
+        # the external requirement key — never requirement prose).
+        rec = state.coverage_recovery
+        if rec:
+            requested = set(rec.get("requested_refs") or [])
+            rec["recovery_newly_covered"] = sorted(
+                requested & state.coverage_grounded)
+            rec["recovery_newly_refused"] = sorted(
+                requested & set(state.coverage_refused))
+            # Zero progress: the hop resolved NOTHING it asked for. An explicit
+            # no_admissible_test IS progress — the AC is honestly resolved.
+            rec["recovery_zero_progress"] = bool(
+                requested and not rec["recovery_newly_covered"]
+                and not rec["recovery_newly_refused"])
+            state.attempted_interpretation["coverage_recovery"] = rec
+        n_by = {"covered": 0, "explicit_refused": 0, "ungrounded": 0,
+                "untagged": 0}
+        for v in cmap.values():
+            if v["status"] == "covered":
+                n_by["covered"] += 1
+            elif v.get("reason") == "ungrounded_after_reprompt":
+                n_by["ungrounded"] += 1
+            elif v.get("reason") == "untagged_after_reprompt":
+                n_by["untagged"] += 1
+            else:
+                n_by["explicit_refused"] += 1
+        log.info(
+            "coverage D-340 [%s]: declared=%d covered=%d refused=%d "
+            "ungrounded=%d untagged=%d reprompted=%s requested=%s "
+            "recovery_intents=%s recovery_grounded=%s newly_covered=%s "
+            "zero_progress=%s",
+            (state.requirement_ref or {}).get("key"), len(state.coverage_acs),
+            n_by["covered"], n_by["explicit_refused"], n_by["ungrounded"],
+            n_by["untagged"], state.coverage_reprompted,
+            rec.get("requested_refs"), rec.get("recovery_intents"),
+            rec.get("recovery_grounded"), rec.get("recovery_newly_covered"),
+            rec.get("recovery_zero_progress"))
 
     def _stash_partial_refusal(self, state: RequirementState, res: Any,
                                propose_input: dict) -> None:

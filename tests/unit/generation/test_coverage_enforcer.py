@@ -1,9 +1,13 @@
 """D-247 per-AC coverage enforcer — the runtime re-prompt loop + coverage_map,
 and the governance no_admissible_test / path-offset changes.
 
-Deterministic: a mocked governance seam + a fake tool_turn drive the loop;
-coverage is steered by the propose TOOL INPUT (declared acceptance_criteria +
-ac_ref tags), independent of grounding. No live LLM, no DB.
+Deterministic: a mocked governance seam + a fake tool_turn drive the loop.
+Coverage is steered by the propose TOOL INPUT (declared acceptance_criteria +
+ac_ref tags); the seam here returns NON-c-indexed path ids ("p1"), so D-340's
+grounding attribution falls back to tag semantics — these tests pin the v1
+behaviour surface under that fallback. The strict grounded-per-AC semantics
+(real governance, c-indexed ids) are pinned in test_coverage_grounded.py.
+No live LLM, no DB.
 """
 from __future__ import annotations
 
@@ -165,7 +169,10 @@ def test_floor_shortfall_triggers_reenumerate_reprompt():
 
 # --- direct helper unit (coverage_map building) -----------------------------
 
-def test_coverage_map_built_from_tags():
+def test_coverage_map_built_from_grounded_tags():
+    # D-340: "covered" requires a GROUNDED intent — a tagged-but-never-grounded
+    # AC records ungrounded_after_reprompt (pre-D-340 tag semantics called it
+    # covered); an untagged AC keeps untagged_after_reprompt.
     rt = GenerationRuntime()
     state = RequirementState(request_id=uuid4(), requirement_ref={"key": "R0"})
     ctx = SimpleNamespace(requirement_text="freeform, no markers")
@@ -173,10 +180,16 @@ def test_coverage_map_built_from_tags():
     rt._coverage_tag(state, _propose(9, [1, 2, 3, 6, 7, 9]))
     rt._coverage_tag(state, {"intent_descriptors": [
         _intent(4), _intent(5), _intent(8, nat=True, reason="no SLA")]})
+    # grounding landed for a subset of the tagged ACs (5 and 7 refused).
+    state.coverage_grounded = {1, 2, 3, 4, 6, 9}
     rt._coverage_finalize(state)
     cm = state.coverage_map
-    assert cm["1"]["status"] == "covered"
+    assert cm["1"]["status"] == "covered" and cm["4"]["status"] == "covered"
     assert cm["8"]["status"] == "refused" and cm["8"]["reason"] == "no SLA"
+    assert (cm["5"]["status"] == "refused"
+            and cm["5"]["reason"] == "ungrounded_after_reprompt")
+    assert (cm["7"]["status"] == "refused"
+            and cm["7"]["reason"] == "ungrounded_after_reprompt")
     assert set(cm) == {str(i) for i in range(1, 10)}
 
 
