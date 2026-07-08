@@ -70,7 +70,7 @@ from primeqa.semantic.edges import TIER_1_EDGES
 from primeqa.generation.verified_negative import _writable
 from primeqa.generation.formula_expectation import (
     as_decimal, verify_formula_expectation)
-from primeqa.generation.vr_conflict import find_staged_vr_conflict
+from primeqa.generation.vr_conflict import entails_firing, find_staged_vr_conflict
 from primeqa.semantic.entity_attributes import (
     field_formula_text, field_is_calculated, field_treat_null_as_zero,
     flow_effects, vr_error_message, vr_formula_text, vr_is_active)
@@ -564,6 +564,51 @@ def _vr_cross_field_pairs(text: str) -> frozenset[frozenset[str]]:
         and node.left.path and node.right.path)
 
 
+def _constraint_states(grounded_conds) -> list:
+    """Enumerate the concrete ``{Object.Field: value}`` worlds the claim's grounded
+    conditions assert are rejected — the LEFT side of the D-350 entailment (the
+    Constraint IR realized for the current predicate taxonomy). ``equals`` -> the
+    value; ``is_null`` -> None (blank); ``in_set`` -> one world per member (Cartesian
+    across in_set fields, bounded — an over-large product refuses via ``[]``).
+    ``not_equals`` / ``matches_pattern`` pin no single deterministic value and
+    ``exceeds`` (cross-field) is handled by the D-330 pair filter, so all three are
+    LEFT UNKNOWN (their field stays absent). Returns ``[]`` when nothing is pinned —
+    the caller then declines to select (refuse-rather-than-guess)."""
+    base: dict = {}
+    branches: list = []   # (external_id, [values]) for in_set fields
+    for gc in (grounded_conds or ()):
+        p, v = gc.predicate, gc.value
+        if p == "equals" and v is not None and not isinstance(v, list):
+            base[gc.field.external_id] = v
+        elif p == "is_null":
+            base[gc.field.external_id] = None
+        elif p == "in_set" and isinstance(v, (list, tuple)) and v:
+            branches.append((gc.field.external_id, list(v)))
+    if not base and not branches:
+        return []
+    states = [dict(base)]
+    for fld, vals in branches:
+        if len(states) * len(vals) > 64:      # bounded enumeration -> refuse
+            return []
+        states = [dict(s, **{fld: val}) for s in states for val in vals]
+    return states
+
+
+def _break_tie_by_entailment(tied_vrs, grounded_conds) -> Optional[str]:
+    """Break a >=2-way field-overlap tie (D-350) by which tied VR the claim's asserted
+    rejection state NECESSARILY fires (entailment, not mere possibility): a VR
+    qualifies iff it fires in EVERY pinned world (:func:`entails_firing` returns True),
+    reusing ``vr_conflict``'s Kleene firing (absent field = unknown). Returns the sole
+    necessarily-firing VR, or ``None`` when zero / >=2 qualify (refuse-on-non-unique
+    reasserted at this dimension) or the claim pins no state. A VR that only POSSIBLY
+    fires (some but not all worlds) is UNKNOWN and never selected."""
+    states = _constraint_states(grounded_conds)
+    if not states:
+        return None
+    entailed = [t for t in tied_vrs if entails_firing(t, states) is True]
+    return entailed[0] if len(entailed) == 1 else None
+
+
 def _break_tie_by_cross_field(tied_vrs, claim_fields) -> Optional[str]:
     """Break a >=2-way field-overlap tie (D-296) using the cross-field structural
     discriminator that field-overlap is blind to. A tied VR QUALIFIES iff it carries
@@ -622,6 +667,14 @@ def _best_aligned_vr(vr_formulas: tuple[str, ...], grounded_conds) -> Optional[s
     tied = [t for s, t in scored if s == best_score]
     if len(tied) == 1:
         return tied[0]
+    # D-350: the predicate/value-aware discriminator — which tied VR the claim's
+    # asserted rejection state NECESSARILY fires — runs FIRST (the most direct
+    # evidence that this is the rule under test). The D-296 structural cross-field
+    # pair is the fallback when firing cannot uniquely resolve (e.g. synthetic
+    # equals-"x" conditions where no VR provably fires).
+    entailed = _break_tie_by_entailment(tied, grounded_conds)
+    if entailed is not None:
+        return entailed
     return _break_tie_by_cross_field(tied, claim_fields)   # D-296; None if non-unique
 
 

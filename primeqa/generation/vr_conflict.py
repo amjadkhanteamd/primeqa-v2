@@ -93,6 +93,38 @@ _ORG_STATE_FUNCS = {"PRIORVALUE", "ISCHANGED", "ISNEW"}
 _MISSING = object()
 
 
+def entails_firing(vr_formula_text: str, states: list) -> Optional[bool]:
+    """D-350 entailment: does the claim's asserted rejection state NECESSARILY fire
+    this VR? ``states`` is the enumerated set of concrete ``{field: value}`` worlds
+    the claim's grounded conditions pin (``equals`` -> the value, ``is_null`` -> None,
+    ``in_set`` -> one world per member; unpinned fields stay absent = unknown).
+
+    Returns:
+      - ``True``  — the VR fires in EVERY pinned world (necessarily fires);
+      - ``False`` — it fires in NONE (contradicted);
+      - ``None``  — otherwise: it only POSSIBLY fires, or an org-state / unparseable
+        subtree leaves it undetermined — the refuse-rather-than-guess floor.
+
+    Reuses the Kleene :func:`_fires` (absent field = unknown), so a rule is only
+    'necessarily' selected when the claim's OWN asserted values determine it — never
+    the whole-payload `evaluate` convention (absent = blank), which would manufacture
+    spurious fires. Exposed for D-350 predicate-aware VR disambiguation."""
+    if not states:
+        return None
+    try:
+        ast = parse(vr_formula_text)
+        if not is_parsed(ast):
+            return None
+        results = [_fires(ast, _bare_payload(s)) for s in states]
+    except Exception:
+        return None
+    if all(r is True for r in results):
+        return True
+    if all(r is False for r in results):
+        return False
+    return None
+
+
 def find_staged_vr_conflict(
     vr_rules, staged_create: dict, staged_update: Optional[dict] = None,
 ) -> Optional[str]:

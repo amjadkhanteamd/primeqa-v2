@@ -44,12 +44,13 @@ ALL_VRS = (
 )
 
 
-def _cond(qualified_field: str) -> _GroundedCondition:
+def _cond(qualified_field: str, predicate: str = "equals",
+          value="x") -> _GroundedCondition:
     """A grounded condition on ``Object.Field`` (object-qualified external_id,
     as governance builds them)."""
     return _GroundedCondition(
         field=_Endpoint(entity_id=1, entity_type="Field", external_id=qualified_field),
-        predicate="equals", value="x")
+        predicate=predicate, value=value)
 
 
 # --- _vr_formula_fields (the RIGHT side of the overlap) ---------------------
@@ -145,12 +146,63 @@ def test_best_aligned_refuses_on_ambiguous_multi_tie():
     assert gc._best_aligned_vr(ALL_VRS, conds) is None
 
 
-def test_best_aligned_refuses_two_way_tie_order_independent():
+def test_best_aligned_entailment_resolves_two_way_tie_order_independent():
+    # D-350: {ISBLANK(A), NOT(ISBLANK(A))} tie on field-overlap {a__c}, but the claim
+    # asserts A__c="x" (non-blank) → the rejection state NECESSARILY fires
+    # NOT(ISBLANK(A)) and never ISBLANK(A). Entailment resolves what field-overlap
+    # could not; order is never a signal.
     a1 = "ISBLANK(A__c)"
     a2 = "NOT(ISBLANK(A__c))"        # same field set {a__c} → both score 1 → tie
-    conds = [_cond("Obj.A__c")]
-    assert gc._best_aligned_vr((a1, a2), conds) is None
-    assert gc._best_aligned_vr((a2, a1), conds) is None   # order never a signal
+    conds = [_cond("Obj.A__c")]      # equals "x"
+    assert gc._best_aligned_vr((a1, a2), conds) == a2
+    assert gc._best_aligned_vr((a2, a1), conds) == a2     # order never a signal
+
+
+def test_best_aligned_refuses_genuine_entailment_ambiguity():
+    # D-350 refuse-on-non-unique floor: when >=2 tied VRs NECESSARILY fire under the
+    # asserted state, selection refuses rather than guess. An is_null claim fires BOTH
+    # ISBLANK and ISNULL → 2 entail, no cross-field pair to break → None.
+    b1 = "ISBLANK(A__c)"
+    b2 = "ISNULL(A__c)"
+    conds = [_cond("Obj.A__c", predicate="is_null", value=None)]
+    assert gc._best_aligned_vr((b1, b2), conds) is None
+
+
+def test_entailment_selects_sole_necessary_vr():
+    # Two VRs tie on {stage__c}; the claim asserts Stage="Approved" → only the
+    # ISPICKVAL(...,"Approved") rule NECESSARILY fires → unique select.
+    v_appr = 'ISPICKVAL(Stage__c, "Approved")'
+    v_draft = 'ISPICKVAL(Stage__c, "Draft")'
+    conds = [_cond("Obj.Stage__c", value="Approved")]
+    assert gc._best_aligned_vr((v_appr, v_draft), conds) == v_appr
+
+
+def test_entailment_in_set_all_members_fire_selects():
+    # in_set {Approved, Contract Review}: a rule firing on BOTH members necessarily
+    # fires → select; a rule firing on neither is contradicted.
+    v = '(ISPICKVAL(Stage__c, "Approved") || ISPICKVAL(Stage__c, "Contract Review"))'
+    v_other = 'ISPICKVAL(Stage__c, "Draft")'
+    conds = [_cond("Obj.Stage__c", predicate="in_set",
+                   value=["Approved", "Contract Review"])]
+    assert gc._best_aligned_vr((v, v_other), conds) == v
+
+
+def test_entailment_in_set_partial_fire_refuses_possibly_not_necessarily():
+    # in_set {Approved, Draft}: the rule fires at Approved but NOT Draft → it only
+    # POSSIBLY fires → UNKNOWN → refuse (the necessarily-not-possibly floor, D-350).
+    v_appr = 'ISPICKVAL(Stage__c, "Approved")'
+    v_review = 'ISPICKVAL(Stage__c, "Contract Review")'
+    conds = [_cond("Obj.Stage__c", predicate="in_set", value=["Approved", "Draft"])]
+    assert gc._best_aligned_vr((v_appr, v_review), conds) is None
+
+
+def test_entailment_org_state_vr_never_fires():
+    # An org-state-only tied VR (ISCHANGED) is never provably fired, so it can never
+    # win the tie-break; the concrete rule the state necessarily fires does.
+    v_changed = "ISCHANGED(A__c)"                 # org-state → unknown, never fires
+    v_blank = "NOT(ISBLANK(A__c))"
+    conds = [_cond("Obj.A__c")]                   # equals "x" → NOT(ISBLANK) fires
+    assert gc._best_aligned_vr((v_changed, v_blank), conds) == v_blank
 
 
 def test_best_aligned_refuses_business_vs_generic_tie():
