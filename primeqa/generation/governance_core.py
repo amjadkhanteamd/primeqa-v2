@@ -25,6 +25,7 @@ Engine discipline (D-096):
 """
 from __future__ import annotations
 
+import logging
 from dataclasses import dataclass, field
 from dataclasses import replace as _dc_replace
 from typing import Any, Optional
@@ -75,6 +76,10 @@ from primeqa.semantic.entity_attributes import (
     flow_effects, vr_error_message, vr_formula_text, vr_is_active)
 from primeqa.semantic.formula import Comparison, FieldRef, is_parsed, parse, walk
 from primeqa.semantic.query import Entity, SemanticOrgModel
+from primeqa.test_representation.identity_hash import compute_identity_hash
+
+
+log = logging.getLogger(__name__)
 
 
 # ---------------------------------------------------------------------------
@@ -3136,6 +3141,49 @@ class GovernanceCore:
         bundles = [author_emission(g, enable_bva_boundaries=enable_bva)
                    for g in groundings]
 
+        # D-339: collapse re-proposal duplicates before persistence. The D-247
+        # coverage re-prompt can re-send the FULL intent array, so a later
+        # propose turn re-grounds intents already grounded on an earlier turn;
+        # each accumulates a duplicate grounding (state.groundings) AND its
+        # aligned presented_candidate, so finalize would otherwise author N
+        # byte-identical claims (outcome ab65fb0c: 53 groundings -> 28 canonical
+        # identities). Dedup by the EXISTING canonical identity
+        # (compute_identity_hash — the very hash the persister dedups on,
+        # persistence.py), keeping FIRST occurrence and its aligned
+        # presented_candidate. Only runs on multi-bundle drafts (a single-bundle
+        # draft is byte-identical to pre-D-339). Two genuinely different intents
+        # that ground to the SAME identity collapse to one (correct — same
+        # claim); the same subject with DIFFERENT semantic_conditions keeps
+        # distinct hashes (both survive). The grounding<->presented_candidate
+        # 1:1 alignment is an invariant (one grounded intent stashes one
+        # grounding AND returns one PresentedCandidate; 0 mismatches across 72
+        # historical drafts). If it is EVER violated we do NOT trim — a blind
+        # index-trim could drop the wrong path_id — instead we preserve current
+        # behavior and emit telemetry so the mismatch is observable.
+        if len(bundles) > 1:
+            presented = list(getattr(state, "presented_candidates", None) or [])
+            if len(presented) != len(bundles):
+                log.error(
+                    "finalize_outcome D-339: grounding/presented_candidate "
+                    "misalignment (bundles=%d, presented=%d) for request_id=%s "
+                    "requirement=%s — skipping identity dedup to preserve "
+                    "behavior", len(bundles), len(presented),
+                    getattr(ctx, "request_id", None),
+                    getattr(ctx, "requirement_ref", None) or {})
+            else:
+                bundles, kept_presented, dropped = _dedup_bundles_by_identity(
+                    bundles, presented)
+                if dropped:
+                    # Retained presented_candidates ride back onto state so the
+                    # selected_path_id(s) below describe exactly the emitted set.
+                    state.presented_candidates = kept_presented
+                    log.info(
+                        "finalize_outcome D-339: collapsed %d duplicate emission "
+                        "bundle(s) -> %d canonical identit%s for requirement=%s",
+                        dropped, len(bundles),
+                        "y" if len(bundles) == 1 else "ies",
+                        getattr(ctx, "requirement_ref", None) or {})
+
         # Mark the canonical path(s) selected in the reasoning artifact. Single
         # intent keeps the pre-D-207 shape (selected_path_id="c0"); a multi-
         # intent draft has no single canonical path — it records the grounded
@@ -3210,6 +3258,38 @@ def _stash_grounding(state: Any, grounding: Any) -> None:
     if not hasattr(state, "groundings") or state.groundings is None:
         state.groundings = []
     state.groundings.append(grounding)
+
+
+def _dedup_bundles_by_identity(bundles: list, presented: list) -> tuple:
+    """D-339: collapse authored bundles that share a canonical claim identity,
+    keeping FIRST occurrence and its index-aligned presented_candidate.
+
+    Identity is the EXISTING ``compute_identity_hash(archetype, claim_kind,
+    asserted_truth, semantic_conditions)`` — the same fingerprint the persister
+    dedups on (``persistence._write_emission``), so this reuses S2's canonical
+    definition of "same claim" rather than inventing a second one. Two distinct
+    intents that ground to the same claim collapse to one; the same subject with
+    different ``semantic_conditions`` yields distinct hashes and both survive.
+
+    Pure and order-preserving: callers own the caller-side alignment guard and
+    telemetry. ``bundles`` and ``presented`` MUST be the same length and
+    index-corresponding (finalize enforces this before calling). Returns
+    ``(retained_bundles, retained_presented, dropped_count)``."""
+    seen: set[str] = set()
+    kept_bundles: list = []
+    kept_presented: list = []
+    dropped = 0
+    for bundle, cand in zip(bundles, presented):
+        h = compute_identity_hash(
+            bundle.archetype, bundle.claim_kind,
+            bundle.asserted_truth, bundle.semantic_conditions)
+        if h in seen:
+            dropped += 1
+            continue
+        seen.add(h)
+        kept_bundles.append(bundle)
+        kept_presented.append(cand)
+    return kept_bundles, kept_presented, dropped
 
 
 def _reindex_paths(res: IntentResolution, i: int) -> None:
