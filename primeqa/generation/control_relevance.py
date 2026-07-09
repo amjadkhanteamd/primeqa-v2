@@ -206,6 +206,35 @@ def role_from_condition_predicate(predicate: str) -> str:
     return UNKNOWN
 
 
+# Bounded requirement-role keyword frames (AK: "R is inferred from its verb/frame").
+# Deliberately small — a lexical map, not NLP; an unmatched excerpt is UNKNOWN.
+_ROLE_FRAMES = (
+    (CAP, ("stricter", "cannot exceed", "must not exceed", "no more than",
+           "not more than", "maximum", "at most", "up to", "capped", " cap ",
+           "cannot be greater", "no greater than", "limit")),
+    (FLOOR, ("at least", "no less than", "minimum", "must be at least",
+             "cannot be less", "no lower than")),
+    (REQUIREDNESS, ("must have", "must be provided", "must be captured",
+                    "is required", "are required", "is mandatory", "mandatory",
+                    "must be present", "must be specified")),
+)
+
+
+def role_from_excerpt(excerpt: str) -> str:
+    """The requirement's behavioural role from its verb/frame — a bounded lexical
+    map (CAP: 'stricter … controls' / 'cannot exceed' / 'maximum'; FLOOR: 'at least'
+    / 'minimum'; REQUIREDNESS: 'must have' / 'required'). UNKNOWN when no frame
+    matches — never a guess. Used only as a fallback when the proposed condition
+    predicate does not itself pin a role."""
+    if not excerpt:
+        return UNKNOWN
+    low = f" {excerpt.lower()} "
+    for role, frames in _ROLE_FRAMES:
+        if any(f in low for f in frames):
+            return role
+    return UNKNOWN
+
+
 def nominate(vr_items, developer_name: str, subject_field: str,
              requirement_role: str) -> Optional[str]:
     """The SINGLE VR formula that is a relevant control for a record-type context

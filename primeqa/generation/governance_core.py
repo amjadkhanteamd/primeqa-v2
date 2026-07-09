@@ -68,6 +68,7 @@ from primeqa.generation.protocol import (
 )
 from primeqa.semantic.edges import TIER_1_EDGES
 from primeqa.generation.verified_negative import _RECORD_TYPES_KEY, _writable
+from primeqa.generation import control_relevance
 from primeqa.generation.formula_expectation import (
     as_decimal, verify_formula_expectation)
 from primeqa.generation.vr_conflict import entails_firing, find_staged_vr_conflict
@@ -799,6 +800,145 @@ def _grounding_field_metadata(neighborhood: list, s1, at_seq: int) -> dict:
     if record_types:
         out[_RECORD_TYPES_KEY] = record_types
     return out
+
+
+# ---------------------------------------------------------------------------
+# Amendment B (AK 2026-07-09): the RECORD-TYPE context hypothesis + control-relevance
+# nomination. RecordType is a DISTINCT context hypothesis (not a Deal_Type field
+# replacement, not force-conjoined). Nominating its relevant control is a different
+# operation from proving a rule fires: the req-315 requirement under-specifies the
+# threshold ("Enterprise deals are subject to stricter discount controls", no number),
+# so entailment cannot select the control — control_relevance nominates by
+# context-gate + subject-governance + behavioural-role alignment, then formula
+# analysis reads the boundary off the nominated VR.
+# ---------------------------------------------------------------------------
+
+def _record_type_devnames(field_metadata: dict) -> dict:
+    """The record-types rail ``{DeveloperName: sf_id}`` (D-348), or ``{}``."""
+    return dict((field_metadata or {}).get(_RECORD_TYPES_KEY) or {})
+
+
+def _provable_devname_prefix(names: list) -> str:
+    """The longest ``_``-terminated prefix shared by ALL DeveloperNames — a
+    metadata-provable object-local namespace convention (e.g. ``PLS_BM_``), or ``""``.
+    Used only to STRIP a proven prefix before an EXACT match; never fuzzy."""
+    if len(names) < 2:
+        return ""
+    lo, hi = min(names), max(names)
+    i = 0
+    while i < len(lo) and i < len(hi) and lo[i] == hi[i]:
+        i += 1
+    p = lo[:i]
+    return p[: p.rindex("_") + 1] if "_" in p else ""
+
+
+def _normalize_to_devname(token: Any, devnames) -> Optional[str]:
+    """Deterministic classification-token resolution (AK Decision 1): exact
+    (case-insensitive) match to a DeveloperName, or an exact match after stripping a
+    metadata-provable common prefix. Unique -> the DeveloperName; 0 or >=2 -> None
+    (refuse). No fuzzy / semantic matching — this is grounding from stable metadata
+    identity, not natural-language label grounding."""
+    if not isinstance(token, str) or not token.strip() or not devnames:
+        return None
+    t = token.strip().casefold()
+    names = list(devnames)
+    exact = [n for n in names if n.casefold() == t]
+    if len(exact) == 1:
+        return exact[0]
+    if exact:
+        return None                              # >=2 exact — ambiguous, refuse
+    prefix = _provable_devname_prefix(names)
+    if prefix:
+        stripped = [n for n in names if n[len(prefix):].casefold() == t]
+        if len(stripped) == 1:
+            return stripped[0]
+    return None
+
+
+def _record_type_endpoint(developer_name: str, neighborhood: list) -> Optional[_Endpoint]:
+    """The ``_Endpoint`` for the neighborhood RecordType entity with this
+    DeveloperName (the last sf_api_name segment), or ``None``."""
+    for r in neighborhood:
+        e = r.entity
+        if (e.entity_type == "RecordType" and e.sf_api_name
+                and e.sf_api_name.rsplit(".", 1)[-1] == developer_name):
+            return _Endpoint(entity_id=e.id, entity_type="RecordType",
+                             external_id=e.sf_api_name)
+    return None
+
+
+def _ground_record_type_context(grounded_conds, field_metadata: dict,
+                                neighborhood: list):
+    """Form the RECORD-TYPE context hypothesis when a grounded EQUALS-condition's
+    value resolves (deterministic DeveloperName normalization) to a RecordType on the
+    subject. Returns ``(developer_name, _Endpoint, classification_cond)`` or ``None``.
+    The classification comes from a value the LLM ALREADY grounded (e.g. a
+    ``Deal_Type = "Enterprise"`` clause) — never from raw-excerpt NLP, so the
+    "than standard deals" comparison never enters."""
+    devnames = _record_type_devnames(field_metadata)
+    if not devnames:
+        return None
+    for gc in grounded_conds or ():
+        if gc.predicate != "equals":
+            continue
+        dev = _normalize_to_devname(gc.value, devnames)
+        if dev is None:
+            continue
+        ep = _record_type_endpoint(dev, neighborhood)
+        if ep is not None:
+            return dev, ep, gc
+    return None
+
+
+def _requirement_subject_role(grounded_conds, classification_cond, excerpt: str):
+    """The requirement's subject field (bare api name) + behavioural role for a
+    context hypothesis. Subject = the grounded condition that is NOT the
+    classification token; role = that condition's predicate role, falling back to the
+    excerpt frame. ``(None, UNKNOWN)`` when indeterminate (refuse-rather-than-guess)."""
+    subj = next((gc for gc in (grounded_conds or ())
+                 if gc is not classification_cond), None)
+    if subj is None:
+        return None, control_relevance.UNKNOWN
+    subject_field = subj.field.external_id.rsplit(".", 1)[-1]
+    role = control_relevance.role_from_condition_predicate(subj.predicate)
+    if role is control_relevance.UNKNOWN:
+        role = control_relevance.role_from_excerpt(excerpt)
+    return subject_field, role
+
+
+def _nominate_record_type_control(vr_all, grounded_conds, field_metadata,
+                                  neighborhood, excerpt):
+    """The full Amendment-B nomination for a prohibition. Returns
+    ``(nominated_vr_formula, context_condition)`` to ground Hypothesis B, or a
+    ``str`` refusal detail when the field AND record-type hypotheses BOTH role-align
+    distinct controls (refuse-and-surface), or ``None`` when no context hypothesis
+    applies (fall through to the existing field-overlap path)."""
+    ctx = _ground_record_type_context(grounded_conds, field_metadata, neighborhood)
+    if ctx is None:
+        return None
+    developer_name, rt_ep, classification_cond = ctx
+    subject_field, req_role = _requirement_subject_role(
+        grounded_conds, classification_cond, excerpt)
+    if not subject_field or req_role is control_relevance.UNKNOWN:
+        return None
+    nominated = control_relevance.nominate(
+        [(t, t) for t in vr_all], developer_name, subject_field, req_role)
+    if nominated is None:
+        return None
+    # Refuse-and-surface (AK B2): if the FIELD hypothesis also role-aligns a
+    # DIFFERENT control for the same subject+role, do not silently pick either.
+    a_vr = _best_aligned_vr(vr_all, grounded_conds)
+    if (a_vr is not None and a_vr != nominated
+            and control_relevance.vr_role_on_field(a_vr, subject_field) == req_role):
+        field_name = classification_cond.field.external_id.rsplit(".", 1)[-1]
+        return (f"the requirement's classification maps plausibly to both the "
+                f"{field_name} business field and the {developer_name} record type, "
+                f"and each governs the {subject_field} behaviour; the system cannot "
+                f"determine which control the requirement intends "
+                f"(classification-mechanism-ambiguous)")
+    context_cond = _GroundedCondition(
+        field=rt_ep, predicate="equals", value=developer_name)
+    return nominated, context_cond
 
 
 # ---------------------------------------------------------------------------
@@ -1619,6 +1759,31 @@ class GovernanceCore:
                     approval_actions=actions,
                     attempted_change=change))
             else:
+                # Amendment B (AK 2026-07-09): the RECORD-TYPE context hypothesis.
+                # When the LLM's grounded conditions name a classification value that
+                # resolves (deterministic DeveloperName normalization) to a RecordType
+                # on the subject, the requirement ("Enterprise deals are subject to
+                # stricter discount controls") has a DISTINCT record-context reading
+                # whose relevant control the field-overlap selector cannot reach (VR08
+                # gates on RecordType, not on a claim condition field). Nominate that
+                # control by control-relevance (context-gate ∧ subject-governance ∧
+                # behavioural-role) — NOT entailment, which the threshold-less
+                # requirement cannot satisfy. On success, ground Hypothesis B on the
+                # nominated VR with the RecordType context as the claim's identity-
+                # bearing condition; a str result is the refuse-and-surface detail when
+                # the field AND record-type hypotheses both role-align distinct controls.
+                _nom = _nominate_record_type_control(
+                    vr_all, grounded_conds, field_metadata, neighborhood, excerpt)
+                if isinstance(_nom, str):
+                    return IntentResolution(
+                        grounded_candidates=[], next_action=NextAction.REFUSE,
+                        interpretation_delta=delta,
+                        refusal=self._router.behaviour_incomplete(
+                            f"prohibition on {subject.sf_api_name}: {_nom}"))
+                if _nom is not None:
+                    nominated_vr, context_cond = _nom
+                    vr_formulas = (nominated_vr,)
+                    grounded_conds = (context_cond,)
                 # D-293 decision-2 (refuse, never silently degrade): the behaviour
                 # instance is complete only when a BEHAVIOURAL reject recipe is
                 # derivable. A non-numeric VR (NOT-ISBLANK / picklist / cross-field) or
