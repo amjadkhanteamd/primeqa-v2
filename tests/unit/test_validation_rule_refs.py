@@ -57,6 +57,14 @@ def test_dedup_same_field_same_reftype():
 
 
 def test_unparsed_boundary():
-    for f in ('REGEX(Name, "x")', "CASE(StageName, \"A\", 1, 0) = 1", "", "Amount <"):
+    for f in ("CASE(StageName, \"A\", 1, 0) = 1", "", "Amount <"):
         parsed, refs, xobj = extract_field_refs(f)
         assert parsed is False and refs == [] and xobj is False, f
+
+
+def test_regex_now_extracts_field_ref():
+    # D-344: REGEX() is recognized, so a VR09-shaped format rule now yields its
+    # field ref (references_status flips unparsed -> complete/partial) instead of
+    # being invisible. The field is a same-object read.
+    parsed, refs, xobj = extract_field_refs('NOT(REGEX(Ext_Ref__c, "^E[0-9]+$"))')
+    assert parsed is True and refs == [(("Ext_Ref__c",), "read")] and xobj is False

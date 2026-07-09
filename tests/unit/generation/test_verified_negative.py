@@ -119,7 +119,40 @@ def test_bare_field_not_derivable():
 
 def test_not_parsed_not_derivable():
     # parser fail-loud -> derive returns NotDerivable (slice-4 caveated fallback)
-    assert _reason('REGEX(Name, "[0-9]+")') == "formula not parsed"
+    assert _reason("VLOOKUP($X.Y, A, B)") == "formula not parsed"
+
+
+def test_regex_positive_not_derivable():
+    # D-344: a POSITIVE REGEX match needs true regex synthesis -> stays NotDerivable
+    # (bounded on purpose; only the NON-match side derives).
+    assert _reason('REGEX(Name, "[0-9]+")') == \
+        "REGEX true (matching-value synthesis not derivable)"
+
+
+def test_regex_non_match_derives_certain_nonblank_value():
+    # D-344: NOT(ISBLANK(f)) && NOT(REGEX(f, pat)) fires for a NON-blank value that
+    # does NOT match pat -> a CERTAIN violating value (re.fullmatch-verified).
+    import re as _re
+    f = 'NOT(ISBLANK(Ext__c)) && NOT(REGEX(Ext__c, "^EXT-[0-9]{8}$"))'
+    meta = {"Ext__c": {"field_type": "string", "is_createable": True,
+                       "is_updateable": True}}
+    r = derive(parse(f), meta)
+    assert isinstance(r, VerifiedNegative)
+    v = r.violating_payload["Ext__c"]
+    assert v and _re.fullmatch("^EXT-[0-9]{8}$", v) is None     # non-blank + non-match
+
+
+def test_regex_non_match_refuses_without_metadata():
+    # certainty bar: no field metadata -> refuse (mirrors NOT-ISBLANK).
+    f = 'NOT(ISBLANK(Ext__c)) && NOT(REGEX(Ext__c, "^EXT-[0-9]{8}$"))'
+    assert isinstance(derive(parse(f)), NotDerivable)
+
+
+def test_regex_match_everything_pattern_refuses():
+    # NOT(REGEX(f, ".*")) can never fire (everything matches) -> NotDerivable.
+    r = derive(parse('NOT(REGEX(F__c, ".*"))'),
+               {"F__c": {"field_type": "string", "is_createable": True}})
+    assert isinstance(r, NotDerivable) and "non-matching" in r.reason
 
 
 def test_not_or_requires_all_disjuncts_not_derivable():

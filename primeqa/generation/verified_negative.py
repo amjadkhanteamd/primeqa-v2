@@ -31,6 +31,7 @@ violating assignment for ISBLANK / ISNULL).
 """
 from __future__ import annotations
 
+import re
 from dataclasses import dataclass
 from typing import Any, Optional, Union
 
@@ -477,7 +478,43 @@ def _self_check(node, payload: dict, want_true: bool) -> None:
             f"synthesized value failed the evaluate self-check for {node!r}")
 
 
+# D-344: deterministic non-match probes for NOT(REGEX(...)) derivation — varied
+# shapes so at least one is a CERTAIN non-match for the simple anchored format
+# patterns real VRs use (each verified per-pattern with re.fullmatch). Replay-
+# stable (fixed order, no randomness).
+_REGEX_NONMATCH_CANDIDATES = (
+    "!nv@l!d-format#", "zzzzzzzz", "0", "not a match", "XxYyZz42",
+)
+
+
 def _satisfy_function(node: FunctionCall, want_true: bool, meta: dict) -> dict[str, Any]:
+    if node.name == "REGEX":
+        # D-344: NOT(REGEX(field, "pat")) fires when `field` does NOT match `pat`.
+        # Derive a CERTAIN non-matching, non-blank value — pick the first
+        # deterministic candidate that Python re.fullmatch rejects (Salesforce
+        # REGEX is a FULL match). The POSITIVE side (a matching value) needs true
+        # regex synthesis and stays NotDerivable (bounded on purpose).
+        if not (len(node.args) == 2 and isinstance(node.args[0], FieldRef)
+                and isinstance(node.args[1], Literal)
+                and isinstance(node.args[1].value, str)):
+            raise _Undecidable("REGEX without a field + literal pattern")
+        if want_true:
+            raise _Undecidable("REGEX true (matching-value synthesis not derivable)")
+        field = _single_field(node)
+        try:
+            rx = re.compile(node.args[1].value)
+        except re.error:
+            raise _Undecidable("REGEX pattern not compilable")
+        cand = next((c for c in _REGEX_NONMATCH_CANDIDATES
+                     if rx.fullmatch(c) is None), None)
+        if cand is None:
+            raise _Undecidable("REGEX (no certain non-matching candidate)")
+        fm = (meta or {}).get(field)
+        if not _writable(fm):
+            raise _Undecidable("REGEX (field not writable)")
+        payload = {field: cand}
+        _self_check(node, payload, want_true)        # NonEvaluable -> trusts re-verified value
+        return payload
     if node.name in ("ISBLANK", "ISNULL"):
         field = _single_field(node)
         if want_true:

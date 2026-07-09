@@ -35,7 +35,12 @@ from .nodes import (
 # handled directly). Anything outside this set -> NotParsed. IF is
 # value-dialect only (handled in _function on the dialect flag).
 _RECOGNIZED_FUNCS = frozenset(
-    {"ISBLANK", "ISNULL", "ISPICKVAL", "PRIORVALUE", "ISCHANGED", "ISNEW"}
+    {"ISBLANK", "ISNULL", "ISPICKVAL", "PRIORVALUE", "ISCHANGED", "ISNEW",
+     # D-344: recognized so the FIELD REFERENCES flow (VR06/VR09/VR10 stop
+     # being invisible to selection + R1 padding). Structurally inert to the
+     # evaluators until D-344 arms derivation: eval -> NonEvaluable, _fires ->
+     # None, verified_negative -> NotDerivable (all default-safe).
+     "TODAY", "REGEX"}
 )
 _COMPARE_OPS = frozenset({"=", "==", "<>", "!=", "<", ">", "<=", ">="})
 _COMPARE_NORMALIZE = {"==": "=", "!=": "<>"}

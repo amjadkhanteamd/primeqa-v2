@@ -83,11 +83,25 @@ def test_dotted_field_refs_parse():
 # ---------------------------------------------------------------------------
 
 def test_unknown_functions_not_parsed():
-    for f in ('REGEX(Name, "[0-9]+")', "VLOOKUP($X.Y, A, B)", "TODAY()",
-              "CONTAINS(Name, \"x\")", 'CASE(StageName, "A", 1, 0) = 1'):
+    for f in ("VLOOKUP($X.Y, A, B)", "CONTAINS(Name, \"x\")",
+              'CASE(StageName, "A", 1, 0) = 1'):
         r = parse(f)
         assert isinstance(r, NotParsed), f"{f!r} should be NotParsed, got {r!r}"
         assert not is_parsed(r) and r.reason
+
+
+def test_today_and_regex_now_parse():
+    # D-344: TODAY()/REGEX() are recognized so their FIELD refs flow to selection
+    # and R1 padding; they stay structurally inert to the evaluators (the
+    # evaluators return NonEvaluable/None/NotDerivable — verified elsewhere).
+    from primeqa.semantic.formula import FunctionCall, FieldRef, Comparison
+    t = parse("TODAY()")
+    assert isinstance(t, FunctionCall) and t.name == "TODAY" and t.args == ()
+    r = parse('REGEX(Name, "[0-9]+")')
+    assert isinstance(r, FunctionCall) and r.name == "REGEX"
+    assert isinstance(r.args[0], FieldRef) and r.args[0].path == ("Name",)
+    c = parse("Close_Date__c < TODAY()")     # a comparison against TODAY() parses
+    assert is_parsed(c) and isinstance(c, Comparison)
 
 
 def test_malformed_not_parsed():
