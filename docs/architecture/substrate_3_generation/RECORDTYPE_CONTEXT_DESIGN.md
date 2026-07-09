@@ -607,29 +607,49 @@ They are formed and evaluated **independently**. If both remain plausible from t
 Plimsol must **not silently collapse** them (retain-or-refuse; generic retention across the whole
 pipeline is *not* in this slice — Amendment A P7).
 
-**Control-relevance nomination (the concrete mechanism).** For a context hypothesis with context
-predicate *C* (`RecordType.DeveloperName = <devname>`) and the requirement's subject field(s) *F*
-(Discount), a VR is a **relevant control** iff its formula:
-1. **gates on the context** — contains the conjunct *C* (the VR is scoped to that record classification), **and**
-2. **governs the subject field** — constrains *F*, **and**
-3. **effect-subject alignment** — *F* is a *primary* constraint (a top-level threshold on *F*), so the
-   VR's controlled effect matches the requirement's subject, rather than *F* appearing incidentally
-   (e.g. one disjunct of a different rule's trigger).
+**Control-relevance nomination (the concrete mechanism — AK's B2 refinement).**
 
-Verified against all ten req-315 VRs, for Hypothesis B (`RecordType=Enterprise`, subject = Discount):
+```
+RelevantControl = ContextGateMatch ∧ SubjectGovernanceMatch ∧ BehaviouralRoleMatch
+```
 
-| VR | gates on RecordType=Enterprise? | governs Discount? | primary discount effect? | relevant? |
-|---|---|---|---|---|
-| VR08 | **yes** (`RecordType.DeveloperName="PLS_BM_Enterprise"`) | yes (`> 0.25`) | yes (top-level cap) | **✔ nominated (unique)** |
-| VR02 | no (general rule) | yes | — | ✘ (not context-gated) |
-| VR03 | no | yes (in a nested OR) | no | ✘ |
-| VR10 | no (gates on `Deal_Type__c`, Hyp A) | yes (one disjunct) | no (approval rule) | ✘ |
-| VR01/04/05/06/07/09 | no | no | — | ✘ |
+For a context hypothesis with context predicate *C* (`RecordType.DeveloperName = <devname>`) and the
+requirement's subject field(s) *F* (Discount) and requirement's asserted behavioural role *R* (a
+"stricter discount **control**" ⇒ an upper-bound **cap**), a VR is a **relevant control** iff its formula:
+1. **ContextGateMatch** — contains the conjunct *C* (the VR is scoped to that record classification), **and**
+2. **SubjectGovernanceMatch** — constrains *F*, **and**
+3. **BehaviouralRoleMatch** — the *role* the VR plays *on F* matches *R* — not merely that *F* appears
+   somewhere in the formula. This is the term that stops "field appears in the formula" from counting as
+   relevance: in VR10, `Discount > 0.20` is an **incidental violation branch inside an approval-transition
+   gate**, not the primary behaviour "stricter discount controls" describes.
 
-**Exactly one VR (VR08) is nominated** — with no threshold pinning and no entailment. VR10 is correctly
-excluded from Hypothesis B (it is not RecordType-gated) and its effect-subject is approval-on-transition,
-not a discount cap; it belongs to Hypothesis A. The `"Enterprise"` label is never the tiebreak — the
-alignment is *context-gate ∧ governs-the-subject-field*.
+**Bounded role grammar (deliberately narrow for this slice — not a universal ontology).** A VR's
+behavioural role on a field is classified into exactly:
+- **direct cap / floor** — a top-level threshold on *F* whose violation is the rejection (VR08: `Discount > 0.25`);
+- **conditional requiredness** — *F* (or a companion) must be present/set under a condition (VR02, VR04);
+- **transition gate** — the rule fires on a state change / approval transition (VR05, VR06, VR10);
+- **compound eligibility gate** — a multi-conjunct gate where the subject field is one branch among many (VR10's disjunction).
+
+A requirement's role *R* is inferred from its verb/frame ("stricter … controls / cannot exceed / maximum"
+⇒ cap; "must have / required when" ⇒ conditional requiredness; "cannot move to / once X then" ⇒ transition).
+Outside this grammar → the role is UNKNOWN and BehaviouralRoleMatch is conservatively false (refuse rather
+than guess). The grammar is the named boundary; widening it is deferred work.
+
+Verified against all ten req-315 VRs, for Hypothesis B (`RecordType=Enterprise`, subject = Discount,
+role = cap):
+
+| VR | ContextGate (RecordType=Enterprise)? | Governs Discount? | Role on Discount | RoleMatch (cap)? | relevant? |
+|---|---|---|---|---|---|
+| VR08 | **yes** (`RecordType.DeveloperName="PLS_BM_Enterprise"`) | yes (`> 0.25`) | **direct cap** | **yes** | **✔ nominated (unique)** |
+| VR02 | no (general rule) | yes | conditional requiredness | no | ✘ (context + role) |
+| VR03 | no | yes (nested OR) | compound eligibility gate | no | ✘ |
+| VR10 | no (gates on `Deal_Type__c`, Hyp A) | yes (one disjunct) | transition / compound gate | no | ✘ |
+| VR01/04/05/06/07/09 | no | no | — | — | ✘ |
+
+**Exactly one VR (VR08) is nominated** — with no threshold pinning and no entailment. VR10 is excluded on
+**two** independent counts (not RecordType-gated *and* its role on Discount is a transition/compound gate,
+not a cap); it belongs to Hypothesis A. The `"Enterprise"` label is never the tiebreak — the alignment is
+*context-gate ∧ governs-the-subject-field ∧ behavioural-role*.
 
 **Threshold from formula analysis, not the requirement.** Once VR08 is nominated, `25%` is read off its
 formula (the existing `derive_boundary_set` / boundary machinery, once it accepts the decimal literal —
@@ -688,16 +708,47 @@ prompt manipulation that forces "Enterprise" to mean RecordType (A2 construction
 5. **ContextDifferential (RECORD)** + within-bundle member-dedup — the third arm; 3 tests / 1 fixture.
 6. **Live env-59** — `E@25` accept, `E@26` reject-attributed, `S@26` accept; scorecard controls **4/10 → 5/10**.
 
-**One point to confirm before I build (the load-bearing discovery):** the **control-relevance rule** in
-B2 — *context-gate ∧ governs-subject-field ∧ effect-subject alignment* — is the net-new selection
-operation that replaces entailment-as-disambiguator. It is verified against the ten req-315 VRs above,
-but it is *your* architectural discovery and I want your confirmation it matches your intent before I
-build the core on it. The open sub-question it leaves: when Hypothesis A and Hypothesis B *both* nominate
-an effect-aligned control for the same requirement (not the case for req-315), the slice's behaviour is
-**refuse-and-surface** (my lean), since generic retention is out of scope — confirm or override.
+**Multiple nominations across competing hypotheses → refuse-and-surface (AK confirmed).** The nomination
+count decides:
+- **0 nominations** → unresolved / refuse.
+- **1 nomination** → proceed.
+- **>1 nominations across competing hypotheses** (e.g. Hyp A nominates a Deal_Type control *and* Hyp B
+  nominates a RecordType control, both behaviourally aligned) → **refuse-and-surface**. Do **not** pick by
+  score, field-overlap, order, or specificity — silently choosing either is dishonest. The refusal detail
+  is concrete, e.g.: *"the requirement's 'Enterprise' classification maps plausibly to both the Enterprise
+  Deal Type and the Enterprise Record Type, and each governs discount behaviour; the system cannot
+  determine which control the requirement intends."* This beats emitting tests for one interpretation and
+  presenting them as complete coverage.
 
-## HOLD
+This is **not** a permanent equation of "multiple nominations = refuse". Later, when competing-hypothesis
+retention exists (A P7), Plimsol may legitimately emit *separate* test bundles (Interpretation A: Deal-Type
+control; Interpretation B: RecordType control). But retention is out of scope for B5, so refuse-and-surface
+is the correct current behaviour. (req-315 does not hit this: only Hyp B nominates a cap-role control — VR08.)
 
-Amendment B is the design of record and is **HELD for AK review before implementation.** On GO I build
-the B5 order; the one confirm-point is the B2 control-relevance rule + the refuse-and-surface lean for
-the both-nominate case.
+## B6 — Per-regeneration checkpoint scorecard (AK: success is not "4/10 → 5/10")
+
+The dangerous failure mode is reaching 5/10 by recovering VR08 while damaging an existing control or
+emitting a green differential for the wrong reason. Every checkpoint regen captures **all** of:
+
+| Metric | Watch for |
+|---|---|
+| Correctly-exercised controls | should rise (→ VR08) |
+| False tests | **must remain 0** |
+| Weak claims (evidence-contract, D-345) | **must remain 0** |
+| Existing-control regressions | VR01/VR02/VR04/VR09 must stay trustworthy + attributed |
+| VR08 attribution | must reject **for VR08 specifically** (its error message), not merely "rejected" |
+| Differential validity | the Standard control arm must **genuinely accept** (not accept for an unrelated reason) |
+
+**The most important checkpoint is after control-relevance + RecordType grounding, BEFORE
+ContextDifferential:** verify Plimsol independently nominates **VR08 from the requirement without threshold
+entailment**. If that holds, the architectural separation (finding the relevant control vs. deriving tests
+from it) is validated — and only then is ContextDifferential added.
+
+## HOLD / GO
+
+Amendments A + B are the design of record. **AK gave GO (2026-07-09)** on: the B2 rule as
+`ContextGateMatch ∧ SubjectGovernanceMatch ∧ BehaviouralRoleMatch` with a bounded role grammar;
+refuse-and-surface on multiple nominations (never choose by score/overlap/order/specificity); and the B5
+build with checkpoints after meaningful capability slices. Implementation proceeds on the branch under
+HOLD-and-show (commit at slice boundaries, regen + B6 scorecard at each checkpoint, STOP at the
+control-relevance+grounding checkpoint before ContextDifferential).
