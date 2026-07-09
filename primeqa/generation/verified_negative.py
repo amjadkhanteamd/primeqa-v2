@@ -260,6 +260,20 @@ def _unwrap_soft(payload: dict[str, Any]) -> dict[str, Any]:
     return out
 
 
+# D-348 (VR08): the ONE cross-object ref the recipe CAN realize on the record
+# itself — a record's RecordType. ``RecordType.DeveloperName = "X"`` is satisfied
+# by SETTING RecordTypeId to the Id of the record type named X (resolved from the
+# ``__record_types__`` rail). Every OTHER dotted ref stays a non-derivable
+# related-record read.
+_RECORDTYPE_PATH = ("recordtype", "developername")
+_RECORD_TYPES_KEY = "__record_types__"
+
+
+def _is_recordtype_ref(node) -> bool:
+    return (isinstance(node, FieldRef) and node.is_dotted
+            and tuple(p.lower() for p in node.path) == _RECORDTYPE_PATH)
+
+
 def _pre_scan(ast) -> Optional[NotDerivable]:
     """Anything that can't be a same-object, flat-state predicate."""
     if isinstance(ast, NotParsed) or ast is None:
@@ -267,7 +281,7 @@ def _pre_scan(ast) -> Optional[NotDerivable]:
     for n in walk(ast):
         if isinstance(n, FunctionCall) and n.name in _ORG_STATE_FUNCS:
             return NotDerivable(f"org-state function {n.name} (needs prior/changed/new record state)")
-        if isinstance(n, FieldRef) and n.is_dotted:
+        if isinstance(n, FieldRef) and n.is_dotted and not _is_recordtype_ref(n):
             return NotDerivable(f"cross-object ref {n.name} (needs related-record state)")
     return None
 
@@ -351,7 +365,38 @@ def _merge(dicts) -> dict[str, Any]:
     return out
 
 
+def _satisfy_recordtype(node: Comparison, want_true: bool,
+                        meta: dict) -> Optional[dict[str, Any]]:
+    """D-348 (VR08): satisfy ``RecordType.DeveloperName <op> "X"`` by SETTING the
+    record's ``RecordTypeId`` — the typed value boundary's DeveloperName→Id (D-346),
+    resolved from the ``__record_types__`` rail. ``None`` when the comparison is not
+    a RecordType ref (fall through to the ordinary path); raises ``_Undecidable``
+    when it is but can't be certainly realized (unknown record type, unsupported op)."""
+    left, right = node.left, node.right
+    if isinstance(right, FieldRef) and isinstance(left, Literal):
+        left, right = right, left                      # normalize literal-on-left
+    if not (_is_recordtype_ref(left) and isinstance(right, Literal)):
+        return None
+    if node.op not in ("=", "<>"):
+        raise _Undecidable(f"RecordType.DeveloperName {node.op} (only =/<> derivable)")
+    rt_map = (meta or {}).get(_RECORD_TYPES_KEY) or {}
+    devname = right.value
+    must_be = (node.op == "=") == want_true            # the record must BE devname
+    if must_be:
+        rid = rt_map.get(devname)
+        if not rid:
+            raise _Undecidable(f"RecordType {devname!r} not in the org (record-types rail)")
+        return {"RecordTypeId": rid}
+    alt = next((rid for name, rid in rt_map.items() if name != devname), None)
+    if not alt:
+        raise _Undecidable(f"no alternative RecordType to {devname!r}")
+    return {"RecordTypeId": alt}
+
+
 def _satisfy_comparison(node: Comparison, want_true: bool, meta: dict) -> dict[str, Any]:
+    rt = _satisfy_recordtype(node, want_true, meta)     # D-348: the RecordType gate
+    if rt is not None:
+        return rt
     # D-294: a field-to-field comparison (`Loan__c > Property__c`) is derivable
     # when both fields are numeric + writable — synthesize an ordered pair.
     if isinstance(node.left, FieldRef) and isinstance(node.right, FieldRef):

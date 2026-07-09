@@ -67,7 +67,7 @@ from primeqa.generation.protocol import (
     RefusalEntry,
 )
 from primeqa.semantic.edges import TIER_1_EDGES
-from primeqa.generation.verified_negative import _writable
+from primeqa.generation.verified_negative import _RECORD_TYPES_KEY, _writable
 from primeqa.generation.formula_expectation import (
     as_decimal, verify_formula_expectation)
 from primeqa.generation.vr_conflict import entails_firing, find_staged_vr_conflict
@@ -787,6 +787,17 @@ def _grounding_field_metadata(neighborhood: list, s1, at_seq: int) -> dict:
             "is_updateable": bool(details.get("is_updateable", True)),
             "picklist_values": picklist_values,
         }
+    # D-348 (VR08): the record-types rail — DeveloperName -> RecordTypeId (the last
+    # sf_api_name segment is the DeveloperName) — so `RecordType.DeveloperName = "X"`
+    # is satisfied by SETTING RecordTypeId. Reserved key (no consumer iterates the
+    # metadata keys; verified: bare-field `.get` only).
+    record_types = {
+        r.entity.sf_api_name.rsplit(".", 1)[-1]: r.entity.sf_id
+        for r in neighborhood
+        if r.entity.entity_type == "RecordType" and r.entity.sf_id
+        and r.entity.sf_api_name}
+    if record_types:
+        out[_RECORD_TYPES_KEY] = record_types
     return out
 
 

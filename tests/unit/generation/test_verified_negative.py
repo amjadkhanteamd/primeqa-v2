@@ -155,6 +155,38 @@ def test_regex_match_everything_pattern_refuses():
     assert isinstance(r, NotDerivable) and "non-matching" in r.reason
 
 
+# --- D-348: the RecordType gate (VR08) --------------------------------------
+
+from primeqa.generation.verified_negative import _RECORD_TYPES_KEY   # noqa: E402
+
+
+def test_recordtype_ref_derives_recordtypeid():
+    # RecordType.DeveloperName = "X" -> SET RecordTypeId to X's Id (resolved from
+    # the __record_types__ rail); the record then IS record type X.
+    f = 'RecordType.DeveloperName = "Enterprise" && Discount__c > 0.25'
+    r = derive(parse(f), {_RECORD_TYPES_KEY: {"Enterprise": "012ENT"}})
+    assert isinstance(r, VerifiedNegative)
+    assert r.violating_payload.get("RecordTypeId") == "012ENT"
+
+
+def test_recordtype_ref_unknown_devname_refuses():
+    f = 'RecordType.DeveloperName = "Missing" && Discount__c > 0.25'
+    assert isinstance(
+        derive(parse(f), {_RECORD_TYPES_KEY: {"Enterprise": "012ENT"}}), NotDerivable)
+
+
+def test_recordtype_ref_without_rail_refuses():
+    # no record-types rail -> can't resolve the Id -> certainty bar refuses.
+    f = 'RecordType.DeveloperName = "Enterprise" && Discount__c > 0.25'
+    assert isinstance(derive(parse(f), {}), NotDerivable)
+
+
+def test_other_cross_object_ref_still_blocked():
+    # only RecordType.DeveloperName is special-cased; any other related-record ref
+    # stays a non-derivable cross-object read.
+    assert isinstance(derive(parse('Account__r.Name = "x"'), {}), NotDerivable)
+
+
 def test_not_or_requires_all_disjuncts_not_derivable():
     # NOT(OR(Amount<0, ISBLANK(R))) = AND(NOT(Amount<0), NOT(ISBLANK)) -> the
     # NOT(ISBLANK) leg is undecidable -> the whole merge is NotDerivable.
