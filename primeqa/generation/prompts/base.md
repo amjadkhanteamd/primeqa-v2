@@ -72,6 +72,20 @@ cannot ground a test for it — by an intent with `no_admissible_test: true` and
 `no_admissible_test_reason`. Do not invent a claim to cover a criterion; an
 honest "no admissible test" is the correct way to address one you cannot ground.
 
+**A missing configured value is not a reason to withhold a behavioural claim.**
+When the requirement states a behavioural obligation but omits the exact number
+or format the org enforces — a discount ceiling, a value limit, a date cutoff, a
+required reference format, a status a transition requires — still PROPOSE the
+behavioural claim: name the obligation, the field it constrains, and the
+classification (record type, stage, category) it applies to. The grounding
+substrate derives the concrete configured value from the org's own metadata (a
+validation rule, a formula, a picklist), so an absent threshold is the
+substrate's to supply, not yours. Do not invent the missing value, and do not
+self-dismiss a testable behaviour because you cannot name it — naming the
+behaviour is your job, naming the value is the substrate's. Reserve
+`no_admissible_test` for a criterion the org genuinely does not implement, never
+for one whose only gap is a number the requirement did not state.
+
 **Declaring the criteria is not enough — you must also PROPOSE them.** In the
 same `propose_semantic_intent` call, emit one `intent_descriptors` entry for
 every acceptance criterion (or a `no_admissible_test` intent for one you cannot

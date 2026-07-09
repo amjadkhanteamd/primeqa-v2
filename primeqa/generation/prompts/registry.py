@@ -28,7 +28,7 @@ _VERSIONS_DIR = _DIR / "versions"
 
 # The default version new generations use (replay pins its own version on the
 # request's operational_context.prompt_template_version, per D-071).
-CURRENT = "generation@v22"
+CURRENT = "generation@v23"
 
 # version id -> frozen composed artifact (filesystem-safe slug).
 _FILES = {
@@ -54,6 +54,7 @@ _FILES = {
     "generation@v20": _VERSIONS_DIR / "generation_v20.md",
     "generation@v21": _VERSIONS_DIR / "generation_v21.md",
     "generation@v22": _VERSIONS_DIR / "generation_v22.md",
+    "generation@v23": _VERSIONS_DIR / "generation_v23.md",
 }
 
 # Recorded SHA-256 of each frozen version's composed content (D-103.1 drift
@@ -157,6 +158,16 @@ RECORDED_HASHES = {
     # actions, never staged; pending/approved/rejected are three distinct
     # intents.
     "generation@v22": "f630983cc82b68096af56aa4c84ec9685a685e720f1f6e403faa20c4be200d29",
+    # v23 (Amendment B, AK 2026-07-09): the proposal-contract clarification — a
+    # missing configured value (threshold / boundary / format the requirement does
+    # not state) is NOT a reason to withhold or self-dismiss a behavioural claim;
+    # the substrate derives concrete configured values from org metadata. Names the
+    # LLM/substrate division of responsibility (identify the behaviour vs supply the
+    # value); do NOT invent the value, do NOT self-dismiss for a missing number.
+    # Fixes the req-315 AC7 stochastic self-dismissal ("cannot construct a violating
+    # discount value without a named threshold"). Narrow + neutral — no record-type
+    # / VR bias.
+    "generation@v23": "a7348141cd1f35954865452a81cbf92f04b6d11c03d9e0464b30625adbdbda47",
 }
 
 # Working composition order — authors the NEXT frozen version (NOT runtime).

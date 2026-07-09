@@ -42,15 +42,19 @@ def test_working_source_composes_to_current():
     assert hashlib.sha256(composed.encode("utf-8")).hexdigest() == registry.recorded_hash()
 
 
-def test_current_resolves_to_v22():
-    # D-333: CURRENT bumped to v22 (the approval-action arc —
-    # approval_actions + attempted_change / update_conditions; the approval
-    # status realized by actions, never staged). v1..v21 stay frozen +
-    # pinned-resolvable (test_runtime_honors_pinned_prompt_version).
-    assert registry.CURRENT == "generation@v22"
-    assert registry.get() == registry.get("generation@v22")
+def test_current_resolves_to_v23():
+    # Amendment B (AK 2026-07-09): CURRENT bumped to v23 (the proposal-contract
+    # clarification — a missing configured value is not a reason to withhold or
+    # self-dismiss a behavioural claim; the substrate derives it from org
+    # metadata). v23 = v22 + only that paragraph, so all prior directives hold.
+    # v1..v22 stay frozen + pinned-resolvable.
+    assert registry.CURRENT == "generation@v23"
+    assert registry.get() == registry.get("generation@v23")
     sys = registry.get()
-    # v22's approval-action arc (D-333)
+    # v23's proposal-contract clarification
+    assert "missing configured value is not a reason to withhold" in sys
+    assert "naming the value is the substrate's" in sys
+    # v22's approval-action arc (D-333) — retained
     assert "APPROVAL-ACTION ARC" in sys
     assert "approval_actions" in sys and "attempted_change" in sys
     # v20's implied-valid-case decomposition (D-329)
