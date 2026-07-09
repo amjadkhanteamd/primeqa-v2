@@ -44,7 +44,7 @@ from typing import Any, Optional, Union
 from uuid import UUID
 
 from primeqa.generation.enums import AdmissibilityLayer, CaveatKind
-from primeqa.generation.formula_expectation import _to_api_value, as_decimal
+from primeqa.generation.typed_value import transport_payload as _to_transport_payload
 from primeqa.generation.semantic_completeness import caveat_kind, requires_caveat
 from primeqa.generation.verified_negative import (
     VerifiedNegative,
@@ -903,33 +903,6 @@ def prohibition_recipe_derivable(
     _, update_pair, violation, _ = _derive_prohibition_recipe(
         operation_hint, vr_formulas, field_metadata)
     return update_pair is not None or violation is not None
-
-
-def _to_transport_payload(payload: Optional[dict],
-                          field_metadata: Optional[dict]) -> Optional[dict]:
-    """Map a derived (FORMULA-domain) payload to its transport/API representation
-    (the D-115 value boundary, first instance). A Percent field's API value is the
-    formula value ×100 (reusing :func:`formula_expectation._to_api_value`); every
-    other type passes through 1:1. Keyed on the bare field name against the D-294
-    metadata; non-numeric values and fields with absent/typeless metadata are
-    untouched. The scaled value is returned JSON-safe (int when integral, else
-    float) — the violating value rides the RECIPE, not the identity-bearing claim
-    (D-110.3), so the recipe grades identically. Without this, a percent VR's
-    derived value (0.20 in formula domain) is written as 0.2% over the API and the
-    rule never fires — a negative test that silently ACCEPTS (the T8 false-pass)."""
-    if not payload or not field_metadata:
-        return payload
-    out = {}
-    for f, v in payload.items():
-        meta = field_metadata.get(f.rsplit(".", 1)[-1]) or {}
-        dec = as_decimal(v)
-        if (meta.get("field_type") or "").lower() == "percent" and dec is not None:
-            scaled = _to_api_value(dec, "percent", meta.get("scale"))
-            out[f] = (int(scaled) if scaled == scaled.to_integral_value()
-                      else float(scaled))
-        else:
-            out[f] = v
-    return out
 
 
 def _behavioral_recipe(
