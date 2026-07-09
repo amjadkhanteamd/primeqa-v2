@@ -6,15 +6,19 @@ Status: **DESIGN — HOLD for review before implementation.** Extends
 **D-343** (the entailment VR selector). This note designs the *selection chain*
 D-348 explicitly did **not** build; nothing here is implemented.
 
-> **Superseded in part — read [Amendment A](#amendment-a--ak-review-2026-07-09-grounding-constraints-4-redesign-and-the-entailment-hand-off-held) first.** AK reviewed
-> §1–§4 (2026-07-09), approved §1–§3 with two added constraints, and asked for §4 to
-> be redesigned into composable primitives. A grounding workflow (5 readers → 2 design
-> passes → adversarial review) then found several places the sections below rest on
-> code premises that are false or incomplete. **Amendment A at the end of this file is
-> the current design of record**; §1–§4 below are retained as the initial sketch it
-> corrects. The single most important correction: §2/§3/§4 are one mechanism —
-> *necessary-firing entailment*, fed the boundary firing value — not three independent
-> pieces.
+> **Superseded — read Amendments A then B (end of file) first.** AK reviewed §1–§4
+> (2026-07-09), approved §1–§3 with two added constraints, and asked for §4 to be
+> redesigned into composable primitives. **Amendment A** captured that plus the code
+> corrections a grounding workflow surfaced. **Amendment B** then records AK's two
+> decisions (ship DeveloperName grounding; do *not* pick a claim shape to make VR08
+> selectable) and the architectural discovery that supersedes A's central claim:
+> **control relevance (nomination) and formula entailment (proof) are two different
+> operations.** A requirement that under-specifies the threshold ("stricter discount
+> controls", not ">25%") cannot be handled by entailment as a *selector* — relevance
+> nominates the control, formula analysis reads the boundary, entailment only proves
+> firing when the requirement's own predicates suffice. **Amendment B is the current
+> design of record**; A's A2/A3/A6 entailment-as-disambiguator framing is corrected by
+> it. §1–§4 above are the initial sketch.
 
 ## The gap (from D-348)
 
@@ -524,3 +528,176 @@ Two items need an explicit AK call before a build starts: the **§2 label scope 
 devname-uniqueness now, or block on S1 label capture) and **which claim shape** the substrate emits
 for RecordType-gated rules (context-replaces-field vs both-fields — it determines whether entailment
 or pass-1 cardinality carries selection, §A3).
+
+> **Both items resolved by AK in Amendment B below** — (1) ship DeveloperName grounding, no S1 label;
+> (2) the "which claim shape" question was a **false binary** — do not pick a shape to make VR08
+> selectable; RecordType is a distinct context hypothesis nominated by *control relevance*, not by
+> entailment or field-overlap. Read Amendment B; it supersedes A2/A3/A6's entailment-as-selector framing.
+
+---
+
+# Amendment B — AK decisions (2026-07-09): control relevance ≠ formula entailment (HELD)
+
+Status: **DESIGN OF RECORD — HOLD for implementation.** Supersedes Amendment A's central claim
+(§A2/§A3/§A6: "necessarily-firing entailment, fed the boundary value, is the disambiguator/selector").
+Records AK's two decisions and the architectural discovery that reframes them. **Nothing implemented.**
+
+## B0 — The discovery: control relevance (nomination) is not formula entailment (proof)
+
+Amendment A tried to make one operation — necessarily-firing entailment fed the boundary value — do
+two jobs: *nominate* the control (which VR is this requirement about?) and *prove* it fires. AK's
+correction: these are different operations, and conflating them is what made the design feel forced
+into a claim-shape binary.
+
+- **Control relevance (nomination).** *Is VR08 a plausible implementation of this requirement?*
+  Established by **semantic subject/context alignment**, not by proving the requirement entails the
+  VR's full formula. The req-315 requirement — *"Enterprise deals are subject to stricter discount
+  controls"* — **never states 25%**, so it cannot entail `Discount > 0.25`. Demanding entailment for
+  nomination is category error: the org metadata, not the requirement, supplies the threshold.
+- **Test derivation (boundary).** *Given VR08 as the nominated control, what value do we test?*
+  Read **25%** off VR08's formula (formula analysis), independent of the requirement's silence on it.
+- **Entailment (proof) stays in its lane.** Use `entails_firing` to *prove* firing / disambiguate
+  **only when the requirement's own predicates are specific enough** (e.g. a requirement that literally
+  says "discount over 25%"). For under-specified requirements it is simply not the operation.
+
+This dissolves the A3 false binary. We do **not** choose `RecordType=Enterprise` over `Deal_Type=Enterprise`
+to win field-overlap, and we do **not** force both into one claim. RecordType is a **distinct context
+hypothesis** whose relevant control is found by alignment — VR08 is nominated because it *gates on the
+Enterprise record type and governs Discount*, full stop.
+
+## B1 — Decision 1: ship DeveloperName grounding, no S1 label (AK: "do not block on S1 label capture")
+
+The grounding contract:
+
+```
+requirement term  →  candidate RecordType contexts  →  exact normalized DeveloperName matching
+                     → one match → ground · zero → unresolved · many → ambiguous/refuse
+```
+
+- **Deterministic only.** Normalization such as `Enterprise → PLS_BM_Enterprise` is permitted **only if
+  a namespace/prefix convention is provable from metadata** (e.g. every RecordType DeveloperName on the
+  object shares the `PLS_BM_` prefix, so the prefix is a provable object-local convention — not a guess).
+  **No fuzzy semantic matching.** Refuse on 0 or ≥2 (the `_bind_picklist_values` discipline).
+- **Name the capability accurately:** *RecordType context grounding from stable metadata identity* —
+  **not** "natural-language RecordType label grounding." S1 has no queryable label (Amendment A, HOLD-2);
+  label capture waits for broader evidence that human-label semantics are needed across RecordTypes /
+  picklists / translated labels / UI metadata.
+- **Honesty in the IR (AK's added constraint):** the struct must not pretend `"Enterprise"` was resolved
+  from a human label. Carry the grounding method:
+
+```
+RecordTypeContext(              # the A1 _GroundedContext, field names reconciled to AK's
+    requirement_term = "Enterprise",
+    developer_name   = "PLS_BM_Enterprise",
+    grounding_method = "developer_name_normalization",   # provenance of HOW it resolved
+    # record_type_id resolved late at the transport boundary (A1 conservation rule)
+)
+```
+
+## B2 — Decision 2: RecordType is a distinct context hypothesis; relevance nominates (AK: "don't make overlap accidentally carry the architecture")
+
+**Two independent hypotheses, neither collapsed, forced-conjoined, nor mechanically substituted:**
+
+```
+Hypothesis A : Deal_Type__c = Enterprise ∧ Discount > threshold     → aligns toward Deal_Type-gated rules
+Hypothesis B : RecordType   = Enterprise ∧ Discount > threshold     → aligns toward VR08
+```
+
+They are formed and evaluated **independently**. If both remain plausible from the requirement alone,
+Plimsol must **not silently collapse** them (retain-or-refuse; generic retention across the whole
+pipeline is *not* in this slice — Amendment A P7).
+
+**Control-relevance nomination (the concrete mechanism).** For a context hypothesis with context
+predicate *C* (`RecordType.DeveloperName = <devname>`) and the requirement's subject field(s) *F*
+(Discount), a VR is a **relevant control** iff its formula:
+1. **gates on the context** — contains the conjunct *C* (the VR is scoped to that record classification), **and**
+2. **governs the subject field** — constrains *F*, **and**
+3. **effect-subject alignment** — *F* is a *primary* constraint (a top-level threshold on *F*), so the
+   VR's controlled effect matches the requirement's subject, rather than *F* appearing incidentally
+   (e.g. one disjunct of a different rule's trigger).
+
+Verified against all ten req-315 VRs, for Hypothesis B (`RecordType=Enterprise`, subject = Discount):
+
+| VR | gates on RecordType=Enterprise? | governs Discount? | primary discount effect? | relevant? |
+|---|---|---|---|---|
+| VR08 | **yes** (`RecordType.DeveloperName="PLS_BM_Enterprise"`) | yes (`> 0.25`) | yes (top-level cap) | **✔ nominated (unique)** |
+| VR02 | no (general rule) | yes | — | ✘ (not context-gated) |
+| VR03 | no | yes (in a nested OR) | no | ✘ |
+| VR10 | no (gates on `Deal_Type__c`, Hyp A) | yes (one disjunct) | no (approval rule) | ✘ |
+| VR01/04/05/06/07/09 | no | no | — | ✘ |
+
+**Exactly one VR (VR08) is nominated** — with no threshold pinning and no entailment. VR10 is correctly
+excluded from Hypothesis B (it is not RecordType-gated) and its effect-subject is approval-on-transition,
+not a discount cap; it belongs to Hypothesis A. The `"Enterprise"` label is never the tiebreak — the
+alignment is *context-gate ∧ governs-the-subject-field*.
+
+**Threshold from formula analysis, not the requirement.** Once VR08 is nominated, `25%` is read off its
+formula (the existing `derive_boundary_set` / boundary machinery, once it accepts the decimal literal —
+Amendment A P1). The requirement's silence on the number is expected and fine.
+
+**Entailment retained (proof role).** `entails_firing` / the A3 leaf resolver stay for the case where a
+requirement's *own* predicates are specific enough to prove which VR fires (e.g. "discount over 25% on
+Enterprise deals"). It is no longer on the critical path for *nominating* VR08 from the under-specified
+req-315 text — which also means the A3 "Blocker 2 / boundary-value hand-off into entailment" is **not
+required for the narrow slice** (it returns only if/when entailment is used for proof).
+
+## B3 — The clean path for VR08 (superseding A6's end-to-end)
+
+```
+requirement "Enterprise deals have stricter discount controls"
+  → context hypothesis  RecordType = Enterprise           (B1 deterministic DeveloperName grounding)
+  → control relevance   VR08 governs Discount under the Enterprise record type   (B2 — unique)
+  → formula analysis    threshold = 25%                    (read off VR08)
+  → test design         BoundaryPair:        Enterprise 25% → accept · Enterprise >25% → reject+attribute
+                        ContextDifferential: Enterprise >25% → reject · Standard same value → accept
+```
+
+Selection here is **relevance**, not `_best_aligned_vr` field-overlap and not entailment — so the
+"which claim shape wins pass-1 cardinality" question (A3) never arises for the RecordType hypothesis.
+
+## B4 — What ships now vs. not (AK's narrow slice)
+
+**Ship (RECORD dimension only):**
+1. **RecordType context representation** — `_GroundedContext(dimension=RECORD_TYPE, requirement_term,
+   developer_name, grounding_method)`; `record_type_id` minted late at the transport boundary (A1).
+2. **DeveloperName-based deterministic grounding** — exact normalized matching, metadata-provable
+   normalization only, refuse on 0/≥2 (B1). No S1 label work.
+3. **Control-relevance nomination** — the B2 mechanism (context-gate ∧ governs-subject-field ∧
+   effect-subject alignment) for a RecordType context hypothesis.
+4. **RecordType-aware entailment leaf** — the A3 Blocker-1 `_lookup` special-case (the context leaf can
+   satisfy/contradict `RecordType.DeveloperName = "PLS_BM_Enterprise"`), for the *proof* role.
+5. **RecordType transport conversion** — already delivered by D-348.
+6. **Record context differential** — `ContextDifferential` (RECORD) **only for a claim already grounded
+   to RecordType context**; + `BoundaryPair` decimal-threshold support (A1 P1) + within-bundle member-dedup.
+
+**Do NOT ship (explicit, AK):** generic competing-hypothesis retention across the pipeline (A P7); fuzzy
+business-field-vs-context arbitration; S1 label capture (A P4-i); user/profile/currency/channel context
+dimensions (A P5); generic fixture-member architecture changes beyond the RECORD dimension (A P6); any
+prompt manipulation that forces "Enterprise" to mean RecordType (A2 construction-bias rule).
+
+## B5 — Corrected build order (each independently checkpointed; never optimize AC count)
+
+1. **P1** — `_is_threshold` accepts decimal literals + `BoundaryPair` held_context (recovers VR08's
+   2-member boundary set on the *Deal_Type* path even before context lands; checkpoint on a regen).
+2. **RecordType context representation + DeveloperName grounding** (B1) — form Hypothesis B; struct +
+   deterministic resolver + refusal. Checkpoint: req-315 grounds an `_GroundedContext(PLS_BM_Enterprise)`.
+3. **Control-relevance nomination** (B2) — nominate VR08 for the RecordType hypothesis without entailment.
+   Checkpoint: VR08 is selected for the RecordType-context claim; VR10 is not.
+4. **RecordType-aware entailment leaf** (A3 Blocker-1) — the proof-role `_lookup` special-case + the four
+   leaf cases.
+5. **ContextDifferential (RECORD)** + within-bundle member-dedup — the third arm; 3 tests / 1 fixture.
+6. **Live env-59** — `E@25` accept, `E@26` reject-attributed, `S@26` accept; scorecard controls **4/10 → 5/10**.
+
+**One point to confirm before I build (the load-bearing discovery):** the **control-relevance rule** in
+B2 — *context-gate ∧ governs-subject-field ∧ effect-subject alignment* — is the net-new selection
+operation that replaces entailment-as-disambiguator. It is verified against the ten req-315 VRs above,
+but it is *your* architectural discovery and I want your confirmation it matches your intent before I
+build the core on it. The open sub-question it leaves: when Hypothesis A and Hypothesis B *both* nominate
+an effect-aligned control for the same requirement (not the case for req-315), the slice's behaviour is
+**refuse-and-surface** (my lean), since generic retention is out of scope — confirm or override.
+
+## HOLD
+
+Amendment B is the design of record and is **HELD for AK review before implementation.** On GO I build
+the B5 order; the one confirm-point is the B2 control-relevance rule + the refuse-and-surface lean for
+the both-nominate case.
