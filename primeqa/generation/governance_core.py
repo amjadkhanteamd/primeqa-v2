@@ -75,7 +75,9 @@ from primeqa.generation.verified_negative import _RECORD_TYPES_KEY, _writable
 from primeqa.generation import control_relevance
 from primeqa.generation.formula_expectation import (
     as_decimal, verify_formula_expectation)
-from primeqa.generation.vr_conflict import entails_firing, find_staged_vr_conflict
+from primeqa.generation.vr_conflict import (
+    _fires, entails_firing, find_staged_vr_conflict,
+)
 from primeqa.semantic.entity_attributes import (
     field_formula_text, field_is_calculated, field_treat_null_as_zero,
     flow_effects, vr_error_message, vr_formula_text, vr_is_active)
@@ -709,6 +711,31 @@ def _best_aligned_vr(vr_formulas: tuple[str, ...], grounded_conds) -> Optional[s
     entailed = _break_tie_by_entailment(tied, grounded_conds)
     if entailed is not None:
         return entailed
+    # Contradiction elimination (VR03 arc, sound Kleene narrowing): the claim
+    # asserts the org rejects EVERY world its conditions pin — a tied VR that
+    # is provably FALSE in at least one pinned world cannot be the claim's
+    # rule ([Compliance=false, Risk in {High, Critical}]: VR07 is False in the
+    # Risk=High world → eliminated; VR03 stays unknown → kept). Elimination
+    # only ever REMOVES wrong candidates; a unique survivor is selected,
+    # otherwise the remaining tie-breaks run over the NARROWED set.
+    states = _constraint_states(grounded_conds)
+    if states:
+        survivors = []
+        for t in tied:
+            try:
+                ast = parse(t)
+                if is_parsed(ast) and any(
+                        _fires(ast, {k.rsplit(".", 1)[-1].lower(): v
+                                     for k, v in st.items()}) is False
+                        for st in states):
+                    continue                       # contradicted — eliminated
+            except Exception:
+                pass
+            survivors.append(t)
+        if len(survivors) == 1:
+            return survivors[0]
+        if survivors:
+            tied = survivors
     # VR05 arc: the prior-state LOCK match — entailment is blind to org-state
     # functions, but a claim pinning the exact state a tied VR locks on as
     # PRIOR ('Stage = Approved' vs VR05's PRIORVALUE gate) uniquely names it.
