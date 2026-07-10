@@ -94,9 +94,14 @@ class BoundaryMember:
     label (rides the recipe body for diagnostics — the verdict never consumes
     it; ``ProbeResult.boundary`` labelling stays deferred, D-300)."""
 
-    payload: dict[str, Any]     # {field_name: value}
+    payload: dict[str, Any]     # {field_name: value} (+ D-328 gate fields)
     expect_reject: bool         # True = firing; False = just-inside (accept)
     edge: str                   # "firing" | "just-inside"
+    # The threshold field's bare name — WHICH payload key carries the boundary
+    # value (a D-328 gated member also stages gate fields, e.g. VR08's
+    # RecordTypeId, so the payload is no longer single-key). ``None`` only on
+    # hand-built members; ``derive_boundary_set`` always fills it.
+    boundary_field: Optional[str] = None
 
 
 @dataclass(frozen=True)
@@ -258,9 +263,9 @@ def _boundary_members(thr: Comparison, *, gates: tuple, meta: dict) -> tuple:
         return ()
     return (
         BoundaryMember(payload=firing, expect_reject=True,
-                       edge="firing"),
+                       edge="firing", boundary_field=field),
         BoundaryMember(payload=just_inside, expect_reject=False,
-                       edge="just-inside"),
+                       edge="just-inside", boundary_field=field),
     )
 
 

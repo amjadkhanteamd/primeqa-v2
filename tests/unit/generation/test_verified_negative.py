@@ -518,10 +518,11 @@ def test_boundary_set_threshold_op_value_table():
         assert len(members) == 2, formula
         firing, just_inside = members
         assert firing == BoundaryMember(
-            payload={"Amount": fire}, expect_reject=True, edge="firing"), formula
+            payload={"Amount": fire}, expect_reject=True, edge="firing",
+            boundary_field="Amount"), formula
         assert just_inside == BoundaryMember(
             payload={"Amount": inside}, expect_reject=False,
-            edge="just-inside"), formula
+            edge="just-inside", boundary_field="Amount"), formula
 
 
 def test_boundary_set_literal_field_order_flips_op():

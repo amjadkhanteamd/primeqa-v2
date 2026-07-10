@@ -39,7 +39,7 @@ from __future__ import annotations
 
 import html
 import re
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from typing import Any, Optional, Union
 from uuid import UUID
 
@@ -991,7 +991,7 @@ def _update_rejected_recipe(
 
 def _boundary_accept_recipe(
     *, subject_entity_type: str, subject_external_id: str,
-    payload: dict, edge: str,
+    payload: dict, edge: str, boundary_field: Optional[str] = None,
 ) -> tuple[DataMutationTriggerBody, DataRecipeBody, ExecutionEnvironmentBody]:
     """Build the (trigger, recipe, env) triple for a D-300 **just-inside accept
     probe**: create the subject AT the boundary-adjacent non-firing value and
@@ -1004,8 +1004,20 @@ def _boundary_accept_recipe(
     label rides the env detail (human diagnostics; the verdict never reads it)."""
     target = LogicalRef(
         entity_type=subject_entity_type, external_id=subject_external_id)
-    (field_bare, value), = payload.items()   # single-threshold: exactly one field
+    if boundary_field is not None:
+        # D-328 gated member: the payload also stages the gate fields (e.g.
+        # VR08's RecordTypeId) — the boundary field is named, not inferred.
+        field_bare, value = boundary_field, payload[boundary_field]
+    else:
+        (field_bare, value), = payload.items()   # bare single-threshold member
     field_qualified = f"{subject_external_id}.{field_bare}"
+
+    def _qualify(f: str) -> str:
+        # The positive vertical's qualified convention (S4 bare-ifies at the API
+        # boundary, world.py; qualification marks the field as authoring-staged
+        # so padding can never silently overwrite it — a wrong-green vector).
+        return f"{subject_external_id}.{f.rsplit('.', 1)[-1]}"
+
     trigger = DataMutationTriggerBody(
         operation="create", target=target,
         identity_context="system", volume="single",
@@ -1017,8 +1029,9 @@ def _boundary_accept_recipe(
             CreateStep(
                 step_id="create-record",
                 target_object=target,
-                # the boundary value only (k16): S4 pads required fields at run
-                field_values={field_qualified: value},
+                # the boundary value + the D-328 gates that make the accept
+                # meaningful (k16: S4 pads only what authoring did NOT stage)
+                field_values={_qualify(f): v for f, v in payload.items()},
             ),
             ReadStep(
                 step_id="read-created",
@@ -1064,6 +1077,7 @@ def author_boundary_recipes(
             subject_entity_type=subject_entity_type,
             subject_external_id=subject_external_id,
             payload=m.payload, edge=m.edge,
+            boundary_field=getattr(m, "boundary_field", None),
         )
         out.append(BoundaryRecipe(
             trigger_kind="data-mutation-trigger", recipe_kind="data-recipe",
@@ -1471,6 +1485,14 @@ def _author_negative(g: GroundedNegative, *,
     if enable_bva_boundaries and verified and source_formula:
         members = derive_boundary_set(parse(source_formula), g.field_metadata)
         if members:
+            # P1: boundary payloads are FORMULA-domain (derive's domain) — map
+            # them through the D-346 typed value boundary like every other
+            # emitted payload (a percent just-inside 0.25 ships as 25.00; the
+            # pre-P1 integer thresholds pass through 1:1, byte-identical).
+            members = tuple(
+                replace(m, payload=_to_transport_payload(
+                    m.payload, g.field_metadata))
+                for m in members)
             boundary = author_boundary_recipes(
                 subject_entity_type=g.subject.entity_type,
                 subject_external_id=g.subject.external_id,
