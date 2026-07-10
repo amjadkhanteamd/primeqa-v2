@@ -240,12 +240,19 @@ def _world_for(create, *, s1, client, tracker, at_seq, world_plans,
                 f"{create.step_id!r} (plan_data_recipe_world must cover every "
                 f"ordinary create)", recipe_id=recipe_id)
         return build_world(wp, client=client, tracker=tracker)
+    staged_bare = {str(k).rsplit(".", 1)[-1].lower()
+                   for k in create.field_values}
     return construct_world(
         create.target_object.external_id,
         set(create.field_values) | set(null_fields),
         s1=s1, client=client, tracker=tracker, at_seq=at_seq,
         semantic_values={**dict(create.field_values),
-                         **{f: None for f in null_fields}})
+                         # D-338: blank-by-assertion — unless the RECIPE itself
+                         # stages the field (the VR06 temporal arms), in which
+                         # case the staged value is the semantic state.
+                         **{f: None for f in null_fields
+                            if str(f).rsplit(".", 1)[-1].lower()
+                            not in staged_bare}})
 
 
 def plan_data_recipe_world(plan: DataRecipePlan, s1,
@@ -267,12 +274,17 @@ def plan_data_recipe_world(plan: DataRecipePlan, s1,
                 and getattr(step, "expect_rejection", None) is None):
             nulls = _nulls_for(
                 step.target_object.external_id, null_asserted_fields)
+            staged_bare = {str(k).rsplit(".", 1)[-1].lower()
+                           for k in step.field_values}
             plans[step.step_id] = plan_world(
                 step.target_object.external_id,
                 set(step.field_values) | nulls,
                 s1=s1, at_seq=at_seq,
                 semantic_values={**dict(step.field_values),
-                                 **{f: None for f in nulls}})
+                                 # D-338 — unless the recipe stages the field
+                                 **{f: None for f in nulls
+                                    if str(f).rsplit(".", 1)[-1].lower()
+                                    not in staged_bare}})
     return plans
 
 
@@ -372,11 +384,17 @@ def _run_negative_with_setup(
     field_values = _sf_fields(
         {**scalar_filler, **parent_filler, **(field_overrides or {}),
          **setup.field_values}, sobject)
-    # D-338: the asserted-blank fields never reach the payload — the same
-    # staged-state-wins law as above, where the staged value is ABSENCE (no
-    # filler and no override may realize a premise the claim excludes).
+    # D-338: the asserted-blank fields never reach the payload FROM A FILLER
+    # OR OVERRIDE (no filler and no override may realize a premise the claim
+    # excludes). A value the RECIPE ITSELF stages is authoring intent, not a
+    # fill — the VR06 temporal arms deliberately stage the very date field the
+    # claim's blank arm asserts absent, and stripping those probes' staged
+    # values silently re-ran the blank branch four times (caught live: every
+    # arm rejected on ISBLANK). Staged-state-wins holds in both directions:
+    # staged ABSENCE beats fillers; staged VALUES beat the strip.
     if nulls:
-        null_bare = {_sf_field(f, sobject) for f in nulls}
+        staged_bare = {_sf_field(k, sobject) for k in setup.field_values}
+        null_bare = {_sf_field(f, sobject) for f in nulls} - staged_bare
         field_values = {k: v for k, v in field_values.items()
                         if k not in null_bare}
 
@@ -943,12 +961,16 @@ def _run_positive(plan: DataRecipePlan, *, client, environment_id: int, s1=None,
             else:
                 field_values = {**field_values, **_sf_fields(field_overrides, sobject)}
 
-        # D-338: the asserted-blank fields never reach the payload — blankness
-        # is staged state, so this is the same staged-wins law as above with
-        # the staged value being ABSENCE (guards the R1 demands AND a
-        # dispatch-time override naming such a field).
+        # D-338: the asserted-blank fields never reach the payload FROM A
+        # FILLER OR OVERRIDE — blankness is staged state, the same staged-wins
+        # law as above with the staged value being ABSENCE. A value the RECIPE
+        # ITSELF stages is authoring intent and survives (the VR06 temporal
+        # accept arms deliberately stage the very date field the claim's blank
+        # arm asserts absent — see the negative path's twin strip).
         if nulls:
-            null_bare = {_sf_field(f, sobject) for f in nulls}
+            recipe_bare = {_sf_field(k, sobject)
+                           for k in create.field_values}
+            null_bare = {_sf_field(f, sobject) for f in nulls} - recipe_bare
             field_values = {k: v for k, v in field_values.items()
                             if k not in null_bare}
 
