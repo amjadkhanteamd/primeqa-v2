@@ -89,6 +89,10 @@ class VerifiedUpdateNegative:
     # (the org's own transition) precedes the violating one. None/empty → the
     # ordinary 2-step pair.
     entry_changes: Optional[dict] = None
+    # The VR06-arc temporal experiment (a transition.TemporalExperiment): the
+    # primary IS its blank arm; emission authors the remaining arms as probes
+    # (past-reject + the adjacent today/tomorrow accepts). None → no experiment.
+    temporal: Optional[Any] = None
 
 
 @dataclass(frozen=True)

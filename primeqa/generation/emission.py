@@ -50,7 +50,7 @@ from primeqa.generation.fixture import (
 )
 from primeqa.generation.transition import (
     derive_prior_state_control, has_transition_semantics, satisfy_transition,
-    satisfy_transition_acceptance,
+    satisfy_transition_acceptance, satisfy_temporal_boundary,
 )
 from primeqa.generation.typed_value import transport_payload as _to_transport_payload
 from primeqa.generation.semantic_completeness import caveat_kind, requires_caveat
@@ -917,6 +917,24 @@ def _derive_prohibition_recipe(
                 source = text
                 break
         if update_pair is None:
+            # VR06 arc: the TEMPORAL-BOUNDARY shape (a gate + the blank/past
+            # date disjunction). The primary IS the blank arm — the date is
+            # staged by ABSENCE (the ISBLANK branch); the remaining three arms
+            # (past-reject + the adjacent today/tomorrow accepts) ride as
+            # probes carrying replay-stable RelativeDate values.
+            for text in vr_formulas:
+                exp = satisfy_temporal_boundary(
+                    text, field_metadata,
+                    sibling_items=sibling_vr_items)
+                if exp is not None:
+                    update_pair = VerifiedUpdateNegative(
+                        setup_payload=exp.setup_base,
+                        violating_changes=exp.changes,
+                        provenance=exp.provenance,
+                        temporal=exp)
+                    source = text
+                    break
+        if update_pair is None:
             update_pair, source = _derive_update_violation(
                 vr_formulas, field_metadata)
         if update_pair is None:
@@ -1646,6 +1664,61 @@ def _author_negative(g: GroundedNegative, *,
     # to-state persisted. Witness None (underivable / UNSAT) → no probe (the
     # negative stands alone) — an acceptance is never emitted on a fixture the
     # rule might still reject.
+    if (enable_bva_boundaries
+            and getattr(update_pair, "temporal", None) is not None):
+        # VR06 arc: the temporal experiment's probe arms — the primary is the
+        # blank-reject arm; here ride run_date−1 (reject, the < TODAY()
+        # branch), run_date (accept — the adjacent boundary), run_date+1
+        # (accept). Each accept reads back the transitioned state.
+        exp = update_pair.temporal
+        _raw = (g.vr_messages or {}).get(source_formula)
+        _msg = html.unescape(_raw) if _raw else None
+        probes = []
+        for label, dv, expect_reject in exp.arms:
+            if dv is None:
+                continue                    # the blank arm IS the primary
+            arm_setup = {**exp.setup_base, exp.date_field: dv}
+            arm_prov = {**exp.provenance,
+                        exp.date_field: (ROLE_TARGET_WITNESS,
+                                         f"temporal arm: {label}")}
+            if expect_reject:
+                t_, r_, e_ = _update_rejected_recipe(
+                    subject_entity_type=g.subject.entity_type,
+                    subject_external_id=g.subject.external_id,
+                    setup_payload=_to_transport_payload(
+                        arm_setup, g.field_metadata),
+                    violating_changes=_to_transport_payload(
+                        exp.changes, g.field_metadata),
+                    env_detail=(
+                        f"temporal boundary arm ({label}): the {exp.date_field} "
+                        f"is a replay-stable RelativeDate materialised at the "
+                        f"S4 boundary; the transition must be REJECTED "
+                        f"(the < TODAY() branch)"),
+                    error_message=_msg,
+                )
+                probes.append(BoundaryRecipe(
+                    trigger_kind="data-mutation-trigger",
+                    recipe_kind="data-recipe",
+                    causal_initiation=t_, observation_realization=r_,
+                    execution_environment=e_,
+                    priority=_BOUNDARY_PROBE_PRIORITY))
+            else:
+                from primeqa.generation.transition import TransitionWitness
+                probes.append(_transition_accept_probe(
+                    subject_entity_type=g.subject.entity_type,
+                    subject_external_id=g.subject.external_id,
+                    witness=TransitionWitness(
+                        setup=arm_setup, changes=dict(exp.changes),
+                        provenance=arm_prov),
+                    field_metadata=g.field_metadata,
+                    differential_note=(
+                        f"temporal boundary arm ({label}): the same transition "
+                        f"the past-date arm rejects must be ACCEPTED — the "
+                        f"adjacent boundary proof"),
+                ))
+        if probes:
+            boundary = tuple(probes)
+            strategy = "bva"
     if (enable_bva_boundaries and update_pair is not None
             and getattr(update_pair, "provenance", None)
             and source_formula and has_transition_semantics(source_formula)):

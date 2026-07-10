@@ -57,6 +57,9 @@ from primeqa.generation.verified_negative import (
     _Undecidable, _merge, _satisfy, _unwrap_soft,
 )
 from primeqa.generation.vr_conflict import _ORG_STATE_FUNCS, _text_eq
+from primeqa.test_representation.temporal import (
+    relative_date, relative_date_offset,
+)
 from primeqa.semantic.formula import (
     And,
     Comparison,
@@ -217,6 +220,8 @@ def _bool_function(node: FunctionCall, val, ts: TransitionState,
             v = val(node.args[0])
             if v is _MISSING:
                 return None
+            if relative_date_offset(v) is not None:
+                return False              # a materialisable date is never blank
             return v is None or v == ""
         return None
     if node.name == "ISPICKVAL":
@@ -237,16 +242,31 @@ def _bool_function(node: FunctionCall, val, ts: TransitionState,
 
 
 def _compare(node: Comparison, val) -> Optional[bool]:
-    # TODAY() comparisons: unknown (no clock at authoring) — with ONE bounded,
-    # documented axiom: the far-future bridge constant is not before today
-    # (`FAR_FUTURE_DATE < TODAY()` is False for any plausible run date). This
-    # is the same assumption the bridge itself rests on, made explicit so the
-    # acceptance verification ("the rule provably does NOT fire") is not
-    # poisoned by a date branch the fixture has already neutralized.
+    # TODAY() comparisons: unknown (no clock at authoring) — EXCEPT for values
+    # anchored at the run's own reference, which are decidable by definition:
+    # a RelativeDate(RUN_DATE, k) compares against TODAY() by the SIGN of k
+    # (k<0 -> before today; k>=0 -> not before), since materialisation anchors
+    # it at the very reference TODAY() denotes. The legacy far-future bridge
+    # constant keeps its documented axiom (`FAR_FUTURE_DATE < TODAY()` is
+    # False) for already-persisted recipes.
     for a_side, b_side, op in ((node.left, node.right, node.op),
                                (node.right, node.left, _FLIP[node.op])):
         if isinstance(b_side, FunctionCall) and b_side.name == "TODAY":
             v = val(a_side)
+            k = relative_date_offset(v)
+            if k is not None:
+                if op == "<":
+                    return k < 0
+                if op == "<=":
+                    return k <= 0
+                if op == ">":
+                    return k > 0
+                if op == ">=":
+                    return k >= 0
+                if op == "=":
+                    return k == 0
+                if op == "<>":
+                    return k != 0
             if v == FAR_FUTURE_DATE and op == "<":
                 return False
             return None
@@ -500,23 +520,24 @@ def _try_branch(branch, disjunction, setup, changes, provenance, meta,
 
 
 def _falsify_branch(node, meta) -> Optional[dict]:
-    """A certain assignment making this disjunct FALSE. Two date pragmatics are
-    handled locally with the SAME far-future constant so sibling date branches
-    reconcile instead of conflicting: ``f < TODAY()`` is falsified by
-    ``FAR_FUTURE_DATE``, and ``ISBLANK(f)`` on a DATE field is falsified by the
-    same constant (the generic non-blank date is a PAST one, which would arm a
+    """A certain assignment making this disjunct FALSE. Two date branches are
+    handled locally with the SAME replay-stable value so they reconcile instead
+    of conflicting: ``f < TODAY()`` is falsified by ``RelativeDate(RUN_DATE, +1)``
+    (tomorrow — provably not before today by the offset sign, and robust to a
+    run straddling midnight), and ``ISBLANK(f)`` on a DATE field takes the same
+    value (the generic non-blank date is a PAST one, which would arm a
     ``< TODAY()`` sibling branch at run time — the live D6/D7 interaction).
     Everything else delegates to the certainty-bounded ``_satisfy(node, False)``."""
     if (isinstance(node, Comparison) and node.op == "<"
             and isinstance(node.left, FieldRef)
             and isinstance(node.right, FunctionCall)
             and node.right.name == "TODAY"):
-        return {node.left.path[-1]: FAR_FUTURE_DATE}
+        return {node.left.path[-1]: relative_date(1)}
     if (isinstance(node, FunctionCall) and node.name in ("ISBLANK", "ISNULL")
             and len(node.args) == 1 and isinstance(node.args[0], FieldRef)):
         f = node.args[0].path[-1]
         if ((meta or {}).get(f) or {}).get("field_type", "").lower() == "date":
-            return {f: FAR_FUTURE_DATE}
+            return {f: relative_date(1)}
     try:
         return _unwrap_soft(_merge([_satisfy(node, False, meta)]))
     except _Undecidable:
@@ -592,6 +613,138 @@ def _compose_entry(witness: TransitionWitness, target_ast, prior_pins,
             return None
         return composed
     return witness
+
+
+@dataclass(frozen=True)
+class TemporalExperiment:
+    """The VR06-shaped four-arm temporal experiment: one shared fixture
+    (``setup_base``, date field EXCLUDED), one transition (``changes`` — the
+    gate state entered via an update, all arms alike), and four arms varying
+    ONLY the date dimension: blank → reject (the ISBLANK branch),
+    RUN_DATE−1 → reject (the < TODAY() branch), RUN_DATE → accept,
+    RUN_DATE+1 → accept. Blank and past are SEPARATE violation branches of the
+    rule — both are exercised independently."""
+    setup_base: dict
+    changes: dict
+    date_field: str
+    arms: tuple            # ((label, date_value_or_None, expect_reject), ...)
+    provenance: dict
+
+
+def satisfy_temporal_boundary(formula_text: str, meta: Optional[dict] = None,
+                              sibling_items=None) -> Optional[TemporalExperiment]:
+    """Recognize + satisfy the bounded TEMPORAL-BOUNDARY shape (VR06):
+
+        AND( <to-state gate on a picklist field>,
+             OR( ISBLANK(date_field), date_field < TODAY() ) )
+
+    and derive the four-arm experiment. The gate state is entered via a
+    transition update from a deterministic non-gate prior (all arms alike);
+    the date rides the setup create as a replay-stable RelativeDate (or is
+    ABSENT for the blank arm — semantics by absence, D-305/D-338). Each arm is
+    verified over the IR: reject arms provably FIRE the rule, accept arms
+    provably do NOT (RelativeDate-vs-TODAY comparisons decide by offset sign);
+    siblings are completed/verified over BOTH the create state and the
+    post-transition state. ``None`` on any other shape or an unverifiable /
+    UNSAT arm — never a guessed experiment."""
+    meta = meta or {}
+    ast = parse(formula_text)
+    if not is_parsed(ast) or not isinstance(ast, And):
+        return None
+    conjuncts = _flatten_and(ast)
+    if len(conjuncts) != 2:
+        return None
+    gate = disj = None
+    for c in conjuncts:
+        if isinstance(c, Or):
+            disj = c
+        elif _to_state_constraint(c) is not None:
+            gate = c
+    if gate is None or disj is None or len(disj.operands) != 2:
+        return None
+    gf, gv = _to_state_constraint(gate)
+    blank_branch = today_branch = None
+    for b in disj.operands:
+        if (isinstance(b, FunctionCall) and b.name in ("ISBLANK", "ISNULL")
+                and len(b.args) == 1 and isinstance(b.args[0], FieldRef)):
+            blank_branch = b
+        elif (isinstance(b, Comparison) and b.op == "<"
+                and isinstance(b.left, FieldRef)
+                and isinstance(b.right, FunctionCall)
+                and b.right.name == "TODAY"):
+            today_branch = b
+    if blank_branch is None or today_branch is None:
+        return None
+    f_date = today_branch.left.path[-1]
+    if blank_branch.args[0].path[-1] != f_date:
+        return None                                # two different date fields
+
+    prior = _alternative_value(gf, gv, meta)
+    if prior is None:
+        return None
+    setup_base = {gf: prior}
+    changes = {gf: gv}
+    provenance = {
+        gf: (ROLE_TARGET_ACTIVATION, f"transition: {prior!r} → {gv!r}"),
+        f_date: (ROLE_TARGET_WITNESS,
+                 "the temporal dimension under test (varied per arm)"),
+    }
+    arms = (
+        ("blank", None, True),                      # the ISBLANK branch
+        ("run_date-1", relative_date(-1), True),    # the < TODAY() branch
+        ("run_date", relative_date(0), False),      # the adjacent boundary
+        ("run_date+1", relative_date(1), False),
+    )
+
+    # Sibling completion over the post-transition state with the most
+    # accept-ish date staged (fills must hold for every arm; the date is the
+    # target's own dimension and stays protected).
+    probe_setup = {**setup_base, f_date: relative_date(1)}
+    protected = set(probe_setup) | set(changes)
+    parsed_sibs = []
+    for name, text in sorted(set((str(n), str(t))
+                                 for n, t in (sibling_items or ())
+                                 if t != formula_text)):
+        sast = parse(text)
+        if is_parsed(sast):
+            parsed_sibs.append((name, sast))
+    fills: dict = {}
+    for name, sast in parsed_sibs:
+        state = {**probe_setup, **fills}
+        ts = TransitionState(prior=_bare(state),
+                             next=_bare({**state, **changes}))
+        if evaluate_transition(sast, ts, absent="blank") is not True:
+            continue
+        off = _falsify_off_target(sast, protected | set(fills), meta)
+        if off is None:
+            return None
+        for f, v in off.items():
+            fills[f] = v
+            provenance[f] = (ROLE_SIBLING_ISOLATION, name)
+    setup_base = {**setup_base, **fills}
+
+    # Per-arm verification: the target's truth must be PROVEN in the arm's
+    # direction, and no sibling may provably fire in ANY arm (create state and
+    # post-transition state both checked).
+    for label, dv, expect_reject in arms:
+        arm_setup = dict(setup_base)
+        if dv is not None:
+            arm_setup[f_date] = dv
+        post = TransitionState(prior=_bare(arm_setup),
+                               next=_bare({**arm_setup, **changes}))
+        want = True if expect_reject else False
+        if evaluate_transition(ast, post, absent="blank") is not want:
+            return None
+        create_state = TransitionState(prior=_bare(arm_setup),
+                                       next=_bare(arm_setup))
+        for name, sast in parsed_sibs:
+            if evaluate_transition(sast, post, absent="blank") is True:
+                return None
+            if evaluate_transition(sast, create_state, absent="blank") is True:
+                return None
+    return TemporalExperiment(
+        setup_base=setup_base, changes=changes, date_field=f_date,
+        arms=arms, provenance=provenance)
 
 
 def derive_prior_state_control(formula_text: str, setup: dict, changes: dict,

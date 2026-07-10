@@ -6,7 +6,8 @@ operation realizes a transition-shaped prohibition as setup + changes, violating
 exactly one approval branch while satisfying the rest and every sibling control.
 """
 from primeqa.generation.transition import (
-    FAR_FUTURE_DATE,
+    FAR_FUTURE_DATE,  # noqa: F401 — the legacy axiom keeps a compat test
+
     TransitionState,
     evaluate_transition,
     has_transition_semantics,
@@ -16,6 +17,7 @@ from primeqa.generation.fixture import (
     ROLE_SIBLING_ISOLATION, ROLE_TARGET_ACTIVATION, ROLE_TARGET_WITNESS,
 )
 from primeqa.semantic.formula import parse
+from primeqa.test_representation.temporal import relative_date
 from tests.unit.generation.test_control_relevance import ALL_VRS, VR05, VR10
 
 RAIL = {
@@ -114,8 +116,9 @@ def test_vr10_witness_satisfies_every_other_branch_and_gate():
     assert s["PLS_BM_Risk_Level__c"] == "Low"                # D2/D3 false
     assert s["PLS_BM_Compliance_Approved__c"] is True        # D4 false
     assert s["PLS_BM_Contract_Number__c"] == "PQA"           # D5 false
-    # D6/D7 reconcile on the SAME far-future date (past would arm D7)
-    assert s["PLS_BM_Contract_Start_Date__c"] == FAR_FUTURE_DATE
+    # D6/D7 reconcile on the SAME replay-stable tomorrow (a past date would
+    # arm D7; the far-future bridge is retired from production)
+    assert s["PLS_BM_Contract_Start_Date__c"] == relative_date(1)
     # VR02 (armed by 0.2001 > 0.20) silenced on the free dimension
     assert s["PLS_BM_Approval_Reason__c"] == "PQA"
 
@@ -200,7 +203,7 @@ def test_emitted_vr10_negative_is_the_transition_pair():
     assert fv["PLS_BM_Stage__c"] == "Draft"
     assert fv["PLS_BM_Deal_Type__c"] == "Enterprise"
     assert fv["PLS_BM_Compliance_Approved__c"] is True
-    assert fv["PLS_BM_Contract_Start_Date__c"] == FAR_FUTURE_DATE
+    assert fv["PLS_BM_Contract_Start_Date__c"] == relative_date(1)
     assert fv["PLS_BM_Approval_Reason__c"] == "PQA"
     # transport: percent 0.2001 ships as 20.01; currency 1:1
     assert fv["PLS_BM_Discount__c"] == 20.01
@@ -230,7 +233,7 @@ def test_acceptance_witness_falsifies_every_branch():
     assert s["PLS_BM_Risk_Level__c"] == "Low"
     assert s["PLS_BM_Compliance_Approved__c"] is True
     assert s["PLS_BM_Contract_Number__c"] == "PQA"
-    assert s["PLS_BM_Contract_Start_Date__c"] == FAR_FUTURE_DATE
+    assert s["PLS_BM_Contract_Start_Date__c"] == relative_date(1)
     # gates + transition intact
     assert s["PLS_BM_Deal_Type__c"] == "Enterprise"
     assert s["PLS_BM_Deal_Value__c"] == 2000000.01

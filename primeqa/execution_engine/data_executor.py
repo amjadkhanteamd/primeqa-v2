@@ -70,6 +70,7 @@ from primeqa.execution_engine.plan import (
     PlannedUpdate,
 )
 from primeqa.execution_engine.provisioning import CreatedRecordTracker
+from primeqa.execution_engine.temporal import TemporalBoundaryClient
 from primeqa.execution_engine.refs import resolve_field_value_refs, resolve_step_refs
 from primeqa.execution_engine.world import (
     _sf_field,
@@ -173,6 +174,15 @@ def execute_data_recipe(
     under the claim's identity (a wrong-green). ``None``/empty → no such
     conditions — byte-identical behavior."""
     nulls = frozenset(null_asserted_fields or ())
+    # VR06 arc: the run's single temporal reference + the ONE materialisation
+    # boundary — every create/update payload crosses it immediately before
+    # transport (symbolic RelativeDate -> ISO date anchored at RUN_DATE;
+    # unrecognized symbolic -> raise, never posted). Wrapping the client here
+    # covers every path by construction, incl. world-provisioned parent
+    # creates. The reference is captured LAZILY on the first symbolic value —
+    # a recipe with none is byte-identical (no extra org query).
+    if client is not None and not isinstance(client, TemporalBoundaryClient):
+        client = TemporalBoundaryClient(client)
     flagged = next(
         (s for s in plan.steps
          if getattr(s, "expect_rejection", None) is not None), None)
