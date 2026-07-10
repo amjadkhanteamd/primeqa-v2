@@ -28,7 +28,7 @@ _VERSIONS_DIR = _DIR / "versions"
 
 # The default version new generations use (replay pins its own version on the
 # request's operational_context.prompt_template_version, per D-071).
-CURRENT = "generation@v24"
+CURRENT = "generation@v25"
 
 # version id -> frozen composed artifact (filesystem-safe slug).
 _FILES = {
@@ -56,6 +56,7 @@ _FILES = {
     "generation@v22": _VERSIONS_DIR / "generation_v22.md",
     "generation@v23": _VERSIONS_DIR / "generation_v23.md",
     "generation@v24": _VERSIONS_DIR / "generation_v24.md",
+    "generation@v25": _VERSIONS_DIR / "generation_v25.md",
 }
 
 # Recorded SHA-256 of each frozen version's composed content (D-103.1 drift
@@ -178,6 +179,14 @@ RECORDED_HASHES = {
     # Phrased on every axis (threshold / derivability / testability / executability)
     # so the behaviour cannot relocate again.
     "generation@v24": "d7670bf7499202e67f231bafd89d38bf0a0208e5de6074ce1e34fb26a7814b0b",
+    # v25 (VR05 arc, AK 2026-07-10): the lock-prohibition contract — an
+    # immutability prohibition names the LOCK STATE (Stage=Approved), never a
+    # contorted "field changes" clause (the live catch: `Deal_Value exceeds
+    # Deal_Value`, a degenerate self-cross-field the D-330 filter can never
+    # match). Which field is protected and what mutation to attempt are the
+    # substrate's to derive from the org's own lock rule (ISCHANGED). Also pins
+    # compared_to != field. Same division-of-responsibility pattern as v23/v24.
+    "generation@v25": "6ae5e2707fe86f69bb110cca0c19d912f377ecf23c69a88e14ff4f2a6740a9a4",
 }
 
 # Working composition order — authors the NEXT frozen version (NOT runtime).
