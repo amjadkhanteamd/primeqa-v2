@@ -67,7 +67,9 @@ from primeqa.generation.protocol import (
     RefusalEntry,
 )
 from primeqa.semantic.edges import TIER_1_EDGES
-from primeqa.generation.transition import _flatten_and, _prior_constraint
+from primeqa.generation.transition import (
+    _flatten_and, _prior_constraint, temporal_boundary_shape,
+)
 from primeqa.generation.verified_negative import _RECORD_TYPES_KEY, _writable
 from primeqa.generation import control_relevance
 from primeqa.generation.formula_expectation import (
@@ -712,6 +714,15 @@ def _best_aligned_vr(vr_formulas: tuple[str, ...], grounded_conds) -> Optional[s
     prior_locked = _break_tie_by_prior_state(tied, grounded_conds)
     if prior_locked is not None:
         return prior_locked
+    # VR06 arc: the temporal-boundary SHAPE match — a claim conditioning a
+    # date field uniquely names the org's one temporal-boundary rule on it
+    # (AND(gate, OR(ISBLANK(d), d < TODAY()))); entailment is blind here too
+    # (the gate field is unpinned → unknown). Refuse-on-non-unique as always.
+    temporal = [t for t in tied
+                if (lambda sh: sh is not None
+                    and sh[2].lower() in claim_fields)(temporal_boundary_shape(t))]
+    if len(temporal) == 1:
+        return temporal[0]
     return _break_tie_by_cross_field(tied, claim_fields)   # D-296; None if non-unique
 
 

@@ -631,6 +631,46 @@ class TemporalExperiment:
     provenance: dict
 
 
+def temporal_boundary_shape(formula_text: str) -> Optional[tuple]:
+    """Pure shape recognizer for the bounded TEMPORAL-BOUNDARY rule:
+    ``AND(<to-state gate>, OR(ISBLANK(d), d < TODAY()))`` → ``(gate_field,
+    gate_value, date_field)``, else ``None``. Shared by the experiment deriver
+    and the selection tie-break (a claim conditioning the date field uniquely
+    names the org's one temporal-boundary rule on it — relevance by shape,
+    where entailment is blind: the gate field is unpinned → unknown)."""
+    ast = parse(formula_text)
+    if not is_parsed(ast) or not isinstance(ast, And):
+        return None
+    conjuncts = _flatten_and(ast)
+    if len(conjuncts) != 2:
+        return None
+    gate = disj = None
+    for c in conjuncts:
+        if isinstance(c, Or):
+            disj = c
+        elif _to_state_constraint(c) is not None:
+            gate = c
+    if gate is None or disj is None or len(disj.operands) != 2:
+        return None
+    blank_branch = today_branch = None
+    for b in disj.operands:
+        if (isinstance(b, FunctionCall) and b.name in ("ISBLANK", "ISNULL")
+                and len(b.args) == 1 and isinstance(b.args[0], FieldRef)):
+            blank_branch = b
+        elif (isinstance(b, Comparison) and b.op == "<"
+                and isinstance(b.left, FieldRef)
+                and isinstance(b.right, FunctionCall)
+                and b.right.name == "TODAY"):
+            today_branch = b
+    if blank_branch is None or today_branch is None:
+        return None
+    f_date = today_branch.left.path[-1]
+    if blank_branch.args[0].path[-1] != f_date:
+        return None
+    gf, gv = _to_state_constraint(gate)
+    return gf, gv, f_date
+
+
 def satisfy_temporal_boundary(formula_text: str, meta: Optional[dict] = None,
                               sibling_items=None) -> Optional[TemporalExperiment]:
     """Recognize + satisfy the bounded TEMPORAL-BOUNDARY shape (VR06):
@@ -648,36 +688,11 @@ def satisfy_temporal_boundary(formula_text: str, meta: Optional[dict] = None,
     post-transition state. ``None`` on any other shape or an unverifiable /
     UNSAT arm — never a guessed experiment."""
     meta = meta or {}
+    shape = temporal_boundary_shape(formula_text)
+    if shape is None:
+        return None
+    gf, gv, f_date = shape
     ast = parse(formula_text)
-    if not is_parsed(ast) or not isinstance(ast, And):
-        return None
-    conjuncts = _flatten_and(ast)
-    if len(conjuncts) != 2:
-        return None
-    gate = disj = None
-    for c in conjuncts:
-        if isinstance(c, Or):
-            disj = c
-        elif _to_state_constraint(c) is not None:
-            gate = c
-    if gate is None or disj is None or len(disj.operands) != 2:
-        return None
-    gf, gv = _to_state_constraint(gate)
-    blank_branch = today_branch = None
-    for b in disj.operands:
-        if (isinstance(b, FunctionCall) and b.name in ("ISBLANK", "ISNULL")
-                and len(b.args) == 1 and isinstance(b.args[0], FieldRef)):
-            blank_branch = b
-        elif (isinstance(b, Comparison) and b.op == "<"
-                and isinstance(b.left, FieldRef)
-                and isinstance(b.right, FunctionCall)
-                and b.right.name == "TODAY"):
-            today_branch = b
-    if blank_branch is None or today_branch is None:
-        return None
-    f_date = today_branch.left.path[-1]
-    if blank_branch.args[0].path[-1] != f_date:
-        return None                                # two different date fields
 
     prior = _alternative_value(gf, gv, meta)
     if prior is None:
