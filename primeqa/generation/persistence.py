@@ -126,6 +126,16 @@ class LedgerPersister:
             session, identity_hash=new_hash,
             identity_hash_version=IDENTITY_HASH_VERSION,
         )
+        # A DEPRECATED claim is not an equivalent for regeneration purposes:
+        # deprecation is a human governance signal (D-ε-1) that this test is
+        # withdrawn — the documented deprecate-then-regenerate procedure expects
+        # the regen to mint FRESH (that is how a defective recipe, which rides
+        # OUTSIDE identity per D-110.3, gets superseded). Without this filter a
+        # same-hash regen silently no-ops against the deprecated row forever:
+        # the stale recipe survives and no fresh equivalent can ever mint
+        # (caught live on req-315: the deprecated 125%-witness VR08 claim
+        # captured the post-P1 regen and blocked the 25.01 witness).
+        equivalent = [c for c in equivalent if c.status != "deprecated"]
         existing_test_id = equivalent[0].test_id if equivalent else None
 
         cr = self._coordinator.write_claim(
