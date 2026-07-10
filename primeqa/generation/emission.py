@@ -44,6 +44,10 @@ from typing import Any, Optional, Union
 from uuid import UUID
 
 from primeqa.generation.enums import AdmissibilityLayer, CaveatKind
+from primeqa.generation.fixture import (
+    FixtureUnsat, ROLE_CONTEXT, ROLE_TARGET_ACTIVATION, ROLE_TARGET_WITNESS,
+    complete_accept_fixture,
+)
 from primeqa.generation.typed_value import transport_payload as _to_transport_payload
 from primeqa.generation.semantic_completeness import caveat_kind, requires_caveat
 from primeqa.generation.verified_negative import (
@@ -992,6 +996,7 @@ def _update_rejected_recipe(
 def _boundary_accept_recipe(
     *, subject_entity_type: str, subject_external_id: str,
     payload: dict, edge: str, boundary_field: Optional[str] = None,
+    fixture_provenance: Optional[dict] = None,
 ) -> tuple[DataMutationTriggerBody, DataRecipeBody, ExecutionEnvironmentBody]:
     """Build the (trigger, recipe, env) triple for a D-300 **just-inside accept
     probe**: create the subject AT the boundary-adjacent non-firing value and
@@ -1049,12 +1054,18 @@ def _boundary_accept_recipe(
             ),
         ],
     )
+    detail = (f"bva boundary probe ({edge}): create a "
+              f"{subject_external_id} record with {field_bare}={value!r} — "
+              f"the boundary-adjacent NON-firing value — and expect the "
+              f"create to SUCCEED (no validation rule fires)")
+    if fixture_provenance:
+        # The durable record of WHY each field is staged (AK Option-1 scope):
+        # target witness / target activation / context / sibling isolation.
+        parts = [f"{f}={payload.get(f)!r} [{role}: {str(src)[:60]}]"
+                 for f, (role, src) in sorted(fixture_provenance.items())]
+        detail += "; fixture provenance: " + "; ".join(parts)
     env = ExecutionEnvironmentBody(auth_assumptions=[AuthAssumption(
-        auth_kind="data_api_user",
-        details=(f"bva boundary probe ({edge}): create a "
-                 f"{subject_external_id} record with {field_bare}={value!r} — "
-                 f"the boundary-adjacent NON-firing value — and expect the "
-                 f"create to SUCCEED (no validation rule fires)"),
+        auth_kind="data_api_user", details=detail,
     )])
     return trigger, recipe, env
 
@@ -1078,6 +1089,7 @@ def author_boundary_recipes(
             subject_external_id=subject_external_id,
             payload=m.payload, edge=m.edge,
             boundary_field=getattr(m, "boundary_field", None),
+            fixture_provenance=getattr(m, "fixture_provenance", None),
         )
         out.append(BoundaryRecipe(
             trigger_kind="data-mutation-trigger", recipe_kind="data-recipe",
@@ -1484,6 +1496,45 @@ def _author_negative(g: GroundedNegative, *,
     strategy = None
     if enable_bva_boundaries and verified and source_formula:
         members = derive_boundary_set(parse(source_formula), g.field_metadata)
+        if members:
+            # Deterministic accept-fixture completion (AK Option-1 scope; the
+            # D-347 satisfaction operation's first production consumer): the
+            # accept probe's staged values may ARM a SIBLING control (live
+            # catch: Enterprise + Discount 25% armed VR02's approval-reason
+            # requiredness — the probe was setup-rejected by a rule that is
+            # not under test). Complete the fixture on FREE dimensions only —
+            # every staged field is PROTECTED (the boundary witness + its
+            # gates/context are preserved exactly); a sibling silenceable only
+            # on a protected dimension is UNSAT → author NO probe (the claim
+            # stays single) rather than modify what is under test. Runs in the
+            # FORMULA domain, before transport. Provenance classifies every
+            # payload value (target witness / activation / context / sibling
+            # isolation) and rides the probe's env detail.
+            vr_items = [(msg or text, text)
+                        for text, msg in (g.vr_messages or {}).items()] or [
+                (t, t) for t in g.vr_formulas]
+            completed = []
+            for m in members:
+                if m.expect_reject:
+                    completed.append(m)
+                    continue
+                comp = complete_accept_fixture(
+                    m.payload, set(m.payload), vr_items, g.field_metadata)
+                if isinstance(comp, FixtureUnsat):
+                    completed = None            # UNSAT → no probe, claim single
+                    break
+                prov = {
+                    f: ((ROLE_TARGET_WITNESS, source_formula)
+                        if f == m.boundary_field
+                        else (ROLE_CONTEXT, "record type")
+                        if f == "RecordTypeId"
+                        else (ROLE_TARGET_ACTIVATION, source_formula))
+                    for f in m.payload}
+                prov.update(comp.provenance)
+                completed.append(replace(
+                    m, payload={**m.payload, **comp.fills},
+                    fixture_provenance=prov))
+            members = tuple(completed) if completed is not None else ()
         if members:
             # P1: boundary payloads are FORMULA-domain (derive's domain) — map
             # them through the D-346 typed value boundary like every other

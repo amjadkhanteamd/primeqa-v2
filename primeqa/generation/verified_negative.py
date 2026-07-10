@@ -102,6 +102,12 @@ class BoundaryMember:
     # RecordTypeId, so the payload is no longer single-key). ``None`` only on
     # hand-built members; ``derive_boundary_set`` always fills it.
     boundary_field: Optional[str] = None
+    # Fixture-completion provenance (AK Option-1 scope): {field: (role, source)}
+    # for every payload value — target witness / target activation / context /
+    # sibling isolation. Stamped by emission's accept-fixture completion;
+    # rendered into the probe's env detail (the durable record of WHY each
+    # field is staged). ``None`` = no completion ran (pre-completion members).
+    fixture_provenance: Optional[dict] = None
 
 
 @dataclass(frozen=True)

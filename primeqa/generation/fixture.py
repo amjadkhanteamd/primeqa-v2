@@ -26,13 +26,22 @@ criteria, approval criteria, required fields, record types) — same IR, same so
 """
 from __future__ import annotations
 
-from typing import Optional
+from dataclasses import dataclass, field
+from typing import Any, Optional
 
 from primeqa.generation.verified_negative import (
     _Undecidable, _satisfy, _unwrap_soft,
 )
 from primeqa.semantic.formula import And, is_parsed, parse
 from primeqa.semantic.formula.eval import evaluate
+
+# Provenance roles for deterministic fixture completion (AK, Amendment B /
+# Option-1 scope): every value in a completed fixture is classified as exactly
+# one of these — the record of WHY each field is staged.
+ROLE_TARGET_WITNESS = "target witness"        # the boundary/violating value under test
+ROLE_TARGET_ACTIVATION = "target activation"  # a gate conjunct that arms the target rule
+ROLE_CONTEXT = "context"                      # the record-context dimension (RecordTypeId)
+ROLE_SIBLING_ISOLATION = "sibling isolation"  # a free-dimension fill silencing a sibling control
 
 
 def _falsify_off_target(sibling_ast, avoid: set, meta: dict) -> Optional[dict]:
@@ -51,6 +60,85 @@ def _falsify_off_target(sibling_ast, avoid: set, meta: dict) -> Optional[dict]:
         if asg and not (set(asg) & avoid):
             return asg
     return None
+
+
+@dataclass(frozen=True)
+class FixtureCompletion:
+    """A deterministic accept-fixture completion: the free-dimension ``fills``
+    added to silence sibling controls, plus per-fill ``provenance``
+    ``{field: (ROLE_SIBLING_ISOLATION, sibling_vr_name)}``. The staged
+    (protected) fields are NOT here — their roles are the caller's to declare
+    (it knows which is the target witness vs a gate vs the context)."""
+    fills: dict = field(default_factory=dict)
+    provenance: dict = field(default_factory=dict)
+
+
+@dataclass(frozen=True)
+class FixtureUnsat:
+    """The completion refused: a firing sibling can only be silenced on a
+    PROTECTED dimension (target witness / activation / context), which must be
+    preserved exactly — never modified to make a fixture work (AK Option-1
+    scope). The probe is not authored; the reason names the sibling."""
+    reason: str
+
+
+def complete_accept_fixture(staged: dict, protected: set, vr_items,
+                            field_metadata: Optional[dict] = None):
+    """Deterministic fixture completion for an ACCEPT-shaped member (the D-347
+    satisfaction operation's first production consumer — AK Option-1 scope).
+
+    ``staged`` is the member's payload in the FORMULA domain (the boundary
+    witness + its gates/context); every field in ``protected`` is preserved
+    exactly. For each ACTIVE sibling control in ``vr_items``
+    (``[(vr_name, formula_text), ...]``) that PROVABLY FIRES over
+    ``staged ⊕ fills`` under run-time semantics (``evaluate``, absent = blank —
+    the satisfaction semantic, D-347), derive a fill on a FREE dimension that
+    silences it (:func:`_falsify_off_target` — values come from the
+    certainty-bounded ``_satisfy`` / typed ``_nonblank_value`` generators, never
+    hard-coded filler). Returns :class:`FixtureCompletion` or
+    :class:`FixtureUnsat` when a firing sibling is only silenceable on a
+    protected dimension.
+
+    Honest bounds (unchanged from the spike, named so the caller can report):
+    an UNPARSEABLE sibling, or one whose firing is UNPROVABLE at create time
+    (org-state functions — ``ISCHANGED`` is false on insert; ``evaluate``
+    returns unknown), is SKIPPED — no fill is guessed for it and the run-time
+    R1 padding + honest ``setup_rejection`` taxonomy remain its backstop,
+    byte-identical to today. Only a *provably firing* sibling demands a fill.
+    A final whole-set verification re-evaluates every sibling over the
+    completed payload so fill interactions cannot slip through."""
+    meta = field_metadata or {}
+    fills: dict = {}
+    provenance: dict = {}
+    parsed = []
+    for name, text in sorted(set((str(n), str(t)) for n, t in vr_items or ())):
+        ast = parse(text)
+        if is_parsed(ast):
+            parsed.append((name, ast))
+    for name, ast in parsed:                       # deterministic: sorted order
+        state = {**staged, **fills}
+        if evaluate(ast, state) is not True:
+            continue                                # not provably firing -> skip
+        off = _falsify_off_target(ast, protected | set(fills), meta)
+        if off is None:
+            return FixtureUnsat(
+                f"sibling control {name!r} fires over the staged accept state "
+                f"and can only be silenced on a protected dimension — the "
+                f"fixture cannot be completed without modifying the value or "
+                f"context under test")
+        for f, v in off.items():
+            fills[f] = v
+            provenance[f] = (ROLE_SIBLING_ISOLATION, name)
+    # Whole-set verification: no parseable sibling may provably fire over the
+    # COMPLETED payload (fill interactions; single-pass ordering artifacts).
+    final = {**staged, **fills}
+    for name, ast in parsed:
+        if evaluate(ast, final) is True:
+            return FixtureUnsat(
+                f"sibling control {name!r} still fires over the completed "
+                f"fixture (fill interaction) — refusing rather than emitting "
+                f"a probe another control would reject")
+    return FixtureCompletion(fills=fills, provenance=provenance)
 
 
 def solve_fixture(target_formula: str, sibling_formulas,
