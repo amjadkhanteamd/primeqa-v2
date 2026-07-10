@@ -368,17 +368,40 @@ def _project_negative(steps, *, recipe_id) -> tuple:
 
     # D-333: peel the approval-action arc — contiguous ApprovalActionSteps
     # immediately after the setup create, before the rejected mutation.
+    # VR05 arc: an ENTRY UpdateStep (expect_acceptance, no expect_rejection)
+    # may also interpose — the org's own transition establishing the prior
+    # state the mutation is then rejected under (a direct create into a gated
+    # state would bypass the org's controls). Same staging semantics as the
+    # arc: the entry must SUCCEED or the prohibition was never exercised.
     arc = []
+    entries = []
     n = 1
-    while n < len(steps) and isinstance(steps[n], ApprovalActionStep):
-        arc.append(steps[n])
+    while n < len(steps):
+        step = steps[n]
+        if isinstance(step, ApprovalActionStep):
+            arc.append(step)
+        elif (isinstance(step, UpdateStep) and step.expect_acceptance
+                and step.expect_rejection is None
+                and n + 1 < len(steps)):
+            if (not isinstance(step.target, LogicalRef)
+                    or step.target.external_id
+                    != create.target_object.external_id):
+                raise PlanTranslationError(
+                    f"entry update {step.step_id!r} must target the setup "
+                    f"create's object {create.target_object.external_id!r}",
+                    recipe_id=recipe_id,
+                )
+            entries.append(step)
+        else:
+            break
         n += 1
 
     if len(steps) != n + 1:
         shape = ", ".join(type(s).__name__ for s in steps)
         raise PlanTranslationError(
             f"a behavioral negative is 1 step (create-rejected) or a setup "
-            f"create -> [ApprovalActionStep x K, D-333] -> rejected "
+            f"create -> [ApprovalActionStep x K, D-333 | entry "
+            f"update-expect-acceptance x K, VR05 arc] -> rejected "
             f"update/delete; got {len(steps)} steps [{shape}] (N-step "
             f"negatives are deferred, 5b-2)",
             recipe_id=recipe_id,
@@ -430,6 +453,16 @@ def _project_negative(steps, *, recipe_id) -> tuple:
             step_id=a.step_id, action=a.action, comment=a.comment,
             setup_step_id=create.step_id)
         for a in arc)
+    # VR05 arc: entry updates ride BEFORE the arc in the planned middle (the
+    # authored order is create -> entries -> mutation; arc and entries do not
+    # mix today — each comes from a different author).
+    planned_arc = tuple(
+        PlannedUpdate(
+            step_id=e.step_id, target_object=e.target,
+            field_changes=dict(e.field_changes),
+            expect_rejection=None, expect_acceptance=True,
+            setup_step_id=create.step_id)
+        for e in entries) + planned_arc
     if isinstance(mutation, UpdateStep):
         return (
             planned_setup,

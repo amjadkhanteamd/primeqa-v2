@@ -405,6 +405,31 @@ def _run_negative_with_setup(
     c_end = _now()
     tracker.record(sobject, record_id)      # the subject joins after its parents
 
+    # 2a-entry (VR05 arc): the ENTRY updates — the org's own transition(s)
+    # establishing the prior state the mutation is then rejected under (e.g.
+    # Stage -> Approved past VR10's gate; a direct create into the gated state
+    # would bypass the org's controls). STAGING, like the arc: each must
+    # SUCCEED; any transport raise or org refusal means the prohibition was
+    # never exercised -> errored (never failed).
+    entry_evs: tuple = ()
+    entries = tuple(s for s in middle
+                    if isinstance(s, PlannedUpdate)
+                    and getattr(s, "expect_acceptance", False))
+    if entries:
+        entry_evs, entry_err = _run_entry_updates(
+            entries, sobject, record_id, client)
+        if entry_err is not None:
+            tracker.teardown(client, _best_effort_delete)
+            return _result(plan, run_id, started, environment_id,
+                           (_evidence(
+                               setup, sobject, c_start, c_end,
+                               http_status=http_status, success=True,
+                               rejection_body=(), matched=None,
+                               cleanup=CleanupRecord(attempted=False),
+                               field_values=field_values),) + entry_evs,
+                           "errored", entry_err,
+                           created_records=tracker.records)
+
     # 2b. D-333: the approval-action arc — staging, between setup and the
     #     prohibited mutation. Any arc break is `errored` (the prohibition
     #     was never exercised); a pending instance is RECALLED before
@@ -451,7 +476,7 @@ def _run_negative_with_setup(
         field_values=field_values)
 
     return _result(plan, run_id, started, environment_id,
-                   (setup_ev,) + arc_evs + (mut_ev,),
+                   (setup_ev,) + entry_evs + arc_evs + (mut_ev,),
                    outcome, top_error, created_records=tracker.records)
 
 
@@ -543,6 +568,48 @@ def _mutation_evidence(mutation, sobject, record_id, changes, start, end, *,
     if isinstance(mutation, PlannedUpdate):
         return UpdateAttemptEvidence(field_changes=dict(changes or {}), **common)
     return DeleteAttemptEvidence(**common)
+
+
+def _run_entry_updates(entries, sobject, record_id, client):
+    """Run the VR05-arc ENTRY updates (the org's own transition into the gated
+    prior state) against the setup record, in order. STAGING — each must
+    SUCCEED; a transport raise or org refusal returns ``(evidences, error)``
+    with the error set (the caller renders ``errored``: the prohibition under
+    test was never exercised, never ``failed``)."""
+    evidences: list = []
+    for i, step in enumerate(entries):
+        changes = _sf_fields(step.field_changes, sobject)
+        start = _now()
+        try:
+            env = client.update(sobject, record_id, changes)
+        except SFClientError as e:
+            end = _now()
+            err = ErrorSurface(phase="update-entry", error_type=type(e).__name__,
+                               message=str(e))
+            evidences.append(_mutation_evidence(
+                step, sobject, record_id, changes, start, end,
+                http_status=None, success=False, rejection_body=(),
+                matched=None, error=err, ordinal=1 + i))
+            return tuple(evidences), err
+        end = _now()
+        http = env["http_status"]
+        if not env["success"]:
+            body = _as_error_tuple(env["api_response"]["body"])
+            err = ErrorSurface(
+                phase="update-entry", error_type="EntryRejected",
+                message=(f"the entry transition {step.step_id!r} was rejected "
+                         f"by the org — the prior state was never established, "
+                         f"so the prohibition under test was never exercised"))
+            evidences.append(_mutation_evidence(
+                step, sobject, record_id, changes, start, end,
+                http_status=http, success=False, rejection_body=body,
+                matched=None, error=err, ordinal=1 + i))
+            return tuple(evidences), err
+        evidences.append(_mutation_evidence(
+            step, sobject, record_id, changes, start, end,
+            http_status=http, success=True, rejection_body=(),
+            matched=None, ordinal=1 + i))
+    return tuple(evidences), None
 
 
 # --- D-333: the approval-action arc ----------------------------------------
