@@ -67,6 +67,7 @@ from primeqa.generation.protocol import (
     RefusalEntry,
 )
 from primeqa.semantic.edges import TIER_1_EDGES
+from primeqa.generation.decision_branch import decision_branch_shape
 from primeqa.generation.transition import (
     _flatten_and, _prior_constraint, temporal_boundary_shape,
 )
@@ -723,7 +724,27 @@ def _best_aligned_vr(vr_formulas: tuple[str, ...], grounded_conds) -> Optional[s
                     and sh[2].lower() in claim_fields)(temporal_boundary_shape(t))]
     if len(temporal) == 1:
         return temporal[0]
-    return _break_tie_by_cross_field(tied, claim_fields)   # D-296; None if non-unique
+    # D-296 cross-field first — an exact structural pair match is the stronger
+    # evidence and must not be stolen by the shape heuristics below.
+    crossed = _break_tie_by_cross_field(tied, claim_fields)
+    if crossed is not None:
+        return crossed
+    # VR03 arc: the DECISION-shape match — a static AND(gates, OR(branches))
+    # rule (org-state formulas are excluded by the recognizer: VR10 also reads
+    # as gates+OR but is transition-shaped and owned by that machinery).
+    # Qualifies only when the claim pins AT LEAST TWO condition fields (one
+    # generic field naming several rules is D-295.1's ambiguous case — refuse
+    # stands) and EVERY one of them belongs to the rule (a claim naming fields
+    # outside it is about something else); the sole such decision-shaped rule
+    # wins. Refuse-on-non-unique as always.
+    if len(claim_fields) < 2:
+        return None
+    decision = [t for t in tied
+                if decision_branch_shape(t) is not None
+                and claim_fields <= _vr_formula_fields(t)]
+    if len(decision) == 1:
+        return decision[0]
+    return None
 
 
 def _align_vr_to_conditions(

@@ -28,7 +28,7 @@ _VERSIONS_DIR = _DIR / "versions"
 
 # The default version new generations use (replay pins its own version on the
 # request's operational_context.prompt_template_version, per D-071).
-CURRENT = "generation@v25"
+CURRENT = "generation@v26"
 
 # version id -> frozen composed artifact (filesystem-safe slug).
 _FILES = {
@@ -57,6 +57,7 @@ _FILES = {
     "generation@v23": _VERSIONS_DIR / "generation_v23.md",
     "generation@v24": _VERSIONS_DIR / "generation_v24.md",
     "generation@v25": _VERSIONS_DIR / "generation_v25.md",
+    "generation@v26": _VERSIONS_DIR / "generation_v26.md",
 }
 
 # Recorded SHA-256 of each frozen version's composed content (D-103.1 drift
@@ -187,6 +188,13 @@ RECORDED_HASHES = {
     # substrate's to derive from the org's own lock rule (ISCHANGED). Also pins
     # compared_to != field. Same division-of-responsibility pattern as v23/v24.
     "generation@v25": "6ae5e2707fe86f69bb110cca0c19d912f377ecf23c69a88e14ff4f2a6740a9a4",
+    # v26 (VR03 arc, AK 2026-07-10): the numeric-threshold contract — a
+    # field-vs-NUMBER condition has NO predicate and exceeds is strictly
+    # field-vs-FIELD (compared_to real + different, never null); name the other
+    # expressible state fields and leave the threshold to the substrate (the
+    # live catch: AC4 proposed Deal_Value exceeds compared_to=null, breaking the
+    # whole intent's grounding — the FOURTH vocabulary-gap instance).
+    "generation@v26": "8c14224439fe937a4f7a9e83b6957bdf654aec6fa4f5939e5811a6f65b4cbaa7",
 }
 
 # Working composition order — authors the NEXT frozen version (NOT runtime).

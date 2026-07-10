@@ -63,6 +63,11 @@ def decision_branch_shape(formula_text: str) -> Optional[tuple]:
     ast = parse(formula_text)
     if not is_parsed(ast) or not isinstance(ast, And):
         return None
+    # An org-state formula is TRANSITION-shaped (owned by that machinery) —
+    # VR10 also reads as AND(gates, OR(...)) but is not a static decision.
+    from primeqa.generation.transition import has_transition_semantics
+    if has_transition_semantics(formula_text):
+        return None
     conjuncts = _flatten_and(ast)
     disj = [c for c in conjuncts if isinstance(c, Or)]
     gates = [c for c in conjuncts if not isinstance(c, Or)]
