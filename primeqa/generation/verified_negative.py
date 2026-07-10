@@ -65,6 +65,11 @@ _CROSS_PAIR = {">": (1, 0), ">=": (1, 0), "<": (0, 1), "<=": (0, 1),
 @dataclass(frozen=True)
 class VerifiedNegative:
     violating_payload: dict[str, Any]   # {field_name: value}; value None = blank
+    # DecisionBranchCoverage (VR03 arc): the full experiment when the formula
+    # is the bounded AND(gates, OR(branches)) decision shape — the primary IS
+    # its first firing arm; emission authors the rest as probes. None → the
+    # ordinary single-witness negative (byte-identical).
+    decision: Optional[Any] = None
 
 
 @dataclass(frozen=True)

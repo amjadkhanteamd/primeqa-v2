@@ -48,6 +48,7 @@ from primeqa.generation.fixture import (
     FixtureUnsat, ROLE_CONTEXT, ROLE_TARGET_ACTIVATION, ROLE_TARGET_WITNESS,
     complete_accept_fixture,
 )
+from primeqa.generation.decision_branch import satisfy_decision_branches
 from primeqa.generation.transition import (
     derive_prior_state_control, has_transition_semantics, satisfy_transition,
     satisfy_transition_acceptance, satisfy_temporal_boundary,
@@ -935,9 +936,23 @@ def _derive_prohibition_recipe(
                     source = text
                     break
         if update_pair is None:
+            # VR03 arc: DecisionBranchCoverage — the bounded
+            # AND(gates, OR(branches)) decision shape. The primary IS the
+            # first isolated firing arm (create-rejected); the second firing
+            # arm + the gate necessity controls ride as probes.
+            for text in vr_formulas:
+                dexp = satisfy_decision_branches(
+                    text, field_metadata, sibling_items=sibling_vr_items)
+                if dexp is not None:
+                    violation = VerifiedNegative(
+                        violating_payload=dexp.arms[0].payload,
+                        decision=dexp)
+                    source = text
+                    break
+        if update_pair is None and violation is None:
             update_pair, source = _derive_update_violation(
                 vr_formulas, field_metadata)
-        if update_pair is None:
+        if update_pair is None and violation is None:
             violation, source = _derive_violation(vr_formulas, field_metadata)
     elif operation == "create_duplicate":
         violation, source = _derive_violation(vr_formulas, field_metadata)
@@ -1664,6 +1679,55 @@ def _author_negative(g: GroundedNegative, *,
     # to-state persisted. Witness None (underivable / UNSAT) → no probe (the
     # negative stands alone) — an acceptance is never emitted on a fixture the
     # rule might still reject.
+    if (enable_bva_boundaries and violation is not None
+            and getattr(violation, "decision", None) is not None):
+        # VR03 arc: DecisionBranchCoverage probes — the primary is the first
+        # isolated firing arm; here ride the remaining firing arm(s) (each
+        # requiring target attribution) + the gate NECESSITY controls (each
+        # must be ACCEPTED, read back on its varied dimension).
+        dexp = violation.decision
+        _raw = (g.vr_messages or {}).get(source_formula)
+        _msg = html.unescape(_raw) if _raw else None
+        probes = []
+        for arm in dexp.arms[1:]:
+            if arm.expect_reject:
+                t_, r_, e_ = _behavioral_recipe(
+                    subject_entity_type=g.subject.entity_type,
+                    subject_external_id=g.subject.external_id,
+                    violating_payload=_to_transport_payload(
+                        arm.payload, g.field_metadata),
+                    env_detail=(
+                        f"decision-branch firing arm ({arm.label}): the "
+                        f"{arm.varied_field} branch fires with every other "
+                        f"branch held false — expect rejection attributed to "
+                        f"the rule under test"),
+                    error_message=_msg,
+                )
+                probes.append(BoundaryRecipe(
+                    trigger_kind="data-mutation-trigger",
+                    recipe_kind="data-recipe",
+                    causal_initiation=t_, observation_realization=r_,
+                    execution_environment=e_,
+                    priority=_BOUNDARY_PROBE_PRIORITY))
+            else:
+                t_, r_, e_ = _boundary_accept_recipe(
+                    subject_entity_type=g.subject.entity_type,
+                    subject_external_id=g.subject.external_id,
+                    payload=_to_transport_payload(
+                        arm.payload, g.field_metadata),
+                    edge=arm.label,
+                    boundary_field=arm.varied_field,
+                    fixture_provenance=arm.provenance,
+                )
+                probes.append(BoundaryRecipe(
+                    trigger_kind="data-mutation-trigger",
+                    recipe_kind="data-recipe",
+                    causal_initiation=t_, observation_realization=r_,
+                    execution_environment=e_,
+                    priority=_BOUNDARY_PROBE_PRIORITY))
+        if probes:
+            boundary = tuple(probes)
+            strategy = "bva"
     if (enable_bva_boundaries
             and getattr(update_pair, "temporal", None) is not None):
         # VR06 arc: the temporal experiment's probe arms — the primary is the
@@ -1753,7 +1817,10 @@ def _author_negative(g: GroundedNegative, *,
                     subject_external_id=g.subject.external_id,
                     witness=_accept, field_metadata=g.field_metadata),)
                 strategy = "bva"
-    if enable_bva_boundaries and verified and source_formula:
+    if (enable_bva_boundaries and verified and source_formula
+            and not boundary):
+        # (the transition / temporal / decision experiments above own their
+        # probe sets; the D-300 boundary machinery must not overwrite them)
         members = derive_boundary_set(parse(source_formula), g.field_metadata)
         if members:
             # Deterministic accept-fixture completion (AK Option-1 scope; the
