@@ -49,8 +49,8 @@ from dataclasses import dataclass, field
 from typing import Any, Optional
 
 from primeqa.generation.fixture import (
-    ROLE_SIBLING_ISOLATION, ROLE_TARGET_ACTIVATION, ROLE_TARGET_WITNESS,
-    _falsify_off_target,
+    ROLE_CONTEXT, ROLE_SIBLING_ISOLATION, ROLE_TARGET_ACTIVATION,
+    ROLE_TARGET_WITNESS, _falsify_off_target,
 )
 from primeqa.generation.formula_expectation import as_decimal
 from primeqa.generation.verified_negative import (
@@ -100,11 +100,21 @@ class TransitionWitness:
     ``setup`` create (the prior state, plus every gate value, falsified branch
     and sibling-isolation fill — everything held through the update) and the
     ``changes`` update that IS the transition the org must reject. Provenance
-    classifies every staged value (AK Option-1 roles)."""
+    classifies every staged value (AK Option-1 roles).
+
+    ``entry_changes`` (the VR05 arc): when the witness's PRIOR state is itself
+    GATED by a sibling transition control (Stage=Approved is entered only past
+    VR10's gate), a direct create into that state would BYPASS the org's own
+    controls — so the prior state is established through the LEGITIMATE path:
+    the create stages the entry control's acceptance fixture and
+    ``entry_changes`` is the first, expected-to-SUCCEED update (the org's own
+    transition), after which ``changes`` is the mutation under test. Empty →
+    the ordinary 2-step pair."""
     setup: dict
     changes: dict
     provenance: dict = field(default_factory=dict)   # {field: (role, source)}
     violated_branch: str = ""                        # human: the ONE violated condition
+    entry_changes: dict = field(default_factory=dict)
 
 
 def has_transition_semantics(formula_text: str) -> bool:
@@ -336,9 +346,16 @@ def satisfy_transition(formula_text: str, meta: Optional[dict] = None,
     except _Undecidable:
         return None
 
+    prior_pins = [(f, setup[f]) for f in
+                  {p[0] for p in map(_prior_constraint, conjuncts) if p}
+                  if f in setup]
+
     if disjunction is None:
         witness = TransitionWitness(setup=dict(setup), changes=dict(changes),
                                     provenance=dict(provenance))
+        witness = _compose_entry(witness, ast, prior_pins, meta, sibling_items)
+        if witness is None:
+            return None
         return _complete(witness, meta, sibling_items)
 
     # Exactly-one-branch violation: first derivable-and-isolatable in formula order.
@@ -506,6 +523,128 @@ def _falsify_branch(node, meta) -> Optional[dict]:
         return None
 
 
+def _compose_entry(witness: TransitionWitness, target_ast, prior_pins,
+                   meta, sibling_items) -> Optional[TransitionWitness]:
+    """The LEGITIMATE-PATH composition (AK, VR05 arc): when the witness's prior
+    state pins a field value whose ENTRY is gated by exactly one sibling
+    transition control (Stage=Approved is entered only past VR10), a direct
+    create into that state would bypass the org's own controls — so the prior
+    state is established through the gate itself: the create stages the entry
+    control's ACCEPTANCE fixture, ``entry_changes`` is the org's own transition
+    (expected to succeed), and the witness's mutation is recomputed against the
+    post-entry state. Unchanged when nothing pins a gated state (a direct
+    create bypasses nothing); ``None`` (refuse) when the entry path is
+    ambiguous (>1 gate), underivable, or the recomputed mutation cannot be
+    verified — never a bypassing fixture."""
+    if not prior_pins or not sibling_items:
+        return witness
+    for f, v in prior_pins:
+        gates = []
+        for name, text in sibling_items:
+            sast = parse(text)
+            if not is_parsed(sast) or not isinstance(sast, And):
+                continue
+            conj = _flatten_and(sast)
+            if (f in _ischanged_fields(conj)
+                    and any(_to_state_constraint(c) == (f, v) for c in conj)):
+                gates.append((name, text))
+        if not gates:
+            continue                       # ungated state — direct create is honest
+        if len(gates) > 1:
+            return None                    # ambiguous entry path — refuse
+        entry = satisfy_transition_acceptance(gates[0][1], meta, sibling_items)
+        if entry is None:
+            return None                    # cannot legitimately reach the prior state
+        post_entry = {**entry.setup, **entry.changes}
+        new_changes: dict = {}
+        for g, nv in witness.changes.items():
+            cur = post_entry.get(g)
+            if cur is None:
+                new_changes[g] = nv
+                continue
+            alt = _different_value(g, cur, meta)
+            if alt is None:
+                return None
+            new_changes[g] = alt
+        setup = dict(entry.setup)
+        for sf, sv in witness.setup.items():
+            if sf == f or sf in witness.changes:
+                continue                   # the pin is realized by the entry; the
+            if sf in setup and setup[sf] != sv:   # ISCHANGED initial: entry wins
+                return None
+            setup.setdefault(sf, sv)
+        prov = dict(entry.provenance)
+        prov.update({pf: pr for pf, pr in witness.provenance.items()
+                     if pf not in prov})
+        prov[f] = (ROLE_CONTEXT,
+                   "prior state (established via the org's own transition control)")
+        for g in new_changes:
+            prov[g] = (ROLE_TARGET_WITNESS, f"the mutation under test ({g})")
+        composed = TransitionWitness(
+            setup=setup, changes=new_changes, provenance=prov,
+            violated_branch=witness.violated_branch,
+            entry_changes=dict(entry.changes))
+        # The target must fire over the MUTATION phase (post-entry prior).
+        ts = TransitionState(
+            prior=_bare({**setup, **entry.changes}),
+            next=_bare({**setup, **entry.changes, **new_changes}))
+        if evaluate_transition(target_ast, ts, absent="blank") is not True:
+            return None
+        return composed
+    return witness
+
+
+def derive_prior_state_control(formula_text: str, setup: dict, changes: dict,
+                               meta: Optional[dict] = None,
+                               sibling_items=None) -> Optional[TransitionWitness]:
+    """The PRIOR_STATE ContextDifferential control arm (AK, VR05 arc): the SAME
+    setup and the SAME mutation, with the entry transition OMITTED — the one
+    varied dimension is the prior-state context, so the accept↔reject delta is
+    attributable to the transition history alone. Returns the control witness
+    only when the target provably does NOT fire over the un-entered mutation
+    (and no parseable sibling provably fires); ``None`` otherwise — a control
+    is never emitted on a fixture some control might still reject."""
+    meta = meta or {}
+    ast = parse(formula_text)
+    if not is_parsed(ast):
+        return None
+    ts = TransitionState(prior=_bare(setup), next=_bare({**setup, **changes}))
+    if evaluate_transition(ast, ts, absent="blank") is not False:
+        return None
+    for name, text in sorted(set((str(n), str(t)) for n, t in (sibling_items or ())
+                                 if t != formula_text)):
+        sast = parse(text)
+        if is_parsed(sast) and evaluate_transition(sast, ts, absent="blank") is True:
+            return None
+    prov = {f: (ROLE_TARGET_ACTIVATION, "held constant (the differential's base)")
+            for f in setup}
+    for g in changes:
+        prov[g] = (ROLE_TARGET_WITNESS, f"the mutation under test ({g})")
+    return TransitionWitness(
+        setup=dict(setup), changes=dict(changes), provenance=prov,
+        violated_branch="")
+
+
+def _different_value(f: str, current: Any, meta: dict) -> Optional[Any]:
+    """A deterministic value ≠ ``current`` for field ``f`` — numeric steps by
+    the field's minimal increment (D-352), picklists take the sorted-first
+    alternative; refuse otherwise."""
+    from primeqa.generation.typed_value import minimal_increment
+    fm = (meta or {}).get(f) or {}
+    ft = (fm.get("field_type") or "").lower()
+    d = as_decimal(current)
+    if d is not None and ft in ("int", "integer", "double", "currency", "percent"):
+        from decimal import Decimal
+        inc = minimal_increment(ft, fm.get("scale")) or Decimal(1)
+        nd = d + inc
+        return int(nd) if nd == nd.to_integral_value() else float(nd)
+    vals = sorted(fm.get("picklist_values") or ())
+    for v in vals:
+        if v != current:
+            return v
+    return None
+
+
 def _complete(witness: TransitionWitness, meta,
               sibling_items) -> Optional[TransitionWitness]:
     """The D-354 completion, transition-aware: every sibling control that
@@ -519,16 +658,23 @@ def _complete(witness: TransitionWitness, meta,
         return witness
     setup = dict(witness.setup)
     provenance = dict(witness.provenance)
-    protected = set(setup) | set(witness.changes)
+    protected = set(setup) | set(witness.changes) | set(witness.entry_changes)
     parsed = []
     for name, text in sorted(set((str(n), str(t)) for n, t in sibling_items)):
         sast = parse(text)
         if is_parsed(sast):
             parsed.append((name, sast))
+
+    def _mutation_ts(s: dict) -> TransitionState:
+        # The MUTATION phase: for an entry-composed witness the prior is the
+        # post-entry state (the record after the org's own transition).
+        prior = {**s, **witness.entry_changes}
+        return TransitionState(prior=_bare(prior),
+                               next=_bare({**prior, **witness.changes}))
+
     for name, sast in parsed:
-        ts = TransitionState(prior=_bare(setup),
-                             next=_bare({**setup, **witness.changes}))
-        if evaluate_transition(sast, ts, absent="blank") is not True:
+        if evaluate_transition(sast, _mutation_ts(setup),
+                               absent="blank") is not True:
             continue
         off = _falsify_off_target(sast, protected, meta)
         if off is None:
@@ -538,14 +684,14 @@ def _complete(witness: TransitionWitness, meta,
             protected.add(f)
             provenance[f] = (ROLE_SIBLING_ISOLATION, name)
     # Whole-set verification over the completed witness.
-    ts = TransitionState(prior=_bare(setup),
-                         next=_bare({**setup, **witness.changes}))
     for name, sast in parsed:
-        if evaluate_transition(sast, ts, absent="blank") is True:
+        if evaluate_transition(sast, _mutation_ts(setup),
+                               absent="blank") is True:
             return None
     return TransitionWitness(setup=setup, changes=dict(witness.changes),
                              provenance=provenance,
-                             violated_branch=witness.violated_branch)
+                             violated_branch=witness.violated_branch,
+                             entry_changes=dict(witness.entry_changes))
 
 
 # ---------------------------------------------------------------------------

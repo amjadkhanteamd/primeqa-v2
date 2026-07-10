@@ -84,6 +84,11 @@ class VerifiedUpdateNegative:
     # (target witness / target activation / sibling isolation). ``None`` on the
     # ordinary single-formula derivation (pre-transition pairs, byte-identical).
     provenance: Optional[dict] = None
+    # The legitimate-path entry update (VR05 arc): when the prior state is
+    # gated by a sibling transition control, this expected-to-SUCCEED update
+    # (the org's own transition) precedes the violating one. None/empty → the
+    # ordinary 2-step pair.
+    entry_changes: Optional[dict] = None
 
 
 @dataclass(frozen=True)

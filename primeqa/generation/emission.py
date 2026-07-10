@@ -49,7 +49,8 @@ from primeqa.generation.fixture import (
     complete_accept_fixture,
 )
 from primeqa.generation.transition import (
-    has_transition_semantics, satisfy_transition, satisfy_transition_acceptance,
+    derive_prior_state_control, has_transition_semantics, satisfy_transition,
+    satisfy_transition_acceptance,
 )
 from primeqa.generation.typed_value import transport_payload as _to_transport_payload
 from primeqa.generation.semantic_completeness import caveat_kind, requires_caveat
@@ -911,7 +912,8 @@ def _derive_prohibition_recipe(
             if w is not None:
                 update_pair = VerifiedUpdateNegative(
                     setup_payload=w.setup, violating_changes=w.changes,
-                    provenance=w.provenance)
+                    provenance=w.provenance,
+                    entry_changes=(w.entry_changes or None))
                 source = text
                 break
         if update_pair is None:
@@ -982,6 +984,7 @@ def _update_rejected_recipe(
     *, subject_entity_type: str, subject_external_id: str,
     setup_payload: dict, violating_changes: dict, env_detail: str,
     error_message: Optional[str] = None,
+    entry_changes: Optional[dict] = None,
 ) -> tuple[DataMutationTriggerBody, DataRecipeBody, ExecutionEnvironmentBody]:
     """Build the (trigger, recipe, env) triple for an **update-rejected**
     negative (D-203): a setup ``CreateStep`` carrying the derived non-violating
@@ -1001,25 +1004,36 @@ def _update_rejected_recipe(
         operation="update", target=target,
         identity_context="system", volume="single",
     )
+    steps = [
+        CreateStep(
+            step_id="create-setup",
+            target_object=target,
+            field_values=_qualified(setup_payload),
+        ),
+    ]
+    if entry_changes:
+        # VR05 arc: the prior state is GATED — establish it through the org's
+        # own transition (expected to SUCCEED, D-306) before the mutation
+        # under test; a direct create into the state would bypass the gate.
+        steps.append(UpdateStep(
+            step_id="update-entry",
+            target=target,
+            field_changes=_qualified(entry_changes),
+            expect_acceptance=True,
+        ))
+    steps.append(UpdateStep(
+        step_id="update-violating",
+        target=target,
+        field_changes=_qualified(violating_changes),
+        expect_rejection=RejectionExpectation(
+            error_code=_VR_REJECTION_ERROR_CODE,
+            error_message_pattern=(
+                re.escape(error_message) if error_message else None)),
+    ))
     recipe = DataRecipeBody(
         api_choice="rest", identity_context="system",
         execution_mechanism="direct_api",
-        steps=[
-            CreateStep(
-                step_id="create-setup",
-                target_object=target,
-                field_values=_qualified(setup_payload),
-            ),
-            UpdateStep(
-                step_id="update-violating",
-                target=target,
-                field_changes=_qualified(violating_changes),
-                expect_rejection=RejectionExpectation(
-                    error_code=_VR_REJECTION_ERROR_CODE,
-                    error_message_pattern=(
-                        re.escape(error_message) if error_message else None)),
-            ),
-        ],
+        steps=steps,
     )
     env = ExecutionEnvironmentBody(auth_assumptions=[AuthAssumption(
         auth_kind="data_api_user", details=env_detail,
@@ -1144,6 +1158,7 @@ def author_boundary_recipes(
 def _transition_accept_probe(
     *, subject_entity_type: str, subject_external_id: str,
     witness, field_metadata: Optional[dict],
+    differential_note: Optional[str] = None,
 ) -> BoundaryRecipe:
     """The T3 positive as a probe on the transition-prohibition claim: create
     the witness's setup (every violation branch falsified, gates + siblings
@@ -1201,6 +1216,8 @@ def _transition_accept_probe(
               f"falsified and all sibling controls satisfied, apply the "
               f"transition update and expect the org to ACCEPT it, then read "
               f"back and assert {', '.join(asserts)} persisted")
+    if differential_note:
+        detail += f"; {differential_note}"
     if witness.provenance:
         parts = [f"{f} [{role}: {str(src)[:60]}]"
                  for f, (role, src) in sorted(witness.provenance.items())]
@@ -1562,6 +1579,8 @@ def _author_negative(g: GroundedNegative, *,
                 update_pair.violating_changes, g.field_metadata),
             env_detail=_detail,
             error_message=error_message,
+            entry_changes=_to_transport_payload(
+                getattr(update_pair, "entry_changes", None), g.field_metadata),
         )
         trigger_kind, recipe_kind = "data-mutation-trigger", "data-recipe"
     elif verified:
@@ -1630,16 +1649,37 @@ def _author_negative(g: GroundedNegative, *,
     if (enable_bva_boundaries and update_pair is not None
             and getattr(update_pair, "provenance", None)
             and source_formula and has_transition_semantics(source_formula)):
-        _accept = satisfy_transition_acceptance(
-            source_formula, g.field_metadata,
-            sibling_items=[(msg or text, text)
-                           for text, msg in (g.vr_messages or {}).items()])
-        if _accept is not None:
-            boundary = (_transition_accept_probe(
-                subject_entity_type=g.subject.entity_type,
-                subject_external_id=g.subject.external_id,
-                witness=_accept, field_metadata=g.field_metadata),)
-            strategy = "bva"
+        _sibs = [(msg or text, text)
+                 for text, msg in (g.vr_messages or {}).items()]
+        if getattr(update_pair, "entry_changes", None):
+            # VR05 arc: the PRIOR_STATE ContextDifferential control arm — the
+            # SAME setup and the SAME mutation with the entry transition
+            # OMITTED (the one varied dimension is the prior-state context;
+            # the accept↔reject delta is attributable to transition history
+            # alone). None → no control (never fabricated on a fixture some
+            # control might reject).
+            _ctrl = derive_prior_state_control(
+                source_formula, update_pair.setup_payload,
+                update_pair.violating_changes, g.field_metadata, _sibs)
+            if _ctrl is not None:
+                boundary = (_transition_accept_probe(
+                    subject_entity_type=g.subject.entity_type,
+                    subject_external_id=g.subject.external_id,
+                    witness=_ctrl, field_metadata=g.field_metadata,
+                    differential_note=(
+                        "prior-state context varied: the entry transition is "
+                        "OMITTED (the differential's control arm) — the same "
+                        "mutation the entered arm rejects must be ACCEPTED"),),)
+                strategy = "bva"
+        else:
+            _accept = satisfy_transition_acceptance(
+                source_formula, g.field_metadata, sibling_items=_sibs)
+            if _accept is not None:
+                boundary = (_transition_accept_probe(
+                    subject_entity_type=g.subject.entity_type,
+                    subject_external_id=g.subject.external_id,
+                    witness=_accept, field_metadata=g.field_metadata),)
+                strategy = "bva"
     if enable_bva_boundaries and verified and source_formula:
         members = derive_boundary_set(parse(source_formula), g.field_metadata)
         if members:

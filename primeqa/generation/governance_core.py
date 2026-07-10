@@ -67,6 +67,7 @@ from primeqa.generation.protocol import (
     RefusalEntry,
 )
 from primeqa.semantic.edges import TIER_1_EDGES
+from primeqa.generation.transition import _flatten_and, _prior_constraint
 from primeqa.generation.verified_negative import _RECORD_TYPES_KEY, _writable
 from primeqa.generation import control_relevance
 from primeqa.generation.formula_expectation import (
@@ -610,6 +611,35 @@ def _break_tie_by_entailment(tied_vrs, grounded_conds) -> Optional[str]:
     return entailed[0] if len(entailed) == 1 else None
 
 
+def _break_tie_by_prior_state(tied_vrs, grounded_conds) -> Optional[str]:
+    """Break a >=2-way field-overlap tie by the PRIOR-STATE LOCK match (the
+    VR05 arc): the sole tied VR whose ``PRIORVALUE`` constraint ``(field,
+    value)`` matches a claim-pinned equals condition — the claim asserts a
+    state the rule LOCKS ON as the prior ('once Approved, the value is
+    protected' pins Stage=Approved; only VR05 among the tied set is
+    PRIORVALUE-gated on that state). Entailment cannot resolve these ties
+    (org-state functions are unknown to the single-phase ``_fires``); this
+    reuses the transition IR's own prior-constraint reading — a bounded,
+    semantically-honest discriminator, refuse-on-non-unique like its
+    siblings."""
+    pinned = {(gc.field.external_id.rsplit(".", 1)[-1].lower(), gc.value)
+              for gc in (grounded_conds or ()) if gc.predicate == "equals"}
+    if not pinned:
+        return None
+    qualifiers = []
+    for t in tied_vrs:
+        try:
+            ast = parse(t)
+            if not is_parsed(ast):
+                continue
+            priors = [p for p in map(_prior_constraint, _flatten_and(ast)) if p]
+            if any((pf.lower(), pv) in pinned for pf, pv in priors):
+                qualifiers.append(t)
+        except Exception:
+            continue
+    return qualifiers[0] if len(qualifiers) == 1 else None
+
+
 def _break_tie_by_cross_field(tied_vrs, claim_fields) -> Optional[str]:
     """Break a >=2-way field-overlap tie (D-296) using the cross-field structural
     discriminator that field-overlap is blind to. A tied VR QUALIFIES iff it carries
@@ -676,6 +706,12 @@ def _best_aligned_vr(vr_formulas: tuple[str, ...], grounded_conds) -> Optional[s
     entailed = _break_tie_by_entailment(tied, grounded_conds)
     if entailed is not None:
         return entailed
+    # VR05 arc: the prior-state LOCK match — entailment is blind to org-state
+    # functions, but a claim pinning the exact state a tied VR locks on as
+    # PRIOR ('Stage = Approved' vs VR05's PRIORVALUE gate) uniquely names it.
+    prior_locked = _break_tie_by_prior_state(tied, grounded_conds)
+    if prior_locked is not None:
+        return prior_locked
     return _break_tie_by_cross_field(tied, claim_fields)   # D-296; None if non-unique
 
 
