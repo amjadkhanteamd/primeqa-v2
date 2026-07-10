@@ -48,6 +48,9 @@ from primeqa.generation.fixture import (
     FixtureUnsat, ROLE_CONTEXT, ROLE_TARGET_ACTIVATION, ROLE_TARGET_WITNESS,
     complete_accept_fixture,
 )
+from primeqa.generation.transition import (
+    has_transition_semantics, satisfy_transition,
+)
 from primeqa.generation.typed_value import transport_payload as _to_transport_payload
 from primeqa.generation.semantic_completeness import caveat_kind, requires_caveat
 from primeqa.generation.verified_negative import (
@@ -867,6 +870,7 @@ class BehaviourIncomplete(RuntimeError):
 def _derive_prohibition_recipe(
     operation_hint: Optional[str], vr_formulas: tuple[str, ...],
     field_metadata: Optional[dict] = None,
+    sibling_vr_items=None,
 ) -> tuple[str, Optional[VerifiedUpdateNegative], Optional[VerifiedNegative], Optional[str]]:
     """Bind the prohibition operation and derive its behavioural reject recipe —
     the SINGLE source of truth shared by :func:`_author_negative` (which needs the
@@ -889,7 +893,30 @@ def _derive_prohibition_recipe(
     violation: Optional[VerifiedNegative] = None
     source: Optional[str] = None
     if operation in ("modify_record", "modify_field"):
-        update_pair, source = _derive_update_violation(vr_formulas, field_metadata)
+        # VR10 arc: a TRANSITION-shaped formula (org-state functions) realizes
+        # as setup + transition-update via the explicit transition IR — the
+        # single-formula derive/derive_update paths keep refusing org-state
+        # (their epistemics are single-phase), so this is strictly additive.
+        # The witness violates EXACTLY ONE approval branch, satisfies the rest,
+        # and (when sibling items are threaded) silences sibling controls with
+        # provenance-classified fills.
+        for text in vr_formulas:
+            if not has_transition_semantics(text):
+                continue
+            w = satisfy_transition(
+                text, field_metadata,
+                # the TARGET is not its own sibling — the witness fires it
+                sibling_items=[(n, t) for n, t in (sibling_vr_items or ())
+                               if t != text])
+            if w is not None:
+                update_pair = VerifiedUpdateNegative(
+                    setup_payload=w.setup, violating_changes=w.changes,
+                    provenance=w.provenance)
+                source = text
+                break
+        if update_pair is None:
+            update_pair, source = _derive_update_violation(
+                vr_formulas, field_metadata)
         if update_pair is None:
             violation, source = _derive_violation(vr_formulas, field_metadata)
     elif operation == "create_duplicate":
@@ -900,13 +927,19 @@ def _derive_prohibition_recipe(
 def prohibition_recipe_derivable(
     operation_hint: Optional[str], vr_formulas: tuple[str, ...],
     field_metadata: Optional[dict] = None,
+    sibling_vr_items=None,
 ) -> bool:
     """D-293 completeness predicate (the governance gate): does this prohibition
     yield a BEHAVIOURAL reject recipe? ``False`` → incomplete behaviour instance →
     governance refuses (no degrade to the caveated inspection). ``field_metadata``
-    (D-294) widens what derives; absent -> today's behaviour."""
+    (D-294) widens what derives; absent -> today's behaviour. ``sibling_vr_items``
+    (VR10 arc) arms the transition path's sibling isolation — threading it here
+    keeps the gate's yes/no consistent with what authoring will actually produce
+    (an un-isolatable transition negative refuses at governance, never crashes at
+    emission)."""
     _, update_pair, violation, _ = _derive_prohibition_recipe(
-        operation_hint, vr_formulas, field_metadata)
+        operation_hint, vr_formulas, field_metadata,
+        sibling_vr_items=sibling_vr_items)
     return update_pair is not None or violation is not None
 
 
@@ -1393,7 +1426,9 @@ def _author_negative(g: GroundedNegative, *,
     # the violating VALUE is recipe-rewrite-stable (D-110.3 Option-C), while the
     # business STATE rides semantic_conditions (D-293, identity-bearing).
     operation, update_pair, violation, source_formula = _derive_prohibition_recipe(
-        g.operation_hint, g.vr_formulas, g.field_metadata)
+        g.operation_hint, g.vr_formulas, g.field_metadata,
+        sibling_vr_items=[(msg or text, text)
+                          for text, msg in (g.vr_messages or {}).items()])
     verified = update_pair is not None or violation is not None
     # D-297 (lever 5): bind the DERIVED VR's synced error message (from the grounding
     # map, keyed by the VR the recipe actually violates — never an arbitrary aligned
@@ -1434,6 +1469,16 @@ def _author_negative(g: GroundedNegative, *,
     # non-VR-testable operation) stays the INSPECTION re-verify (there is no
     # violation to construct). Replace, not augment (single-recipe; D-110.3).
     if update_pair is not None:
+        _detail = (f"create a valid {g.subject.external_id} record, then "
+                   f"update it into violation of the grounding validation "
+                   f"rule (expect rejection)")
+        _prov = getattr(update_pair, "provenance", None)
+        if _prov:
+            # The transition witness's durable record of WHY each field is
+            # staged (AK Option-1 roles), mirroring the boundary probes.
+            parts = [f"{f} [{role}: {str(src)[:60]}]"
+                     for f, (role, src) in sorted(_prov.items())]
+            _detail += "; fixture provenance: " + "; ".join(parts)
         trigger, recipe, env = _update_rejected_recipe(
             subject_entity_type=g.subject.entity_type,
             subject_external_id=g.subject.external_id,
@@ -1441,9 +1486,7 @@ def _author_negative(g: GroundedNegative, *,
                 update_pair.setup_payload, g.field_metadata),
             violating_changes=_to_transport_payload(
                 update_pair.violating_changes, g.field_metadata),
-            env_detail=(f"create a valid {g.subject.external_id} record, then "
-                        f"update it into violation of the grounding validation "
-                        f"rule (expect rejection)"),
+            env_detail=_detail,
             error_message=error_message,
         )
         trigger_kind, recipe_kind = "data-mutation-trigger", "data-recipe"

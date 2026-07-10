@@ -276,6 +276,10 @@ def satisfy_transition(formula_text: str, meta: Optional[dict] = None,
     ast = parse(formula_text)
     if not is_parsed(ast) or not isinstance(ast, And):
         return None
+    # Defensive: the target is never its own sibling (the witness FIRES it —
+    # completing against it would UNSAT on the protected witness fields).
+    if sibling_items:
+        sibling_items = [(n, t) for n, t in sibling_items if t != formula_text]
     conjuncts = _flatten_and(ast)
 
     changed_fields = _ischanged_fields(conjuncts)

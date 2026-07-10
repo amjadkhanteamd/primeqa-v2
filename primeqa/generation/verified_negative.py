@@ -79,6 +79,11 @@ class VerifiedUpdateNegative:
 
     setup_payload: dict[str, Any]       # non-violating create-time state
     violating_changes: dict[str, Any]   # the update that fires the rejection
+    # Transition-witness provenance (VR10 arc): {field: (role, source)} for
+    # every staged value when the pair came from `transition.satisfy_transition`
+    # (target witness / target activation / sibling isolation). ``None`` on the
+    # ordinary single-formula derivation (pre-transition pairs, byte-identical).
+    provenance: Optional[dict] = None
 
 
 @dataclass(frozen=True)

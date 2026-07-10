@@ -1797,8 +1797,16 @@ class GovernanceCore:
                 # bare existence check). Conditions de-collapse identity (Reading B);
                 # derivability is the hard gate. D-294 widens what derives via
                 # field_metadata (dormant here).
+                # VR10 arc: thread the neighborhood's VR messages as sibling
+                # items so the gate's yes/no matches authoring (the transition
+                # path's sibling isolation + UNSAT refusal both live behind it).
+                _sibling_items = [
+                    (msg or text, text)
+                    for text, msg in _grounding_vr_messages(
+                        claim_kind, neighborhood).items()]
                 if not prohibition_recipe_derivable(
-                        hint.get("operation"), vr_formulas, field_metadata):
+                        hint.get("operation"), vr_formulas, field_metadata,
+                        sibling_vr_items=_sibling_items):
                     # D-295: a MISMATCH (no rule aligns with the asserted state) and
                     # D-293's derivability gap (the aligned/only VR cannot be tested)
                     # both refuse here, with distinct BA-facing reasons.

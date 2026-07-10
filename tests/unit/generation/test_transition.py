@@ -174,3 +174,44 @@ def test_has_transition_semantics():
     assert has_transition_semantics(VR10) is True
     assert has_transition_semantics(VR05) is True
     assert has_transition_semantics("PLS_BM_Deal_Value__c <= 0") is False
+
+
+# -- end-to-end: the emitted VR10 update-rejected recipe --------------------------
+
+def test_emitted_vr10_negative_is_the_transition_pair():
+    from uuid import uuid4
+    from primeqa.generation.emission import (
+        _author_negative, GroundedNegative, _Endpoint)
+    g = GroundedNegative(
+        archetype="data_behavior", claim_kind="prohibition-claim",
+        operation_hint="modify_record", version_seq=1,
+        subject=_Endpoint(entity_id=uuid4(), entity_type="Object",
+                          external_id="PLS_BM_Deal__c"),
+        requirement_excerpt="Large Enterprise deal cannot move to Approved",
+        vr_formulas=(VR10,),
+        field_metadata=RAIL,
+        vr_messages={t: f"msg {n}" for n, t in ALL_VRS},
+    )
+    bundle = _author_negative(g)
+    steps = bundle.observation_realization.steps
+    create, update = steps[0], steps[1]
+    fv = {k.split(".")[-1]: v for k, v in create.field_values.items()}
+    # the setup create: non-violating prior state incl. every gate + isolation
+    assert fv["PLS_BM_Stage__c"] == "Draft"
+    assert fv["PLS_BM_Deal_Type__c"] == "Enterprise"
+    assert fv["PLS_BM_Compliance_Approved__c"] is True
+    assert fv["PLS_BM_Contract_Start_Date__c"] == FAR_FUTURE_DATE
+    assert fv["PLS_BM_Approval_Reason__c"] == "PQA"
+    # transport: percent 0.2001 ships as 20.01; currency 1:1
+    assert fv["PLS_BM_Discount__c"] == 20.01
+    assert fv["PLS_BM_Deal_Value__c"] == 2000000.01
+    # the update IS the transition, expected rejected with VR10's message
+    fc = {k.split(".")[-1]: v for k, v in update.field_changes.items()}
+    assert fc == {"PLS_BM_Stage__c": "Approved"}
+    assert update.expect_rejection is not None
+    # the message pattern is regex-escaped (D-297): 'msg\ VR10'
+    assert "VR10" in (update.expect_rejection.error_message_pattern or "")
+    # provenance rides the env detail
+    detail = bundle.execution_environment.auth_assumptions[0].details
+    assert "fixture provenance" in detail
+    assert "target witness" in detail and "sibling isolation" in detail
