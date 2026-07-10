@@ -49,7 +49,7 @@ from primeqa.generation.fixture import (
     complete_accept_fixture,
 )
 from primeqa.generation.transition import (
-    has_transition_semantics, satisfy_transition,
+    has_transition_semantics, satisfy_transition, satisfy_transition_acceptance,
 )
 from primeqa.generation.typed_value import transport_payload as _to_transport_payload
 from primeqa.generation.semantic_completeness import caveat_kind, requires_caveat
@@ -1141,6 +1141,80 @@ def author_boundary_recipes(
     return tuple(out)
 
 
+def _transition_accept_probe(
+    *, subject_entity_type: str, subject_external_id: str,
+    witness, field_metadata: Optional[dict],
+) -> BoundaryRecipe:
+    """The T3 positive as a probe on the transition-prohibition claim: create
+    the witness's setup (every violation branch falsified, gates + siblings
+    satisfied), apply the transition update expecting SUCCESS (D-306
+    ``expect_acceptance`` — a business rejection grades failed), then read the
+    record back and assert the to-state persisted (AK: require update success
+    AND read-back of the transitioned value). Fixture provenance rides the env
+    detail. Priority −1 — a data probe the bva batch strict-ANDs with the
+    primary reject (D-300.1)."""
+    target = LogicalRef(
+        entity_type=subject_entity_type, external_id=subject_external_id)
+
+    def _q(f: str) -> str:
+        return f"{subject_external_id}.{f.rsplit('.', 1)[-1]}"
+
+    setup = _to_transport_payload(witness.setup, field_metadata)
+    changes = _to_transport_payload(witness.changes, field_metadata)
+    steps = [
+        CreateStep(
+            step_id="create-setup", target_object=target,
+            field_values={_q(f): v for f, v in setup.items()},
+        ),
+        UpdateStep(
+            step_id="update-transition", target=target,
+            field_changes={_q(f): v for f, v in changes.items()},
+            expect_acceptance=True,
+        ),
+    ]
+    asserts = []
+    for f, v in sorted(changes.items()):
+        fq = _q(f)
+        steps.append(ReadStep(
+            step_id=f"read-{f.rsplit('.', 1)[-1].lower()}", target=target,
+            soql=(f"SELECT {fq} FROM {subject_external_id} "
+                  f"WHERE Id = '$create-setup.id'"),
+            fields_to_capture=[fq],
+        ))
+        steps.append(DataAssertStep(
+            step_id=f"assert-{f.rsplit('.', 1)[-1].lower()}",
+            predicate=AssertionPredicate(
+                subject_ref=f"read-{f.rsplit('.', 1)[-1].lower()}.{fq}",
+                predicate="equals", value=v),
+        ))
+        asserts.append(f"{fq}={v!r}")
+    trigger = DataMutationTriggerBody(
+        operation="update", target=target,
+        identity_context="system", volume="single",
+    )
+    recipe = DataRecipeBody(
+        api_choice="rest", identity_context="system",
+        execution_mechanism="direct_api", steps=steps,
+    )
+    detail = (f"transition accept probe (the inverse experiment): create a "
+              f"{subject_external_id} record with every violation branch "
+              f"falsified and all sibling controls satisfied, apply the "
+              f"transition update and expect the org to ACCEPT it, then read "
+              f"back and assert {', '.join(asserts)} persisted")
+    if witness.provenance:
+        parts = [f"{f} [{role}: {str(src)[:60]}]"
+                 for f, (role, src) in sorted(witness.provenance.items())]
+        detail += "; fixture provenance: " + "; ".join(parts)
+    env = ExecutionEnvironmentBody(auth_assumptions=[AuthAssumption(
+        auth_kind="data_api_user", details=detail,
+    )])
+    return BoundaryRecipe(
+        trigger_kind="data-mutation-trigger", recipe_kind="data-recipe",
+        causal_initiation=trigger, observation_realization=recipe,
+        execution_environment=env, priority=_BOUNDARY_PROBE_PRIORITY,
+    )
+
+
 def _author_acceptance(g: GroundedAcceptance) -> EmissionBundle:
     """Author the acceptance bundle (D-305): the claim asserts the org ACCEPTS
     creating the subject under the grounded business state; the recipe stages
@@ -1546,6 +1620,26 @@ def _author_negative(g: GroundedNegative, *,
     # Flag OFF (the default) -> byte-identical bundle.
     boundary = ()
     strategy = None
+    # T3 positive (VR10 arc): when the primary is a TRANSITION pair, author the
+    # INVERSE experiment as an accept probe on the SAME claim — every violation
+    # branch falsified, gates + siblings satisfied, the update (the transition
+    # into the gated state) expected to SUCCEED, with a read-back asserting the
+    # to-state persisted. Witness None (underivable / UNSAT) → no probe (the
+    # negative stands alone) — an acceptance is never emitted on a fixture the
+    # rule might still reject.
+    if (enable_bva_boundaries and update_pair is not None
+            and getattr(update_pair, "provenance", None)
+            and source_formula and has_transition_semantics(source_formula)):
+        _accept = satisfy_transition_acceptance(
+            source_formula, g.field_metadata,
+            sibling_items=[(msg or text, text)
+                           for text, msg in (g.vr_messages or {}).items()])
+        if _accept is not None:
+            boundary = (_transition_accept_probe(
+                subject_entity_type=g.subject.entity_type,
+                subject_external_id=g.subject.external_id,
+                witness=_accept, field_metadata=g.field_metadata),)
+            strategy = "bva"
     if enable_bva_boundaries and verified and source_formula:
         members = derive_boundary_set(parse(source_formula), g.field_metadata)
         if members:

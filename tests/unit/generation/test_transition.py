@@ -215,3 +215,87 @@ def test_emitted_vr10_negative_is_the_transition_pair():
     detail = bundle.execution_environment.auth_assumptions[0].details
     assert "fixture provenance" in detail
     assert "target witness" in detail and "sibling isolation" in detail
+
+
+# -- the T3 positive: the inverse experiment --------------------------------------
+
+def test_acceptance_witness_falsifies_every_branch():
+    from primeqa.generation.transition import satisfy_transition_acceptance
+    w = satisfy_transition_acceptance(VR10, RAIL, sibling_items=SIBLINGS)
+    assert w is not None and w.violated_branch == ""
+    s = w.setup
+    # every violation branch FALSE: discount at the boundary (0.2 allowed),
+    # risk low, compliance true, contract number + future start date staged
+    assert s["PLS_BM_Discount__c"] == 0.2
+    assert s["PLS_BM_Risk_Level__c"] == "Low"
+    assert s["PLS_BM_Compliance_Approved__c"] is True
+    assert s["PLS_BM_Contract_Number__c"] == "PQA"
+    assert s["PLS_BM_Contract_Start_Date__c"] == FAR_FUTURE_DATE
+    # gates + transition intact
+    assert s["PLS_BM_Deal_Type__c"] == "Enterprise"
+    assert s["PLS_BM_Deal_Value__c"] == 2000000.01
+    assert w.changes == {"PLS_BM_Stage__c": "Approved"}
+    # the rule provably does NOT fire over the witness (the far-future axiom
+    # closes the TODAY branch)
+    ts = _ts(w.setup, w.changes)
+    assert evaluate_transition(parse(VR10), ts, absent="blank") is False
+
+
+def test_acceptance_witness_siblings_silent():
+    from primeqa.generation.transition import satisfy_transition_acceptance
+    w = satisfy_transition_acceptance(VR10, RAIL, sibling_items=SIBLINGS)
+    ts = _ts(w.setup, w.changes)
+    for name, text in SIBLINGS:
+        assert evaluate_transition(parse(text), ts, absent="blank") is not True, name
+
+
+def test_emitted_t3_probe_expects_success_and_reads_back():
+    from uuid import uuid4
+    from primeqa.generation.emission import (
+        _author_negative, GroundedNegative, _Endpoint)
+    g = GroundedNegative(
+        archetype="data_behavior", claim_kind="prohibition-claim",
+        operation_hint="modify_record", version_seq=1,
+        subject=_Endpoint(entity_id=uuid4(), entity_type="Object",
+                          external_id="PLS_BM_Deal__c"),
+        requirement_excerpt="Large Enterprise deal cannot move to Approved",
+        vr_formulas=(VR10,),
+        field_metadata=RAIL,
+        vr_messages={t: f"msg {n}" for n, t in ALL_VRS},
+    )
+    bundle = _author_negative(g, enable_bva_boundaries=True)
+    assert bundle.strategy_kind == "bva"
+    assert len(bundle.boundary_recipes) == 1
+    probe = bundle.boundary_recipes[0]
+    create, update, read, assertion = probe.observation_realization.steps
+    fv = {k.split(".")[-1]: v for k, v in create.field_values.items()}
+    assert fv["PLS_BM_Discount__c"] == 20        # transport of 0.2
+    assert fv["PLS_BM_Compliance_Approved__c"] is True
+    # the transition update expects SUCCESS (D-306)
+    assert update.expect_acceptance is True
+    assert update.expect_rejection is None
+    assert {k.split(".")[-1]: v for k, v in update.field_changes.items()} \
+        == {"PLS_BM_Stage__c": "Approved"}
+    # read-back asserts the to-state persisted
+    assert assertion.predicate.predicate == "equals"
+    assert assertion.predicate.value == "Approved"
+    assert "PLS_BM_Stage__c" in read.fields_to_capture[0]
+    # provenance preserved
+    detail = probe.execution_environment.auth_assumptions[0].details
+    assert "fixture provenance" in detail and "branch falsified" in detail
+
+
+def test_t3_probe_absent_when_flag_off_or_witness_unsat():
+    from uuid import uuid4
+    from primeqa.generation.emission import (
+        _author_negative, GroundedNegative, _Endpoint)
+    g = GroundedNegative(
+        archetype="data_behavior", claim_kind="prohibition-claim",
+        operation_hint="modify_record", version_seq=1,
+        subject=_Endpoint(entity_id=uuid4(), entity_type="Object",
+                          external_id="PLS_BM_Deal__c"),
+        requirement_excerpt="x", vr_formulas=(VR10,), field_metadata=RAIL,
+        vr_messages={t: f"msg {n}" for n, t in ALL_VRS},
+    )
+    bundle = _author_negative(g)                 # flag off
+    assert bundle.boundary_recipes == () and bundle.strategy_kind is None

@@ -227,9 +227,18 @@ def _bool_function(node: FunctionCall, val, ts: TransitionState,
 
 
 def _compare(node: Comparison, val) -> Optional[bool]:
-    # TODAY() on either side → unknown (no clock at authoring).
-    for side in (node.left, node.right):
-        if isinstance(side, FunctionCall) and side.name == "TODAY":
+    # TODAY() comparisons: unknown (no clock at authoring) — with ONE bounded,
+    # documented axiom: the far-future bridge constant is not before today
+    # (`FAR_FUTURE_DATE < TODAY()` is False for any plausible run date). This
+    # is the same assumption the bridge itself rests on, made explicit so the
+    # acceptance verification ("the rule provably does NOT fire") is not
+    # poisoned by a date branch the fixture has already neutralized.
+    for a_side, b_side, op in ((node.left, node.right, node.op),
+                               (node.right, node.left, _FLIP[node.op])):
+        if isinstance(b_side, FunctionCall) and b_side.name == "TODAY":
+            v = val(a_side)
+            if v == FAR_FUTURE_DATE and op == "<":
+                return False
             return None
     a, b, op = val(node.left), val(node.right), node.op
     if a is _MISSING or b is _MISSING or a is None or b is None:
@@ -339,6 +348,91 @@ def satisfy_transition(formula_text: str, meta: Optional[dict] = None,
         if result is not None:
             return result
     return None
+
+
+def satisfy_transition_acceptance(formula_text: str, meta: Optional[dict] = None,
+                                  sibling_items=None) -> Optional[TransitionWitness]:
+    """The INVERSE VR10 experiment (the T3 positive): a witness under which the
+    transition-shaped rule provably does NOT fire — every violation branch
+    falsified, every gate and transition atom still realized — so the update
+    (the transition into the gated state) must SUCCEED. Same grammar, same
+    :class:`TransitionState`, same sibling completion as
+    :func:`satisfy_transition`; the verification flips (the target must
+    evaluate False over the witness, run-time mode). ``None`` on
+    out-of-grammar / underivable / UNSAT — an acceptance is never emitted on a
+    fixture the rule might still reject."""
+    meta = meta or {}
+    ast = parse(formula_text)
+    if not is_parsed(ast) or not isinstance(ast, And):
+        return None
+    if sibling_items:
+        sibling_items = [(n, t) for n, t in sibling_items if t != formula_text]
+    conjuncts = _flatten_and(ast)
+    changed_fields = _ischanged_fields(conjuncts)
+    if not changed_fields:
+        return None
+
+    setup: dict = {}
+    changes: dict = {}
+    provenance: dict = {}
+    disjunction = None
+    plain: list = []
+    try:
+        for c in conjuncts:
+            if isinstance(c, Or):
+                if disjunction is not None:
+                    return None
+                disjunction = c
+                continue
+            if _is_ischanged(c):
+                continue
+            if _transition_atom(c, changed_fields, setup, changes,
+                                provenance, meta):
+                continue
+            plain.append(c)
+        for f in changed_fields:
+            if f not in changes:
+                pair = _changed_pair(f, meta)
+                if pair is None:
+                    return None
+                setup.setdefault(f, pair[0])
+                changes[f] = pair[1]
+                provenance.setdefault(
+                    f, (ROLE_TARGET_ACTIVATION, "transition: the field changes"))
+        for c in plain:
+            asg = _unwrap_soft(_merge([_satisfy(c, True, meta)]))
+            for f, v in asg.items():
+                if f in changes or (f in setup and setup[f] != v):
+                    return None
+                setup.setdefault(f, v)
+                provenance.setdefault(f, (ROLE_TARGET_ACTIVATION, _plain_src(c)))
+        # The inverse: EVERY violation branch falsified (none violated).
+        if disjunction is not None:
+            for branch in disjunction.operands:
+                off = _falsify_branch(branch, meta)
+                if off is None:
+                    return None
+                for f, v in off.items():
+                    if f in changes:
+                        return None
+                    if f in setup and setup[f] != v:
+                        return None
+                    setup.setdefault(f, v)
+                    provenance.setdefault(
+                        f, (ROLE_TARGET_ACTIVATION,
+                            f"branch falsified: {_plain_src(branch)}"))
+    except _Undecidable:
+        return None
+
+    witness = TransitionWitness(setup=dict(setup), changes=dict(changes),
+                                provenance=dict(provenance),
+                                violated_branch="")
+    # The target must provably NOT fire over the witness (run-time mode).
+    ts = TransitionState(prior=_bare(witness.setup),
+                         next=_bare({**witness.setup, **witness.changes}))
+    if evaluate_transition(ast, ts, absent="blank") is not False:
+        return None
+    return _complete(witness, meta, sibling_items)
 
 
 def _try_branch(branch, disjunction, setup, changes, provenance, meta,
