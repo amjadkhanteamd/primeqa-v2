@@ -42,16 +42,20 @@ def test_working_source_composes_to_current():
     assert hashlib.sha256(composed.encode("utf-8")).hexdigest() == registry.recorded_hash()
 
 
-def test_current_resolves_to_v23():
-    # Amendment B (AK 2026-07-09): CURRENT bumped to v23 (the proposal-contract
-    # clarification — a missing configured value is not a reason to withhold or
-    # self-dismiss a behavioural claim; the substrate derives it from org
-    # metadata). v23 = v22 + only that paragraph, so all prior directives hold.
-    # v1..v22 stay frozen + pinned-resolvable.
-    assert registry.CURRENT == "generation@v23"
-    assert registry.get() == registry.get("generation@v23")
+def test_current_resolves_to_v24():
+    # Amendment B (AK 2026-07-10): CURRENT bumped to v24 (the feasibility-boundary
+    # clarification — the LLM never decides derivability / testability /
+    # executability; closes the v23 residual where 1/5 runs self-dismissed AC7 by
+    # declaring VR08 "non-derivable"). v24 = v23 + only that paragraph; v23's
+    # missing-configured-value directive retained. v1..v23 stay frozen +
+    # pinned-resolvable.
+    assert registry.CURRENT == "generation@v24"
+    assert registry.get() == registry.get("generation@v24")
     sys = registry.get()
-    # v23's proposal-contract clarification
+    # v24's feasibility-boundary clarification
+    assert "Do not decide technical feasibility" in sys
+    assert "threshold, derivability, testability, or executability" in sys
+    # v23's proposal-contract clarification — retained
     assert "missing configured value is not a reason to withhold" in sys
     assert "naming the value is the substrate's" in sys
     # v22's approval-action arc (D-333) — retained

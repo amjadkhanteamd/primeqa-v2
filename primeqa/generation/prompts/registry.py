@@ -28,7 +28,7 @@ _VERSIONS_DIR = _DIR / "versions"
 
 # The default version new generations use (replay pins its own version on the
 # request's operational_context.prompt_template_version, per D-071).
-CURRENT = "generation@v23"
+CURRENT = "generation@v24"
 
 # version id -> frozen composed artifact (filesystem-safe slug).
 _FILES = {
@@ -55,6 +55,7 @@ _FILES = {
     "generation@v21": _VERSIONS_DIR / "generation_v21.md",
     "generation@v22": _VERSIONS_DIR / "generation_v22.md",
     "generation@v23": _VERSIONS_DIR / "generation_v23.md",
+    "generation@v24": _VERSIONS_DIR / "generation_v24.md",
 }
 
 # Recorded SHA-256 of each frozen version's composed content (D-103.1 drift
@@ -168,6 +169,15 @@ RECORDED_HASHES = {
     # discount value without a named threshold"). Narrow + neutral — no record-type
     # / VR bias.
     "generation@v23": "a7348141cd1f35954865452a81cbf92f04b6d11c03d9e0464b30625adbdbda47",
+    # v24 (Amendment B, AK 2026-07-10): the feasibility-boundary clarification —
+    # the LLM must never decide whether a behaviour / VR / automation / control is
+    # derivable, executable, or testable (the v23 residual: 1/5 runs self-dismissed
+    # AC7 by declaring VR08 "non-derivable" — the same forbidden decision relocated
+    # from thresholds to derivability). Propose the business behaviour; grounding,
+    # derivability, recipe construction, and honest refusal are the substrate's.
+    # Phrased on every axis (threshold / derivability / testability / executability)
+    # so the behaviour cannot relocate again.
+    "generation@v24": "d7670bf7499202e67f231bafd89d38bf0a0208e5de6074ce1e34fb26a7814b0b",
 }
 
 # Working composition order — authors the NEXT frozen version (NOT runtime).
