@@ -28,7 +28,7 @@ _VERSIONS_DIR = _DIR / "versions"
 
 # The default version new generations use (replay pins its own version on the
 # request's operational_context.prompt_template_version, per D-071).
-CURRENT = "generation@v26"
+CURRENT = "generation@v27"
 
 # version id -> frozen composed artifact (filesystem-safe slug).
 _FILES = {
@@ -58,6 +58,7 @@ _FILES = {
     "generation@v24": _VERSIONS_DIR / "generation_v24.md",
     "generation@v25": _VERSIONS_DIR / "generation_v25.md",
     "generation@v26": _VERSIONS_DIR / "generation_v26.md",
+    "generation@v27": _VERSIONS_DIR / "generation_v27.md",
 }
 
 # Recorded SHA-256 of each frozen version's composed content (D-103.1 drift
@@ -195,6 +196,10 @@ RECORDED_HASHES = {
     # live catch: AC4 proposed Deal_Value exceeds compared_to=null, breaking the
     # whole intent's grounding — the FOURTH vocabulary-gap instance).
     "generation@v26": "8c14224439fe937a4f7a9e83b6957bdf654aec6fa4f5939e5811a6f65b4cbaa7",
+    # v27 (VR03 arc): lean != minimal — name EVERY expressible state dimension
+    # the rule involves (risk in_set + compliance false, not the flag alone);
+    # a single generic condition cannot select a unique rule (D-295.1).
+    "generation@v27": "88eb4dc4429bdb887a4dca95ef1d8dce60fda32f4294ec858dbc52c80ce99ffe",
 }
 
 # Working composition order — authors the NEXT frozen version (NOT runtime).

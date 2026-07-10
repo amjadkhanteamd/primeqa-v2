@@ -42,15 +42,16 @@ def test_working_source_composes_to_current():
     assert hashlib.sha256(composed.encode("utf-8")).hexdigest() == registry.recorded_hash()
 
 
-def test_current_resolves_to_v26():
+def test_current_resolves_to_v27():
     # Amendment B (AK 2026-07-10): CURRENT bumped to v24 (the feasibility-boundary
     # clarification — the LLM never decides derivability / testability /
     # executability; closes the v23 residual where 1/5 runs self-dismissed AC7 by
     # declaring VR08 "non-derivable"). v24 = v23 + only that paragraph; v23's
     # missing-configured-value directive retained. v1..v23 stay frozen +
     # pinned-resolvable.
-    assert registry.CURRENT == "generation@v26"
-    assert registry.get() == registry.get("generation@v26")
+    assert registry.CURRENT == "generation@v27"
+    assert registry.get() == registry.get("generation@v27")
+    assert "lean does NOT mean minimal" in registry.get()
     # v26: the numeric-threshold contract
     assert "numeric threshold has NO predicate" in registry.get()
     # v25: the lock-prohibition contract
