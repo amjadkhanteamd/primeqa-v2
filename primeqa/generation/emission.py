@@ -55,6 +55,7 @@ from primeqa.generation.verified_negative import (
     VerifiedUpdateNegative,
     derive,
     derive_boundary_set,
+    derive_context_control,
     derive_update,
 )
 from primeqa.semantic.formula import parse
@@ -1054,10 +1055,18 @@ def _boundary_accept_recipe(
             ),
         ],
     )
-    detail = (f"bva boundary probe ({edge}): create a "
-              f"{subject_external_id} record with {field_bare}={value!r} — "
-              f"the boundary-adjacent NON-firing value — and expect the "
-              f"create to SUCCEED (no validation rule fires)")
+    if edge == "context-control":
+        detail = (f"context-differential control ({edge}): create a "
+                  f"{subject_external_id} record with {field_bare}={value!r} — "
+                  f"the SAME above-boundary value the in-context arm rejects — "
+                  f"under the ALTERNATIVE record classification, and expect the "
+                  f"create to SUCCEED: the accept↔reject delta at one varied "
+                  f"context dimension proves the rule is context-scoped")
+    else:
+        detail = (f"bva boundary probe ({edge}): create a "
+                  f"{subject_external_id} record with {field_bare}={value!r} — "
+                  f"the boundary-adjacent NON-firing value — and expect the "
+                  f"create to SUCCEED (no validation rule fires)")
     if fixture_provenance:
         # The durable record of WHY each field is staged (AK Option-1 scope):
         # target witness / target activation / context / sibling isolation.
@@ -1513,6 +1522,19 @@ def _author_negative(g: GroundedNegative, *,
             vr_items = [(msg or text, text)
                         for text, msg in (g.vr_messages or {}).items()] or [
                 (t, t) for t in g.vr_formulas]
+            # ContextDifferential (RECORD dimension, Amendment B §4): when the
+            # firing member stages a RecordTypeId (the claim is record-context-
+            # gated) and the org exposes a real alternative record type, derive
+            # the CONTROL arm by reference — the same above-boundary value under
+            # the alternative classification, expected ACCEPTED. The treatment
+            # arm IS the firing member (already the primary's proof), so the
+            # composition dedup is by construction. No RecordTypeId / no
+            # alternative → None → the plain BoundaryPair (2-member fallback).
+            firing = next((m for m in members if m.expect_reject), None)
+            if firing is not None:
+                control = derive_context_control(firing, g.field_metadata)
+                if control is not None:
+                    members = members + (control,)
             completed = []
             for m in members:
                 if m.expect_reject:
@@ -1521,13 +1543,18 @@ def _author_negative(g: GroundedNegative, *,
                 comp = complete_accept_fixture(
                     m.payload, set(m.payload), vr_items, g.field_metadata)
                 if isinstance(comp, FixtureUnsat):
+                    if m.edge == "context-control":
+                        continue    # control UNSAT → drop the arm (2-member fallback)
                     completed = None            # UNSAT → no probe, claim single
                     break
+                varied = m.edge == "context-control"
                 prov = {
-                    f: ((ROLE_TARGET_WITNESS, source_formula)
-                        if f == m.boundary_field
-                        else (ROLE_CONTEXT, "record type")
+                    f: ((ROLE_CONTEXT,
+                         "record type (varied: the differential's control arm)"
+                         if varied else "record type")
                         if f == "RecordTypeId"
+                        else (ROLE_TARGET_WITNESS, source_formula)
+                        if f == m.boundary_field
                         else (ROLE_TARGET_ACTIVATION, source_formula))
                     for f in m.payload}
                 prov.update(comp.provenance)

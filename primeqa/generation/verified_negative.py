@@ -223,6 +223,42 @@ def derive_boundary_set(ast, field_metadata=None) -> tuple:
     return ()                           # Or / Not / function shapes: no single threshold
 
 
+def derive_context_control(firing: "BoundaryMember",
+                           meta: Optional[dict] = None) -> Optional["BoundaryMember"]:
+    """The RECORD-dimension **ContextDifferential control arm** (Amendment B §4
+    redesign): the SAME above-boundary scenario under the ALTERNATIVE record
+    classification, expected to be ACCEPTED — proving the rule is context-scoped
+    (the identical value rejected in-context is accepted out-of-context).
+
+    Derived **by reference** from the BoundaryPair's firing member — the
+    single-dimension guarantee is structural: exactly ONE mutation (the
+    ``RecordTypeId`` key, flipped to a REAL alternative record type off the
+    D-348 rail, sorted-deterministic); every other field is copied
+    byte-identically, so no second axis can co-vary and the reject↔accept delta
+    is attributable to the record-context flip alone. This also realizes the
+    composition dedup by construction: the differential's TREATMENT arm *is*
+    the firing member (already the claim's primary reject proof) — nothing is
+    reconstructed, so nothing can drift.
+
+    ``None`` (the honest 2-member fallback) when the firing member stages no
+    ``RecordTypeId`` (the claim is not record-context-gated) or the org exposes
+    no alternative record type — a control arm is only meaningful against a
+    real alternative classification, never fabricated."""
+    rid = (firing.payload or {}).get("RecordTypeId")
+    if rid is None:
+        return None
+    rt_map = (meta or {}).get(_RECORD_TYPES_KEY) or {}
+    alternatives = sorted(
+        (name, alt) for name, alt in rt_map.items() if alt and alt != rid)
+    if not alternatives:
+        return None
+    _alt_name, alt_rid = alternatives[0]
+    return BoundaryMember(
+        payload={**firing.payload, "RecordTypeId": alt_rid},
+        expect_reject=False, edge="context-control",
+        boundary_field=firing.boundary_field)
+
+
 def _is_threshold(node, meta: Optional[dict] = None) -> bool:
     """A single-field-vs-numeric-literal comparison with a threshold ordering —
     the boundary-eligible conjunct shape. D-300's review-fix held integers only
