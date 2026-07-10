@@ -23,6 +23,7 @@ place rather than as scattered one-offs.
 """
 from __future__ import annotations
 
+from decimal import Decimal
 from typing import Any, Optional
 
 from primeqa.generation.formula_expectation import _to_api_value, as_decimal
@@ -41,6 +42,40 @@ _TRANSPORT_SCALED = frozenset({"percent"})
 #   - "lookup": logical identity -> Salesforce Id.
 _TRANSPORT_FUTURE = frozenset(
     {"date", "datetime", "reference", "recordtype", "lookup"})
+
+
+# Numeric field types whose representable step is derivable from the field's
+# declared scale (the S1 ``field_details.scale``). Mirrors verified_negative's
+# numeric set; percent is special-cased below (its FORMULA domain sits two
+# decimal places below its display scale).
+_SCALED_NUMERIC = frozenset({"int", "integer", "double", "currency", "percent"})
+
+
+def minimal_increment(field_type: Optional[str],
+                      scale: Optional[int]) -> Optional[Decimal]:
+    """The smallest representable step of a numeric field, in the **formula**
+    domain — the increment a *minimally violating* witness moves by (AK,
+    Amendment B step 3: a derived witness should be minimally violating where an
+    ordered boundary is available, derived from the field's representable
+    precision in the correct value domain — never an arbitrary ±1).
+
+    A percent field's display scale is ``scale`` but its formula domain is the
+    display value ÷100, so the formula-domain step is ``10^-(scale+2)`` (display
+    scale 2 → ``0.0001``: ``> 0.25`` is minimally violated by ``0.2501``, which
+    transports to ``25.01``). Every other numeric type steps ``10^-scale``.
+    ``None`` when the type is non-numeric or the scale is unknown — the caller
+    falls back to its existing behaviour (the certainty bar: never guess a
+    step the field cannot represent)."""
+    ft = (field_type or "").lower()
+    if ft not in _SCALED_NUMERIC or scale is None:
+        return None
+    try:
+        s = int(scale)
+    except (TypeError, ValueError):
+        return None
+    if s < 0:
+        return None
+    return Decimal(1).scaleb(-(s + 2)) if ft == "percent" else Decimal(1).scaleb(-s)
 
 
 def to_transport(value: Any, field_type: Optional[str],

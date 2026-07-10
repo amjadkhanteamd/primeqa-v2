@@ -778,6 +778,10 @@ def _grounding_field_metadata(neighborhood: list, s1, at_seq: int) -> dict:
         out[api.rsplit(".", 1)[-1]] = {
             "field_type": (details.get("field_type") or "").lower(),
             "length": details.get("length"),
+            # P1 (Amendment B): the field's declared scale — arms the minimally
+            # violating witness (typed_value.minimal_increment) and transport
+            # quantization (transport_payload already reads it; was never fed).
+            "scale": details.get("scale"),
             "is_calculated": bool(details.get("is_calculated", False)),
             # D-305.1 (review B3): required-ness — an is_null acceptance clause
             # on a NON-nillable field is structurally defeated by k16 padding.

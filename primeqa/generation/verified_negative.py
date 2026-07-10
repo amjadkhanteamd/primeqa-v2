@@ -33,7 +33,10 @@ from __future__ import annotations
 
 import re
 from dataclasses import dataclass
+from decimal import Decimal
 from typing import Any, Optional, Union
+
+from primeqa.generation.typed_value import minimal_increment
 
 from primeqa.semantic.formula import (
     And, Comparison, FieldRef, FunctionCall, Literal, Not, NotParsed, NonEvaluable,
@@ -200,7 +203,7 @@ def derive_boundary_set(ast, field_metadata=None) -> tuple:
         return _boundary_members(ast, gates=(), meta=meta)
     if isinstance(ast, And):
         # D-328: exactly one threshold conjunct; the rest are gates.
-        thresholds = [op for op in ast.operands if _is_threshold(op)]
+        thresholds = [op for op in ast.operands if _is_threshold(op, meta)]
         if len(thresholds) != 1:
             return ()
         thr = thresholds[0]
@@ -209,10 +212,15 @@ def derive_boundary_set(ast, field_metadata=None) -> tuple:
     return ()                           # Or / Not / function shapes: no single threshold
 
 
-def _is_threshold(node) -> bool:
-    """A single-field-vs-INTEGER-literal comparison with a threshold ordering —
-    the boundary-eligible conjunct shape (D-300 review-fix: integers only;
-    fractional ±1 adjacency is unsound under field-scale rounding)."""
+def _is_threshold(node, meta: Optional[dict] = None) -> bool:
+    """A single-field-vs-numeric-literal comparison with a threshold ordering —
+    the boundary-eligible conjunct shape. D-300's review-fix held integers only
+    (fractional ±1 adjacency is unsound under field-scale rounding); P1 lifts
+    that EXACTLY where the unsoundness is cured: a fractional literal qualifies
+    iff the field's metadata carries a numeric type + scale, so adjacency steps
+    by the field's own representable increment (``minimal_increment``). An
+    integer literal stays eligible with or without metadata (the pre-P1
+    behaviour); a fractional literal without scale metadata still refuses."""
     if not isinstance(node, Comparison):
         return False
     if isinstance(node.left, FieldRef) and isinstance(node.right, FieldRef):
@@ -221,23 +229,31 @@ def _is_threshold(node) -> bool:
         _field, literal, op = _orient(node)
     except _Undecidable:
         return False
-    return (literal.kind == "number" and op in _BOUNDARY_OPS
-            and isinstance(literal.value, int))
+    if literal.kind != "number" or op not in _BOUNDARY_OPS:
+        return False
+    if isinstance(literal.value, int):
+        return True
+    fref = node.left if isinstance(node.left, FieldRef) else node.right
+    fm = _field_meta(fref, meta or {})
+    return minimal_increment((fm or {}).get("field_type"),
+                             (fm or {}).get("scale")) is not None
 
 
 def _boundary_members(thr: Comparison, *, gates: tuple, meta: dict) -> tuple:
     """The (firing, just-inside) pair for threshold ``thr`` with ``gates``
     staged TRUE in both probes. Refuses (``()``) when the threshold shape is
     ineligible, a gate is underivable, or the merge conflicts."""
-    if not _is_threshold(thr):
+    if not _is_threshold(thr, meta):
         return ()
     field, literal, op = _orient(thr)
+    thr_fref = thr.left if isinstance(thr.left, FieldRef) else thr.right
+    thr_fm = _field_meta(thr_fref, meta)
     try:
         gate_payloads = [_satisfy(g, True, meta) for g in gates]
         firing = _unwrap_soft(_merge(
-            gate_payloads + [{field: _violating_value(op, literal)}]))
+            gate_payloads + [{field: _violating_value(op, literal, thr_fm)}]))
         just_inside = _unwrap_soft(_merge(
-            gate_payloads + [{field: _violating_value(_NEG[op], literal)}]))
+            gate_payloads + [{field: _violating_value(_NEG[op], literal, thr_fm)}]))
     except _Undecidable:
         return ()
     return (
@@ -404,7 +420,8 @@ def _satisfy_comparison(node: Comparison, want_true: bool, meta: dict) -> dict[s
     field, literal, op = _orient(node)
     if want_true is False:
         op = _NEG[op]
-    return {field: _violating_value(op, literal)}
+    fref = node.left if isinstance(node.left, FieldRef) else node.right
+    return {field: _violating_value(op, literal, _field_meta(fref, meta))}
 
 
 def _field_meta(node: FieldRef, meta: dict) -> Optional[dict]:
@@ -456,10 +473,25 @@ def _orient(node: Comparison):
     raise _Undecidable("comparison without a single field + literal")
 
 
-def _violating_value(op: str, literal: Literal) -> Any:
-    """A concrete value making ``field op literal`` TRUE, with certainty."""
+def _violating_value(op: str, literal: Literal,
+                     fm: Optional[dict] = None) -> Any:
+    """A concrete value making ``field op literal`` TRUE, with certainty.
+
+    P1 (Amendment B): when the field's metadata carries a numeric type + scale,
+    the ordered ops step by the field's smallest representable increment in the
+    formula domain (``typed_value.minimal_increment``) — the **minimally
+    violating** witness (``Discount > 0.25`` on a scale-2 percent → ``0.2501``,
+    transport ``25.01``), never an arbitrary ±1 that could collide with field
+    precision, another control, or domain plausibility at run time. Without
+    scale metadata the ±1 fallback is byte-identical to pre-P1 (the certainty
+    bar: sound-but-loose beats a guessed step)."""
     v = literal.value
     if literal.kind == "number":
+        inc = minimal_increment((fm or {}).get("field_type"),
+                                (fm or {}).get("scale"))
+        if inc is not None and op in ("<", ">", "<>"):
+            d = Decimal(str(v)) + (inc if op in (">", "<>") else -inc)
+            return int(d) if d == d.to_integral_value() else float(d)
         return {"=": v, "<=": v, ">=": v, "<": v - 1, ">": v + 1, "<>": v + 1}[op]
     if literal.kind == "string":
         if op == "=":
