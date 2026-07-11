@@ -1,0 +1,10 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<ValidationRule xmlns="http://soap.sforce.com/2006/04/metadata">
+    <fullName>PLS_BM_VR06_Contract_Start_Date</fullName>
+    <active>true</active>
+    <description>Approved deals require a Contract Start Date of today or later.</description>
+    <errorConditionFormula>ISPICKVAL(PLS_BM_Stage__c, "Approved") &amp;&amp;
+(ISBLANK(PLS_BM_Contract_Start_Date__c) || PLS_BM_Contract_Start_Date__c &lt; TODAY())</errorConditionFormula>
+    <errorDisplayField>PLS_BM_Contract_Start_Date__c</errorDisplayField>
+    <errorMessage>Approved deals require a Contract Start Date of today or later.</errorMessage>
+</ValidationRule>

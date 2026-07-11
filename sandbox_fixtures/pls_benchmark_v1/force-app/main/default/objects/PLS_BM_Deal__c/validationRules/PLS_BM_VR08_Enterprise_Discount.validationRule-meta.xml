@@ -1,0 +1,10 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<ValidationRule xmlns="http://soap.sforce.com/2006/04/metadata">
+    <fullName>PLS_BM_VR08_Enterprise_Discount</fullName>
+    <active>true</active>
+    <description>Enterprise record type deals cannot have Discount greater than 25%. Exactly 25% is allowed.</description>
+    <errorConditionFormula>RecordType.DeveloperName = "PLS_BM_Enterprise" &amp;&amp;
+PLS_BM_Discount__c &gt; 0.25</errorConditionFormula>
+    <errorDisplayField>PLS_BM_Discount__c</errorDisplayField>
+    <errorMessage>Enterprise deals cannot have a Discount greater than 25%.</errorMessage>
+</ValidationRule>

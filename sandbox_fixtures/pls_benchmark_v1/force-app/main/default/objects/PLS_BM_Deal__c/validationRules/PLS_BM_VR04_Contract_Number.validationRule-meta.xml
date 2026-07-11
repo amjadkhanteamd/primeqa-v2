@@ -1,0 +1,10 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<ValidationRule xmlns="http://soap.sforce.com/2006/04/metadata">
+    <fullName>PLS_BM_VR04_Contract_Number</fullName>
+    <active>true</active>
+    <description>Contract Number mandatory when Stage is Contract Review or Approved.</description>
+    <errorConditionFormula>(ISPICKVAL(PLS_BM_Stage__c, "Contract Review") || ISPICKVAL(PLS_BM_Stage__c, "Approved")) &amp;&amp;
+ISBLANK(PLS_BM_Contract_Number__c)</errorConditionFormula>
+    <errorDisplayField>PLS_BM_Contract_Number__c</errorDisplayField>
+    <errorMessage>Contract Number is required during Contract Review and Approved stages.</errorMessage>
+</ValidationRule>

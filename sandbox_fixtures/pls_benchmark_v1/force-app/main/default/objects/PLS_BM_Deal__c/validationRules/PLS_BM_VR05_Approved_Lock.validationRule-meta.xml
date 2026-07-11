@@ -1,0 +1,10 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<ValidationRule xmlns="http://soap.sforce.com/2006/04/metadata">
+    <fullName>PLS_BM_VR05_Approved_Lock</fullName>
+    <active>true</active>
+    <description>Once a deal is Approved, Deal Value cannot be changed. Allows creation and unrelated field edits.</description>
+    <errorConditionFormula>ISPICKVAL(PRIORVALUE(PLS_BM_Stage__c), "Approved") &amp;&amp;
+ISCHANGED(PLS_BM_Deal_Value__c)</errorConditionFormula>
+    <errorDisplayField>PLS_BM_Deal_Value__c</errorDisplayField>
+    <errorMessage>Deal Value cannot be changed after the deal has been approved.</errorMessage>
+</ValidationRule>

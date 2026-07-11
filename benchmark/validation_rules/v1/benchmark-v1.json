@@ -1,0 +1,137 @@
+{
+  "benchmark_version": "1.0.0",
+  "benchmark_name": "Plimsol Validation Benchmark V1",
+  "description": "Controlled benchmark fixture for evaluating Plimsol's ability to generate QA test cases from business requirements and Salesforce org metadata. Tests 10 progressively complex validation rule patterns.",
+  "target_org": {
+    "alias": "primeqa-sandbox",
+    "username": "amjad.khan@teamd.co.in.primeqa",
+    "type": "Sandbox"
+  },
+  "deployed": "2026-07-08",
+  "object": {
+    "api_name": "PLS_BM_Deal__c",
+    "label": "Plimsol Benchmark Deal",
+    "plural_label": "Plimsol Benchmark Deals",
+    "name_field": {
+      "type": "AutoNumber",
+      "format": "DEAL-{00000}"
+    }
+  },
+  "fields": [
+    {
+      "api_name": "PLS_BM_Deal_Type__c",
+      "type": "Picklist",
+      "values": ["Enterprise", "SMB", "Partner"]
+    },
+    {
+      "api_name": "PLS_BM_Stage__c",
+      "type": "Picklist",
+      "values": ["Draft", "Qualification", "Proposal", "Negotiation", "Contract Review", "Approved", "Rejected"]
+    },
+    {
+      "api_name": "PLS_BM_Deal_Value__c",
+      "type": "Currency",
+      "precision": 16,
+      "scale": 2
+    },
+    {
+      "api_name": "PLS_BM_Discount__c",
+      "type": "Percent",
+      "precision": 5,
+      "scale": 2
+    },
+    {
+      "api_name": "PLS_BM_Approval_Reason__c",
+      "type": "LongTextArea"
+    },
+    {
+      "api_name": "PLS_BM_Contract_Number__c",
+      "type": "Text",
+      "length": 50
+    },
+    {
+      "api_name": "PLS_BM_Contract_Start_Date__c",
+      "type": "Date"
+    },
+    {
+      "api_name": "PLS_BM_Risk_Level__c",
+      "type": "Picklist",
+      "values": ["Low", "Medium", "High", "Critical"]
+    },
+    {
+      "api_name": "PLS_BM_Compliance_Approved__c",
+      "type": "Checkbox",
+      "default": false
+    },
+    {
+      "api_name": "PLS_BM_Override_Reason__c",
+      "type": "TextArea"
+    },
+    {
+      "api_name": "PLS_BM_External_Reference__c",
+      "type": "Text",
+      "length": 30
+    },
+    {
+      "api_name": "PLS_BM_Expected_Close_Date__c",
+      "type": "Date"
+    }
+  ],
+  "record_types": [
+    {
+      "developer_name": "PLS_BM_Enterprise",
+      "label": "Enterprise Benchmark Deal"
+    },
+    {
+      "developer_name": "PLS_BM_Standard",
+      "label": "Standard Benchmark Deal"
+    }
+  ],
+  "validation_rules": [
+    {
+      "api_name": "PLS_BM_VR01_Positive_Deal_Value",
+      "capability_tested": "Simple boundary: numeric field must be positive when populated; blank is allowed"
+    },
+    {
+      "api_name": "PLS_BM_VR02_Approval_Reason",
+      "capability_tested": "Conditional required field: text field becomes mandatory based on a percentage threshold with exact boundary"
+    },
+    {
+      "api_name": "PLS_BM_VR03_High_Value_Deal",
+      "capability_tested": "Compound boolean logic: AND of a numeric condition with OR of a percentage threshold and picklist membership"
+    },
+    {
+      "api_name": "PLS_BM_VR04_Contract_Number",
+      "capability_tested": "Picklist-driven required field: text field is mandatory only at specific stage values"
+    },
+    {
+      "api_name": "PLS_BM_VR05_Approved_Lock",
+      "capability_tested": "Change detection: field lock after reaching a specific stage using ISCHANGED and PRIORVALUE"
+    },
+    {
+      "api_name": "PLS_BM_VR06_Contract_Start_Date",
+      "capability_tested": "Date boundary: date field is mandatory and must be today or later at a specific stage"
+    },
+    {
+      "api_name": "PLS_BM_VR07_Critical_Risk",
+      "capability_tested": "Multiple failure conditions: two independent requirements that both must be satisfied for a specific picklist value"
+    },
+    {
+      "api_name": "PLS_BM_VR08_Enterprise_Discount",
+      "capability_tested": "Record type context: percentage cap that applies only to a specific record type; other record types are unaffected"
+    },
+    {
+      "api_name": "PLS_BM_VR09_External_Reference",
+      "capability_tested": "Text pattern validation: REGEX enforcement of a specific format when the field is populated"
+    },
+    {
+      "api_name": "PLS_BM_VR10_Enterprise_Approval",
+      "capability_tested": "Composite business logic: multi-condition gate on a stage transition combining picklist, numeric, boolean, date, and change-detection checks"
+    }
+  ],
+  "permission_set": {
+    "api_name": "PLS_BM_Deal_Access",
+    "description": "Full CRUD + FLS for the benchmark object and all fields"
+  },
+  "sfdx_project_path": "sandbox_fixtures/pls_benchmark_v1/"
+}

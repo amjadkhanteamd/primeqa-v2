@@ -1,0 +1,6 @@
+{
+  "packageDirectories": [{"path": "force-app", "default": true}],
+  "name": "pls-benchmark-v1",
+  "namespace": "",
+  "sourceApiVersion": "59.0"
+}

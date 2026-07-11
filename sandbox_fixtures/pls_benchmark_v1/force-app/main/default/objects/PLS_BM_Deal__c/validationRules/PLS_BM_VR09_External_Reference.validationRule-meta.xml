@@ -1,0 +1,10 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<ValidationRule xmlns="http://soap.sforce.com/2006/04/metadata">
+    <fullName>PLS_BM_VR09_External_Reference</fullName>
+    <active>true</active>
+    <description>External Reference, if populated, must match the pattern EXT-12345678 (EXT- followed by exactly 8 digits).</description>
+    <errorConditionFormula>NOT(ISBLANK(PLS_BM_External_Reference__c)) &amp;&amp;
+NOT(REGEX(PLS_BM_External_Reference__c, "^EXT-[0-9]{8}$"))</errorConditionFormula>
+    <errorDisplayField>PLS_BM_External_Reference__c</errorDisplayField>
+    <errorMessage>External Reference must use the format EXT-12345678.</errorMessage>
+</ValidationRule>

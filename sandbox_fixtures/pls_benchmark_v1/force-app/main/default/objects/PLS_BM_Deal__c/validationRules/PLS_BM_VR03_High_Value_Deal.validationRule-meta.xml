@@ -1,0 +1,11 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<ValidationRule xmlns="http://soap.sforce.com/2006/04/metadata">
+    <fullName>PLS_BM_VR03_High_Value_Deal</fullName>
+    <active>true</active>
+    <description>Compliance Approval required when Deal Value &gt; 1,000,000 AND (Discount &gt; 15% OR Risk is High/Critical).</description>
+    <errorConditionFormula>PLS_BM_Deal_Value__c &gt; 1000000 &amp;&amp;
+(PLS_BM_Discount__c &gt; 0.15 || ISPICKVAL(PLS_BM_Risk_Level__c, "High") || ISPICKVAL(PLS_BM_Risk_Level__c, "Critical")) &amp;&amp;
+NOT(PLS_BM_Compliance_Approved__c)</errorConditionFormula>
+    <errorDisplayField>PLS_BM_Compliance_Approved__c</errorDisplayField>
+    <errorMessage>High-value risky or highly discounted deals require Compliance Approval.</errorMessage>
+</ValidationRule>

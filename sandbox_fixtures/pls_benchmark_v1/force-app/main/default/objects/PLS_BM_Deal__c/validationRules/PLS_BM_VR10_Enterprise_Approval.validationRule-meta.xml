@@ -1,0 +1,21 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<ValidationRule xmlns="http://soap.sforce.com/2006/04/metadata">
+    <fullName>PLS_BM_VR10_Enterprise_Approval</fullName>
+    <active>true</active>
+    <description>Enterprise deals above 2,000,000 must meet all approval conditions before moving to Approved. Only fires on stage transition to Approved.</description>
+    <errorConditionFormula>ISPICKVAL(PLS_BM_Deal_Type__c, "Enterprise") &amp;&amp;
+ISPICKVAL(PLS_BM_Stage__c, "Approved") &amp;&amp;
+ISCHANGED(PLS_BM_Stage__c) &amp;&amp;
+PLS_BM_Deal_Value__c &gt; 2000000 &amp;&amp;
+(
+  PLS_BM_Discount__c &gt; 0.20 ||
+  ISPICKVAL(PLS_BM_Risk_Level__c, "High") ||
+  ISPICKVAL(PLS_BM_Risk_Level__c, "Critical") ||
+  NOT(PLS_BM_Compliance_Approved__c) ||
+  ISBLANK(PLS_BM_Contract_Number__c) ||
+  ISBLANK(PLS_BM_Contract_Start_Date__c) ||
+  PLS_BM_Contract_Start_Date__c &lt; TODAY()
+)</errorConditionFormula>
+    <errorDisplayField>PLS_BM_Stage__c</errorDisplayField>
+    <errorMessage>Enterprise deals above 2,000,000 must meet all approval conditions before moving to Approved.</errorMessage>
+</ValidationRule>

@@ -1,0 +1,9 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<ValidationRule xmlns="http://soap.sforce.com/2006/04/metadata">
+    <fullName>PLS_BM_VR01_Positive_Deal_Value</fullName>
+    <active>true</active>
+    <description>Deal Value must be greater than zero. Blank values are allowed.</description>
+    <errorConditionFormula>NOT(ISBLANK(PLS_BM_Deal_Value__c)) &amp;&amp; PLS_BM_Deal_Value__c &lt;= 0</errorConditionFormula>
+    <errorDisplayField>PLS_BM_Deal_Value__c</errorDisplayField>
+    <errorMessage>Deal Value must be greater than zero.</errorMessage>
+</ValidationRule>
