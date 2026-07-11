@@ -1,10 +1,13 @@
 # FB-V1 — Requirement A (verbatim input candidate)
 
-**Status: authored Wave 0 — NOT yet loaded into Plimsol, NOT yet frozen.**
-When this requirement is created in Plimsol (Wave 1), the stored acceptance
-criteria must match the block in §Acceptance criteria **byte-for-byte**;
-Plimsol's requirement sync then appends its object/field projection tail,
-which will be recorded here at that point (VRB-V1 precedent). The text is
+**Status: LOADED — Plimsol requirement `req-320` (source: manual, created
+2026-07-11), stored acceptance criteria verified byte-identical to the block
+in §Acceptance criteria. NOT yet frozen.** Deliberately loaded with **no
+projection tail**: unlike VRB-V1's requirement (whose tail was authored into
+the stored AC — no auto-append mechanism exists in Plimsol; the VRB-V1
+REQUIREMENT.md wording overstated this), FB-V1's input is the pure business
+text, so object resolution itself is part of what the benchmark measures.
+Any rerun must reproduce this AC block byte-for-byte with no tail. The text is
 deliberately qualitative: it names behaviours and business states, never
 thresholds, offsets, formats, band boundaries, or automation artifacts —
 deriving those from the org's own metadata is the capability under test.
