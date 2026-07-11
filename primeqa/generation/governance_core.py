@@ -72,7 +72,7 @@ from primeqa.generation.transition import (
     _flatten_and, _prior_constraint, temporal_boundary_shape,
 )
 from primeqa.generation.verified_negative import _RECORD_TYPES_KEY, _writable
-from primeqa.generation import control_relevance
+from primeqa.generation import control_coverage, control_relevance
 from primeqa.generation.formula_expectation import (
     as_decimal, verify_formula_expectation)
 from primeqa.generation.vr_conflict import (
@@ -1737,6 +1737,11 @@ class GovernanceCore:
 
         # admissibility (real S1 grounding, Layer 1)
         neighborhood = self._admit.scoped_neighborhood(subject, at)
+        # Control-telemetry Phase 0: OBSERVE the subject's control facts for the
+        # finalize-time coverage map. Read-only — stashing changes no resolution
+        # outcome; refused intents stash too (Expected must not depend on
+        # emission success).
+        _stash_control_facts(state, subject, neighborhood)
         base = self._admit.evaluate(archetype=archetype, claim_kind=claim_kind,
                                     polarity_hint=polarity, subject=subject,
                                     neighborhood=neighborhood, excerpt=excerpt,
@@ -3674,6 +3679,17 @@ class GovernanceCore:
                                        (getattr(state, "presented_candidates", None) or [])]
             delta = {"selected_path_ids": ai["selected_path_ids"]}
 
+        # Control-telemetry Phase 0: the control-coverage map (stages through
+        # EMITTED), from the stashed control facts + the deduped bundle set.
+        # Read-only telemetry on a NEW ai key — explanation_hash canonicalizes
+        # only its four fixed keys, so no outcome re-keys (test-asserted).
+        # Absent facts (config-only paths, legacy states) attach nothing —
+        # byte-identical to pre-telemetry outcomes.
+        control_facts = list(getattr(state, "control_facts", None) or [])
+        if control_facts:
+            ai["control_coverage"] = control_coverage.coverage_from_bundles(
+                control_facts, bundles)
+
         # The outcome-level marker aggregates CONSERVATIVELY across bundles
         # (D-207 decision 5): LAYER_2 only when every bundle verified; a caveat
         # on any bundle makes the outcome caveated. Per-bundle truth stays on
@@ -3718,6 +3734,22 @@ class GovernanceCore:
                 for r in neighborhood
             ],
         }
+
+
+def _stash_control_facts(state: Any, subject: Entity, neighborhood: list) -> None:
+    """Control-telemetry Phase 0: accumulate the subject's control facts on the
+    state for the finalize-time coverage map (read-only — observes, never
+    selects/refuses). Dedup by (subject, control_ref): the D-247 re-prompt
+    resolves many intents against the same subject; one fact set suffices."""
+    if state is None:
+        return
+    if not hasattr(state, "control_facts") or state.control_facts is None:
+        state.control_facts = []
+    known = {(f.subject_ref, f.control_ref) for f in state.control_facts}
+    for fact in control_coverage.controls_from_neighborhood(
+            subject.sf_api_name or "", neighborhood):
+        if (fact.subject_ref, fact.control_ref) not in known:
+            state.control_facts.append(fact)
 
 
 def _stash_grounding(state: Any, grounding: Any) -> None:
