@@ -1,0 +1,9 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<ValidationRule xmlns="http://soap.sforce.com/2006/04/metadata">
+    <fullName>PLS_FB_VR01_External_Ref_Format</fullName>
+    <active>true</active>
+    <description>External Reference, when present, must match FB- plus 6 digits. Paired with before-save flow PLS_FB_FL02_Normalize_External_Ref, which runs earlier in the order of execution and repairs case/whitespace first.</description>
+    <errorConditionFormula>NOT(ISBLANK(PLS_FB_External_Ref__c)) &amp;&amp; NOT(REGEX(PLS_FB_External_Ref__c, "FB-[0-9]{6}"))</errorConditionFormula>
+    <errorDisplayField>PLS_FB_External_Ref__c</errorDisplayField>
+    <errorMessage>External Reference must use the format FB- followed by 6 digits (e.g. FB-123456).</errorMessage>
+</ValidationRule>

@@ -1,0 +1,56 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<Flow xmlns="http://soap.sforce.com/2006/04/metadata">
+    <apiVersion>59.0</apiVersion>
+    <assignments>
+        <name>Set_Default_Priority</name>
+        <label>Set Default Priority</label>
+        <locationX>176</locationX>
+        <locationY>287</locationY>
+        <assignmentItems>
+            <assignToReference>$Record.PLS_FB_Priority__c</assignToReference>
+            <operator>Assign</operator>
+            <value>
+                <stringValue>Standard</stringValue>
+            </value>
+        </assignmentItems>
+    </assignments>
+    <decisions>
+        <name>Priority_Blank</name>
+        <label>Priority Blank?</label>
+        <locationX>176</locationX>
+        <locationY>167</locationY>
+        <defaultConnectorLabel>Priority Supplied</defaultConnectorLabel>
+        <rules>
+            <name>Is_Blank</name>
+            <conditionLogic>and</conditionLogic>
+            <conditions>
+                <leftValueReference>$Record.PLS_FB_Priority__c</leftValueReference>
+                <operator>IsNull</operator>
+                <rightValue>
+                    <booleanValue>true</booleanValue>
+                </rightValue>
+            </conditions>
+            <connector>
+                <targetReference>Set_Default_Priority</targetReference>
+            </connector>
+            <label>Is Blank</label>
+        </rules>
+    </decisions>
+    <description>FB-V1 benchmark FL01. New orders without a stated priority are treated as standard priority: on create, when Priority is blank, set it to Standard before the record is saved. A supplied priority is never modified.</description>
+    <environments>Default</environments>
+    <interviewLabel>PLS FB FL01 Default Priority {!$Flow.CurrentDateTime}</interviewLabel>
+    <label>PLS FB FL01 Default Priority</label>
+    <processType>AutoLaunchedFlow</processType>
+    <start>
+        <locationX>50</locationX>
+        <locationY>0</locationY>
+        <connector>
+            <targetReference>Priority_Blank</targetReference>
+        </connector>
+        <object>PLS_FB_Order__c</object>
+        <recordTriggerType>Create</recordTriggerType>
+        <triggerType>RecordBeforeSave</triggerType>
+    </start>
+    <status>Active</status>
+    <triggerOrder>10</triggerOrder>
+</Flow>

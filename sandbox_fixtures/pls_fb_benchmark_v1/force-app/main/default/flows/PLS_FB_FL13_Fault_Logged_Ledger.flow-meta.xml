@@ -1,0 +1,84 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<Flow xmlns="http://soap.sforce.com/2006/04/metadata">
+    <apiVersion>59.0</apiVersion>
+    <description>FB-V1 benchmark FL13. Confirmed orders post a ledger entry; when posting fails, the failure is recorded for audit and the confirmation still stands: when an order is updated into Confirmed status, create a PLS FB Ledger Entry whose (universally required) Ledger Code is sourced from the order's OPTIONAL Ledger Code field. An order confirmed with the field blank makes the create fail; the fault connector then writes a LedgerFault audit-log entry instead of aborting the save. The fault is reachable by ordinary input choice, by design.</description>
+    <environments>Default</environments>
+    <interviewLabel>PLS FB FL13 Fault Logged Ledger {!$Flow.CurrentDateTime}</interviewLabel>
+    <label>PLS FB FL13 Fault Logged Ledger</label>
+    <processType>AutoLaunchedFlow</processType>
+    <recordCreates>
+        <name>Create_Ledger_Entry</name>
+        <label>Create Ledger Entry</label>
+        <locationX>176</locationX>
+        <locationY>167</locationY>
+        <faultConnector>
+            <targetReference>Create_Fault_Log</targetReference>
+        </faultConnector>
+        <inputAssignments>
+            <field>PLS_FB_Amount__c</field>
+            <value>
+                <elementReference>$Record.PLS_FB_Amount__c</elementReference>
+            </value>
+        </inputAssignments>
+        <inputAssignments>
+            <field>PLS_FB_Ledger_Code__c</field>
+            <value>
+                <elementReference>$Record.PLS_FB_Ledger_Code__c</elementReference>
+            </value>
+        </inputAssignments>
+        <inputAssignments>
+            <field>PLS_FB_Order__c</field>
+            <value>
+                <elementReference>$Record.Id</elementReference>
+            </value>
+        </inputAssignments>
+        <object>PLS_FB_Ledger_Entry__c</object>
+        <storeOutputAutomatically>false</storeOutputAutomatically>
+    </recordCreates>
+    <recordCreates>
+        <name>Create_Fault_Log</name>
+        <label>Create Ledger Fault Log</label>
+        <locationX>352</locationX>
+        <locationY>287</locationY>
+        <inputAssignments>
+            <field>PLS_FB_Detail__c</field>
+            <value>
+                <elementReference>$Flow.FaultMessage</elementReference>
+            </value>
+        </inputAssignments>
+        <inputAssignments>
+            <field>PLS_FB_Kind__c</field>
+            <value>
+                <stringValue>LedgerFault</stringValue>
+            </value>
+        </inputAssignments>
+        <inputAssignments>
+            <field>PLS_FB_Order__c</field>
+            <value>
+                <elementReference>$Record.Id</elementReference>
+            </value>
+        </inputAssignments>
+        <object>PLS_FB_Audit_Log__c</object>
+        <storeOutputAutomatically>false</storeOutputAutomatically>
+    </recordCreates>
+    <start>
+        <locationX>50</locationX>
+        <locationY>0</locationY>
+        <connector>
+            <targetReference>Create_Ledger_Entry</targetReference>
+        </connector>
+        <doesRequireRecordChangedToMeetCriteria>true</doesRequireRecordChangedToMeetCriteria>
+        <filterLogic>and</filterLogic>
+        <filters>
+            <field>PLS_FB_Status__c</field>
+            <operator>EqualTo</operator>
+            <value>
+                <stringValue>Confirmed</stringValue>
+            </value>
+        </filters>
+        <object>PLS_FB_Order__c</object>
+        <recordTriggerType>Update</recordTriggerType>
+        <triggerType>RecordAfterSave</triggerType>
+    </start>
+    <status>Active</status>
+</Flow>

@@ -1,0 +1,59 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<Flow xmlns="http://soap.sforce.com/2006/04/metadata">
+    <apiVersion>59.0</apiVersion>
+    <description>FB-V1 benchmark FL11. Confirmed orders get enrichment processing recorded for audit shortly after confirmation: when an order is updated into Confirmed status, an AsyncEnrichment audit-log entry is created on the flow's ASYNCHRONOUS path — a separate transaction that commits after the triggering save returns. The effect is observable only eventually, not at response time.</description>
+    <environments>Default</environments>
+    <interviewLabel>PLS FB FL11 Async Enrichment {!$Flow.CurrentDateTime}</interviewLabel>
+    <label>PLS FB FL11 Async Enrichment</label>
+    <processType>AutoLaunchedFlow</processType>
+    <recordCreates>
+        <name>Create_Async_Log</name>
+        <label>Create Async Enrichment Log</label>
+        <locationX>176</locationX>
+        <locationY>167</locationY>
+        <inputAssignments>
+            <field>PLS_FB_Detail__c</field>
+            <value>
+                <stringValue>Asynchronous enrichment completed for the confirmed order.</stringValue>
+            </value>
+        </inputAssignments>
+        <inputAssignments>
+            <field>PLS_FB_Kind__c</field>
+            <value>
+                <stringValue>AsyncEnrichment</stringValue>
+            </value>
+        </inputAssignments>
+        <inputAssignments>
+            <field>PLS_FB_Order__c</field>
+            <value>
+                <elementReference>$Record.Id</elementReference>
+            </value>
+        </inputAssignments>
+        <object>PLS_FB_Audit_Log__c</object>
+        <storeOutputAutomatically>false</storeOutputAutomatically>
+    </recordCreates>
+    <start>
+        <locationX>50</locationX>
+        <locationY>0</locationY>
+        <doesRequireRecordChangedToMeetCriteria>true</doesRequireRecordChangedToMeetCriteria>
+        <filterLogic>and</filterLogic>
+        <filters>
+            <field>PLS_FB_Status__c</field>
+            <operator>EqualTo</operator>
+            <value>
+                <stringValue>Confirmed</stringValue>
+            </value>
+        </filters>
+        <object>PLS_FB_Order__c</object>
+        <recordTriggerType>Update</recordTriggerType>
+        <scheduledPaths>
+            <name>Async_Path</name>
+            <connector>
+                <targetReference>Create_Async_Log</targetReference>
+            </connector>
+            <pathType>AsyncAfterCommit</pathType>
+        </scheduledPaths>
+        <triggerType>RecordAfterSave</triggerType>
+    </start>
+    <status>Active</status>
+</Flow>

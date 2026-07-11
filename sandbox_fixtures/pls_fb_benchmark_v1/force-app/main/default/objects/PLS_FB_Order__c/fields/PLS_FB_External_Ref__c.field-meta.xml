@@ -1,0 +1,9 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<CustomField xmlns="http://soap.sforce.com/2006/04/metadata">
+    <fullName>PLS_FB_External_Ref__c</fullName>
+    <label>External Reference</label>
+    <type>Text</type>
+    <length>30</length>
+    <required>false</required>
+    <unique>false</unique>
+</CustomField>

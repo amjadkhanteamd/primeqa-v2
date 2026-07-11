@@ -1,0 +1,47 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<Flow xmlns="http://soap.sforce.com/2006/04/metadata">
+    <apiVersion>59.0</apiVersion>
+    <assignments>
+        <name>Normalize_Ref</name>
+        <label>Normalize External Reference</label>
+        <locationX>176</locationX>
+        <locationY>167</locationY>
+        <assignmentItems>
+            <assignToReference>$Record.PLS_FB_External_Ref__c</assignToReference>
+            <operator>Assign</operator>
+            <value>
+                <elementReference>fNormalizedRef</elementReference>
+            </value>
+        </assignmentItems>
+    </assignments>
+    <description>FB-V1 benchmark FL02. External references are stored in the company's canonical form regardless of how they were typed: before save, trim whitespace and uppercase the External Reference. Deliberately paired with validation rule PLS_FB_VR01_External_Ref_Format, which runs AFTER before-save flows in the order of execution — a lowercase but otherwise valid reference is repaired here and therefore saves.</description>
+    <environments>Default</environments>
+    <formulas>
+        <name>fNormalizedRef</name>
+        <dataType>String</dataType>
+        <expression>UPPER(TRIM({!$Record.PLS_FB_External_Ref__c}))</expression>
+    </formulas>
+    <interviewLabel>PLS FB FL02 Normalize External Ref {!$Flow.CurrentDateTime}</interviewLabel>
+    <label>PLS FB FL02 Normalize External Ref</label>
+    <processType>AutoLaunchedFlow</processType>
+    <start>
+        <locationX>50</locationX>
+        <locationY>0</locationY>
+        <connector>
+            <targetReference>Normalize_Ref</targetReference>
+        </connector>
+        <filterLogic>and</filterLogic>
+        <filters>
+            <field>PLS_FB_External_Ref__c</field>
+            <operator>IsNull</operator>
+            <value>
+                <booleanValue>false</booleanValue>
+            </value>
+        </filters>
+        <object>PLS_FB_Order__c</object>
+        <recordTriggerType>CreateAndUpdate</recordTriggerType>
+        <triggerType>RecordBeforeSave</triggerType>
+    </start>
+    <status>Active</status>
+    <triggerOrder>20</triggerOrder>
+</Flow>

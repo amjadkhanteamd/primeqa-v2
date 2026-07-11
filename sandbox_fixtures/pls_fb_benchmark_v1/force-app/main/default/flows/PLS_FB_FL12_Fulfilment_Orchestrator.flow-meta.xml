@@ -1,0 +1,143 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<Flow xmlns="http://soap.sforce.com/2006/04/metadata">
+    <apiVersion>59.0</apiVersion>
+    <assignments>
+        <name>Assign_Fulfilled_Date</name>
+        <label>Assign Fulfilled Date</label>
+        <locationX>176</locationX>
+        <locationY>527</locationY>
+        <assignmentItems>
+            <assignToReference>$Record.PLS_FB_Fulfilled_Date__c</assignToReference>
+            <operator>Assign</operator>
+            <value>
+                <elementReference>$Flow.CurrentDate</elementReference>
+            </value>
+        </assignmentItems>
+        <connector>
+            <targetReference>Update_Order_Record</targetReference>
+        </connector>
+    </assignments>
+    <decisions>
+        <name>Any_Open_Tasks</name>
+        <label>Any Open Tasks?</label>
+        <locationX>176</locationX>
+        <locationY>167</locationY>
+        <defaultConnector>
+            <targetReference>Check_Fulfilled_Date</targetReference>
+        </defaultConnector>
+        <defaultConnectorLabel>No Open Tasks</defaultConnectorLabel>
+        <rules>
+            <name>Has_Open_Tasks</name>
+            <conditionLogic>and</conditionLogic>
+            <conditions>
+                <leftValueReference>Get_Open_Task</leftValueReference>
+                <operator>IsNull</operator>
+                <rightValue>
+                    <booleanValue>false</booleanValue>
+                </rightValue>
+            </conditions>
+            <connector>
+                <targetReference>Call_Close_Tasks</targetReference>
+            </connector>
+            <label>Has Open Tasks</label>
+        </rules>
+    </decisions>
+    <decisions>
+        <name>Check_Fulfilled_Date</name>
+        <label>Fulfilled Date Blank?</label>
+        <locationX>176</locationX>
+        <locationY>407</locationY>
+        <defaultConnectorLabel>Already Stamped</defaultConnectorLabel>
+        <rules>
+            <name>Date_Blank</name>
+            <conditionLogic>and</conditionLogic>
+            <conditions>
+                <leftValueReference>$Record.PLS_FB_Fulfilled_Date__c</leftValueReference>
+                <operator>IsNull</operator>
+                <rightValue>
+                    <booleanValue>true</booleanValue>
+                </rightValue>
+            </conditions>
+            <connector>
+                <targetReference>Assign_Fulfilled_Date</targetReference>
+            </connector>
+            <label>Date Blank</label>
+        </rules>
+    </decisions>
+    <description>FB-V1 benchmark FL12 — the composition capstone. Fulfilling an order closes out its open fulfilment work and stamps the fulfilment date: when an order is updated into Fulfilled status, decide whether open tasks exist; if so, call subflow PLS_FB_SF01_Close_Tasks to complete them (the subflow owns the loop, the write-back, and the fault handling); then stamp Fulfilled Date if not already set. Behaviour spans two flow artifacts by design.</description>
+    <environments>Default</environments>
+    <interviewLabel>PLS FB FL12 Fulfilment Orchestrator {!$Flow.CurrentDateTime}</interviewLabel>
+    <label>PLS FB FL12 Fulfilment Orchestrator</label>
+    <processType>AutoLaunchedFlow</processType>
+    <recordLookups>
+        <name>Get_Open_Task</name>
+        <label>Get an Open Task</label>
+        <locationX>176</locationX>
+        <locationY>47</locationY>
+        <assignNullValuesIfNoRecordsFound>false</assignNullValuesIfNoRecordsFound>
+        <connector>
+            <targetReference>Any_Open_Tasks</targetReference>
+        </connector>
+        <filterLogic>and</filterLogic>
+        <filters>
+            <field>PLS_FB_Order__c</field>
+            <operator>EqualTo</operator>
+            <value>
+                <elementReference>$Record.Id</elementReference>
+            </value>
+        </filters>
+        <filters>
+            <field>PLS_FB_Status__c</field>
+            <operator>EqualTo</operator>
+            <value>
+                <stringValue>Open</stringValue>
+            </value>
+        </filters>
+        <getFirstRecordOnly>true</getFirstRecordOnly>
+        <object>PLS_FB_Fulfilment_Task__c</object>
+        <storeOutputAutomatically>true</storeOutputAutomatically>
+    </recordLookups>
+    <recordUpdates>
+        <name>Update_Order_Record</name>
+        <label>Update Order Record</label>
+        <locationX>176</locationX>
+        <locationY>647</locationY>
+        <inputReference>$Record</inputReference>
+    </recordUpdates>
+    <start>
+        <locationX>50</locationX>
+        <locationY>0</locationY>
+        <connector>
+            <targetReference>Get_Open_Task</targetReference>
+        </connector>
+        <doesRequireRecordChangedToMeetCriteria>true</doesRequireRecordChangedToMeetCriteria>
+        <filterLogic>and</filterLogic>
+        <filters>
+            <field>PLS_FB_Status__c</field>
+            <operator>EqualTo</operator>
+            <value>
+                <stringValue>Fulfilled</stringValue>
+            </value>
+        </filters>
+        <object>PLS_FB_Order__c</object>
+        <recordTriggerType>Update</recordTriggerType>
+        <triggerType>RecordAfterSave</triggerType>
+    </start>
+    <status>Active</status>
+    <subflows>
+        <name>Call_Close_Tasks</name>
+        <label>Call Close Tasks</label>
+        <locationX>176</locationX>
+        <locationY>287</locationY>
+        <connector>
+            <targetReference>Check_Fulfilled_Date</targetReference>
+        </connector>
+        <flowName>PLS_FB_SF01_Close_Tasks</flowName>
+        <inputAssignments>
+            <name>OrderId</name>
+            <value>
+                <elementReference>$Record.Id</elementReference>
+            </value>
+        </inputAssignments>
+    </subflows>
+</Flow>

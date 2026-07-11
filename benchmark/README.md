@@ -9,6 +9,7 @@ thing the original run measured.
 | Benchmark | Version | Status | Location | Identity |
 |---|---|---|---|---|
 | Validation Rule Benchmark | V1 | **FROZEN** — complete 2026-07-10 at 10/10 | [`validation_rules/v1/`](validation_rules/v1/) | [`MANIFEST.md`](validation_rules/v1/MANIFEST.md) |
+| Flow Benchmark | V1 | **Wave 0** — fixture deployed + live-verified 46/46 (2026-07-11); **not frozen**, program not yet run | [`flows/v1/`](flows/v1/) | [`ORG_FIXTURE.md`](flows/v1/ORG_FIXTURE.md) (MANIFEST at freeze) |
 
 Governance: [`BENCHMARK_POLICY.md`](BENCHMARK_POLICY.md) — read it before
 touching anything under this directory. The one-sentence version: **a frozen

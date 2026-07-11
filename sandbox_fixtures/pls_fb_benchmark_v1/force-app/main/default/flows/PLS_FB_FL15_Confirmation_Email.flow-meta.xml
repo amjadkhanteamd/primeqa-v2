@@ -1,0 +1,82 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<Flow xmlns="http://soap.sforce.com/2006/04/metadata">
+    <apiVersion>59.0</apiVersion>
+    <actionCalls>
+        <name>Send_Confirmation_Email</name>
+        <label>Send Confirmation Email</label>
+        <locationX>176</locationX>
+        <locationY>167</locationY>
+        <actionName>emailSimple</actionName>
+        <actionType>emailSimple</actionType>
+        <flowTransactionModel>CurrentTransaction</flowTransactionModel>
+        <inputParameters>
+            <name>emailAddresses</name>
+            <value>
+                <elementReference>$Record.PLS_FB_Customer_Email__c</elementReference>
+            </value>
+        </inputParameters>
+        <inputParameters>
+            <name>emailSubject</name>
+            <value>
+                <elementReference>tSubject</elementReference>
+            </value>
+        </inputParameters>
+        <inputParameters>
+            <name>emailBody</name>
+            <value>
+                <elementReference>tBody</elementReference>
+            </value>
+        </inputParameters>
+    </actionCalls>
+    <description>FB-V1 benchmark FL15. Customers receive a confirmation email when their order is confirmed: when an order with a customer email address is updated into Confirmed status, send a confirmation email (Flow core Send Email action) to that address. The effect leaves no queryable record trace by design — this is the benchmark's evidence-limit control, deliberately co-triggered on the same transition as FL04, FL11 and FL13.</description>
+    <environments>Default</environments>
+    <interviewLabel>PLS FB FL15 Confirmation Email {!$Flow.CurrentDateTime}</interviewLabel>
+    <label>PLS FB FL15 Confirmation Email</label>
+    <processType>AutoLaunchedFlow</processType>
+    <start>
+        <locationX>50</locationX>
+        <locationY>0</locationY>
+        <connector>
+            <targetReference>Send_Confirmation_Email</targetReference>
+        </connector>
+        <doesRequireRecordChangedToMeetCriteria>true</doesRequireRecordChangedToMeetCriteria>
+        <filterLogic>and</filterLogic>
+        <filters>
+            <field>PLS_FB_Status__c</field>
+            <operator>EqualTo</operator>
+            <value>
+                <stringValue>Confirmed</stringValue>
+            </value>
+        </filters>
+        <filters>
+            <field>PLS_FB_Customer_Email__c</field>
+            <operator>IsNull</operator>
+            <value>
+                <booleanValue>false</booleanValue>
+            </value>
+        </filters>
+        <object>PLS_FB_Order__c</object>
+        <recordTriggerType>Update</recordTriggerType>
+        <triggerType>RecordAfterSave</triggerType>
+    </start>
+    <status>Active</status>
+    <textTemplates>
+        <name>tBody</name>
+        <isViewedAsPlainText>true</isViewedAsPlainText>
+        <text>Dear customer,
+
+Your order {!$Record.Name} has been confirmed.
+
+Order amount: {!$Record.PLS_FB_Amount__c}
+Promised date: {!$Record.PLS_FB_Promised_Date__c}
+
+Thank you for your business.
+
+PLS FB Order Management</text>
+    </textTemplates>
+    <textTemplates>
+        <name>tSubject</name>
+        <isViewedAsPlainText>true</isViewedAsPlainText>
+        <text>Your order {!$Record.Name} is confirmed</text>
+    </textTemplates>
+</Flow>

@@ -1,0 +1,109 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<Flow xmlns="http://soap.sforce.com/2006/04/metadata">
+    <apiVersion>59.0</apiVersion>
+    <assignments>
+        <name>Mark_Reopened</name>
+        <label>Mark Reopened</label>
+        <locationX>176</locationX>
+        <locationY>287</locationY>
+        <assignmentItems>
+            <assignToReference>$Record.PLS_FB_Reopened__c</assignToReference>
+            <operator>Assign</operator>
+            <value>
+                <booleanValue>true</booleanValue>
+            </value>
+        </assignmentItems>
+        <connector>
+            <targetReference>Update_Order_Record</targetReference>
+        </connector>
+    </assignments>
+    <decisions>
+        <name>Was_Fulfilled</name>
+        <label>Left Fulfilled?</label>
+        <locationX>176</locationX>
+        <locationY>167</locationY>
+        <defaultConnectorLabel>Not a Reopen</defaultConnectorLabel>
+        <rules>
+            <name>Left_Fulfilled</name>
+            <conditionLogic>and</conditionLogic>
+            <conditions>
+                <leftValueReference>$Record__Prior.PLS_FB_Status__c</leftValueReference>
+                <operator>EqualTo</operator>
+                <rightValue>
+                    <stringValue>Fulfilled</stringValue>
+                </rightValue>
+            </conditions>
+            <conditions>
+                <leftValueReference>$Record.PLS_FB_Status__c</leftValueReference>
+                <operator>NotEqualTo</operator>
+                <rightValue>
+                    <stringValue>Fulfilled</stringValue>
+                </rightValue>
+            </conditions>
+            <connector>
+                <targetReference>Mark_Reopened</targetReference>
+            </connector>
+            <label>Left Fulfilled</label>
+        </rules>
+    </decisions>
+    <description>FB-V1 benchmark FL09. A fulfilled order that gets moved back into an active state is marked as reopened and the event is recorded for audit: fires on status changes, and uses the record's PRIOR state ($Record__Prior) to detect leaving Fulfilled — the same mutation applied to an order that was never Fulfilled does nothing.</description>
+    <environments>Default</environments>
+    <interviewLabel>PLS FB FL09 Reopen Guard {!$Flow.CurrentDateTime}</interviewLabel>
+    <label>PLS FB FL09 Reopen Guard</label>
+    <processType>AutoLaunchedFlow</processType>
+    <recordCreates>
+        <name>Create_Reopen_Log</name>
+        <label>Create Reopen Log</label>
+        <locationX>176</locationX>
+        <locationY>527</locationY>
+        <inputAssignments>
+            <field>PLS_FB_Detail__c</field>
+            <value>
+                <stringValue>Order left Fulfilled status and was marked as reopened.</stringValue>
+            </value>
+        </inputAssignments>
+        <inputAssignments>
+            <field>PLS_FB_Kind__c</field>
+            <value>
+                <stringValue>Reopen</stringValue>
+            </value>
+        </inputAssignments>
+        <inputAssignments>
+            <field>PLS_FB_Order__c</field>
+            <value>
+                <elementReference>$Record.Id</elementReference>
+            </value>
+        </inputAssignments>
+        <object>PLS_FB_Audit_Log__c</object>
+        <storeOutputAutomatically>false</storeOutputAutomatically>
+    </recordCreates>
+    <recordUpdates>
+        <name>Update_Order_Record</name>
+        <label>Update Order Record</label>
+        <locationX>176</locationX>
+        <locationY>407</locationY>
+        <connector>
+            <targetReference>Create_Reopen_Log</targetReference>
+        </connector>
+        <inputReference>$Record</inputReference>
+    </recordUpdates>
+    <start>
+        <locationX>50</locationX>
+        <locationY>0</locationY>
+        <connector>
+            <targetReference>Was_Fulfilled</targetReference>
+        </connector>
+        <filterLogic>and</filterLogic>
+        <filters>
+            <field>PLS_FB_Status__c</field>
+            <operator>IsChanged</operator>
+            <value>
+                <booleanValue>true</booleanValue>
+            </value>
+        </filters>
+        <object>PLS_FB_Order__c</object>
+        <recordTriggerType>Update</recordTriggerType>
+        <triggerType>RecordAfterSave</triggerType>
+    </start>
+    <status>Active</status>
+</Flow>

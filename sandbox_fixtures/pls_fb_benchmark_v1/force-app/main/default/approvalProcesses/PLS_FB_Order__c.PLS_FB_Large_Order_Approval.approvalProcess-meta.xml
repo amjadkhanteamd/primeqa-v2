@@ -1,0 +1,27 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<ApprovalProcess xmlns="http://soap.sforce.com/2006/04/metadata">
+    <active>true</active>
+    <allowRecall>true</allowRecall>
+    <allowedSubmitters>
+        <type>allInternalUsers</type>
+    </allowedSubmitters>
+    <approvalStep>
+        <allowDelegate>false</allowDelegate>
+        <assignedApprover>
+            <approver>
+                <type>adhoc</type>
+            </approver>
+        </assignedApprover>
+        <description>Single review step. The approver is supplied at submission time (FL14 passes the order owner explicitly), keeping the fixture org-portable — no hardcoded usernames.</description>
+        <label>Owner Review</label>
+        <name>Owner_Review</name>
+    </approvalStep>
+    <description>FB-V1 benchmark approval process, the target of flow PLS_FB_FL14_Approval_Submit. Deliberately minimal: one step, no entry criteria (the flow owns the gate), no field-update actions — so the observable evidence is the approval mechanism itself (a pending ProcessInstance and the record lock), not approval side effects.</description>
+    <enableMobileDeviceAccess>false</enableMobileDeviceAccess>
+    <finalApprovalRecordLock>true</finalApprovalRecordLock>
+    <finalRejectionRecordLock>false</finalRejectionRecordLock>
+    <label>PLS FB Large Order Approval</label>
+    <processOrder>1</processOrder>
+    <recordEditability>AdminOnly</recordEditability>
+    <showApprovalHistory>true</showApprovalHistory>
+</ApprovalProcess>

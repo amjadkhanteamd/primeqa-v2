@@ -1,0 +1,128 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<Flow xmlns="http://soap.sforce.com/2006/04/metadata">
+    <apiVersion>59.0</apiVersion>
+    <assignments>
+        <name>Assign_Platinum</name>
+        <label>Assign Platinum</label>
+        <locationX>50</locationX>
+        <locationY>287</locationY>
+        <assignmentItems>
+            <assignToReference>$Record.PLS_FB_Tier__c</assignToReference>
+            <operator>Assign</operator>
+            <value>
+                <stringValue>Platinum</stringValue>
+            </value>
+        </assignmentItems>
+    </assignments>
+    <assignments>
+        <name>Assign_Gold</name>
+        <label>Assign Gold</label>
+        <locationX>182</locationX>
+        <locationY>287</locationY>
+        <assignmentItems>
+            <assignToReference>$Record.PLS_FB_Tier__c</assignToReference>
+            <operator>Assign</operator>
+            <value>
+                <stringValue>Gold</stringValue>
+            </value>
+        </assignmentItems>
+    </assignments>
+    <assignments>
+        <name>Assign_Silver</name>
+        <label>Assign Silver</label>
+        <locationX>314</locationX>
+        <locationY>287</locationY>
+        <assignmentItems>
+            <assignToReference>$Record.PLS_FB_Tier__c</assignToReference>
+            <operator>Assign</operator>
+            <value>
+                <stringValue>Silver</stringValue>
+            </value>
+        </assignmentItems>
+    </assignments>
+    <assignments>
+        <name>Assign_Bronze</name>
+        <label>Assign Bronze</label>
+        <locationX>446</locationX>
+        <locationY>287</locationY>
+        <assignmentItems>
+            <assignToReference>$Record.PLS_FB_Tier__c</assignToReference>
+            <operator>Assign</operator>
+            <value>
+                <stringValue>Bronze</stringValue>
+            </value>
+        </assignmentItems>
+    </assignments>
+    <decisions>
+        <name>Tier_Band</name>
+        <label>Tier Band</label>
+        <locationX>248</locationX>
+        <locationY>167</locationY>
+        <defaultConnector>
+            <targetReference>Assign_Bronze</targetReference>
+        </defaultConnector>
+        <defaultConnectorLabel>Bronze (default)</defaultConnectorLabel>
+        <rules>
+            <name>Platinum_Band</name>
+            <conditionLogic>and</conditionLogic>
+            <conditions>
+                <leftValueReference>$Record.PLS_FB_Amount__c</leftValueReference>
+                <operator>GreaterThanOrEqualTo</operator>
+                <rightValue>
+                    <numberValue>250000.0</numberValue>
+                </rightValue>
+            </conditions>
+            <connector>
+                <targetReference>Assign_Platinum</targetReference>
+            </connector>
+            <label>Platinum Band</label>
+        </rules>
+        <rules>
+            <name>Gold_Band</name>
+            <conditionLogic>and</conditionLogic>
+            <conditions>
+                <leftValueReference>$Record.PLS_FB_Amount__c</leftValueReference>
+                <operator>GreaterThanOrEqualTo</operator>
+                <rightValue>
+                    <numberValue>50000.0</numberValue>
+                </rightValue>
+            </conditions>
+            <connector>
+                <targetReference>Assign_Gold</targetReference>
+            </connector>
+            <label>Gold Band</label>
+        </rules>
+        <rules>
+            <name>Silver_Band</name>
+            <conditionLogic>and</conditionLogic>
+            <conditions>
+                <leftValueReference>$Record.PLS_FB_Amount__c</leftValueReference>
+                <operator>GreaterThanOrEqualTo</operator>
+                <rightValue>
+                    <numberValue>10000.0</numberValue>
+                </rightValue>
+            </conditions>
+            <connector>
+                <targetReference>Assign_Silver</targetReference>
+            </connector>
+            <label>Silver Band</label>
+        </rules>
+    </decisions>
+    <description>FB-V1 benchmark FL03. Orders are classified into commercial tiers by order value: Platinum at 250,000 or more, Gold at 50,000 or more, Silver at 10,000 or more, otherwise Bronze (including blank amounts). Outcomes are evaluated in order — first match wins. Runs before save on create and on every update.</description>
+    <environments>Default</environments>
+    <interviewLabel>PLS FB FL03 Tier Banding {!$Flow.CurrentDateTime}</interviewLabel>
+    <label>PLS FB FL03 Tier Banding</label>
+    <processType>AutoLaunchedFlow</processType>
+    <start>
+        <locationX>50</locationX>
+        <locationY>0</locationY>
+        <connector>
+            <targetReference>Tier_Band</targetReference>
+        </connector>
+        <object>PLS_FB_Order__c</object>
+        <recordTriggerType>CreateAndUpdate</recordTriggerType>
+        <triggerType>RecordBeforeSave</triggerType>
+    </start>
+    <status>Active</status>
+    <triggerOrder>30</triggerOrder>
+</Flow>

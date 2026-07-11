@@ -1,0 +1,12 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<CustomField xmlns="http://soap.sforce.com/2006/04/metadata">
+    <fullName>PLS_FB_Order__c</fullName>
+    <label>Order</label>
+    <type>MasterDetail</type>
+    <referenceTo>PLS_FB_Order__c</referenceTo>
+    <relationshipLabel>PLS FB Order Lines</relationshipLabel>
+    <relationshipName>Order_Lines</relationshipName>
+    <relationshipOrder>0</relationshipOrder>
+    <reparentableMasterDetail>false</reparentableMasterDetail>
+    <writeRequiresMasterRead>false</writeRequiresMasterRead>
+</CustomField>

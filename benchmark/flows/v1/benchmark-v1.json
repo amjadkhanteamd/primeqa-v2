@@ -1,0 +1,102 @@
+{
+  "benchmark": "Salesforce Flow Benchmark V1 (FB-V1)",
+  "benchmark_version": "1.0.0-wave0",
+  "status": "DEPLOYED_NOT_FROZEN",
+  "deployed": "2026-07-11",
+  "org": {
+    "alias": "primeqa-sandbox",
+    "type": "sandbox",
+    "api_version": "59.0",
+    "components_deployed": 53,
+    "shares_org_with": "VRB-V1 (disjoint PLS_BM_* fixture, no cross-references)"
+  },
+  "sfdx_source": "sandbox_fixtures/pls_fb_benchmark_v1/",
+  "objects": {
+    "PLS_FB_Order__c": {
+      "name_format": "ORD-{00000}",
+      "fields": {
+        "PLS_FB_Status__c": {"type": "Picklist", "restricted": true, "values": ["Draft", "Submitted", "Confirmed", "Fulfilled", "Cancelled"], "default": "Draft"},
+        "PLS_FB_Amount__c": {"type": "Currency", "precision": 16, "scale": 2},
+        "PLS_FB_Priority__c": {"type": "Picklist", "restricted": true, "values": ["Low", "Standard", "High"], "default": null},
+        "PLS_FB_Tier__c": {"type": "Picklist", "restricted": true, "values": ["Bronze", "Silver", "Gold", "Platinum"], "written_by": "FL03", "fls": "read-only"},
+        "PLS_FB_External_Ref__c": {"type": "Text", "length": 30},
+        "PLS_FB_Customer_Email__c": {"type": "Email"},
+        "PLS_FB_Promised_Date__c": {"type": "Date"},
+        "PLS_FB_SLA_Deadline__c": {"type": "Date", "written_by": "FL08", "fls": "read-only"},
+        "PLS_FB_Duplicate_Flag__c": {"type": "Checkbox", "written_by": "FL06", "fls": "read-only"},
+        "PLS_FB_Escalated__c": {"type": "Checkbox", "written_by": "FL10", "fls": "read-only"},
+        "PLS_FB_Reopened__c": {"type": "Checkbox", "written_by": "FL09", "fls": "read-only"},
+        "PLS_FB_Fulfilled_Date__c": {"type": "Date", "written_by": "FL12", "fls": "read-only"},
+        "PLS_FB_Order_Total__c": {"type": "Currency", "precision": 16, "scale": 2, "written_by": "FL07", "fls": "read-only"},
+        "PLS_FB_Line_Count__c": {"type": "Number", "precision": 18, "scale": 0, "written_by": "FL07", "fls": "read-only"},
+        "PLS_FB_Ledger_Code__c": {"type": "Text", "length": 20, "required": false, "role": "FL13 fault key"}
+      }
+    },
+    "PLS_FB_Order_Line__c": {
+      "name_format": "LINE-{00000}",
+      "sharing": "ControlledByParent",
+      "fields": {
+        "PLS_FB_Order__c": {"type": "MasterDetail", "to": "PLS_FB_Order__c", "relationship": "Order_Lines"},
+        "PLS_FB_Quantity__c": {"type": "Number", "precision": 16, "scale": 2},
+        "PLS_FB_Unit_Price__c": {"type": "Currency", "precision": 16, "scale": 2},
+        "PLS_FB_Line_Total__c": {"type": "Currency", "formula": "PLS_FB_Quantity__c * PLS_FB_Unit_Price__c", "blanks": "zero"}
+      }
+    },
+    "PLS_FB_Fulfilment_Task__c": {
+      "name_format": "TASK-{00000}",
+      "fields": {
+        "PLS_FB_Order__c": {"type": "Lookup", "to": "PLS_FB_Order__c", "relationship": "Fulfilment_Tasks"},
+        "PLS_FB_Type__c": {"type": "Picklist", "restricted": true, "values": ["Confirmation", "Escalation"]},
+        "PLS_FB_Status__c": {"type": "Picklist", "restricted": true, "values": ["Open", "Completed", "Cancelled"]},
+        "PLS_FB_Due_Date__c": {"type": "Date"}
+      }
+    },
+    "PLS_FB_Audit_Log__c": {
+      "name_format": "LOG-{00000}",
+      "fields": {
+        "PLS_FB_Order__c": {"type": "Lookup", "to": "PLS_FB_Order__c", "relationship": "Audit_Logs"},
+        "PLS_FB_Kind__c": {"type": "Picklist", "restricted": true, "values": ["AsyncEnrichment", "LedgerFault", "Reopen", "CloseoutFault"]},
+        "PLS_FB_Detail__c": {"type": "LongTextArea", "length": 32768}
+      }
+    },
+    "PLS_FB_Ledger_Entry__c": {
+      "name_format": "LED-{00000}",
+      "fields": {
+        "PLS_FB_Order__c": {"type": "Lookup", "to": "PLS_FB_Order__c", "relationship": "Ledger_Entries"},
+        "PLS_FB_Ledger_Code__c": {"type": "Text", "length": 20, "required": true, "role": "fault mechanism"},
+        "PLS_FB_Amount__c": {"type": "Currency", "precision": 16, "scale": 2}
+      }
+    }
+  },
+  "validation_rules": [
+    {"name": "PLS_FB_VR01_External_Ref_Format", "object": "PLS_FB_Order__c", "active": true,
+     "formula": "NOT(ISBLANK(PLS_FB_External_Ref__c)) && NOT(REGEX(PLS_FB_External_Ref__c, \"FB-[0-9]{6}\"))",
+     "role": "order-of-execution counterpart to FL02"}
+  ],
+  "flows": [
+    {"name": "PLS_FB_FL01_Default_Priority", "trigger": "Order before-save, create", "trigger_order": 10, "capability": "transformation evidence (default)"},
+    {"name": "PLS_FB_FL02_Normalize_External_Ref", "trigger": "Order before-save, create+update, ref not null", "trigger_order": 20, "capability": "order-of-execution composition with VR01"},
+    {"name": "PLS_FB_FL03_Tier_Banding", "trigger": "Order before-save, create+update", "trigger_order": 30, "capability": "multi-outcome decision, first-match bands 10k/50k/250k"},
+    {"name": "PLS_FB_FL04_Confirmation_Task", "trigger": "Order after-save, updated-to-meet Status=Confirmed", "capability": "side-effect create (+3d due date)"},
+    {"name": "PLS_FB_FL05_Cancellation_Sync", "trigger": "Order after-save, updated-to-meet Status=Cancelled", "capability": "scoped fan-out update (open tasks only)"},
+    {"name": "PLS_FB_FL06_Duplicate_Flag", "trigger": "Order before-save, create, ref not null", "trigger_order": 40, "capability": "data-presence differential (Get Records)"},
+    {"name": "PLS_FB_FL07_Order_Rollup", "trigger": "Order Line after-save, create+update", "capability": "loop/aggregate, child-to-parent write"},
+    {"name": "PLS_FB_FL08_SLA_Stamp", "trigger": "Order before-save, updated-to-meet Status=Submitted", "trigger_order": 50, "capability": "computed date (+5d)"},
+    {"name": "PLS_FB_FL09_Reopen_Guard", "trigger": "Order after-save, update, Status IsChanged", "capability": "$Record__Prior (left Fulfilled)"},
+    {"name": "PLS_FB_FL10_Stale_Order_Escalation", "trigger": "Order after-save, updated-to-meet Status=Submitted; scheduled path +2d", "capability": "out-of-window scheduled execution (honesty control)"},
+    {"name": "PLS_FB_FL11_Async_Enrichment", "trigger": "Order after-save, updated-to-meet Status=Confirmed; AsyncAfterCommit path", "capability": "deferred-observable evidence"},
+    {"name": "PLS_FB_FL12_Fulfilment_Orchestrator", "trigger": "Order after-save, updated-to-meet Status=Fulfilled", "capability": "capstone: decisions + subflow + date stamp", "calls": "PLS_FB_SF01_Close_Tasks"},
+    {"name": "PLS_FB_FL13_Fault_Logged_Ledger", "trigger": "Order after-save, updated-to-meet Status=Confirmed", "capability": "externally-reachable fault path (blank Ledger_Code)"},
+    {"name": "PLS_FB_FL14_Approval_Submit", "trigger": "Order after-save, updated-to-meet Status=Submitted AND Amount>=100000", "capability": "cross-mechanism evidence (ProcessInstance)"},
+    {"name": "PLS_FB_FL15_Confirmation_Email", "trigger": "Order after-save, updated-to-meet Status=Confirmed AND email present", "capability": "evidence-limit control (Send Email, no record trace)"},
+    {"name": "PLS_FB_SF01_Close_Tasks", "trigger": "none (autolaunched subflow)", "capability": "loop-modify-collect + fault connector on DML"}
+  ],
+  "approval_processes": [
+    {"name": "PLS_FB_Large_Order_Approval", "object": "PLS_FB_Order__c", "active": true, "steps": 1, "approver": "adhoc (FL14 passes order owner)", "record_editability": "AdminOnly"}
+  ],
+  "permission_sets": ["PLS_FB_Access"],
+  "co_triggered_transitions": {
+    "Confirmed (update-to)": ["FL04", "FL11(async)", "FL13", "FL15"],
+    "Submitted (update-to)": ["FL08(before)", "FL10(scheduled)", "FL14(if >=100000)"]
+  }
+}
