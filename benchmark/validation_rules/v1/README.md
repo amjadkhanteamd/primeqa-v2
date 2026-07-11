@@ -72,6 +72,7 @@ never merely "some rule rejected the save".
 
 | File | Role |
 |---|---|
+| [`MANIFEST.md`](MANIFEST.md) | The benchmark's identity card: identity, inventory, fingerprint, success criteria, change policy |
 | [`REQUIREMENT.md`](REQUIREMENT.md) | The verbatim input requirement (the determinism anchor) |
 | [`ORG_FIXTURE.md`](ORG_FIXTURE.md) | The benchmark org: object, fields, record types, rules, deployment record |
 | [`benchmark-v1.json`](benchmark-v1.json) | Machine-readable fixture spec |
