@@ -92,6 +92,12 @@ class RefCheck:
     ok: bool
     missing_refs: list[str] = field(default_factory=list)
     feedback: Optional[str] = None   # operational correction text for tool_result(is_error)
+    # B0 grounded recovery: the near-miss candidate sets the substrate OFFERED
+    # for this rejection's missing refs (``recovery.offer_payload`` dicts).
+    # Telemetry-only — the model sees the same candidates inside ``feedback``;
+    # the spine records offers onto the outcome's attempted_interpretation so
+    # what-was-disclosed is auditable. Never a substitution channel.
+    offers: list[dict] = field(default_factory=list)
 
 
 @dataclass

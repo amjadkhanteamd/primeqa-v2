@@ -109,7 +109,15 @@
           {% if outcome.kind == 'refusal' %}
           <p>The engine <span class="font-medium text-amber-700">declined</span> to generate tests.</p>
           <p class="text-amber-800 bg-amber-50 border border-amber-200 rounded px-2 py-1 text-xs">{{ outcome.refusal_plain or 'No reason was recorded.' }}
-            {% if outcome.refusal_kind %}<span class="text-amber-600">({{ outcome.refusal_kind.replace('-', ' ') }})</span>{% endif %}</p>
+            {% if outcome.refusal_kind %}<span class="text-amber-600">({{ outcome.refusal_kind.replace('-', ' ') }})</span>{% endif %}
+            {# B0 provenance: whose words the recorded reason is. #}
+            {% if outcome.refusal_source == 'model' %}
+            <span class="ml-1 inline-flex items-center px-1.5 py-0 rounded-full text-[10px] font-medium bg-violet-50 text-violet-700 border border-violet-200"
+                  title="This explanation was written by the AI generation model, not verified by the substrate{% if outcome.refusal_layer %} (recorded at the {{ outcome.refusal_layer }} stage){% endif %}">model's explanation</span>
+            {% elif outcome.refusal_source == 'substrate' %}
+            <span class="ml-1 inline-flex items-center px-1.5 py-0 rounded-full text-[10px] font-medium bg-gray-50 text-gray-600 border border-gray-200"
+                  title="This reason was determined by the substrate from the org metadata{% if outcome.refusal_layer %} at the {{ outcome.refusal_layer }} stage{% endif %}">substrate diagnostic</span>
+            {% endif %}</p>
           {% else %}
             {% if outcome.claims_written %}
             <p>Wrote <span class="font-medium">{{ outcome.claims_written | length }}</span> test case{{ '' if outcome.claims_written | length == 1 else 's' }}:</p>
@@ -127,7 +135,11 @@
             <p class="text-amber-800">Declined {{ outcome.partial_refusals | length }} proposed test{{ '' if outcome.partial_refusals | length == 1 else 's' }} along the way:</p>
             <ul class="list-disc pl-5 space-y-0.5 text-xs text-amber-800">
               {% for pr in outcome.partial_refusals %}
-              <li>{% if pr.ac_ref %}<span class="font-medium">AC{{ pr.ac_ref }}:</span> {% endif %}{{ pr.plain or 'No reason was recorded.' }}</li>
+              <li>{% if pr.ac_ref %}<span class="font-medium">AC{{ pr.ac_ref }}:</span> {% endif %}{{ pr.plain or 'No reason was recorded.' }}
+                {% if pr.source == 'model' %}
+                <span class="ml-1 inline-flex items-center px-1.5 py-0 rounded-full text-[10px] font-medium bg-violet-50 text-violet-700 border border-violet-200"
+                      title="This explanation was written by the AI generation model, not verified by the substrate">model's explanation</span>
+                {% endif %}</li>
               {% endfor %}
             </ul>
             {% endif %}

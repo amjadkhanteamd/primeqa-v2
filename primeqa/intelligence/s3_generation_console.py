@@ -455,13 +455,21 @@ def read_generation_run_detail(tenant_id: int, requirement_key: str,
         partial = []
         for entry in d.get("partial_refusals") or ():
             if isinstance(entry, dict):
+                _pl = entry.get("payload") if isinstance(entry.get("payload"), dict) else {}
                 partial.append({
                     "ac_ref": entry.get("ac_ref"),
                     "refusal_kind": entry.get("refusal_kind"),
                     "plain": refusal_plain(entry.get("refusal_kind"), [entry]),
+                    # B0 provenance: model-authored vs substrate-authored
+                    # reason + the pipeline layer that recorded it.
+                    "source": _pl.get("detail_source") or "substrate",
+                    "layer": _pl.get("detail_layer"),
                 })
         outcome = None
         if d.get("outcome_kind"):
+            _refs = d.get("refusals") or []
+            _r0 = _refs[0] if _refs and isinstance(_refs[0], dict) else {}
+            _r0p = _r0.get("payload") if isinstance(_r0.get("payload"), dict) else {}
             outcome = {
                 "kind": d["outcome_kind"],
                 "at": _iso(d.get("outcome_at")),
@@ -469,6 +477,12 @@ def read_generation_run_detail(tenant_id: int, requirement_key: str,
                 "equivalent_existing": d.get("equivalent_existing") or [],
                 "refusal_kind": d.get("refusal_kind"),
                 "refusal_plain": (refusal_plain(d.get("refusal_kind"), d.get("refusals"))
+                                  if d.get("refusal_kind") else None),
+                # B0 provenance for the banner: whose words the reason is
+                # + the pipeline layer that recorded it.
+                "refusal_source": ((_r0p.get("detail_source") or "substrate")
+                                   if d.get("refusal_kind") else None),
+                "refusal_layer": (_r0p.get("detail_layer")
                                   if d.get("refusal_kind") else None),
                 "partial_refusals": partial,
             }
@@ -865,8 +879,15 @@ def _assemble_ac_coverage(raw_parameters, partial_refusals) -> list[dict]:
     refusals_by_ac: dict = {}
     for entry in (partial_refusals or ()):
         if isinstance(entry, dict) and entry.get("ac_ref") is not None:
-            refusals_by_ac.setdefault(entry["ac_ref"], []).append(
-                refusal_plain(entry.get("refusal_kind"), [entry]))
+            payload = entry.get("payload") if isinstance(entry.get("payload"), dict) else {}
+            refusals_by_ac.setdefault(entry["ac_ref"], []).append({
+                "plain": refusal_plain(entry.get("refusal_kind"), [entry]),
+                # B0 provenance: who authored the recorded reason + the
+                # pipeline layer that recorded it. Pre-B0 payloads carry no
+                # tags and read as substrate with no layer (they were).
+                "source": payload.get("detail_source") or "substrate",
+                "layer": payload.get("detail_layer"),
+            })
     rows = []
     for ac in acs:
         if not isinstance(ac, dict) or ac.get("index") is None:
@@ -876,19 +897,28 @@ def _assemble_ac_coverage(raw_parameters, partial_refusals) -> list[dict]:
                 if isinstance(i, dict) and i.get("ac_ref") == idx]
         untestable = [i for i in mine if i.get("no_admissible_test")]
         refused = refusals_by_ac.get(idx, [])
+        # B0 provenance: an untestable reason is MODEL prose verbatim (D-247);
+        # a grounding-refusal reason carries its payload's recorded source.
         if untestable:
             status, reason = "untestable", (
                 untestable[0].get("no_admissible_test_reason") or "")
+            reason_source, reason_layer = "model", "resolution"
         elif refused and len(refused) >= len(mine):
-            status, reason = "refused", (refused[0] or "")
+            status, reason = "refused", (refused[0]["plain"] or "")
+            reason_source = refused[0]["source"]
+            reason_layer = refused[0].get("layer")
         elif refused:
-            status, reason = "partial", (refused[0] or "")
+            status, reason = "partial", (refused[0]["plain"] or "")
+            reason_source = refused[0]["source"]
+            reason_layer = refused[0].get("layer")
         elif mine:
-            status, reason = "proposed", None
+            status, reason, reason_source, reason_layer = "proposed", None, None, None
         else:
-            status, reason = "unaddressed", None
+            status, reason, reason_source, reason_layer = "unaddressed", None, None, None
         rows.append({"index": idx, "label": ac.get("label") or f"AC{idx}",
                      "status": status, "reason": reason,
+                     "reason_source": reason_source,
+                     "reason_layer": reason_layer,
                      "intents": len(mine), "refused": len(refused)})
     return rows
 

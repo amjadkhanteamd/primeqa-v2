@@ -33,6 +33,7 @@ from uuid import uuid4
 
 from primeqa.generation.enums import AdmissibilityLayer, OutcomeKind, RefusalKind
 from primeqa.generation.explanation_hash import compute_explanation_hash
+from primeqa.generation import recovery as _recovery
 from primeqa.generation.tools import normalize_propose_input
 from primeqa.generation.emission import (
     GroundedAcceptance,
@@ -1054,6 +1055,11 @@ class _Candidate:
     status: str                              # admissibly_grounded | dismissed
     admissibility_layer: Optional[str] = None
     dismissal_reason: Optional[str] = None
+    # B0: grounded-recovery offer attached at dismissal time (an
+    # _recovery.offer_payload dict) — carried into the refusal payload by
+    # ``from_dismissed``; deliberately NOT serialized into candidate_paths
+    # (``to_path``), which stay byte-stable.
+    recovery: Optional[dict] = None
 
     def to_path(self) -> dict:
         return {
@@ -1226,6 +1232,82 @@ class AdmissibilityEngine:
             subject.id, OBJECT_NEIGHBORHOOD_EDGES, "inbound", at_seq=at_seq,
         )
 
+    # -- B0 grounded recovery (near-miss candidates from the pinned snapshot)
+    #
+    # A failed reference gets a SMALL, deterministically-ranked candidate set
+    # drawn only from S1 at the run's pinned version — the substrate offers
+    # grounded alternatives, never conclusions, and never substitutes: the
+    # model must re-propose its choice, which re-enters normal resolution.
+    # Bounded fail-safes: Field recovery requires a resolvable owning Object
+    # ("Obj.Field" qualification — the shape the model already sends) and an
+    # oversized pool yields NOT_FOUND rather than a scan (never a directory
+    # dump, never a perf cliff). Never raises.
+
+    _RECOVERY_MAX_POOL = 1500
+
+    # The B0 recovery boundary (D-362). Candidate recovery is LEXICAL, so it
+    # is offered only for entities whose identity is lexical — schema/config
+    # entities. BEHAVIOURAL entities (automations) are NEVER candidate-
+    # recoverable: behavioural entities require behavioural verification
+    # (effect-first binding, D-318/D-299) — lexical recovery alone is
+    # insufficient, and supplying an automation name lets the name-trust
+    # binding attach an automation WITHOUT verifying its effect (live-observed
+    # wrong-attribution at the B0 exit gate). ALLOWLIST, not blocklist:
+    # unknown/new entity types default to non-recoverable.
+    _RECOVERY_ALLOWED_TYPES = frozenset({
+        "Object", "Field", "RecordType", "ValidationRule", "PermissionSet",
+        # documented-recoverable per D-362; dormant until S1 models the type
+        "CustomMetadata",
+    })
+    # The documented NON-recoverable behavioural types (D-362) — listed for
+    # the boundary's readability; the allowlist above is the enforcement.
+    _RECOVERY_BEHAVIOURAL_TYPES = frozenset({
+        "Flow", "ApprovalProcess", "ApexClass", "InvocableAction"})
+
+    def recover_reference(self, entity_type: Optional[str],
+                          proposed_api: Optional[str],
+                          at_seq: Optional[int],
+                          context_text: Optional[str] = None,
+                          ) -> _recovery.RecoveryResolution:
+        if not entity_type or not proposed_api or at_seq is None:
+            return _recovery.RecoveryResolution(_recovery.NOT_FOUND)
+        if entity_type not in self._RECOVERY_ALLOWED_TYPES:
+            return _recovery.RecoveryResolution(_recovery.NOT_FOUND)
+        try:
+            if self.resolve_subject(entity_type, proposed_api, at_seq):
+                return _recovery.RecoveryResolution(_recovery.RESOLVED)
+            if entity_type == "Field":
+                pool = self._field_pool(proposed_api, at_seq)
+            else:
+                ents = self._s1.get_entities(entity_type, at_seq=at_seq)
+                if len(ents) > self._RECOVERY_MAX_POOL:
+                    return _recovery.RecoveryResolution(_recovery.NOT_FOUND)
+                pool = [(e.sf_api_name, e.display_name) for e in ents
+                        if e.sf_api_name]
+            cands = _recovery.rank_candidates(proposed_api, pool,
+                                              context_text=context_text)
+        except Exception:   # noqa: BLE001 — recovery must never break resolution
+            return _recovery.RecoveryResolution(_recovery.NOT_FOUND)
+        if not cands:
+            return _recovery.RecoveryResolution(_recovery.NOT_FOUND)
+        return _recovery.RecoveryResolution(_recovery.CANDIDATES, cands)
+
+    def _field_pool(self, proposed_api: str, at_seq: int) -> list:
+        """Candidate pool for a Field miss: the BELONGS_TO fields of the
+        proposed name's owning Object ("Obj.Field"). An unqualified name or an
+        unresolvable owner yields an empty pool — the owner Object gets its own
+        recovery at its own check site."""
+        if "." not in proposed_api:
+            return []
+        owner_api = proposed_api.split(".", 1)[0]
+        owners = self.resolve_subject("Object", owner_api, at_seq)
+        if len(owners) != 1:
+            return []
+        return [(r.entity.sf_api_name, r.entity.display_name)
+                for r in self.scoped_neighborhood(owners[0], at_seq)
+                if r.edge_type == EDGE_BELONGS
+                and r.entity.entity_type == "Field" and r.entity.sf_api_name]
+
     def is_negative(self, claim_kind: str, polarity_hint: str) -> bool:
         return claim_kind in _INHERENTLY_NEGATIVE or polarity_hint == "negative"
 
@@ -1353,7 +1435,37 @@ class AdmissibilityEngine:
             cand.admissibility_layer = AdmissibilityLayer.LAYER_1.value
         else:
             cand.dismissal_reason = "insufficient_grounding"
+            # B0: a value-claim's failed FIELD reference gets a grounded
+            # near-miss offer (rides the ungrounded-claim payload -> the D-340
+            # recovery re-prompt) so a wrong guess can recover instead of
+            # decaying into a blanket model self-refusal. Deliberately FIELDS
+            # ONLY: an automation-effect's automation hint gets NO candidates —
+            # supplying Flow/ApprovalProcess names would let the D-299
+            # name-trust binding attach an automation without verifying its
+            # effect (live-observed wrong-attribution at the B0 exit gate);
+            # the LLM never names automations (D-318), so the substrate must
+            # never teach it to.
+            cand.recovery = self._named_ref_recovery(
+                claim_kind, fields, field_hint)
         return cand
+
+    def _named_ref_recovery(self, claim_kind: str, fields: list,
+                            field_hint: Optional[str]) -> Optional[dict]:
+        """B0: near-miss offer for a value-claim's Layer-1 FIELD miss — the
+        hint ranks against the subject's own BELONGS_TO fields.
+        In-neighborhood pool only (no extra S1 reads); never raises; None when
+        nothing clears the threshold. Automation hints are deliberately NOT
+        recovered (see caller)."""
+        try:
+            if claim_kind == "value-claim" and field_hint:
+                pool = [(r.entity.sf_api_name, r.entity.display_name)
+                        for r in fields if r.entity.sf_api_name]
+                cands = _recovery.rank_candidates(field_hint, pool)
+                if cands:
+                    return _recovery.offer_payload("Field", field_hint, cands)
+        except Exception:   # noqa: BLE001 — recovery must never break grounding
+            return None
+        return None
 
 
 # ---------------------------------------------------------------------------
@@ -1377,17 +1489,32 @@ class DecompositionController:
 # ---------------------------------------------------------------------------
 
 class RefusalRouter:
+    # Provenance (B0 telemetry honesty): every payload whose ``detail`` the
+    # SUBSTRATE authored carries ``detail_source: "substrate"``; a payload
+    # recording MODEL prose verbatim (the D-247 no_admissible_test hinge)
+    # carries ``detail_source: "model"`` — so a model explanation can never
+    # read as a substrate fact downstream (the req-320 job-76 incident).
+
     def underspecified(self, reason: str = "no claim_kind to anchor a candidate") -> RefusalDirective:
-        return RefusalDirective(RefusalKind.UNDERSPECIFIED_REQUIREMENT, {"detail": reason})
+        return RefusalDirective(RefusalKind.UNDERSPECIFIED_REQUIREMENT, {
+            "detail": reason, "detail_source": "substrate",
+            "detail_layer": "resolution"})
 
     def ambiguous(self, matches: list[Entity]) -> RefusalDirective:
         return RefusalDirective(RefusalKind.AMBIGUOUS_REFERENCE, {
             "matched": [{"entity_type": m.entity_type, "sf_api_name": m.sf_api_name,
                          "id": str(m.id)} for m in matches],
+            "detail_source": "substrate", "detail_layer": "resolution",
         })
 
-    def no_relevant_context(self, detail: str) -> RefusalDirective:
-        return RefusalDirective(RefusalKind.NO_RELEVANT_CONTEXT, {"detail": detail})
+    def no_relevant_context(self, detail: str, *, source: str = "substrate",
+                            layer: str = "resolution",
+                            candidates: Optional[dict] = None) -> RefusalDirective:
+        payload: dict[str, Any] = {"detail": detail, "detail_source": source,
+                                   "detail_layer": layer}
+        if candidates:
+            payload["candidates"] = candidates   # B0 offer (source: substrate)
+        return RefusalDirective(RefusalKind.NO_RELEVANT_CONTEXT, payload)
 
     def behaviour_incomplete(self, detail: str) -> RefusalDirective:
         """D-293 decision-2: a prohibition intent that is not a COMPLETE behaviour
@@ -1398,7 +1525,9 @@ class RefusalRouter:
         policy refusal: the requirement is admissible, but the substrate declines
         to author a behaviourally-empty prohibition. Lifts as violation-derivation
         widens (the out-of-scope D-293 follow-on)."""
-        return RefusalDirective(RefusalKind.BEHAVIOUR_INCOMPLETE, {"detail": detail})
+        return RefusalDirective(RefusalKind.BEHAVIOUR_INCOMPLETE, {
+            "detail": detail, "detail_source": "substrate",
+            "detail_layer": "grounding"})
 
     def emission_deferred(self, archetype: str, claim_kind: str,
                           detail: Optional[str] = None) -> RefusalDirective:
@@ -1412,6 +1541,8 @@ class RefusalRouter:
             "detail": detail or (
                 f"{archetype}/{claim_kind} is groundable, but emission for "
                 f"this claim_kind is not yet built"),
+            "detail_source": "substrate",
+            "detail_layer": "grounding",
             "archetype": archetype,
             "claim_kind": claim_kind,
         })
@@ -1427,6 +1558,7 @@ class RefusalRouter:
             what_unblocks = (["substrate-3 Apex/Tier-2 modeling"]
                              if cause == "ontology_gap" else [])
             return RefusalDirective(RefusalKind.NO_ADMISSIBLE_NEGATIVE_SCENARIO_FOUND, {
+                "detail_source": "substrate", "detail_layer": "admissibility",
                 "cause": cause,
                 "proposed_negative_assertion": {"claim_kind": cand.claim_kind,
                                                 "subject_refs": cand.subject_refs},
@@ -1435,11 +1567,19 @@ class RefusalRouter:
                 "what_would_unblock": what_unblocks,
             })
         # positive ungrounded, or meaningfulness mismatch -> ungrounded-claim
-        return RefusalDirective(RefusalKind.UNGROUNDED_CLAIM, {
+        payload: dict[str, Any] = {
             "claim_kind": cand.claim_kind,
             "subject_refs": cand.subject_refs,
             "dismissal_reason": reason,
-        })
+            "detail_source": "substrate",
+            "detail_layer": "admissibility",
+        }
+        # B0: a dismissal that carries a grounded-recovery offer (near-miss
+        # candidates for the reference that failed) surfaces it on the payload
+        # so the D-340 recovery re-prompt can show the model its options.
+        if cand.recovery:
+            payload["candidates"] = cand.recovery
+        return RefusalDirective(RefusalKind.UNGROUNDED_CLAIM, payload)
 
 
 # ---------------------------------------------------------------------------
@@ -1520,17 +1660,36 @@ class GovernanceCore:
         # coverage re-prompt.
         per_intent = normalize_propose_input(intent_input)
         if len(per_intent) == 1:
-            return self._check_refs_one(per_intent[0], at)
+            return self._check_refs_one(per_intent[0], at,
+                                        getattr(ctx, 'requirement_text', None))
         failures = [(i, rc) for i, rc in
-                    ((i, self._check_refs_one(pi, at)) for i, pi in enumerate(per_intent))
+                    ((i, self._check_refs_one(
+                        pi, at, getattr(ctx, 'requirement_text', None)))
+                     for i, pi in enumerate(per_intent))
                     if not rc.ok]
         if len(failures) < len(per_intent):
             return RefCheck(ok=True)   # >=1 intent's refs resolve -> proceed (partial coverage)
         missing = [m for _, rc in failures for m in rc.missing_refs]
         feedback = "; ".join(f"intent[{i}]: {rc.feedback}" for i, rc in failures)
-        return RefCheck(ok=False, missing_refs=missing, feedback=feedback)
+        offers = [o for _, rc in failures for o in rc.offers]
+        return RefCheck(ok=False, missing_refs=missing, feedback=feedback,
+                        offers=offers)
 
-    def _check_refs_one(self, intent_input: dict, at: int) -> RefCheck:
+    def _ref_miss(self, et: Optional[str], api: Optional[str], at: int,
+                  context_text: Optional[str] = None):
+        """B0: feedback tail + telemetry offer for one unresolved endpoint —
+        ``("", None)`` when no grounded near-miss clears the threshold (the
+        rejection text then stays byte-identical to pre-B0). ``context_text``
+        (the requirement text) grounds the relatedness term of the ranking."""
+        rec = self._admit.recover_reference(et, api, at,
+                                            context_text=context_text)
+        if rec.status != _recovery.CANDIDATES:
+            return "", None
+        return (_recovery.format_candidates(rec.candidates),
+                _recovery.offer_payload(et, api, rec.candidates))
+
+    def _check_refs_one(self, intent_input: dict, at: int,
+                        context_text: Optional[str] = None) -> RefCheck:
         desc = intent_input.get("intent_descriptor") or {}
         if desc.get("no_admissible_test"):
             return RefCheck(ok=True)   # D-247: a per-AC refusal needs no S1 ref
@@ -1543,46 +1702,76 @@ class GovernanceCore:
             if desc.get("claim_kind_hint") in ("existence-claim", "property-claim"):
                 et, api = hint.get("entity_type"), hint.get("sf_api_name")
                 if not et or not api or not self._admit.resolve_subject(et, api, at):
+                    tail, offer = self._ref_miss(et, api, at, context_text)
                     return RefCheck(ok=False, missing_refs=[f"{et}:{api}"],
-                                    feedback=f"subject not found at s1_version_seq {at}: {et}:{api}")
+                                    feedback=(f"subject not found at s1_version_seq {at}: "
+                                              f"{et}:{api}." + tail),
+                                    offers=[offer] if offer else [])
                 return RefCheck(ok=True)
             missing: list[str] = []
+            offers: list[dict] = []
+            tails: list[str] = []
             for label in ("source", "target"):
                 ep = hint.get(label) or {}
                 et, api = ep.get("entity_type"), ep.get("sf_api_name")
                 if not et or not api or not self._admit.resolve_subject(et, api, at):
                     missing.append(f"{label}:{et}:{api}")
+                    tail, offer = self._ref_miss(et, api, at, context_text)
+                    if offer:
+                        offers.append(offer)
+                        tails.append(f"For {label} {api!r}:{tail}")
             if missing:
                 return RefCheck(ok=False, missing_refs=missing,
-                                feedback=f"relationship endpoint(s) not found at s1_version_seq {at}: {missing}")
+                                feedback=(f"relationship endpoint(s) not found at "
+                                          f"s1_version_seq {at}: {missing}."
+                                          + " ".join([""] + tails if tails else [])),
+                                offers=offers)
             return RefCheck(ok=True)
 
         # permission capability-claim (D-123): two endpoints — grantee + target —
         # carried under target_subject_hint, not the flat {entity_type, sf_api_name}.
         if desc.get("archetype_hint") == "permission":
             missing = []
+            offers = []
+            tails = []
             for label in ("grantee", "target"):
                 ep = hint.get(label) or {}
                 et, api = ep.get("entity_type"), ep.get("sf_api_name")
                 if not et or not api or not self._admit.resolve_subject(et, api, at):
                     missing.append(f"{label}:{et}:{api}")
+                    tail, offer = self._ref_miss(et, api, at, context_text)
+                    if offer:
+                        offers.append(offer)
+                        tails.append(f"For {label} {api!r}:{tail}")
             if missing:
                 return RefCheck(ok=False, missing_refs=missing,
-                                feedback=f"grant endpoint(s) not found at s1_version_seq {at}: {missing}")
+                                feedback=(f"grant endpoint(s) not found at "
+                                          f"s1_version_seq {at}: {missing}."
+                                          + " ".join([""] + tails if tails else [])),
+                                offers=offers)
             return RefCheck(ok=True)
 
         # ui layout-claim (D-124): two endpoints — layout + field — carried under
         # target_subject_hint, not the flat {entity_type, sf_api_name}.
         if desc.get("archetype_hint") == "ui":
             missing = []
+            offers = []
+            tails = []
             for label in ("layout", "field"):
                 ep = hint.get(label) or {}
                 et, api = ep.get("entity_type"), ep.get("sf_api_name")
                 if not et or not api or not self._admit.resolve_subject(et, api, at):
                     missing.append(f"{label}:{et}:{api}")
+                    tail, offer = self._ref_miss(et, api, at, context_text)
+                    if offer:
+                        offers.append(offer)
+                        tails.append(f"For {label} {api!r}:{tail}")
             if missing:
                 return RefCheck(ok=False, missing_refs=missing,
-                                feedback=f"layout endpoint(s) not found at s1_version_seq {at}: {missing}")
+                                feedback=(f"layout endpoint(s) not found at "
+                                          f"s1_version_seq {at}: {missing}."
+                                          + " ".join([""] + tails if tails else [])),
+                                offers=offers)
             return RefCheck(ok=True)
 
         et, api = hint.get("entity_type"), hint.get("sf_api_name")
@@ -1592,8 +1781,11 @@ class GovernanceCore:
                 "descriptive selectors are not yet supported (query_entities deferred)"))
         matches = self._admit.resolve_subject(et, api, at)
         if not matches:
+            tail, offer = self._ref_miss(et, api, at, context_text)
             return RefCheck(ok=False, missing_refs=[f"{et}:{api}"],
-                            feedback=f"no {et} named {api!r} exists at s1_version_seq {at}")
+                            feedback=(f"no {et} named {api!r} exists at "
+                                      f"s1_version_seq {at}." + tail),
+                            offers=[offer] if offer else [])
         return RefCheck(ok=True)   # >=1 exists; disambiguation is semantic (resolve_intent)
 
     # -- semantic reasoning ---------------------------------------------
@@ -1693,11 +1885,16 @@ class GovernanceCore:
             return IntentResolution(grounded_candidates=[], next_action=NextAction.REFUSE,
                                     interpretation_delta=delta, refusal=self._router.ambiguous(matches))
         if not matches:
-            # post-check_refs_exist this is defensive
+            # post-check_refs_exist this is defensive; with multi-intent partial
+            # coverage (D-311) bad-ref intents DO reach here — same B0 recovery
+            # offer as Layer A so the miss stays recoverable on the re-prompt.
+            tail, offer = self._ref_miss(
+                et, api, at, getattr(ctx, "requirement_text", None))
             return IntentResolution(grounded_candidates=[], next_action=NextAction.REFUSE,
                                     interpretation_delta=self._delta([], []),
                                     refusal=self._router.no_relevant_context(
-                                        f"subject {et}:{api} did not resolve at version {at}"))
+                                        f"subject {et}:{api} did not resolve at version {at}."
+                                        + tail, candidates=offer))
         subject = matches[0]
 
         # underspecified: no claim_kind to anchor a candidate -> no candidate
@@ -1782,12 +1979,33 @@ class GovernanceCore:
             grounded_conds, invalid_conds = _ground_rejection_conditions(
                 hint.get("rejection_conditions"), neighborhood, at)
             if invalid_conds:
+                # B0: a clause whose FIELD does not BELONG_TO the subject gets
+                # a near-miss offer from the subject's own field inventory (the
+                # AC4/External_Reference__c class) — grounded alternatives, the
+                # model re-proposes or refuses.
+                offer, tail = None, ""
+                known = {r.entity.sf_api_name for r in neighborhood
+                         if r.edge_type == EDGE_BELONGS
+                         and r.entity.entity_type == "Field"}
+                pool = [(r.entity.sf_api_name, r.entity.display_name)
+                        for r in neighborhood
+                        if r.edge_type == EDGE_BELONGS
+                        and r.entity.entity_type == "Field" and r.entity.sf_api_name]
+                for clause in (hint.get("rejection_conditions") or []):
+                    fld = (clause or {}).get("field")
+                    if fld and fld not in known:
+                        cands = _recovery.rank_candidates(fld, pool)
+                        if cands:
+                            offer = _recovery.offer_payload("Field", fld, cands)
+                            tail = _recovery.format_candidates(cands)
+                        break
                 return IntentResolution(
                     grounded_candidates=[], next_action=NextAction.REFUSE,
                     interpretation_delta=delta,
                     refusal=self._router.no_relevant_context(
                         f"rejection-condition not grounded on "
-                        f"{subject.sf_api_name}: {invalid_conds}"))
+                        f"{subject.sf_api_name}: {invalid_conds}." + tail,
+                        layer="grounding", candidates=offer))
             # Carry the grounding VRs' formulas so authoring (and the gate below)
             # can run the D-107 verified-vs-caveated derivation (re-found from the
             # same in-scope neighborhood Layer-1 grounding matched).
@@ -2648,6 +2866,14 @@ class GovernanceCore:
                      and r.entity.entity_type == "Field"
                      and r.entity.sf_api_name == via_name), None)
                 if via_ent is None:
+                    # B0: near-miss offer from the subject's own fields.
+                    via_pool = [(r.entity.sf_api_name, r.entity.display_name)
+                                for r in neighborhood
+                                if r.edge_type == EDGE_BELONGS
+                                and r.entity.entity_type == "Field"
+                                and r.entity.sf_api_name]
+                    via_tail = _recovery.format_candidates(
+                        _recovery.rank_candidates(via_name or "", via_pool))
                     return IntentResolution(
                         grounded_candidates=[], next_action=NextAction.REFUSE,
                         interpretation_delta=delta,
@@ -2656,7 +2882,7 @@ class GovernanceCore:
                             detail=(f"effect_via_lookup_field {via_name!r} "
                                     f"does not exist on the subject — cannot "
                                     f"link the trigger record to the effect "
-                                    f"parent")))
+                                    f"parent." + via_tail)))
                 grounded_eff = self._ground_cross_object_effect(
                     hint, effect_object_api, at, lookup_required=False)
                 if isinstance(grounded_eff, str):
@@ -3104,8 +3330,14 @@ class GovernanceCore:
         ``effect_via_lookup_field``, verified by the caller)."""
         matches = self._admit.resolve_subject("Object", effect_object_api, at)
         if len(matches) != 1:
+            # B0: a zero-match effect object gets a near-miss offer (a >1
+            # match is ambiguity, not a miss — no candidates there).
+            tail = ""
+            if not matches:
+                tail, _ = self._ref_miss("Object", effect_object_api, at)
             return (f"effect object {effect_object_api!r} did not resolve "
-                    f"uniquely in the org model ({len(matches)} matches)")
+                    f"uniquely in the org model ({len(matches)} matches)."
+                    + tail)
         eff = matches[0]
         eff_neigh = self._admit.scoped_neighborhood(eff, at)
         # Key by the BARE field tail so a bare hint ("Subject") resolves the same
@@ -3123,9 +3355,12 @@ class GovernanceCore:
         lookup_ent = (eff_fields.get(lookup_name.rsplit(".", 1)[-1])
                       if isinstance(lookup_name, str) and lookup_name else None)
         if lookup_ent is None and lookup_required:
+            lk_tail = _recovery.format_candidates(_recovery.rank_candidates(
+                lookup_name or "",
+                [(e.sf_api_name, e.display_name) for e in eff_fields.values()]))
             return (f"effect lookup field {lookup_name!r} does not exist on "
                     f"{effect_object_api} — cannot correlate the effect record "
-                    f"to the trigger record")
+                    f"to the trigger record." + lk_tail)
         eff_field_name = hint.get("effect_field")
         eff_field_ep = None
         if eff_field_name is not None:
@@ -3133,8 +3368,11 @@ class GovernanceCore:
                              if isinstance(eff_field_name, str) and eff_field_name
                              else None)
             if eff_field_ent is None:
+                ef_tail = _recovery.format_candidates(_recovery.rank_candidates(
+                    eff_field_name if isinstance(eff_field_name, str) else "",
+                    [(e.sf_api_name, e.display_name) for e in eff_fields.values()]))
                 return (f"effect field {eff_field_name!r} does not exist on "
-                        f"{effect_object_api}")
+                        f"{effect_object_api}." + ef_tail)
             eff_field_ep = _Endpoint(
                 entity_id=eff_field_ent.id, entity_type=eff_field_ent.entity_type,
                 external_id=eff_field_ent.sf_api_name or str(eff_field_ent.id))
@@ -3162,10 +3400,15 @@ class GovernanceCore:
             requirement_anchor=excerpt, status="dismissed",
             dismissal_reason="no_admissible_test")
         reason = desc.get("no_admissible_test_reason") or "no admissible test for this AC"
+        # B0 telemetry honesty: this reason is MODEL prose recorded verbatim —
+        # mark its provenance so it can never read as a substrate fact (the
+        # req-320 job-76 incident: an invented "pinned version" explanation
+        # presented as if the substrate had concluded it).
         return IntentResolution(
             grounded_candidates=[], next_action=NextAction.REFUSE,
             interpretation_delta=self._delta([], [cand]),
-            refusal=self._router.no_relevant_context(reason))
+            refusal=self._router.no_relevant_context(
+                reason, source="model", layer="resolution"))
 
     def _resolve_configuration(self, intent_input: dict, ctx: ConversationContext, state: Any) -> IntentResolution:
         """Edge-existence admissibility for a config metadata-relationship-claim
@@ -3201,7 +3444,8 @@ class GovernanceCore:
         if edge_type not in TIER_1_EDGES:
             return IntentResolution([], NextAction.REFUSE, self._delta([], [_cand("type_incompatibility")]),
                                     refusal=RefusalDirective(RefusalKind.UNGROUNDED_CLAIM, {
-                                        "detail": f"edge_type {edge_type!r} is not a Tier-1 edge type",
+                                        "detail_source": "substrate", "detail_layer": "grounding",
+                                    "detail": f"edge_type {edge_type!r} is not a Tier-1 edge type",
                                         "edge_type": edge_type}))
 
         src_matches = self._admit.resolve_subject(src.get("entity_type"), src.get("sf_api_name"), at)
@@ -3250,6 +3494,7 @@ class GovernanceCore:
         cand.dismissal_reason = "insufficient_grounding"
         return IntentResolution([], NextAction.REFUSE, self._delta(related, [cand]),
                                 refusal=RefusalDirective(RefusalKind.UNGROUNDED_CLAIM, {
+                                    "detail_source": "substrate", "detail_layer": "grounding",
                                     "detail": "asserted relationship not present in the org",
                                     "edge_type": edge_type, "source": subject_refs[0], "target": subject_refs[1]}))
 
@@ -3359,7 +3604,8 @@ class GovernanceCore:
             cand.dismissal_reason = "ontology_gap"
             return IntentResolution([], NextAction.REFUSE, self._delta([], [cand]),
                                     refusal=RefusalDirective(RefusalKind.UNGROUNDED_CLAIM, {
-                                        "detail": f"property {property_name!r} is not S1-modeled on "
+                                        "detail_source": "substrate", "detail_layer": "grounding",
+                                    "detail": f"property {property_name!r} is not S1-modeled on "
                                                   f"{e.entity_type} (Tier-1 ceiling)", "property": property_name}))
         s1_value = details[property_name]
         # D-246: compare semantically against the S1-native type — a correct
@@ -3370,7 +3616,8 @@ class GovernanceCore:
             cand.dismissal_reason = "insufficient_grounding"
             return IntentResolution([], NextAction.REFUSE, self._delta([], [cand]),
                                     refusal=RefusalDirective(RefusalKind.UNGROUNDED_CLAIM, {
-                                        "detail": f"asserted {property_name}={asserted!r} but S1 holds {s1_value!r}",
+                                        "detail_source": "substrate", "detail_layer": "grounding",
+                                    "detail": f"asserted {property_name}={asserted!r} but S1 holds {s1_value!r}",
                                         "property": property_name}))
         cand.status, cand.admissibility_layer = "admissibly_grounded", AdmissibilityLayer.LAYER_1.value
         if state is not None:
@@ -3420,7 +3667,8 @@ class GovernanceCore:
         if flag is None:
             return IntentResolution([], NextAction.REFUSE, self._delta([], [_cand("ontology_gap")]),
                                     refusal=RefusalDirective(RefusalKind.UNGROUNDED_CLAIM, {
-                                        "detail": f"capability {capability!r} is not S1-modeled "
+                                        "detail_source": "substrate", "detail_layer": "grounding",
+                                    "detail": f"capability {capability!r} is not S1-modeled "
                                                   f"(known: {sorted(_CAPABILITY_FLAG)})",
                                         "capability": capability}))
 
@@ -3472,6 +3720,7 @@ class GovernanceCore:
         cand.dismissal_reason = "insufficient_grounding"
         return IntentResolution([], NextAction.REFUSE, self._delta(related, [cand]),
                                 refusal=RefusalDirective(RefusalKind.UNGROUNDED_CLAIM, {
+                                    "detail_source": "substrate", "detail_layer": "grounding",
                                     "detail": f"{grantee.sf_api_name} does not grant {capability!r} on "
                                               f"{target.sf_api_name} (no direct grant edge or bit unset)",
                                     "capability": capability,
@@ -3540,6 +3789,7 @@ class GovernanceCore:
         cand.dismissal_reason = "insufficient_grounding"
         return IntentResolution([], NextAction.REFUSE, self._delta(related, [cand]),
                                 refusal=RefusalDirective(RefusalKind.UNGROUNDED_CLAIM, {
+                                    "detail_source": "substrate", "detail_layer": "grounding",
                                     "detail": f"{field.sf_api_name} is not placed on layout "
                                               f"{layout.sf_api_name} (no INCLUDES_FIELD edge)",
                                     "layout": subject_refs[0], "field": subject_refs[1]}))

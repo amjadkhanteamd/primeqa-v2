@@ -287,7 +287,17 @@
         <span class="mt-0.5 inline-flex shrink-0 items-center px-2 py-0.5 rounded text-xs font-mono bg-gray-100 text-gray-600">AC{{ row.index }}</span>
         <span class="flex-1 text-gray-700">{{ row.label }}
           {% if row.reason %}
-          <span class="block mt-0.5 text-xs text-gray-500">{{ row.reason }}</span>
+          <span class="block mt-0.5 text-xs text-gray-500">{{ row.reason }}
+            {# B0 provenance: whose words the reason is — a model explanation
+               must never read as a substrate fact. #}
+            {% if row.reason_source == 'model' %}
+            <span class="ml-1 inline-flex items-center px-1.5 py-0 rounded-full text-[10px] font-medium bg-violet-50 text-violet-700 border border-violet-200"
+                  title="This explanation was written by the AI generation model, not verified by the substrate{% if row.reason_layer %} (recorded at the {{ row.reason_layer }} stage){% endif %}">model's explanation</span>
+            {% elif row.reason_source == 'substrate' %}
+            <span class="ml-1 inline-flex items-center px-1.5 py-0 rounded-full text-[10px] font-medium bg-gray-50 text-gray-600 border border-gray-200"
+                  title="This reason was determined by the substrate from the org metadata{% if row.reason_layer %} at the {{ row.reason_layer }} stage{% endif %}">substrate diagnostic</span>
+            {% endif %}
+          </span>
           {% endif %}
         </span>
         {% if row.status == 'proposed' %}
@@ -301,7 +311,7 @@
               title="Every proposed test for this criterion was declined — the reason is shown under the label">declined</span>
         {% elif row.status == 'untestable' %}
         <span class="inline-flex shrink-0 items-center px-2 py-0.5 rounded-full text-xs font-medium bg-gray-100 text-gray-600"
-              title="The engine declared no admissible test exists for this criterion — the reason is shown under the label">not testable</span>
+              title="The AI generation model declared no admissible test exists for this criterion — its explanation is shown under the label">not testable</span>
         {% else %}
         <span class="inline-flex shrink-0 items-center px-2 py-0.5 rounded-full text-xs font-medium bg-rose-100 text-rose-800"
               title="No test intent addressed this criterion in the latest generation">unaddressed</span>

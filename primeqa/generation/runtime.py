@@ -480,6 +480,14 @@ class GenerationRuntime:
                 rc = seam.check_refs_exist(intent_input=tu.input, ctx=ctx)
                 if not rc.ok:
                     fb = rc.feedback or f"S1 entity refs not found: {rc.missing_refs}"
+                    # B0 grounded recovery: persist what the substrate DISCLOSED
+                    # (near-miss candidate offers) onto the outcome's audit
+                    # record. A separate, clearly-operational key — never a
+                    # semantic dismissal; provenance rides each offer
+                    # (source: substrate).
+                    if getattr(rc, "offers", None):
+                        state.attempted_interpretation.setdefault(
+                            "grounded_recovery_offers", []).extend(rc.offers)
                     self._reject(state, tu, fb, phase_attempt, model_id, turn)
                     phase_attempt += 1
                     if phase_attempt > self._max_corrections:
@@ -554,7 +562,9 @@ class GenerationRuntime:
                     # finding -> substrate-routed refusal.
                     directive = sv.finding or RefusalDirective(
                         RefusalKind.STRUCTURAL_VALIDATION_FAILURE,
-                        {"reason": "selection not accepted"},
+                        {"reason": "selection not accepted",
+                         "detail_source": "substrate",
+                         "detail_layer": "grounding"},
                     )
                     return self._route(directive, ctx, state, seam)
                 state.canonicals_selected += 1
@@ -732,6 +742,16 @@ class GenerationRuntime:
                 if isinstance(payload, dict):
                     detail = str(payload.get("detail") or payload.get("reason")
                                  or "")[:160]
+                    # B0: a structured candidate offer on the payload renders
+                    # UNTRUNCATED after the detail — the whole point is that
+                    # the model sees its grounded options on the recovery hop.
+                    offer = payload.get("candidates")
+                    if isinstance(offer, dict) and offer.get("candidates"):
+                        apis = ", ".join(
+                            c.get("sf_api_name", "")
+                            for c in offer["candidates"][:3])
+                        detail += (f" — closest grounded to "
+                                   f"{offer.get('proposed')!r}: {apis}")
                 fb[r] = ((pr.get("refusal_kind") or "refused")
                          + (f": {detail}" if detail else ""))
         return fb
@@ -803,17 +823,31 @@ class GenerationRuntime:
         cmap: dict = {}
         for a in state.coverage_acs:
             idx, label = a["index"], a.get("label", "")
+            # B0 telemetry honesty: ``reason_source`` says WHO authored the
+            # reason — "model" for a no_admissible_test explanation recorded
+            # verbatim (D-247's honesty hinge), "substrate" for the harness-
+            # derived verdicts. A model explanation must never read as a
+            # substrate fact (the req-320 job-76 incident).
             if idx in state.coverage_refused:
+                # model self-refusal: recorded where it entered — resolution
                 cmap[str(idx)] = {"status": "refused", "label": label,
-                                  "reason": state.coverage_refused[idx]}
+                                  "reason": state.coverage_refused[idx],
+                                  "reason_source": "model",
+                                  "reason_layer": "resolution"}
             elif idx in state.coverage_grounded:
                 cmap[str(idx)] = {"status": "covered", "label": label}
             elif idx in state.coverage_tagged:
+                # proposed but nothing admitted/grounded -> admissibility
                 cmap[str(idx)] = {"status": "refused", "label": label,
-                                  "reason": "ungrounded_after_reprompt"}
+                                  "reason": "ungrounded_after_reprompt",
+                                  "reason_source": "substrate",
+                                  "reason_layer": "admissibility"}
             else:
+                # never proposed at all -> resolution never happened
                 cmap[str(idx)] = {"status": "refused", "label": label,
-                                  "reason": "untagged_after_reprompt"}
+                                  "reason": "untagged_after_reprompt",
+                                  "reason_source": "substrate",
+                                  "reason_layer": "resolution"}
         state.coverage_map = cmap
         state.attempted_interpretation["coverage_map"] = cmap
         shortfall = _coverage.floor_shortfall(len(state.coverage_acs), state.coverage_floor)
@@ -890,6 +924,10 @@ class GenerationRuntime:
     def _operational_refusal(self, kind: RefusalKind, ctx: ConversationContext,
                              state: RequirementState, seam: GovernanceProvider,
                              payload: dict) -> RequirementResult:
+        # B0 provenance: operational refusals are substrate-authored at the
+        # EXECUTION layer (budget/structural — the runtime itself refused).
+        payload.setdefault("detail_source", "substrate")
+        payload.setdefault("detail_layer", "execution")
         return self._route(RefusalDirective(refusal_kind=kind, payload=payload), ctx, state, seam)
 
     def _structural_failure(self, ctx: ConversationContext, state: RequirementState,
