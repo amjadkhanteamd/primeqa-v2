@@ -2,9 +2,11 @@
 
 Fixture-driven: ``fixtures/pls_fb_flows/*.json`` are byte snapshots of the
 FB-V1 benchmark org's synced Flow entity ``attributes`` (16 flows,
-2026-07-11). The suite pins the arc's scope contract: **FL01 is the sole
-grounded flow**; every other flow is unsupported/opaque with NAMED reasons,
-preserving honest refusal downstream ("no unintended benchmark expansion").
+2026-07-11). The suite pins the arc's scope contract, updated per slice:
+**FL01 is the sole LITERAL-grounded flow and FL02 the sole TRANSFORM-grounded
+flow (IR v2, the FL02 slice)**; every other flow is unsupported/opaque with
+NAMED reasons, preserving honest refusal downstream ("no unintended benchmark
+expansion").
 """
 import json
 import os
@@ -12,7 +14,8 @@ import os
 import pytest
 
 from primeqa.semantic.entity_attributes import (
-    flow_behaviour, flow_grounded_same_record_effects)
+    _fb_parse_transform_formula, apply_transform_chain, flow_behaviour,
+    flow_grounded_same_record_effects, flow_grounded_transforms)
 
 FIXTURE_DIR = os.path.join(os.path.dirname(__file__), "fixtures",
                            "pls_fb_flows")
@@ -32,7 +35,7 @@ def _all_fixture_names():
 
 def test_fl01_is_grounded_with_guard_and_literal_effect():
     ir = flow_behaviour(_load("PLS_FB_FL01_Default_Priority"))
-    assert ir["ir_version"] == 1
+    assert ir["ir_version"] == 2
     assert ir["parse_status"] == "full"
     t = ir["trigger"]
     assert t["object"] == "PLS_FB_Order__c"
@@ -58,27 +61,59 @@ def test_fl01_binder_projection_exposes_the_effect_pair():
 
 # ── the scope contract: nothing else grounds ────────────────────────
 
-def test_fl01_is_the_sole_grounded_flow_in_the_benchmark_org():
+def test_fl01_and_fl02_are_the_only_grounded_flows_in_the_benchmark_org():
+    # IR v2 scope contract: FL01 (literal) + FL02 (transform); nothing else.
     grounded = {
         name for name in _all_fixture_names()
         if any(b["state"] == "grounded"
                for b in flow_behaviour(_load(name))["behaviours"])
     }
-    assert grounded == {"PLS_FB_FL01_Default_Priority"}
+    assert grounded == {"PLS_FB_FL01_Default_Priority",
+                        "PLS_FB_FL02_Normalize_External_Ref"}
+
+
+def test_fl02_is_grounded_as_a_transform_with_consumed_entry_filter():
+    ir = flow_behaviour(_load("PLS_FB_FL02_Normalize_External_Ref"))
+    assert ir["ir_version"] == 2
+    assert ir["parse_status"] == "full"
+    t = ir["trigger"]
+    assert t["save_phase"] == "before_save"
+    assert t["record_trigger_type"] == "CreateAndUpdate"
+    assert t["entry_filter_count"] == 1
+    assert t["entry_filters_consumed"] is True
+    [b] = ir["behaviours"]
+    assert b["state"] == "grounded"
+    assert b["kind"] == "set_record_field_transform"
+    assert b["field"] == "PLS_FB_External_Ref__c"
+    assert b["source_field"] == "PLS_FB_External_Ref__c"
+    assert b["transform"] == ["TRIM", "UPPER"]   # application order
+    assert b["guard"] == [["PLS_FB_External_Ref__c", "IsNull", False]]
+    assert b["value"] is None
+
+
+def test_fl02_binder_projections_split_cleanly():
+    attrs = _load("PLS_FB_FL02_Normalize_External_Ref")
+    # the LITERAL projection stays empty — transforms never leak into it
+    assert flow_grounded_same_record_effects(attrs) == frozenset()
+    (tr,) = flow_grounded_transforms(attrs)
+    assert tr == {"field": "PLS_FB_External_Ref__c",
+                  "transform": ("TRIM", "UPPER"),
+                  "source_field": "PLS_FB_External_Ref__c",
+                  "guard": (("PLS_FB_External_Ref__c", "IsNull", False),)}
+    assert apply_transform_chain(tr["transform"], "  fb-000123  ") == "FB-000123"
 
 
 def test_no_other_flow_contributes_binder_effects():
     for name in _all_fixture_names():
-        if name == "PLS_FB_FL01_Default_Priority":
-            continue
-        assert flow_grounded_same_record_effects(_load(name)) == frozenset(), name
+        if name != "PLS_FB_FL01_Default_Priority":
+            assert flow_grounded_same_record_effects(_load(name)) == frozenset(), name
+        if name != "PLS_FB_FL02_Normalize_External_Ref":
+            assert flow_grounded_transforms(_load(name)) == (), name
 
 
 # ── named reasons per excluded flow (honest refusal is diagnosable) ──
 
 @pytest.mark.parametrize("name,expected_reason", [
-    # formula-valued assignment (UPPER/TRIM) — value not literal
-    ("PLS_FB_FL02_Normalize_External_Ref", "non_literal_assignment_value"),
     # four ordered band outcomes — first-match semantics not in grammar
     ("PLS_FB_FL03_Tier_Banding", "multi_outcome_decision"),
     # after-save side effect (task create)
@@ -213,3 +248,87 @@ def test_partial_path_demotes_grounded_siblings():
     assert ir["parse_status"] == "partial"
     assert all(b["state"] != "grounded" for b in ir["behaviours"])
     assert flow_grounded_same_record_effects(attrs) == frozenset()
+
+
+# ── IR v2: transform grammar + entry-filter boundaries ───────────────
+
+@pytest.mark.parametrize("expr,expected", [
+    ("UPPER(TRIM({!$Record.X__c}))", (("TRIM", "UPPER"), "X__c")),
+    ("TRIM({!$Record.X__c})", (("TRIM",), "X__c")),
+    ("LOWER(UPPER(TRIM({!$Record.A_B__c})))",
+     (("TRIM", "UPPER", "LOWER"), "A_B__c")),
+    ("LEN({!$Record.X__c})", None),                 # unknown function
+    ("UPPER({!$Record.X__c}, 2)", None),            # extra argument
+    ("UPPER(X__c)", None),                          # non-$Record argument
+    ("UPPER(TRIM(LOWER(UPPER({!$Record.X__c}))))", None),  # depth > 3
+    ("TODAY() + 5", None),                          # FL08's class
+    (None, None),
+])
+def test_transform_formula_grammar_bounds(expr, expected):
+    assert _fb_parse_transform_formula(expr) == expected
+
+
+def test_non_isnull_entry_filter_still_demotes():
+    # an EqualTo entry filter is outside the consumption grammar — the flow
+    # keeps the v1 entry_conditions_not_consumed demotion even with a clean
+    # literal assignment on the path
+    attrs = {"Metadata": {
+        "start": {"object": "X__c", "triggerType": "RecordBeforeSave",
+                  "recordTriggerType": "Create", "filterLogic": "and",
+                  "filters": [{"field": "Status__c", "operator": "EqualTo",
+                               "value": {"stringValue": "Open"}}],
+                  "connector": {"targetReference": "Set"}},
+        "assignments": [
+            {"name": "Set",
+             "assignmentItems": [{"assignToReference": "$Record.F__c",
+                                  "operator": "Assign",
+                                  "value": {"stringValue": "v"}}]},
+        ],
+    }}
+    ir = flow_behaviour(attrs)
+    reasons = {r for b in ir["behaviours"] for r in b["reasons"]}
+    assert "entry_conditions_not_consumed" in reasons
+    assert all(b["state"] != "grounded" for b in ir["behaviours"])
+    assert flow_grounded_same_record_effects(attrs) == frozenset()
+
+
+def test_transform_then_outside_grammar_demotes_conservatively():
+    # conservatism holds for transforms exactly as for literals
+    attrs = {"Metadata": {
+        "start": {"object": "X__c", "triggerType": "RecordBeforeSave",
+                  "recordTriggerType": "Create",
+                  "connector": {"targetReference": "Norm"}},
+        "formulas": [{"name": "f", "dataType": "String",
+                      "expression": "UPPER({!$Record.F__c})"}],
+        "assignments": [
+            {"name": "Norm",
+             "assignmentItems": [{"assignToReference": "$Record.F__c",
+                                  "operator": "Assign",
+                                  "value": {"elementReference": "f"}}],
+             "connector": {"targetReference": "Look"}},
+        ],
+        "recordLookups": [{"name": "Look"}],
+    }}
+    attrs_ir = flow_behaviour(attrs)
+    assert attrs_ir["parse_status"] == "partial"
+    assert flow_grounded_transforms(attrs) == ()
+
+
+def test_cross_field_transform_grounds():
+    # source != target stays within the grammar (copy-normalize shape)
+    attrs = {"Metadata": {
+        "start": {"object": "X__c", "triggerType": "RecordBeforeSave",
+                  "recordTriggerType": "Create",
+                  "connector": {"targetReference": "Norm"}},
+        "formulas": [{"name": "f", "dataType": "String",
+                      "expression": "TRIM({!$Record.Raw__c})"}],
+        "assignments": [
+            {"name": "Norm",
+             "assignmentItems": [{"assignToReference": "$Record.Clean__c",
+                                  "operator": "Assign",
+                                  "value": {"elementReference": "f"}}]},
+        ],
+    }}
+    (tr,) = flow_grounded_transforms(attrs)
+    assert tr["field"] == "Clean__c" and tr["source_field"] == "Raw__c"
+    assert tr["transform"] == ("TRIM",)

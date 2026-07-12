@@ -30,6 +30,7 @@ population); attributes carries sparse per-row metadata.
 
 from __future__ import annotations
 
+import re as _re
 from typing import Optional, Type
 
 from pydantic import BaseModel, ConfigDict, Field
@@ -644,7 +645,7 @@ def flow_effects(attributes: Optional[dict]) -> dict:
 # "understood" effect, so partial understanding of a path never grounds.
 # (Never-raises; D-203.1 shape tolerance throughout.)
 
-FLOW_BEHAVIOUR_IR_VERSION = 1
+FLOW_BEHAVIOUR_IR_VERSION = 2
 
 _FB_GROUNDED = "grounded"
 _FB_UNSUPPORTED = "unsupported"
@@ -692,25 +693,116 @@ def _fb_guard_condition(cond) -> Optional[tuple]:
     return (field, operator, value)
 
 
+# IR v2 (FL02 slice): the bounded TRANSFORM grammar — a formula-valued
+# assignment grounds iff its expression is a nest of these string functions
+# over ONE ``$Record.<Field>`` argument (e.g. ``UPPER(TRIM({!$Record.X__c}))``).
+# Anything else stays ``non_literal_assignment_value`` (unchanged honesty).
+_FB_TRANSFORM_FNS = frozenset({"UPPER", "LOWER", "TRIM"})
+_FB_TRANSFORM_MAX_DEPTH = 3
+
+_FB_TRANSFORM_CALL_RE = _re.compile(r"^\s*([A-Z]+)\s*\(\s*(.*?)\s*\)\s*$",
+                                    _re.S)
+_FB_TRANSFORM_ARG_RE = _re.compile(r"^\{!\$Record\.([A-Za-z0-9_]+)\}$")
+
+
+def _fb_parse_transform_formula(expression) -> Optional[tuple]:
+    """Parse a bounded transform formula into ``(chain, source_field)`` where
+    ``chain`` is the APPLICATION-ORDER tuple (innermost first — for
+    ``UPPER(TRIM(x))`` the chain is ``("TRIM", "UPPER")``) and
+    ``source_field`` is the bare ``$Record`` field the nest reads. ``None``
+    for anything outside the grammar (unknown function, depth > 3, a
+    non-``$Record`` argument, extra arguments)."""
+    if not isinstance(expression, str):
+        return None
+    rest = expression.strip()
+    outer_to_inner: list = []
+    for _ in range(_FB_TRANSFORM_MAX_DEPTH):
+        m = _FB_TRANSFORM_CALL_RE.match(rest)
+        if m is None:
+            break
+        fn, inner = m.group(1), m.group(2)
+        if fn not in _FB_TRANSFORM_FNS or "," in inner:
+            return None
+        outer_to_inner.append(fn)
+        rest = inner.strip()
+    if not outer_to_inner:
+        return None
+    arg = _FB_TRANSFORM_ARG_RE.match(rest)
+    if arg is None:
+        return None
+    return (tuple(reversed(outer_to_inner)), arg.group(1))
+
+
+def apply_transform_chain(chain, value):
+    """Apply an application-ordered transform chain to a string value —
+    deterministic, the exact semantics Salesforce gives these functions on
+    plain strings. Non-string values pass through unchanged (the caller owns
+    type guarantees). Shared by the IR's consumers (emission computes the
+    expected post-save value; the VR staged-state check evaluates rules on
+    the post-transform value, the order-of-execution fact for before-save
+    same-field transforms)."""
+    if not isinstance(value, str):
+        return value
+    out = value
+    for fn in chain:
+        if fn == "UPPER":
+            out = out.upper()
+        elif fn == "LOWER":
+            out = out.lower()
+        elif fn == "TRIM":
+            out = out.strip()
+    return out
+
+
+def _fb_entry_filter_guard(f) -> Optional[tuple]:
+    """Parse one start-element entry filter into a guard tuple. Bounded to
+    the ``IsNull`` shape (``{field, operator: "IsNull", value: {booleanValue}}``
+    — the field is a BARE api-name on the trigger object). Anything else →
+    ``None`` and the flow keeps today's ``entry_conditions_not_consumed``
+    demotion."""
+    if not isinstance(f, dict):
+        return None
+    field = f.get("field")
+    if not isinstance(field, str) or not field or "." in field:
+        return None
+    if f.get("operator") != "IsNull":
+        return None
+    value = f.get("value")
+    flag = value.get("booleanValue") if isinstance(value, dict) else None
+    if not isinstance(flag, bool):
+        return None
+    return (field, "IsNull", flag)
+
+
 def flow_behaviour(attributes: Optional[dict]) -> dict:
     """Parse a Flow's raw ``Metadata`` into the Flow Behaviour IR (v1).
 
     Returns a plain dict (JSON-shaped, schema-versioned)::
 
-        {"ir_version": 1,
+        {"ir_version": 2,
          "trigger": {"object": str|None, "save_phase": "before_save"|"after_save"|None,
                      "record_trigger_type": str|None,
                      "entry_filter_count": int, "requires_change_to_meet": bool,
+                     "entry_filters_consumed": bool,   # IR v2 (FL02 slice)
                      "has_scheduled_paths": bool, "has_async_path": bool,
                      "is_record_triggered": bool},
          "behaviours": [
              {"state": "grounded"|"unsupported"|"opaque",
-              "kind": "set_record_field"|None,
-              "guard": [[field, operator, value], ...],   # conjunction
+              "kind": "set_record_field"|"set_record_field_transform"|None,
+              "guard": [[field, operator, value], ...],   # conjunction; incl.
+                                                          # consumed entry filters
               "field": str|None, "value": scalar|None,
+              "transform": [fn, ...],       # IR v2: application order (inner
+              "source_field": str|None,     # first); () for literal writes
               "reasons": [str, ...]},
          ],
          "parse_status": "full"|"partial"|"opaque"|"empty"}
+
+    IR v2 (the FL02 slice) adds the bounded TRANSFORM grammar: a formula-
+    valued assignment grounds as ``set_record_field_transform`` iff its
+    expression is a UPPER/LOWER/TRIM nest over exactly one ``$Record`` field;
+    entry filters are CONSUMED into behaviour guards when every filter is the
+    bounded IsNull shape (else the v1 flow-level demotion stands).
 
     Never raises. Absent/malformed Metadata → ``parse_status="opaque"`` with
     zero behaviours. The FIRST consumer is the automation-effect binder
@@ -722,6 +814,7 @@ def flow_behaviour(attributes: Optional[dict]) -> dict:
         "trigger": {
             "object": None, "save_phase": None, "record_trigger_type": None,
             "entry_filter_count": 0, "requires_change_to_meet": False,
+            "entry_filters_consumed": False,
             "has_scheduled_paths": False, "has_async_path": False,
             "is_record_triggered": False,
         },
@@ -757,11 +850,26 @@ def flow_behaviour(attributes: Optional[dict]) -> dict:
                                       for p in scheduled)
     trig["is_record_triggered"] = save_phase is not None and trig["object"] is not None
 
+    # IR v2: consume entry filters when EVERY one parses in the bounded
+    # IsNull shape — they become part of each behaviour's guard (the fire
+    # condition the staging must satisfy). Any unparseable filter keeps
+    # today's flow-level ``entry_conditions_not_consumed`` demotion.
+    entry_filters = [f for f in _flow_md_list(start.get("filters"))
+                     if isinstance(f, dict)]
+    entry_guard_parsed = [_fb_entry_filter_guard(f) for f in entry_filters]
+    entry_guard: tuple = ()
+    if entry_filters and all(g is not None for g in entry_guard_parsed) \
+            and start.get("filterLogic") in (None, "and"):
+        entry_guard = tuple(entry_guard_parsed)
+        trig["entry_filters_consumed"] = True
+
     def _behaviour(state, kind=None, guard=(), field=None, value=None,
-                   reasons=()):
+                   reasons=(), transform=(), source_field=None):
         return {"state": state, "kind": kind,
-                "guard": [list(g) for g in guard],
-                "field": field, "value": value, "reasons": list(reasons)}
+                "guard": [list(g) for g in entry_guard + tuple(guard)],
+                "field": field, "value": value,
+                "transform": list(transform), "source_field": source_field,
+                "reasons": list(reasons)}
 
     # ── flow-level gates: not record-triggered / no immediate path ──
     if not trig["is_record_triggered"]:
@@ -782,6 +890,11 @@ def flow_behaviour(attributes: Optional[dict]) -> dict:
         out["behaviours"].append(_behaviour(_FB_UNSUPPORTED, reasons=reasons))
         out["parse_status"] = "partial"
         return out
+
+    # ── formula index: name → formula element (transform grammar source) ──
+    formulas_by_name: dict = {
+        f["name"]: f for f in _flow_md_list(md.get("formulas"))
+        if isinstance(f, dict) and isinstance(f.get("name"), str)}
 
     # ── element index: name → (list_name, element) ──
     index: dict = {}
@@ -826,13 +939,31 @@ def flow_behaviour(attributes: Optional[dict]) -> dict:
                     reasons.append("non_record_assignment_target")
                 if op != "Assign":
                     reasons.append(f"non_assign_operator:{op}")
-                if value is None:
+                # IR v2: a non-literal value may still ground as a bounded
+                # TRANSFORM — an elementReference to a formula whose
+                # expression is a UPPER/LOWER/TRIM nest over one $Record
+                # field. Everything else keeps the v1 demotion.
+                transform = None
+                if value is None and not reasons:
+                    val = item.get("value")
+                    ref = (val or {}).get("elementReference") \
+                        if isinstance(val, dict) else None
+                    formula = formulas_by_name.get(ref) if ref else None
+                    transform = _fb_parse_transform_formula(
+                        (formula or {}).get("expression"))
+                if value is None and transform is None:
                     reasons.append("non_literal_assignment_value")
                 if reasons:
                     behaviours.append(_behaviour(
                         _FB_UNSUPPORTED, kind="set_record_field",
                         guard=guard, field=field, reasons=reasons))
                     demote_reasons.extend(reasons)
+                elif transform is not None:
+                    chain, source_field = transform
+                    behaviours.append(_behaviour(
+                        _FB_GROUNDED, kind="set_record_field_transform",
+                        guard=guard, field=field,
+                        transform=chain, source_field=source_field))
                 else:
                     behaviours.append(_behaviour(
                         _FB_GROUNDED, kind="set_record_field",
@@ -889,7 +1020,7 @@ def flow_behaviour(attributes: Optional[dict]) -> dict:
             break
 
     # ── flow-level demotions of otherwise-grounded behaviours ──
-    if trig["entry_filter_count"]:
+    if trig["entry_filter_count"] and not trig["entry_filters_consumed"]:
         demote_reasons.append("entry_conditions_not_consumed")
     if trig["requires_change_to_meet"]:
         demote_reasons.append("updated_to_meet_not_consumed")
@@ -927,6 +1058,30 @@ def flow_behaviour(attributes: Optional[dict]) -> dict:
     else:
         out["parse_status"] = "partial"
     return out
+
+
+def flow_grounded_transforms(attributes: Optional[dict]) -> tuple:
+    """The binder-facing projection of the IR's GROUNDED transform behaviours
+    (IR v2 / FL02 slice): a deterministic tuple of dicts
+    ``{"field", "transform", "source_field", "guard"}`` — the field the Flow
+    verifiably REWRITES on the triggering record, the application-order
+    function chain, the field it reads, and the fire guard (consumed entry
+    filters + decision guard). Unsupported/opaque behaviours contribute
+    nothing (honest refusal upstream). Only before-save transforms exist in
+    the grammar, so consumers may rely on the run-before-validation-rules
+    order-of-execution fact."""
+    ir = flow_behaviour(attributes)
+    out = [
+        {"field": b["field"], "transform": tuple(b["transform"]),
+         "source_field": b["source_field"],
+         "guard": tuple(tuple(g) for g in b["guard"])}
+        for b in ir["behaviours"]
+        if b["state"] == _FB_GROUNDED
+        and b["kind"] == "set_record_field_transform"
+        and b["field"] is not None
+    ]
+    out.sort(key=lambda d: (d["field"], d["transform"]))
+    return tuple(out)
 
 
 def flow_grounded_same_record_effects(attributes: Optional[dict]) -> frozenset:
