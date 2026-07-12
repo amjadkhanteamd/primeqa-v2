@@ -28,7 +28,7 @@ _VERSIONS_DIR = _DIR / "versions"
 
 # The default version new generations use (replay pins its own version on the
 # request's operational_context.prompt_template_version, per D-071).
-CURRENT = "generation@v28"
+CURRENT = "generation@v29"
 
 # version id -> frozen composed artifact (filesystem-safe slug).
 _FILES = {
@@ -60,6 +60,7 @@ _FILES = {
     "generation@v26": _VERSIONS_DIR / "generation_v26.md",
     "generation@v27": _VERSIONS_DIR / "generation_v27.md",
     "generation@v28": _VERSIONS_DIR / "generation_v28.md",
+    "generation@v29": _VERSIONS_DIR / "generation_v29.md",
 }
 
 # Recorded SHA-256 of each frozen version's composed content (D-103.1 drift
@@ -210,6 +211,16 @@ RECORDED_HASHES = {
     # it uniquely against the org's convention (req-320: Priority__c →
     # PLS_FB_Priority__c) and teaches the real vocabulary on a miss.
     "generation@v28": "1274717313117c5a4263fbda8b1376ed742ef9736a7db04961e20a410bd0567f",
+    # v29 (B0/B1 seam): the naming contract made CAPABILITY-ACCURATE after the
+    # v28 object-anchoring regression (req-320: 4/4 -> 1/3 convergence; the
+    # model generalized "bare name / never invent prefixed variants" to the
+    # SUBJECT and anchored on resolvable wrong objects — standard Order —
+    # where no recovery can fire). v29 splits the contract: the subject
+    # object is VALIDATED only (name it from the requirement's full wording,
+    # most-specific-wins; a wrong-but-real name resolves silently), while
+    # fields keep label/bare-name freedom with grounded recovery where
+    # supported. Shows-value routing (v28) unchanged.
+    "generation@v29": "c5c876c74327a8a1c2df3a9fabbf40efacf653d5338df9609629dee180e0a702",
 }
 
 # Working composition order — authors the NEXT frozen version (NOT runtime).

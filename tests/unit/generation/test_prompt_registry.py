@@ -42,19 +42,25 @@ def test_working_source_composes_to_current():
     assert hashlib.sha256(composed.encode("utf-8")).hexdigest() == registry.recorded_hash()
 
 
-def test_current_resolves_to_v28():
-    # v28 (B1 flow-grounding arc): the sixth division-of-responsibility
-    # instance — a saved record SHOWING a value the user did not enter
-    # (default / normalization / classification) is an automation effect,
-    # never a state-transition or a stage-it-yourself value-claim; plus the
-    # field-naming contract (the substrate resolves labels/bare names
-    # uniquely and teaches the real vocabulary on a miss). v1..v27 stay
-    # frozen + pinned-resolvable.
-    assert registry.CURRENT == "generation@v28"
-    assert registry.get() == registry.get("generation@v28")
-    # v28's shows-value routing + naming contract
-    assert "shows Standard once saved" in registry.get()
+def test_current_resolves_to_v29():
+    # v29 (B0/B1 seam): the naming contract made CAPABILITY-ACCURATE after
+    # the v28 object-anchoring regression — the subject object is VALIDATED
+    # only (a wrong-but-real name resolves silently, no correction), while
+    # fields keep label/bare-name freedom with grounded recovery where
+    # supported. v28's shows-value routing is retained verbatim; v1..v28
+    # stay frozen + pinned-resolvable.
+    assert registry.CURRENT == "generation@v29"
+    assert registry.get() == registry.get("generation@v29")
+    # v29's split naming contract
+    assert "VALIDATES the subject you name" in registry.get()
+    assert "resolves successfully" in registry.get()
+    assert "no correction is ever offered" in registry.get()
     assert "Field naming:" in registry.get()
+    # the v28 wording that caused the regression is GONE
+    assert "never invent prefixed variants" not in registry.get()
+    assert "resolves your name" not in registry.get()
+    # v28: shows-value routing — retained
+    assert "shows Standard once saved" in registry.get()
     assert "never stage such a value as a create input" in registry.get()
     # v27: lean != minimal — retained
     assert "lean does NOT mean minimal" in registry.get()
