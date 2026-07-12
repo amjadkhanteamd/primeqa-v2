@@ -42,15 +42,21 @@ def test_working_source_composes_to_current():
     assert hashlib.sha256(composed.encode("utf-8")).hexdigest() == registry.recorded_hash()
 
 
-def test_current_resolves_to_v27():
-    # Amendment B (AK 2026-07-10): CURRENT bumped to v24 (the feasibility-boundary
-    # clarification — the LLM never decides derivability / testability /
-    # executability; closes the v23 residual where 1/5 runs self-dismissed AC7 by
-    # declaring VR08 "non-derivable"). v24 = v23 + only that paragraph; v23's
-    # missing-configured-value directive retained. v1..v23 stay frozen +
-    # pinned-resolvable.
-    assert registry.CURRENT == "generation@v27"
-    assert registry.get() == registry.get("generation@v27")
+def test_current_resolves_to_v28():
+    # v28 (B1 flow-grounding arc): the sixth division-of-responsibility
+    # instance — a saved record SHOWING a value the user did not enter
+    # (default / normalization / classification) is an automation effect,
+    # never a state-transition or a stage-it-yourself value-claim; plus the
+    # field-naming contract (the substrate resolves labels/bare names
+    # uniquely and teaches the real vocabulary on a miss). v1..v27 stay
+    # frozen + pinned-resolvable.
+    assert registry.CURRENT == "generation@v28"
+    assert registry.get() == registry.get("generation@v28")
+    # v28's shows-value routing + naming contract
+    assert "shows Standard once saved" in registry.get()
+    assert "Field naming:" in registry.get()
+    assert "never stage such a value as a create input" in registry.get()
+    # v27: lean != minimal — retained
     assert "lean does NOT mean minimal" in registry.get()
     # v26: the numeric-threshold contract
     assert "numeric threshold has NO predicate" in registry.get()

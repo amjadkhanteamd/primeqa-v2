@@ -28,7 +28,7 @@ _VERSIONS_DIR = _DIR / "versions"
 
 # The default version new generations use (replay pins its own version on the
 # request's operational_context.prompt_template_version, per D-071).
-CURRENT = "generation@v27"
+CURRENT = "generation@v28"
 
 # version id -> frozen composed artifact (filesystem-safe slug).
 _FILES = {
@@ -59,6 +59,7 @@ _FILES = {
     "generation@v25": _VERSIONS_DIR / "generation_v25.md",
     "generation@v26": _VERSIONS_DIR / "generation_v26.md",
     "generation@v27": _VERSIONS_DIR / "generation_v27.md",
+    "generation@v28": _VERSIONS_DIR / "generation_v28.md",
 }
 
 # Recorded SHA-256 of each frozen version's composed content (D-103.1 drift
@@ -200,6 +201,15 @@ RECORDED_HASHES = {
     # the rule involves (risk in_set + compliance false, not the flag alone);
     # a single generic condition cannot select a unique rule (D-295.1).
     "generation@v27": "88eb4dc4429bdb887a4dca95ef1d8dce60fda32f4294ec858dbc52c80ce99ffe",
+    # v28 (B1 flow-grounding arc): the SIXTH division-of-responsibility
+    # instance — a saved record SHOWING a value the user did not enter
+    # (default / normalization / classification) is an automation effect,
+    # never a state-transition or a stage-it-yourself value-claim; system-
+    # computed values are never staged as create inputs. Plus the naming
+    # contract: propose the label/bare name you know — the substrate resolves
+    # it uniquely against the org's convention (req-320: Priority__c →
+    # PLS_FB_Priority__c) and teaches the real vocabulary on a miss.
+    "generation@v28": "1274717313117c5a4263fbda8b1376ed742ef9736a7db04961e20a410bd0567f",
 }
 
 # Working composition order — authors the NEXT frozen version (NOT runtime).
