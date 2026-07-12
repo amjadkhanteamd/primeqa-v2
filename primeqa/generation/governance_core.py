@@ -73,7 +73,7 @@ from primeqa.generation.decision_branch import decision_branch_shape
 from primeqa.generation.transition import (
     _flatten_and, _prior_constraint, temporal_boundary_shape,
 )
-from primeqa.generation.verified_negative import _RECORD_TYPES_KEY, _writable
+from primeqa.generation.verified_negative import _RECORD_TYPES_KEY
 from primeqa.generation import control_coverage, control_relevance
 from primeqa.generation.formula_expectation import (
     as_decimal, verify_formula_expectation)
