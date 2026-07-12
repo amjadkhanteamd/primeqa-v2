@@ -3,10 +3,10 @@
 Fixture-driven: ``fixtures/pls_fb_flows/*.json`` are byte snapshots of the
 FB-V1 benchmark org's synced Flow entity ``attributes`` (16 flows,
 2026-07-11). The suite pins the arc's scope contract, updated per slice:
-**FL01 is the sole LITERAL-grounded flow and FL02 the sole TRANSFORM-grounded
-flow (IR v2, the FL02 slice)**; every other flow is unsupported/opaque with
-NAMED reasons, preserving honest refusal downstream ("no unintended benchmark
-expansion").
+**FL01 + FL03 are the LITERAL-grounded flows (FL03 via the C1 ordered-
+decision fan-out) and FL02 the sole TRANSFORM-grounded flow**; every other
+flow is unsupported/opaque with NAMED reasons, preserving honest refusal
+downstream ("no unintended benchmark expansion").
 """
 import json
 import os
@@ -61,15 +61,42 @@ def test_fl01_binder_projection_exposes_the_effect_pair():
 
 # ── the scope contract: nothing else grounds ────────────────────────
 
-def test_fl01_and_fl02_are_the_only_grounded_flows_in_the_benchmark_org():
-    # IR v2 scope contract: FL01 (literal) + FL02 (transform); nothing else.
+def test_grounded_scope_contract():
+    # C1 scope contract: FL01 (literal), FL02 (transform), FL03 (ordered
+    # bands); nothing else grounds.
     grounded = {
         name for name in _all_fixture_names()
         if any(b["state"] == "grounded"
                for b in flow_behaviour(_load(name))["behaviours"])
     }
     assert grounded == {"PLS_FB_FL01_Default_Priority",
-                        "PLS_FB_FL02_Normalize_External_Ref"}
+                        "PLS_FB_FL02_Normalize_External_Ref",
+                        "PLS_FB_FL03_Tier_Banding"}
+
+
+def test_fl03_grounds_four_band_arms_with_negation_context():
+    ir = flow_behaviour(_load("PLS_FB_FL03_Tier_Banding"))
+    assert ir["parse_status"] == "full"
+    arms = {b["value"]: b for b in ir["behaviours"]}
+    assert set(arms) == {"Platinum", "Gold", "Silver", "Bronze"}
+    assert all(b["state"] == "grounded"
+               and b["kind"] == "set_record_field"
+               and b["field"] == "PLS_FB_Tier__c"
+               for b in ir["behaviours"])
+    amt = "PLS_FB_Amount__c"
+    assert arms["Platinum"]["guard"] == [[amt, "GreaterThanOrEqualTo", 250000.0]]
+    assert arms["Platinum"]["negated_guards"] == []
+    assert arms["Gold"]["guard"] == [[amt, "GreaterThanOrEqualTo", 50000.0]]
+    assert arms["Gold"]["negated_guards"] == [[amt, "GreaterThanOrEqualTo", 250000.0]]
+    assert arms["Silver"]["negated_guards"] == [
+        [amt, "GreaterThanOrEqualTo", 250000.0],
+        [amt, "GreaterThanOrEqualTo", 50000.0]]
+    # the default arm: no positive guard, ALL rules negated
+    assert arms["Bronze"]["guard"] == []
+    assert arms["Bronze"]["negated_guards"] == [
+        [amt, "GreaterThanOrEqualTo", 250000.0],
+        [amt, "GreaterThanOrEqualTo", 50000.0],
+        [amt, "GreaterThanOrEqualTo", 10000.0]]
 
 
 def test_fl02_is_grounded_as_a_transform_with_consumed_entry_filter():
@@ -104,8 +131,9 @@ def test_fl02_binder_projections_split_cleanly():
 
 
 def test_no_other_flow_contributes_binder_effects():
+    literal_ok = {"PLS_FB_FL01_Default_Priority", "PLS_FB_FL03_Tier_Banding"}
     for name in _all_fixture_names():
-        if name != "PLS_FB_FL01_Default_Priority":
+        if name not in literal_ok:
             assert flow_grounded_same_record_effects(_load(name)) == frozenset(), name
         if name != "PLS_FB_FL02_Normalize_External_Ref":
             assert flow_grounded_transforms(_load(name)) == (), name
@@ -114,8 +142,6 @@ def test_no_other_flow_contributes_binder_effects():
 # ── named reasons per excluded flow (honest refusal is diagnosable) ──
 
 @pytest.mark.parametrize("name,expected_reason", [
-    # four ordered band outcomes — first-match semantics not in grammar
-    ("PLS_FB_FL03_Tier_Banding", "multi_outcome_decision"),
     # after-save side effect (task create)
     ("PLS_FB_FL04_Confirmation_Task", "element_outside_grammar:recordCreates"),
     # after-save fan-out via Get Records
@@ -332,3 +358,102 @@ def test_cross_field_transform_grounds():
     (tr,) = flow_grounded_transforms(attrs)
     assert tr["field"] == "Clean__c" and tr["source_field"] == "Raw__c"
     assert tr["transform"] == ("TRIM",)
+
+
+# ── C1: ordered-decision fan-out boundaries ──────────────────────────
+
+def _decision_flow(rules, default=None, extra=None):
+    md = {
+        "start": {"object": "X__c", "triggerType": "RecordBeforeSave",
+                  "recordTriggerType": "Create",
+                  "connector": {"targetReference": "D"}},
+        "decisions": [{"name": "D", "rules": rules,
+                       **({"defaultConnector": {"targetReference": default}}
+                          if default else {})}],
+        "assignments": [],
+    }
+    if extra:
+        md.update(extra)
+    return {"Metadata": md}
+
+
+def _rule(name, field, op, num, target):
+    return {"name": name, "conditionLogic": "and",
+            "conditions": [{"leftValueReference": f"$Record.{field}",
+                            "operator": op,
+                            "rightValue": {"numberValue": num}}],
+            "connector": {"targetReference": target}}
+
+
+def _assign(name, field, value):
+    return {"name": name,
+            "assignmentItems": [{"assignToReference": f"$Record.{field}",
+                                 "operator": "Assign",
+                                 "value": {"stringValue": value}}]}
+
+
+def test_per_path_conservatism_sibling_arms_survive():
+    # band A -> clean literal; band B -> a lookup (out of grammar):
+    # A stays grounded, B demotes with its own reason, status is partial.
+    attrs = _decision_flow(
+        rules=[_rule("R1", "Amt__c", "GreaterThanOrEqualTo", 100, "SetA"),
+               _rule("R2", "Amt__c", "GreaterThanOrEqualTo", 10, "Look")],
+        extra={"assignments": [_assign("SetA", "Band__c", "A")],
+               "recordLookups": [{"name": "Look"}]})
+    ir = flow_behaviour(attrs)
+    assert ir["parse_status"] == "partial"
+    by_state = {}
+    for b in ir["behaviours"]:
+        by_state.setdefault(b["state"], []).append(b)
+    assert len(by_state.get("grounded", [])) == 1
+    assert by_state["grounded"][0]["value"] == "A"
+    reasons = {r for b in by_state.get("unsupported", []) for r in b["reasons"]}
+    assert "element_outside_grammar:recordLookups" in reasons
+    # the grounded arm still feeds the binder
+    assert flow_grounded_same_record_effects(attrs) == frozenset({("Band__c", "A")})
+
+
+def test_multi_condition_rule_in_ordered_decision_demotes():
+    two_cond = {"name": "R1", "conditionLogic": "and",
+                "conditions": [
+                    {"leftValueReference": "$Record.A__c", "operator": "EqualTo",
+                     "rightValue": {"stringValue": "x"}},
+                    {"leftValueReference": "$Record.B__c", "operator": "EqualTo",
+                     "rightValue": {"stringValue": "y"}}],
+                "connector": {"targetReference": "S1"}}
+    attrs = _decision_flow(
+        rules=[two_cond,
+               _rule("R2", "Amt__c", "GreaterThan", 1, "S2")],
+        extra={"assignments": [_assign("S1", "F__c", "a"),
+                               _assign("S2", "F__c", "b")]})
+    ir = flow_behaviour(attrs)
+    reasons = {r for b in ir["behaviours"] for r in b["reasons"]}
+    assert "multi_condition_rule_in_ordered_decision" in reasons
+    assert all(b["state"] != "grounded" for b in ir["behaviours"])
+
+
+def test_decision_rule_bound_is_enforced():
+    rules = [_rule(f"R{i}", "Amt__c", "GreaterThan", i, "S")
+             for i in range(7)]
+    attrs = _decision_flow(rules=rules,
+                           extra={"assignments": [_assign("S", "F__c", "v")]})
+    ir = flow_behaviour(attrs)
+    reasons = {r for b in ir["behaviours"] for r in b["reasons"]}
+    assert "decision_rule_bound_exceeded" in reasons
+
+
+def test_single_rule_decision_keeps_conjunctive_grammar():
+    # FL01's shape: one rule, multiple conjunctive conditions still ground
+    two_cond = {"name": "R1", "conditionLogic": "and",
+                "conditions": [
+                    {"leftValueReference": "$Record.A__c", "operator": "EqualTo",
+                     "rightValue": {"stringValue": "x"}},
+                    {"leftValueReference": "$Record.B__c", "operator": "IsNull",
+                     "rightValue": {"booleanValue": True}}],
+                "connector": {"targetReference": "S1"}}
+    attrs = _decision_flow(rules=[two_cond],
+                           extra={"assignments": [_assign("S1", "F__c", "v")]})
+    ir = flow_behaviour(attrs)
+    assert ir["parse_status"] == "full"
+    [b] = ir["behaviours"]
+    assert b["state"] == "grounded" and len(b["guard"]) == 2

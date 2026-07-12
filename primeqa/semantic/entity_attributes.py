@@ -653,7 +653,15 @@ _FB_OPAQUE = "opaque"
 
 # Decision-condition operators the bounded grammar understands. Kept
 # deliberately small: FL-shaped null/equality guards on $Record fields.
-_FB_GUARD_OPERATORS = frozenset({"IsNull", "EqualTo", "NotEqualTo"})
+_FB_GUARD_OPERATORS = frozenset({
+    "IsNull", "EqualTo", "NotEqualTo",
+    # C1 (ordered-decision slice): numeric ladder comparisons
+    "GreaterThanOrEqualTo", "GreaterThan", "LessThanOrEqualTo", "LessThan"})
+
+# Ordered-decision bounds (C1): first-match fan-out is walked per rule with
+# the negation-context of every PRIOR rule; kept small and honest.
+_FB_MAX_DECISION_RULES = 6
+_FB_MAX_RULE_CONDITIONS = 4
 
 # Flow-Metadata element lists that can appear as walk targets. Anything
 # resolved into a list NOT in the supported set → unsupported reason.
@@ -864,9 +872,13 @@ def flow_behaviour(attributes: Optional[dict]) -> dict:
         trig["entry_filters_consumed"] = True
 
     def _behaviour(state, kind=None, guard=(), field=None, value=None,
-                   reasons=(), transform=(), source_field=None):
+                   reasons=(), transform=(), source_field=None, negated=()):
         return {"state": state, "kind": kind,
                 "guard": [list(g) for g in entry_guard + tuple(guard)],
+                # C1: the negation-context — each entry means NOT(f op v);
+                # first-match ordered decisions put every PRIOR rule's
+                # condition here for the later arms and the default arm.
+                "negated_guards": [list(g) for g in negated],
                 "field": field, "value": value,
                 "transform": list(transform), "source_field": source_field,
                 "reasons": list(reasons)}
@@ -904,120 +916,225 @@ def flow_behaviour(attributes: Optional[dict]) -> dict:
                 index[el["name"]] = (list_name, el)
 
     # ── bounded walk of the immediate path ──
+    #
+    # C1 (ordered-decision slice): the walk is a linear stepper that FANS OUT
+    # exactly once at a decision — each rule's connector path (and the default
+    # path) is walked independently with that arm's guard + the negation-
+    # context of every PRIOR rule (first-match semantics made explicit).
+    # Conservatism is PER PATH for the fan-out arms: sibling branches are
+    # mutually exclusive at run time, so an out-of-grammar element on band 3's
+    # path cannot overwrite band 1's effect — band 1 stays grounded while
+    # band 3 demotes with its own reasons. Flow-level demotions (filters,
+    # phase, trigger type) still apply to every behaviour.
     behaviours: list = []
     demote_reasons: list = []
-    guard: tuple = ()
-    seen: set = set()
-    steps = 0
-    opaque = False
+    opaque_any = False
+    grounded_possible = True   # set False only by pre-walk global gates
 
+    def _walk_linear(start_target, guard, negated):
+        """Walk one linear path (no further decisions) to completion.
+        Returns (path_behaviours, path_reasons, path_opaque)."""
+        pb: list = []
+        pr: list = []
+        p_opaque = False
+        seen: set = set()
+        steps = 0
+        target = start_target
+        while target:
+            steps += 1
+            if steps > _FB_MAX_WALK or target in seen:
+                p_opaque = True
+                pr.append("walk_bound_exceeded" if steps > _FB_MAX_WALK
+                          else "cycle_detected")
+                break
+            seen.add(target)
+            entry = index.get(target)
+            if entry is None:
+                p_opaque = True
+                pr.append(f"unknown_element:{target}")
+                break
+            list_name, el = entry
+            if list_name == "assignments":
+                for item in _flow_md_list(el.get("assignmentItems")):
+                    if not isinstance(item, dict):
+                        pr.append("malformed_assignment_item")
+                        continue
+                    field = _fb_record_field(item.get("assignToReference"))
+                    op = item.get("operator")
+                    value = _flow_assignment_value(item.get("value"))
+                    reasons = []
+                    if field is None:
+                        reasons.append("non_record_assignment_target")
+                    if op != "Assign":
+                        reasons.append(f"non_assign_operator:{op}")
+                    transform = None
+                    if value is None and not reasons:
+                        val = item.get("value")
+                        ref = (val or {}).get("elementReference") \
+                            if isinstance(val, dict) else None
+                        formula = formulas_by_name.get(ref) if ref else None
+                        transform = _fb_parse_transform_formula(
+                            (formula or {}).get("expression"))
+                    if value is None and transform is None:
+                        reasons.append("non_literal_assignment_value")
+                    if reasons:
+                        pb.append(_behaviour(
+                            _FB_UNSUPPORTED, kind="set_record_field",
+                            guard=guard, negated=negated, field=field,
+                            reasons=reasons))
+                        pr.extend(reasons)
+                    elif transform is not None:
+                        chain, source_field = transform
+                        pb.append(_behaviour(
+                            _FB_GROUNDED, kind="set_record_field_transform",
+                            guard=guard, negated=negated, field=field,
+                            transform=chain, source_field=source_field))
+                    else:
+                        pb.append(_behaviour(
+                            _FB_GROUNDED, kind="set_record_field",
+                            guard=guard, negated=negated, field=field,
+                            value=value))
+                connector = el.get("connector")
+                target = (connector or {}).get("targetReference") \
+                    if isinstance(connector, dict) else None
+            elif list_name == "decisions":
+                # a SECOND decision on any path is outside the grammar
+                pr.append("nested_decision")
+                pb.append(_behaviour(
+                    _FB_UNSUPPORTED, guard=guard, negated=negated,
+                    reasons=["nested_decision"]))
+                break
+            else:
+                reason = f"element_outside_grammar:{list_name}"
+                pr.append(reason)
+                pb.append(_behaviour(_FB_UNSUPPORTED, guard=guard,
+                                     negated=negated, reasons=[reason]))
+                break
+        # per-path conservatism: any reason on this path demotes ITS grounded
+        # behaviours (a later element on the SAME path could overwrite)
+        if pr:
+            state = _FB_OPAQUE if p_opaque else _FB_UNSUPPORTED
+            for b in pb:
+                if b["state"] == _FB_GROUNDED:
+                    b["state"] = state
+                b["reasons"] = sorted(set(b["reasons"]) | set(pr))
+        return pb, pr, p_opaque
+
+    def _parse_rule(rule):
+        """One decision rule -> (conds tuple) or (None) when out of grammar."""
+        logic = rule.get("conditionLogic")
+        conds = [c for c in _flow_md_list(rule.get("conditions"))
+                 if isinstance(c, dict)]
+        if logic not in (None, "and") or not conds \
+                or len(conds) > _FB_MAX_RULE_CONDITIONS:
+            return None
+        parsed = [_fb_guard_condition(c) for c in conds]
+        if any(pc is None for pc in parsed):
+            return None
+        return tuple(parsed)
+
+    # step to (at most) the first decision; then fan out
+    pre_behaviours: list = []
+    seen0: set = set()
+    steps0 = 0
     while target:
-        steps += 1
-        if steps > _FB_MAX_WALK or target in seen:
-            opaque = True
-            demote_reasons.append("walk_bound_exceeded" if steps > _FB_MAX_WALK
+        steps0 += 1
+        if steps0 > _FB_MAX_WALK or target in seen0:
+            opaque_any = True
+            demote_reasons.append("walk_bound_exceeded" if steps0 > _FB_MAX_WALK
                                   else "cycle_detected")
+            target = None
             break
-        seen.add(target)
+        seen0.add(target)
         entry = index.get(target)
         if entry is None:
-            opaque = True
+            opaque_any = True
             demote_reasons.append(f"unknown_element:{target}")
+            target = None
             break
         list_name, el = entry
-
         if list_name == "assignments":
-            for item in _flow_md_list(el.get("assignmentItems")):
-                if not isinstance(item, dict):
-                    demote_reasons.append("malformed_assignment_item")
-                    continue
-                field = _fb_record_field(item.get("assignToReference"))
-                op = item.get("operator")
-                value = _flow_assignment_value(item.get("value"))
-                reasons = []
-                if field is None:
-                    reasons.append("non_record_assignment_target")
-                if op != "Assign":
-                    reasons.append(f"non_assign_operator:{op}")
-                # IR v2: a non-literal value may still ground as a bounded
-                # TRANSFORM — an elementReference to a formula whose
-                # expression is a UPPER/LOWER/TRIM nest over one $Record
-                # field. Everything else keeps the v1 demotion.
-                transform = None
-                if value is None and not reasons:
-                    val = item.get("value")
-                    ref = (val or {}).get("elementReference") \
-                        if isinstance(val, dict) else None
-                    formula = formulas_by_name.get(ref) if ref else None
-                    transform = _fb_parse_transform_formula(
-                        (formula or {}).get("expression"))
-                if value is None and transform is None:
-                    reasons.append("non_literal_assignment_value")
-                if reasons:
-                    behaviours.append(_behaviour(
-                        _FB_UNSUPPORTED, kind="set_record_field",
-                        guard=guard, field=field, reasons=reasons))
-                    demote_reasons.extend(reasons)
-                elif transform is not None:
-                    chain, source_field = transform
-                    behaviours.append(_behaviour(
-                        _FB_GROUNDED, kind="set_record_field_transform",
-                        guard=guard, field=field,
-                        transform=chain, source_field=source_field))
-                else:
-                    behaviours.append(_behaviour(
-                        _FB_GROUNDED, kind="set_record_field",
-                        guard=guard, field=field, value=value))
-            connector = el.get("connector")
-            target = (connector or {}).get("targetReference") \
-                if isinstance(connector, dict) else None
-
+            # an unconditional assignment BEFORE any decision — walk it via
+            # the linear walker from here and stop (it consumes the rest).
+            pb, pr, p_op = _walk_linear(target, (), ())
+            pre_behaviours.extend(pb)
+            demote_reasons.extend(pr)
+            opaque_any = opaque_any or p_op
+            target = None
         elif list_name == "decisions":
             rules = [r for r in _flow_md_list(el.get("rules"))
                      if isinstance(r, dict)]
             default_conn = el.get("defaultConnector")
             default_target = (default_conn or {}).get("targetReference") \
                 if isinstance(default_conn, dict) else None
-            if guard:
-                demote_reasons.append("nested_decision")
-                behaviours.append(_behaviour(
-                    _FB_UNSUPPORTED, reasons=["nested_decision"]))
+            if not rules:
+                demote_reasons.append("decision_without_rules")
+                pre_behaviours.append(_behaviour(
+                    _FB_UNSUPPORTED, reasons=["decision_without_rules"]))
+                target = None
                 break
-            if len(rules) != 1 or default_target:
-                reason = ("multi_outcome_decision" if len(rules) > 1
-                          or default_target else "decision_without_rules")
-                demote_reasons.append(reason)
-                behaviours.append(_behaviour(
-                    _FB_UNSUPPORTED, reasons=[reason]))
+            if len(rules) > _FB_MAX_DECISION_RULES:
+                demote_reasons.append("decision_rule_bound_exceeded")
+                pre_behaviours.append(_behaviour(
+                    _FB_UNSUPPORTED, reasons=["decision_rule_bound_exceeded"]))
+                target = None
                 break
-            rule = rules[0]
-            logic = rule.get("conditionLogic")
-            conds = [c for c in _flow_md_list(rule.get("conditions"))
-                     if isinstance(c, dict)]
-            if logic not in (None, "and") or not conds:
-                reason = ("non_conjunctive_guard" if conds
-                          else "decision_rule_without_conditions")
-                demote_reasons.append(reason)
-                behaviours.append(_behaviour(
-                    _FB_UNSUPPORTED, reasons=[reason]))
-                break
-            parsed = [_fb_guard_condition(c) for c in conds]
-            if any(p is None for p in parsed):
+            parsed_rules = [_parse_rule(r) for r in rules]
+            if any(pr_ is None for pr_ in parsed_rules):
                 demote_reasons.append("unparseable_guard_condition")
-                behaviours.append(_behaviour(
+                pre_behaviours.append(_behaviour(
                     _FB_UNSUPPORTED, reasons=["unparseable_guard_condition"]))
+                target = None
                 break
-            guard = tuple(parsed)
-            rule_conn = rule.get("connector")
-            target = (rule_conn or {}).get("targetReference") \
-                if isinstance(rule_conn, dict) else None
-
+            # C1: first-match negation-context is sound only when every
+            # PRIOR rule is single-condition (¬(A∧B) is a disjunction the
+            # guard grammar does not carry). Multi-rule decisions therefore
+            # require all rules single-condition; the single-rule decision
+            # keeps the conjunctive grammar (FL01 unchanged).
+            if len(rules) > 1 and any(len(pr_) != 1 for pr_ in parsed_rules):
+                demote_reasons.append(
+                    "multi_condition_rule_in_ordered_decision")
+                pre_behaviours.append(_behaviour(
+                    _FB_UNSUPPORTED,
+                    reasons=["multi_condition_rule_in_ordered_decision"]))
+                target = None
+                break
+            arms = []
+            for i, rule in enumerate(rules):
+                rule_conn = rule.get("connector")
+                arm_target = (rule_conn or {}).get("targetReference") \
+                    if isinstance(rule_conn, dict) else None
+                negated = tuple(pr_[0] for pr_ in parsed_rules[:i])
+                arms.append((arm_target, parsed_rules[i], negated))
+            if default_target:
+                arms.append((default_target,
+                             (),
+                             tuple(pr_[0] for pr_ in parsed_rules)
+                             if all(len(pr_) == 1 for pr_ in parsed_rules)
+                             else None))
+            for arm_target, arm_guard, arm_negated in arms:
+                if arm_negated is None:
+                    demote_reasons.append(
+                        "multi_condition_rule_in_ordered_decision")
+                    pre_behaviours.append(_behaviour(
+                        _FB_UNSUPPORTED,
+                        reasons=["multi_condition_rule_in_ordered_decision"]))
+                    continue
+                if not arm_target:
+                    continue        # an armless rule writes nothing
+                pb, pr, p_op = _walk_linear(arm_target, arm_guard, arm_negated)
+                behaviours.extend(pb)
+                opaque_any = opaque_any or p_op
+            target = None
         else:
             # A recognized element type outside the bounded grammar.
             reason = f"element_outside_grammar:{list_name}"
             demote_reasons.append(reason)
-            behaviours.append(_behaviour(_FB_UNSUPPORTED, reasons=[reason]))
-            break
+            pre_behaviours.append(_behaviour(_FB_UNSUPPORTED, reasons=[reason]))
+            target = None
+
+    # unconditional-path behaviours join the fan-out arms' behaviours
+    behaviours = pre_behaviours + behaviours
 
     # ── flow-level demotions of otherwise-grounded behaviours ──
     if trig["entry_filter_count"] and not trig["entry_filters_consumed"]:
@@ -1031,7 +1148,11 @@ def flow_behaviour(attributes: Optional[dict]) -> dict:
             f"trigger_type_not_in_grammar:{trig['record_trigger_type']}")
 
     if demote_reasons:
-        state = _FB_OPAQUE if opaque else _FB_UNSUPPORTED
+        # GLOBAL demotions (flow-level gates + the pre-decision segment):
+        # per-path reasons were already applied inside _walk_linear — sibling
+        # fan-out arms are mutually exclusive at run time, so they demote
+        # independently (the C1 refinement of the conservatism rule).
+        state = _FB_OPAQUE if opaque_any else _FB_UNSUPPORTED
         if not behaviours:
             # An anomalous walk that produced no behaviours must still be
             # visible (an unknown target/cycle is not an "empty" flow).
@@ -1039,10 +1160,10 @@ def flow_behaviour(attributes: Optional[dict]) -> dict:
         for b in behaviours:
             if b["state"] == _FB_GROUNDED:
                 b["state"] = state
-            elif opaque and b["state"] == _FB_UNSUPPORTED:
+            elif opaque_any and b["state"] == _FB_UNSUPPORTED:
                 b["state"] = _FB_OPAQUE
-            # Flow-level demotions are facts about every behaviour on the
-            # path, not just the previously-grounded ones.
+            # Flow-level demotions are facts about every behaviour, not just
+            # the previously-grounded ones.
             b["reasons"] = sorted(set(b["reasons"]) | set(demote_reasons))
 
     if not behaviours:
@@ -1051,11 +1172,14 @@ def flow_behaviour(attributes: Optional[dict]) -> dict:
         return out
     out["behaviours"] = behaviours
     states = {b["state"] for b in behaviours}
-    if opaque:
-        out["parse_status"] = "opaque"
-    elif states == {_FB_GROUNDED}:
+    if states == {_FB_GROUNDED}:
         out["parse_status"] = "full"
+    elif _FB_GROUNDED not in states and (opaque_any or states == {_FB_OPAQUE}):
+        # opacity with NO surviving grounded arm — nothing usable
+        out["parse_status"] = "opaque"
     else:
+        # mixed: grounded arms survive beside demoted siblings (C1), or
+        # pure-unsupported (the pre-C1 partial)
         out["parse_status"] = "partial"
     return out
 
