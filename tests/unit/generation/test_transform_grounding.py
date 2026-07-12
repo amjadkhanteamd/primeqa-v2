@@ -261,3 +261,83 @@ def test_update_phase_transform_intent_stays_refused():
 ])
 def test_regex_matching_value_bounds(pattern, expected):
     assert regex_matching_value(pattern) == expected
+
+
+# ---------------------------------------------------------------------------
+# M3 — the author path (recipe stages raw; claim asserts canonical)
+# ---------------------------------------------------------------------------
+
+from primeqa.generation.emission import (GroundedAutomationEffect, _Endpoint,
+                                         author_emission)
+from primeqa.test_representation.models.recipes.data_recipe import CreateStep
+
+
+_SUBJ_EP = _Endpoint(entity_id=uuid4(), entity_type="Object",
+                     external_id="PLS_FB_Order__c")
+_AUTO_EP = _Endpoint(entity_id=uuid4(), entity_type="Flow",
+                     external_id="PLS_FB_FL02_Normalize_External_Ref")
+_FIELD_EP = _Endpoint(entity_id=uuid4(), entity_type="Field",
+                      external_id="PLS_FB_Order__c.PLS_FB_External_Ref__c")
+
+
+def _grounded_transform(**kw):
+    base = dict(
+        archetype="data_behavior", claim_kind="automation-effect-claim",
+        version_seq=128,
+        subject=_SUBJ_EP,
+        automation=_AUTO_EP,
+        requirement_excerpt=EXCERPT,
+        effect_field=_FIELD_EP,
+        effect_value="FB-000000",
+        transform_chain=("TRIM", "UPPER"),
+        transform_staged_value=" fb-000000 ",
+        transform_source_field="PLS_FB_External_Ref__c",
+    )
+    base.update(kw)
+    return GroundedAutomationEffect(**base)
+
+
+def test_author_transform_stages_raw_and_asserts_canonical():
+    b = author_emission(_grounded_transform())
+    body = b.asserted_truth
+    assert body.kind == "automation-effect-claim"
+    changes = body.expected_effect.changes.field_values
+    assert changes["PLS_FB_Order__c.PLS_FB_External_Ref__c"].value == "FB-000000"
+    steps = b.observation_realization.steps
+    assert [s.step_id for s in steps] == ["create-record", "read-created",
+                                          "assert-value"]
+    create = steps[0]
+    assert isinstance(create, CreateStep)
+    # the deliberate k16 exception: the raw witness IS staged on the field
+    assert create.field_values == {
+        "PLS_FB_Order__c.PLS_FB_External_Ref__c": " fb-000000 "}
+    # identity-bearing narration distinguishes the transform from a stamp
+    assert "raw input the org normalizes" in body.triggering_action.description
+
+
+def test_author_transform_identity_differs_from_literal_stamp():
+    # the staged-raw narration is identity-bearing (D-327 idiom): a transform
+    # claim can never dedup-collide with a literal stamp of the same
+    # field+value (the D-339 masking class).
+    from primeqa.test_representation.canonicalization import canonicalize
+    transform = author_emission(_grounded_transform()).asserted_truth
+    literal = author_emission(_grounded_transform(
+        transform_chain=(), transform_staged_value=None,
+        transform_source_field=None)).asserted_truth
+    assert canonicalize(transform) != canonicalize(literal)
+
+
+def test_author_transform_is_deterministic():
+    a = author_emission(_grounded_transform()).asserted_truth.model_dump(mode="json")
+    b = author_emission(_grounded_transform()).asserted_truth.model_dump(mode="json")
+    assert a == b
+
+
+def test_author_transform_refuses_cross_object_composition():
+    with pytest.raises(ValueError, match="same-record only"):
+        author_emission(_grounded_transform(
+            effect_object=_Endpoint(entity_id=uuid4(), entity_type="Object",
+                                    external_id="Task"),
+            effect_lookup_field=_Endpoint(entity_id=uuid4(),
+                                          entity_type="Field",
+                                          external_id="Task.WhatId")))

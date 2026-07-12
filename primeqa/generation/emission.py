@@ -2202,6 +2202,12 @@ def _author_automation_effect(g: GroundedAutomationEffect) -> EmissionBundle:
         raise ValueError(
             "update_trigger_fields on a cross-object/parent-stamp automation "
             "effect — the update-observe shape is same-record only (D-306)")
+    if g.transform_chain and (g.effect_object is not None
+                              or g.update_trigger_fields):
+        raise ValueError(
+            "transform provenance on a cross-object/parent-stamp/update-phase "
+            "automation effect — the transform shape is create-scoped "
+            "same-record only (FL02 slice v1)")
 
     if g.effect_object is None:
         # same-record: the Flow sets effect_field on the subject itself
@@ -2217,6 +2223,15 @@ def _author_automation_effect(g: GroundedAutomationEffect) -> EmissionBundle:
         # carried raw (the recipe side; the claim wraps in LiteralValue). Empty
         # trigger_fields () -> today's padding-only shape, byte-identical.
         create_fields = {ep.external_id: val for ep, val in g.trigger_fields}
+        # FL02 slice: the TRANSFORM shape stages the RAW witness ON the effect
+        # field itself — the deliberate, documented exception to the k16
+        # padding-only rule. Staged != expected by construction (the stash
+        # gate synthesized and verified the pair), so the test can never be
+        # self-fulfilling: if the flow does not run, the read-back returns
+        # the raw value and the assert fails honestly.
+        if g.transform_chain:
+            create_fields = dict(create_fields)
+            create_fields[field_api] = g.transform_staged_value
         # D-306: the update-observe phase — the CHANGED state an UpdateStep
         # stages after the create, so the read observes the RE-computed effect.
         update_fields = {ep.external_id: val
@@ -2234,6 +2249,14 @@ def _author_automation_effect(g: GroundedAutomationEffect) -> EmissionBundle:
                 trigger_kind="data-mutation-trigger",
                 description=(f"creating a {object_api}{initial} then updating "
                              f"{upd_gate}"))
+        elif g.transform_chain:
+            # identity-bearing narration (D-327 idiom): the staged raw input
+            # + the normalize framing hash this claim apart from a literal
+            # stamp of the same field/value.
+            sr_event = EventDescriptor(
+                trigger_kind="data-mutation-trigger",
+                description=(f"creating a {object_api} with {gate} — raw "
+                             f"input the org normalizes on save"))
         elif create_fields:
             sr_event = EventDescriptor(
                 trigger_kind="data-mutation-trigger",
@@ -2254,6 +2277,13 @@ def _author_automation_effect(g: GroundedAutomationEffect) -> EmissionBundle:
             details = (f"create a {object_api} record{initial}, update "
                        f"{upd_gate} (the change), read it back, assert the "
                        f"org re-computed {field_api}={g.effect_value!r}")
+        elif g.transform_chain:
+            chain = "(".join(reversed(g.transform_chain)) \
+                + "(value" + ")" * len(g.transform_chain)
+            details = (f"create a {object_api} record staging the raw value "
+                       f"{g.transform_staged_value!r} on {field_api}, read it "
+                       f"back, assert the Flow normalized it to "
+                       f"{field_api}={g.effect_value!r} (= {chain})")
         elif create_fields:
             details = (f"create a {object_api} record with {gate} (the Flow's "
                        f"entry condition), read it back, assert the Flow set "
