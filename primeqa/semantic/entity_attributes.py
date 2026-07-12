@@ -613,3 +613,332 @@ def flow_effects(attributes: Optional[dict]) -> dict:
             cross_object.add(obj)
     return {"same_record": frozenset(same_record),
             "cross_object": frozenset(cross_object)}
+
+
+# ----------------------------------------------------------------------
+# Flow Behaviour IR (B1 arc) — bounded, behaviour-oriented parse of a
+# record-triggered Flow's stored Metadata graph.
+# ----------------------------------------------------------------------
+#
+# ``flow_behaviour`` reads the same raw ``attributes.Metadata`` that
+# :func:`flow_effects` glances at, but models BEHAVIOURS — (trigger
+# context, guard, effect) units — instead of a flat assignment set. Three
+# explicit states preserve honest refusal downstream:
+#
+#   - **grounded**: the behaviour is fully within the bounded grammar —
+#     a before-save, create-firing flow whose ENTIRE immediate path is a
+#     chain of parseable single-rule decisions and literal ``$Record``
+#     assignments. Only grounded behaviours may feed grounding/binding.
+#   - **unsupported**: the parser RECOGNIZED structure that is outside
+#     the currently-supported grammar (multi-outcome decisions, formula-
+#     valued assignments, data lookups, actions, subflows, update-only
+#     triggers, entry conditions, scheduled/async-only paths, …). Named
+#     reasons; consumers must refuse, not guess.
+#   - **opaque**: the parser could not follow the graph at all (unknown
+#     element target, cycle, depth cap, malformed shapes). Consumers must
+#     refuse.
+#
+# Conservatism rule: if ANY element on the walked immediate path falls
+# outside the grammar, every behaviour on that path is demoted to
+# unsupported — an unparsed later element could overwrite an earlier
+# "understood" effect, so partial understanding of a path never grounds.
+# (Never-raises; D-203.1 shape tolerance throughout.)
+
+FLOW_BEHAVIOUR_IR_VERSION = 1
+
+_FB_GROUNDED = "grounded"
+_FB_UNSUPPORTED = "unsupported"
+_FB_OPAQUE = "opaque"
+
+# Decision-condition operators the bounded grammar understands. Kept
+# deliberately small: FL-shaped null/equality guards on $Record fields.
+_FB_GUARD_OPERATORS = frozenset({"IsNull", "EqualTo", "NotEqualTo"})
+
+# Flow-Metadata element lists that can appear as walk targets. Anything
+# resolved into a list NOT in the supported set → unsupported reason.
+_FB_ELEMENT_LISTS = (
+    "assignments", "decisions", "recordCreates", "recordUpdates",
+    "recordLookups", "recordDeletes", "recordRollbacks", "loops",
+    "actionCalls", "subflows", "waits", "screens", "transforms",
+    "collectionProcessors", "customErrors", "steps", "apexPluginCalls",
+    "orchestratedStages",
+)
+
+_FB_MAX_WALK = 24  # generous bound; benchmark paths are <6 elements
+
+
+def _fb_record_field(ref) -> Optional[str]:
+    """``$Record.<Field>`` → bare field api-name; anything else → None."""
+    if isinstance(ref, str) and ref.startswith("$Record."):
+        rest = ref[len("$Record."):]
+        if rest and "." not in rest:
+            return rest
+    return None
+
+
+def _fb_guard_condition(cond) -> Optional[tuple]:
+    """Parse one decision-rule condition into ``(field, operator, value)``.
+    None when outside the bounded grammar (non-$Record left side, unknown
+    operator, non-literal right value)."""
+    if not isinstance(cond, dict):
+        return None
+    field = _fb_record_field(cond.get("leftValueReference"))
+    operator = cond.get("operator")
+    if field is None or operator not in _FB_GUARD_OPERATORS:
+        return None
+    value = _flow_assignment_value(cond.get("rightValue"))
+    if value is None:
+        return None
+    return (field, operator, value)
+
+
+def flow_behaviour(attributes: Optional[dict]) -> dict:
+    """Parse a Flow's raw ``Metadata`` into the Flow Behaviour IR (v1).
+
+    Returns a plain dict (JSON-shaped, schema-versioned)::
+
+        {"ir_version": 1,
+         "trigger": {"object": str|None, "save_phase": "before_save"|"after_save"|None,
+                     "record_trigger_type": str|None,
+                     "entry_filter_count": int, "requires_change_to_meet": bool,
+                     "has_scheduled_paths": bool, "has_async_path": bool,
+                     "is_record_triggered": bool},
+         "behaviours": [
+             {"state": "grounded"|"unsupported"|"opaque",
+              "kind": "set_record_field"|None,
+              "guard": [[field, operator, value], ...],   # conjunction
+              "field": str|None, "value": scalar|None,
+              "reasons": [str, ...]},
+         ],
+         "parse_status": "full"|"partial"|"opaque"|"empty"}
+
+    Never raises. Absent/malformed Metadata → ``parse_status="opaque"`` with
+    zero behaviours. The FIRST consumer is the automation-effect binder
+    (``governance_core._flows_producing_effect``), which reads only
+    ``state == "grounded"`` ``set_record_field`` behaviours; everything else
+    exists so refusals stay honest and named."""
+    out = {
+        "ir_version": FLOW_BEHAVIOUR_IR_VERSION,
+        "trigger": {
+            "object": None, "save_phase": None, "record_trigger_type": None,
+            "entry_filter_count": 0, "requires_change_to_meet": False,
+            "has_scheduled_paths": False, "has_async_path": False,
+            "is_record_triggered": False,
+        },
+        "behaviours": [],
+        "parse_status": "opaque",
+    }
+    attrs = attributes or {}
+    md = attrs.get("Metadata")
+    if not isinstance(md, dict):
+        return out
+    start = md.get("start")
+    if not isinstance(start, dict):
+        return out
+
+    trigger_type = start.get("triggerType")
+    save_phase = {"RecordBeforeSave": "before_save",
+                  "RecordAfterSave": "after_save"}.get(trigger_type)
+    scheduled = [p for p in _flow_md_list(start.get("scheduledPaths"))
+                 if isinstance(p, dict)]
+    trig = out["trigger"]
+    trig["object"] = start.get("object") if isinstance(start.get("object"), str) else None
+    trig["save_phase"] = save_phase
+    trig["record_trigger_type"] = (start.get("recordTriggerType")
+                                   if isinstance(start.get("recordTriggerType"), str)
+                                   else None)
+    trig["entry_filter_count"] = len([f for f in _flow_md_list(start.get("filters"))
+                                      if isinstance(f, dict)])
+    trig["requires_change_to_meet"] = bool(
+        start.get("doesRequireRecordChangedToMeetCriteria"))
+    trig["has_async_path"] = any(p.get("pathType") == "AsyncAfterCommit"
+                                 for p in scheduled)
+    trig["has_scheduled_paths"] = any(p.get("pathType") != "AsyncAfterCommit"
+                                      for p in scheduled)
+    trig["is_record_triggered"] = save_phase is not None and trig["object"] is not None
+
+    def _behaviour(state, kind=None, guard=(), field=None, value=None,
+                   reasons=()):
+        return {"state": state, "kind": kind,
+                "guard": [list(g) for g in guard],
+                "field": field, "value": value, "reasons": list(reasons)}
+
+    # ── flow-level gates: not record-triggered / no immediate path ──
+    if not trig["is_record_triggered"]:
+        out["behaviours"].append(_behaviour(
+            _FB_UNSUPPORTED, reasons=["not_record_triggered"]))
+        out["parse_status"] = "partial"
+        return out
+
+    connector = start.get("connector")
+    target = (connector or {}).get("targetReference") \
+        if isinstance(connector, dict) else None
+    if not target:
+        reasons = ["no_immediate_path"]
+        if trig["has_async_path"]:
+            reasons.append("async_path_only")
+        if trig["has_scheduled_paths"]:
+            reasons.append("scheduled_path_only")
+        out["behaviours"].append(_behaviour(_FB_UNSUPPORTED, reasons=reasons))
+        out["parse_status"] = "partial"
+        return out
+
+    # ── element index: name → (list_name, element) ──
+    index: dict = {}
+    for list_name in _FB_ELEMENT_LISTS:
+        for el in _flow_md_list(md.get(list_name)):
+            if isinstance(el, dict) and isinstance(el.get("name"), str):
+                index[el["name"]] = (list_name, el)
+
+    # ── bounded walk of the immediate path ──
+    behaviours: list = []
+    demote_reasons: list = []
+    guard: tuple = ()
+    seen: set = set()
+    steps = 0
+    opaque = False
+
+    while target:
+        steps += 1
+        if steps > _FB_MAX_WALK or target in seen:
+            opaque = True
+            demote_reasons.append("walk_bound_exceeded" if steps > _FB_MAX_WALK
+                                  else "cycle_detected")
+            break
+        seen.add(target)
+        entry = index.get(target)
+        if entry is None:
+            opaque = True
+            demote_reasons.append(f"unknown_element:{target}")
+            break
+        list_name, el = entry
+
+        if list_name == "assignments":
+            for item in _flow_md_list(el.get("assignmentItems")):
+                if not isinstance(item, dict):
+                    demote_reasons.append("malformed_assignment_item")
+                    continue
+                field = _fb_record_field(item.get("assignToReference"))
+                op = item.get("operator")
+                value = _flow_assignment_value(item.get("value"))
+                reasons = []
+                if field is None:
+                    reasons.append("non_record_assignment_target")
+                if op != "Assign":
+                    reasons.append(f"non_assign_operator:{op}")
+                if value is None:
+                    reasons.append("non_literal_assignment_value")
+                if reasons:
+                    behaviours.append(_behaviour(
+                        _FB_UNSUPPORTED, kind="set_record_field",
+                        guard=guard, field=field, reasons=reasons))
+                    demote_reasons.extend(reasons)
+                else:
+                    behaviours.append(_behaviour(
+                        _FB_GROUNDED, kind="set_record_field",
+                        guard=guard, field=field, value=value))
+            connector = el.get("connector")
+            target = (connector or {}).get("targetReference") \
+                if isinstance(connector, dict) else None
+
+        elif list_name == "decisions":
+            rules = [r for r in _flow_md_list(el.get("rules"))
+                     if isinstance(r, dict)]
+            default_conn = el.get("defaultConnector")
+            default_target = (default_conn or {}).get("targetReference") \
+                if isinstance(default_conn, dict) else None
+            if guard:
+                demote_reasons.append("nested_decision")
+                behaviours.append(_behaviour(
+                    _FB_UNSUPPORTED, reasons=["nested_decision"]))
+                break
+            if len(rules) != 1 or default_target:
+                reason = ("multi_outcome_decision" if len(rules) > 1
+                          or default_target else "decision_without_rules")
+                demote_reasons.append(reason)
+                behaviours.append(_behaviour(
+                    _FB_UNSUPPORTED, reasons=[reason]))
+                break
+            rule = rules[0]
+            logic = rule.get("conditionLogic")
+            conds = [c for c in _flow_md_list(rule.get("conditions"))
+                     if isinstance(c, dict)]
+            if logic not in (None, "and") or not conds:
+                reason = ("non_conjunctive_guard" if conds
+                          else "decision_rule_without_conditions")
+                demote_reasons.append(reason)
+                behaviours.append(_behaviour(
+                    _FB_UNSUPPORTED, reasons=[reason]))
+                break
+            parsed = [_fb_guard_condition(c) for c in conds]
+            if any(p is None for p in parsed):
+                demote_reasons.append("unparseable_guard_condition")
+                behaviours.append(_behaviour(
+                    _FB_UNSUPPORTED, reasons=["unparseable_guard_condition"]))
+                break
+            guard = tuple(parsed)
+            rule_conn = rule.get("connector")
+            target = (rule_conn or {}).get("targetReference") \
+                if isinstance(rule_conn, dict) else None
+
+        else:
+            # A recognized element type outside the bounded grammar.
+            reason = f"element_outside_grammar:{list_name}"
+            demote_reasons.append(reason)
+            behaviours.append(_behaviour(_FB_UNSUPPORTED, reasons=[reason]))
+            break
+
+    # ── flow-level demotions of otherwise-grounded behaviours ──
+    if trig["entry_filter_count"]:
+        demote_reasons.append("entry_conditions_not_consumed")
+    if trig["requires_change_to_meet"]:
+        demote_reasons.append("updated_to_meet_not_consumed")
+    if trig["save_phase"] != "before_save":
+        demote_reasons.append("after_save_not_in_grammar")
+    if trig["record_trigger_type"] not in ("Create", "CreateAndUpdate"):
+        demote_reasons.append(
+            f"trigger_type_not_in_grammar:{trig['record_trigger_type']}")
+
+    if demote_reasons:
+        state = _FB_OPAQUE if opaque else _FB_UNSUPPORTED
+        if not behaviours:
+            # An anomalous walk that produced no behaviours must still be
+            # visible (an unknown target/cycle is not an "empty" flow).
+            behaviours.append(_behaviour(state, reasons=demote_reasons))
+        for b in behaviours:
+            if b["state"] == _FB_GROUNDED:
+                b["state"] = state
+            elif opaque and b["state"] == _FB_UNSUPPORTED:
+                b["state"] = _FB_OPAQUE
+            # Flow-level demotions are facts about every behaviour on the
+            # path, not just the previously-grounded ones.
+            b["reasons"] = sorted(set(b["reasons"]) | set(demote_reasons))
+
+    if not behaviours:
+        out["behaviours"] = []
+        out["parse_status"] = "empty"
+        return out
+    out["behaviours"] = behaviours
+    states = {b["state"] for b in behaviours}
+    if opaque:
+        out["parse_status"] = "opaque"
+    elif states == {_FB_GROUNDED}:
+        out["parse_status"] = "full"
+    else:
+        out["parse_status"] = "partial"
+    return out
+
+
+def flow_grounded_same_record_effects(attributes: Optional[dict]) -> frozenset:
+    """The binder-facing projection of :func:`flow_behaviour`: the
+    ``(bare_field, literal_value)`` pairs this Flow VERIFIABLY writes to the
+    triggering record via GROUNDED behaviours only. Unsupported/opaque
+    behaviours contribute nothing — honest refusal is preserved upstream.
+    Shape-compatible with ``flow_effects()["same_record"]`` so the
+    automation-effect binder consumes both with one code path."""
+    ir = flow_behaviour(attributes)
+    return frozenset(
+        (b["field"], b["value"]) for b in ir["behaviours"]
+        if b["state"] == _FB_GROUNDED and b["kind"] == "set_record_field"
+        and b["field"] is not None
+    )

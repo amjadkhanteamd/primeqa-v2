@@ -767,6 +767,114 @@ def test_flows_producing_effect_cross_object_and_none_hint_floor():
         [SimpleNamespace(attributes=None)], "x.Risk_Rating__c", "High", None) == []
 
 
+# B1 arc: the Flow Behaviour IR joins the binder — a before-save guarded
+# literal `$Record` assignment (FL01's mechanism) is a verifiable producer.
+
+def _before_save_assignment_flow(*, guarded=True, literal=True):
+    md = {
+        "start": {"object": "PLS_FB_Order__c",
+                  "triggerType": "RecordBeforeSave",
+                  "recordTriggerType": "Create",
+                  "connector": {"targetReference": ("Check" if guarded
+                                                    else "Set")}},
+        "assignments": [
+            {"name": "Set",
+             "assignmentItems": [{
+                 "assignToReference": "$Record.PLS_FB_Priority__c",
+                 "operator": "Assign",
+                 "value": ({"stringValue": "Standard"} if literal
+                           else {"elementReference": "fVar"})}]},
+        ],
+    }
+    if guarded:
+        md["decisions"] = [
+            {"name": "Check",
+             "rules": [{
+                 "name": "Is_Blank", "conditionLogic": "and",
+                 "conditions": [{
+                     "leftValueReference": "$Record.PLS_FB_Priority__c",
+                     "operator": "IsNull",
+                     "rightValue": {"booleanValue": True}}],
+                 "connector": {"targetReference": "Set"}}]},
+        ]
+    return SimpleNamespace(attributes={"Metadata": md})
+
+
+def test_flows_producing_effect_before_save_guarded_literal_binds():
+    f = _before_save_assignment_flow()
+    assert gc._flows_producing_effect(
+        [f], "PLS_FB_Order__c.PLS_FB_Priority__c", "Standard", None) == [f]
+    # bare field hint binds too (the resolver bare-ifies)
+    assert gc._flows_producing_effect(
+        [f], "PLS_FB_Priority__c", "Standard", None) == [f]
+    # wrong value never binds
+    assert gc._flows_producing_effect(
+        [f], "PLS_FB_Priority__c", "High", None) == []
+
+
+def test_flows_producing_effect_formula_valued_assignment_never_binds():
+    # FL02/FL08 shape: elementReference value — unsupported in the IR, so
+    # the flow is NOT a verifiable producer (honest refusal preserved).
+    f = _before_save_assignment_flow(literal=False)
+    assert gc._flows_producing_effect(
+        [f], "PLS_FB_Priority__c", "Standard", None) == []
+
+
+# B1 arc: deterministic field-name resolution — the substrate supplies the
+# org's naming mechanics; 0-or-ambiguous never guesses.
+
+def _fb_field_rel(api, label):
+    return SimpleNamespace(
+        edge_type=gc.EDGE_BELONGS,
+        entity=SimpleNamespace(entity_type="Field", sf_api_name=api,
+                               display_name=label, attributes={}))
+
+
+_NBHD = [
+    _fb_field_rel("PLS_FB_Order__c.PLS_FB_Priority__c", "Priority"),
+    _fb_field_rel("PLS_FB_Order__c.PLS_FB_Status__c", "Status"),
+    _fb_field_rel("PLS_FB_Order__c.PLS_FB_Amount__c", "Amount"),
+]
+
+
+def test_resolve_field_exact_qualified_name_is_identity():
+    assert gc._resolve_subject_field_name(
+        _NBHD, "PLS_FB_Order__c.PLS_FB_Priority__c") \
+        == "PLS_FB_Order__c.PLS_FB_Priority__c"
+
+
+def test_resolve_field_bare_and_suffix_and_label_rules():
+    # bare (case-insensitive)
+    assert gc._resolve_subject_field_name(_NBHD, "pls_fb_priority__c") \
+        == "PLS_FB_Order__c.PLS_FB_Priority__c"
+    # suffix: the req-320 miss — Priority__c → PLS_FB_Priority__c
+    assert gc._resolve_subject_field_name(_NBHD, "Priority__c") \
+        == "PLS_FB_Order__c.PLS_FB_Priority__c"
+    # qualified-but-wrong-bare resolves by its bare tail
+    assert gc._resolve_subject_field_name(
+        _NBHD, "PLS_FB_Order__c.Priority__c") \
+        == "PLS_FB_Order__c.PLS_FB_Priority__c"
+    # label
+    assert gc._resolve_subject_field_name(_NBHD, "Priority") \
+        == "PLS_FB_Order__c.PLS_FB_Priority__c"
+
+
+def test_resolve_field_ambiguous_or_absent_returns_none():
+    nbhd = _NBHD + [_fb_field_rel("PLS_FB_Order__c.Other_Priority__c",
+                               "Other Priority")]
+    # two ..._priority__c suffix matches -> ambiguous -> None (never guess)
+    assert gc._resolve_subject_field_name(nbhd, "Priority__c") is None
+    assert gc._resolve_subject_field_name(_NBHD, "Nonexistent__c") is None
+    assert gc._resolve_subject_field_name(_NBHD, None) is None
+    assert gc._resolve_subject_field_name(_NBHD, "") is None
+
+
+def test_subject_field_inventory_line_is_compact_and_bounded():
+    line = gc._subject_field_inventory_line(_NBHD, limit=2)
+    assert line.startswith("subject fields include: ")
+    assert "(+1 more)" in line
+
+
 # ---------------------------------------------------------------------------
 # D-320: _active_approvals / _names_a_subject_approval — approval bind-by-effect.
 # ---------------------------------------------------------------------------

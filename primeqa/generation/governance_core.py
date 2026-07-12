@@ -81,7 +81,8 @@ from primeqa.generation.vr_conflict import (
 )
 from primeqa.semantic.entity_attributes import (
     field_formula_text, field_is_calculated, field_treat_null_as_zero,
-    flow_effects, vr_error_message, vr_formula_text, vr_is_active)
+    flow_effects, flow_grounded_same_record_effects, vr_error_message,
+    vr_formula_text, vr_is_active)
 from primeqa.semantic.formula import Comparison, FieldRef, is_parsed, parse, walk
 from primeqa.semantic.query import Entity, SemanticOrgModel
 from primeqa.test_representation.identity_hash import compute_identity_hash
@@ -1082,11 +1083,15 @@ class _Candidate:
     status: str                              # admissibly_grounded | dismissed
     admissibility_layer: Optional[str] = None
     dismissal_reason: Optional[str] = None
-    # B0: grounded-recovery offer attached at dismissal time (an
+    # B0 (D-362): grounded-recovery offer attached at dismissal time (an
     # _recovery.offer_payload dict) — carried into the refusal payload by
     # ``from_dismissed``; deliberately NOT serialized into candidate_paths
     # (``to_path``), which stay byte-stable.
     recovery: Optional[dict] = None
+    # B1 arc: optional human-readable dismissal context (e.g. the subject's
+    # field vocabulary on a value-claim field miss) — surfaces through
+    # ``RefusalRouter.from_dismissed`` into the recovery feedback channel.
+    dismissal_detail: Optional[str] = None
 
     def to_path(self) -> dict:
         return {
@@ -1190,6 +1195,67 @@ def _numeric_effect_guard(field_ent, effect_value, s1, at_seq):
     return None
 
 
+def _resolve_subject_field_name(neighborhood, name):
+    """B1 arc: a proposed field name → the subject's REAL qualified api-name,
+    resolved DETERMINISTICALLY (the field-level twin of business-label object
+    resolution). The LLM cannot know an org's field naming convention (req-320
+    proposed ``Priority__c`` for ``PLS_FB_Priority__c``); the substrate owns
+    the mechanics. Rules, unique-match-only — 0 or >1 candidates → ``None``
+    and the caller's refusal stands (never guess):
+
+      1. exact qualified api-name match → itself (no rewrite);
+      2. unique case-insensitive BARE api-name match
+         (``priority__c`` == ``priority__c``);
+      3. unique case-insensitive bare SUFFIX match
+         (``Priority__c`` → ``PLS_FB_Priority__c`` via ``…_priority__c``);
+      4. unique label match (``Priority`` ≙ display_name, case-insensitive;
+         a trailing ``__c``/underscores on the proposal are normalized away).
+    """
+    if not isinstance(name, str) or not name:
+        return None
+    fields = [r.entity for r in neighborhood
+              if r.edge_type == EDGE_BELONGS
+              and r.entity.entity_type == "Field"
+              and isinstance(r.entity.sf_api_name, str)]
+    if any(f.sf_api_name == name for f in fields):
+        return name
+    bare = name.rsplit(".", 1)[-1].lower()
+    label_norm = bare[:-3].replace("_", " ").strip() if bare.endswith("__c") \
+        else bare.replace("_", " ").strip()
+
+    def _bare(api):
+        return api.rsplit(".", 1)[-1].lower()
+
+    for rule in ("bare", "suffix", "label"):
+        if rule == "bare":
+            cands = [f for f in fields if _bare(f.sf_api_name) == bare]
+        elif rule == "suffix":
+            cands = [f for f in fields
+                     if _bare(f.sf_api_name).endswith("_" + bare)]
+        else:
+            cands = [f for f in fields
+                     if isinstance(f.display_name, str)
+                     and f.display_name.strip().lower() == label_norm]
+        if len(cands) == 1:
+            return cands[0].sf_api_name
+        if len(cands) > 1:
+            return None
+    return None
+
+
+def _subject_field_inventory_line(neighborhood, limit: int = 8) -> str:
+    """A compact, deterministic vocabulary line for field-miss refusal details
+    (the D-340 recovery feedback truncates at ~160 chars — bare names only)."""
+    bares = sorted({r.entity.sf_api_name.rsplit(".", 1)[-1]
+                    for r in neighborhood
+                    if r.edge_type == EDGE_BELONGS
+                    and r.entity.entity_type == "Field"
+                    and isinstance(r.entity.sf_api_name, str)})
+    shown = ", ".join(bares[:limit])
+    more = f" (+{len(bares) - limit} more)" if len(bares) > limit else ""
+    return f"subject fields include: {shown}{more}"
+
+
 def _flows_producing_effect(flow_entities, field_hint, expected_value, effect_object):
     """D-318: the subset of neighborhood Flow entities whose parsed Metadata effect
     (``flow_effects``) ACTUALLY produces the claim's declared effect — same-record
@@ -1206,10 +1272,17 @@ def _flows_producing_effect(flow_entities, field_hint, expected_value, effect_ob
             if isinstance(field_hint, str) and field_hint else None)
     out = []
     for ent in flow_entities:
-        eff = flow_effects(getattr(ent, "attributes", None))
+        attrs = getattr(ent, "attributes", None)
+        eff = flow_effects(attrs)
+        # B1 arc: the Flow Behaviour IR's GROUNDED same-record effects join
+        # the match set — before-save guarded literal `$Record` assignments
+        # (FL01's mechanism) become verifiable producers. Unsupported/opaque
+        # IR behaviours contribute nothing by construction, so a flow the
+        # parser does not fully understand still refuses honestly.
+        same_pairs = eff["same_record"] | flow_grounded_same_record_effects(attrs)
         same = bare is not None and expected_value is not None and any(
             fld == bare and _effect_values_equal(val, expected_value)
-            for (fld, val) in eff["same_record"])
+            for (fld, val) in same_pairs)
         cross = bool(effect_object) and effect_object in eff["cross_object"]
         if same or cross:
             out.append(ent)
@@ -1404,6 +1477,13 @@ class AdmissibilityEngine:
         if claim_kind == "value-claim":
             grounds = bool(field_hint) and any(
                 r.entity.sf_api_name == field_hint for r in fields)
+            if not grounds and field_hint:
+                # B1 arc: the named field did not resolve (unique resolution
+                # already ran upstream) — carry the subject's vocabulary so
+                # the recovery re-prompt can converge instead of re-guessing.
+                cand.dismissal_detail = (
+                    f"field {field_hint!r} does not resolve on the subject; "
+                    + _subject_field_inventory_line(neighborhood))
         elif claim_kind == "automation-effect-claim":
             flows = [r for r in neighborhood
                      if r.edge_type == EDGE_FLOW and r.entity.entity_type == "Flow"]
@@ -1601,11 +1681,17 @@ class RefusalRouter:
             "detail_source": "substrate",
             "detail_layer": "admissibility",
         }
-        # B0: a dismissal that carries a grounded-recovery offer (near-miss
-        # candidates for the reference that failed) surfaces it on the payload
-        # so the D-340 recovery re-prompt can show the model its options.
+        # B0 (D-362): a dismissal that carries a grounded-recovery offer
+        # (near-miss candidates for the reference that failed) surfaces it on
+        # the payload so the D-340 recovery re-prompt can show the model its
+        # options.
         if cand.recovery:
             payload["candidates"] = cand.recovery
+        # B1 arc: dismissal context (e.g. the subject's field vocabulary on a
+        # named-field miss) rides the recovery feedback's `detail` slot —
+        # substrate-authored, consistent with the provenance tags above.
+        if cand.dismissal_detail:
+            payload["detail"] = cand.dismissal_detail
         return RefusalDirective(RefusalKind.UNGROUNDED_CLAIM, payload)
 
 
@@ -1961,6 +2047,20 @@ class GovernanceCore:
 
         # admissibility (real S1 grounding, Layer 1)
         neighborhood = self._admit.scoped_neighborhood(subject, at)
+        # B1 arc: deterministic field-name resolution for the field-bearing
+        # positive kinds — the proposed name is canonicalized to the subject's
+        # real qualified api-name when it resolves UNIQUELY (bare / suffix /
+        # label rules); 0-or-ambiguous keeps the proposed name and the
+        # downstream refusal stands. Division of responsibility: the model
+        # names the behaviour's field, the substrate supplies the org's
+        # naming mechanics.
+        if claim_kind in ("value-claim", "automation-effect-claim"):
+            _proposed_field = hint.get("field_name")
+            _resolved_field = _resolve_subject_field_name(
+                neighborhood, _proposed_field)
+            if _resolved_field is not None and _resolved_field != _proposed_field:
+                hint = dict(hint)
+                hint["field_name"] = _resolved_field
         # Control-telemetry Phase 0: OBSERVE the subject's control facts for the
         # finalize-time coverage map. Read-only — stashing changes no resolution
         # outcome; refused intents stash too (Expected must not depend on
@@ -3090,6 +3190,12 @@ class GovernanceCore:
                      and r.entity.sf_api_name == hint.get("field_name")), None)
                 effect_value = _identity_safe(hint.get("expected_value"))
                 if field_ent is None or effect_value is None:
+                    # B1 arc: a field-name miss carries the subject's real
+                    # vocabulary so the recovery re-prompt can converge
+                    # (the proposed name already failed unique resolution).
+                    _voc = ("; " + _subject_field_inventory_line(neighborhood)
+                            if field_ent is None and hint.get("field_name")
+                            else "")
                     return IntentResolution(
                         grounded_candidates=[], next_action=NextAction.REFUSE,
                         interpretation_delta=delta,
@@ -3098,7 +3204,7 @@ class GovernanceCore:
                             detail=("automation-effect needs a verifiable "
                                     "effect: field_name + expected_value on "
                                     "the subject, or effect_object + "
-                                    "effect_lookup_field")))
+                                    "effect_lookup_field" + _voc)))
                 # R2 (req-302 robustness): a numeric effect field refuses a
                 # non-numeric expected value HERE — the "<computed>"
                 # placeholder class never reaches a claim body again.
