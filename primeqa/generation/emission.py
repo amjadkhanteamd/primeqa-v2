@@ -387,6 +387,19 @@ class GroundedAutomationEffect:
     # refuses it on non-same-record shapes). Empty () → the create-scoped
     # shape, byte-identical.
     update_trigger_fields: tuple = ()  # tuple[tuple[_Endpoint, Any], ...]
+    # FL02 slice (IR v2): the TRANSFORM shape — the Flow REWRITES the effect
+    # field from a staged raw input (before-save, so the transformed value is
+    # what validation rules and the read-back observe). When
+    # ``transform_chain`` is non-empty the author stages
+    # ``transform_staged_value`` ON the effect field itself (the deliberate,
+    # documented k16 exception: staged != expected, so the test can never be
+    # self-fulfilling — if the flow does not run, read-back returns the raw
+    # value and the assert fails honestly) and asserts ``effect_value`` (the
+    # substrate-computed post-transform canonical). Empty chain → every
+    # pre-FL02 construction byte-identical.
+    transform_chain: tuple = ()            # application order, e.g. ("TRIM","UPPER")
+    transform_staged_value: Any = None     # the raw witness staged on effect_field
+    transform_source_field: Optional[str] = None   # bare field the chain reads
     # D-307: the ABSENCE case — "under this staged state the automation
     # correctly produces NO correlated record" (TC-038/039: Medium/Low band →
     # no follow-up Task). Cross-object shape ONLY (effect_object +

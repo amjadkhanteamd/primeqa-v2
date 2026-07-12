@@ -26,6 +26,7 @@ Engine discipline (D-096):
 from __future__ import annotations
 
 import logging
+import re as _re_mod
 from dataclasses import dataclass, field
 from dataclasses import replace as _dc_replace
 from typing import Any, Optional
@@ -80,10 +81,11 @@ from primeqa.generation.vr_conflict import (
     _fires, entails_firing, find_staged_vr_conflict,
 )
 from primeqa.semantic.entity_attributes import (
-    field_formula_text, field_is_calculated, field_treat_null_as_zero,
-    flow_effects, flow_grounded_same_record_effects, vr_error_message,
-    vr_formula_text, vr_is_active)
-from primeqa.semantic.formula import Comparison, FieldRef, is_parsed, parse, walk
+    apply_transform_chain, field_formula_text, field_is_calculated,
+    field_treat_null_as_zero, flow_effects, flow_grounded_same_record_effects,
+    flow_grounded_transforms, vr_error_message, vr_formula_text, vr_is_active)
+from primeqa.semantic.formula import (Comparison, FieldRef, FunctionCall,
+                                       Literal, is_parsed, parse, walk)
 from primeqa.semantic.query import Entity, SemanticOrgModel
 from primeqa.test_representation.identity_hash import compute_identity_hash
 
@@ -1287,6 +1289,115 @@ def _flows_producing_effect(flow_entities, field_hint, expected_value, effect_ob
         if same or cross:
             out.append(ent)
     return out
+
+
+def _flows_producing_transform(flow_entities, field_hint):
+    """FL02 slice: the neighborhood Flows whose Flow Behaviour IR carries a
+    GROUNDED transform on the claim's field — the before-save rewrite
+    producers (``flow_grounded_transforms``). Returns ``[(entity, behaviour
+    dict), ...]``; a flow the parser does not fully understand contributes
+    nothing (honest refusal upstream). The effect-first twin of
+    ``_flows_producing_effect`` for value-LESS normalization intents."""
+    bare = (field_hint.rsplit(".", 1)[-1]
+            if isinstance(field_hint, str) and field_hint else None)
+    if bare is None:
+        return []
+    out = []
+    for ent in flow_entities:
+        for beh in flow_grounded_transforms(getattr(ent, "attributes", None)):
+            if beh["field"] == bare:
+                out.append((ent, beh))
+    return out
+
+
+def _field_regex_patterns(neighborhood, bare_field):
+    """The REGEX format patterns the subject's ACTIVE validation rules pin on
+    ``bare_field``, plus the names of active rules that MENTION the field but
+    whose formulas the parser cannot read (the fail-closed set — an opaque
+    rule could bounce any witness). Deterministic; patterns sorted."""
+    patterns: set = set()
+    opaque: set = set()
+    token = _re_mod.compile(r"(?<![0-9A-Za-z_])" + _re_mod.escape(bare_field)
+                            + r"(?![0-9A-Za-z_])")
+    for r in neighborhood:
+        e = r.entity
+        if r.edge_type != EDGE_VALIDATION_RULE \
+                or e.entity_type != "ValidationRule" \
+                or not vr_is_active(e.attributes):
+            continue
+        formula = vr_formula_text(e.attributes) or ""
+        if not token.search(formula):
+            continue
+        tree = parse(formula)
+        if not is_parsed(tree):
+            opaque.add(e.sf_api_name or "?")
+            continue
+        found_regex = False
+        for node in walk(tree):
+            if isinstance(node, FunctionCall) and node.name == "REGEX" \
+                    and len(node.args) == 2 \
+                    and isinstance(node.args[0], FieldRef) \
+                    and node.args[0].path[-1] == bare_field \
+                    and isinstance(node.args[1], Literal) \
+                    and isinstance(node.args[1].value, str):
+                patterns.add(node.args[1].value)
+                found_regex = True
+        if not found_regex:
+            # parsed, mentions the field, but pins something the witness
+            # machinery does not model (e.g. a length rule) — fail closed
+            opaque.add(e.sf_api_name or "?")
+    return sorted(patterns), sorted(opaque)
+
+
+def _synthesize_transform_witness(chain, patterns, opaque_rules):
+    """FL02 slice: derive the (canonical, raw) witness pair for a transform
+    test — ``canonical`` satisfies every synthesizable format rule and
+    ``raw`` is the deterministic de-transformation the create stages
+    (post-save the org must produce ``canonical``). Returns the pair, or a
+    refusal-detail STRING when honesty demands it (opaque governing rule, an
+    unsynthesizable pattern, or a chain whose inversion cannot produce a
+    distinguishing raw value)."""
+    from primeqa.generation.verified_negative import regex_matching_value
+    if opaque_rules:
+        return (f"active validation rule(s) {opaque_rules} govern the "
+                f"transformed field but their formulas are not readable — "
+                f"cannot derive a witness the save is known to accept")
+    if patterns:
+        canonical = regex_matching_value(patterns[0])
+        if canonical is None:
+            return (f"the field's format pattern {patterns[0]!r} is outside "
+                    f"the bounded synthesis grammar — cannot derive a "
+                    f"format-valid witness")
+        for pat in patterns[1:]:
+            try:
+                if not _re_mod.fullmatch(pat, canonical):
+                    return (f"no single witness satisfies every governing "
+                            f"format pattern ({patterns})")
+            except _re_mod.error:
+                return f"format pattern {pat!r} is not compilable"
+        # the canonical must be a FIXED POINT of the chain — the org stores
+        # the transformed value, so a format whose members the chain rewrites
+        # out of the format is a genuinely inconsistent flow+rule pair.
+        if apply_transform_chain(chain, canonical) != canonical:
+            return (f"the format-valid witness {canonical!r} is not stable "
+                    f"under the transform chain {list(chain)} — the flow "
+                    f"would rewrite values out of their own format rule")
+    else:
+        # no format rule constrains the field: normalize the deterministic
+        # seed through the chain so the canonical IS the post-save value.
+        canonical = apply_transform_chain(chain, "Sample Value 1")
+    raw = canonical
+    for fn in reversed(chain):
+        if fn == "UPPER":
+            raw = raw.lower()
+        elif fn == "LOWER":
+            raw = raw.upper()
+        elif fn == "TRIM":
+            raw = " " + raw + " "
+    if raw == canonical or apply_transform_chain(chain, raw) != canonical:
+        return (f"cannot construct a raw witness the transform chain "
+                f"{list(chain)} distinguishably normalizes to a valid value")
+    return (canonical, raw)
 
 
 def _active_approvals(neighborhood) -> list:
@@ -3189,6 +3300,58 @@ class GovernanceCore:
                      if r.edge_type == EDGE_BELONGS and r.entity.entity_type == "Field"
                      and r.entity.sf_api_name == hint.get("field_name")), None)
                 effect_value = _identity_safe(hint.get("expected_value"))
+                # FL02 slice: a VALUE-LESS same-record intent ("the org stores
+                # the canonical/normalized form") grounds when exactly ONE
+                # Flow's IR carries a grounded TRANSFORM on the field — the
+                # substrate then owns the mechanics end to end: it derives a
+                # format-valid canonical witness from the field's own
+                # governing REGEX rules (or refuses when it cannot), stages
+                # the de-transformed raw, and asserts the post-save value.
+                # Create-scoped only in v1 (an update-phase transform intent
+                # falls through to the existing refusal).
+                transform_meta = None
+                if (field_ent is not None and effect_value is None
+                        and not hint.get("update_trigger_fields")):
+                    tproducers = _flows_producing_transform(
+                        flows, field_ent.sf_api_name)
+                    if len(tproducers) > 1:
+                        return IntentResolution(
+                            grounded_candidates=[], next_action=NextAction.REFUSE,
+                            interpretation_delta=delta,
+                            refusal=self._router.emission_deferred(
+                                archetype, claim_kind,
+                                detail=(f"{len(tproducers)} Flows verifiably "
+                                        f"transform {field_ent.sf_api_name!r} "
+                                        f"— cannot attribute the rewrite")))
+                    if len(tproducers) == 1:
+                        t_ent, t_beh = tproducers[0]
+                        bare = field_ent.sf_api_name.rsplit(".", 1)[-1]
+                        patterns, opaque_rules = _field_regex_patterns(
+                            neighborhood, bare)
+                        witness = _synthesize_transform_witness(
+                            t_beh["transform"], patterns, opaque_rules)
+                        if isinstance(witness, str):
+                            return IntentResolution(
+                                grounded_candidates=[],
+                                next_action=NextAction.REFUSE,
+                                interpretation_delta=delta,
+                                refusal=self._router.emission_deferred(
+                                    archetype, claim_kind, detail=witness))
+                        canonical, raw = witness
+                        effect_value = canonical
+                        transform_meta = {
+                            "chain": t_beh["transform"],
+                            "staged": raw,
+                            "source_field": t_beh["source_field"],
+                        }
+                        # the verified rewrite producer IS the automation —
+                        # rebind away from any provisional flows[0] stand-in
+                        flow_ent = t_ent
+                        primitive = "flow"
+                        no_producer_floor = False
+                        flow_ep = _Endpoint(
+                            entity_id=t_ent.id, entity_type=t_ent.entity_type,
+                            external_id=t_ent.sf_api_name or str(t_ent.id))
                 if field_ent is None or effect_value is None:
                     # B1 arc: a field-name miss carries the subject's real
                     # vocabulary so the recovery re-prompt can converge
@@ -3440,7 +3603,16 @@ class GovernanceCore:
                     effect_value=effect_value,
                     trigger_fields=trigger_fields,
                     automation_primitive=primitive,
-                    update_trigger_fields=update_trigger_fields))
+                    update_trigger_fields=update_trigger_fields,
+                    # FL02 slice: the transform provenance — chain + the raw
+                    # witness the create stages on the effect field itself
+                    # (the documented k16 exception; staged != expected).
+                    transform_chain=(transform_meta["chain"]
+                                     if transform_meta else ()),
+                    transform_staged_value=(transform_meta["staged"]
+                                            if transform_meta else None),
+                    transform_source_field=(transform_meta["source_field"]
+                                            if transform_meta else None)))
 
         # grounded -> emit deferred (draft vertical). resolve_intent stays whole.
         presented = [PresentedCandidate(path_id=c.path_id,

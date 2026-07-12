@@ -624,6 +624,66 @@ def _self_check(node, payload: dict, want_true: bool) -> None:
 # D-344: deterministic non-match probes for NOT(REGEX(...)) derivation — varied
 # shapes so at least one is a CERTAIN non-match for the simple anchored format
 # patterns real VRs use (each verified per-pattern with re.fullmatch). Replay-
+
+def regex_matching_value(pattern) -> "str | None":
+    """FL02 slice (D-344 extension): synthesize a value that FULLY matches a
+    BOUNDED regex — the format-rule grammar (literals + digit classes with
+    counted quantifiers), e.g. ``FB-[0-9]{6}`` → ``FB-000000``. Deterministic
+    (lowest digit, minimum count). Anything outside the grammar (alternation,
+    groups, unbounded quantifiers, non-digit classes, anchors beyond the
+    implicit full match) returns ``None`` — the pre-existing Undecidable
+    boundary stands for it. The result is verified with ``re.fullmatch``
+    before being returned (never emit an unverified witness)."""
+    if not isinstance(pattern, str) or not pattern:
+        return None
+    out: list = []
+    i = 0
+    n = len(pattern)
+    while i < n:
+        ch = pattern[i]
+        if ch == "\\" and i + 1 < n:
+            nxt = pattern[i + 1]
+            if nxt == "d":
+                token = "0"
+            elif nxt in "-.\\/+*?()[]{}|^$":
+                token = nxt
+            else:
+                return None
+            i += 2
+        elif ch == "[":
+            j = pattern.find("]", i)
+            if j < 0:
+                return None
+            cls = pattern[i + 1:j]
+            if cls not in ("0-9",):
+                return None
+            token = "0"
+            i = j + 1
+        elif ch in "|()+*?^$.":
+            return None                      # outside the bounded grammar
+        else:
+            token = ch
+            i += 1
+        # counted quantifier {n} / {n,m} → emit n tokens
+        if i < n and pattern[i] == "{":
+            j = pattern.find("}", i)
+            if j < 0:
+                return None
+            spec = pattern[i + 1:j]
+            head = spec.split(",", 1)[0]
+            if not head.isdigit():
+                return None
+            out.append(token * int(head))
+            i = j + 1
+        else:
+            out.append(token)
+    candidate = "".join(out)
+    try:
+        return candidate if re.fullmatch(pattern, candidate) else None
+    except re.error:
+        return None
+
+
 # stable (fixed order, no randomness).
 _REGEX_NONMATCH_CANDIDATES = (
     "!nv@l!d-format#", "zzzzzzzz", "0", "not a match", "XxYyZz42",
