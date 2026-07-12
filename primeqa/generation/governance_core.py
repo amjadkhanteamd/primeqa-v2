@@ -144,6 +144,33 @@ _INHERENTLY_NEGATIVE = {"prohibition-claim"}
 # invariant — no UNRESOLVED value crosses into an executable recipe.
 _UNKNOWN_SENTINEL = "<UNKNOWN>"
 
+
+def _is_placeholder_value(v) -> bool:
+    """B0 hardening: an angle-bracketed string ("<UNKNOWN>", "<higher tier>",
+    "<canonical uppercase normalized>") is the model's PLACEHOLDER idiom, not a
+    testable literal — live-observed surviving into stored claims as literal
+    expected values at the B0 exit gate. Generalizes the ``_UNKNOWN_SENTINEL``
+    screen (which caught only the exact sentinel string)."""
+    return (isinstance(v, str) and len(v) >= 2
+            and v.startswith("<") and v.endswith(">"))
+
+
+def _scrub_placeholder_values(hint: dict) -> dict:
+    """Return a copy of a data-behavior ``target_subject_hint`` with
+    placeholder-shaped VALUE slots normalized to ``None`` (absent), so the
+    established needs-a-value refusal gates fire instead of a placeholder
+    string being emitted as a claim's literal. Value slots only —
+    ``automation_name``'s ``<UNKNOWN>`` sentinel and ``rejection_conditions``
+    (whose values the VR derivation owns, D-294/D-295) keep their semantics."""
+    if not isinstance(hint, dict):
+        return {}
+    scrubbed = dict(hint)
+    for key in ("expected_value", "effect_value"):
+        if _is_placeholder_value(scrubbed.get(key)):
+            scrubbed[key] = None
+    return scrubbed
+
+
 # Salesforce DescribeField.type values that carry a numeric value (must parse as
 # a Decimal to be an executable value on that field).
 _NUMERIC_FIELD_TYPES = frozenset(
@@ -1872,7 +1899,7 @@ class GovernanceCore:
             return self._resolve_ui(intent_input, ctx, state)
         polarity = desc.get("polarity_hint")
         claim_kind = desc.get("claim_kind_hint")
-        hint = desc.get("target_subject_hint") or {}
+        hint = _scrub_placeholder_values(desc.get("target_subject_hint") or {})
         et, api = hint.get("entity_type"), hint.get("sf_api_name")
         at = ctx.semantic_context.s1_version_seq
 
@@ -2570,7 +2597,16 @@ class GovernanceCore:
                              and r.entity.entity_type == "Flow"]
                 _st_producers = _flows_producing_effect(
                     _st_flows, field_ent.sf_api_name, to_value, None)
-                if not _st_producers and not _active_approvals(neighborhood):
+                # B0 hardening: the approval arm is REMOVED from this floor —
+                # an approval process fires only on explicit submission, never
+                # on a bare record create, so it can never be the producer of
+                # a create-scoped transition. The arm let a create-scoped
+                # to-state ground with NO producer whenever ANY active
+                # approval sat on the subject (live-observed at the B0 exit
+                # gate: a vacuous stage-the-value claim credited as the FL01
+                # default-priority AC). Approvals keep their real rails:
+                # D-320 ProcessInstance effects and D-308 named binding.
+                if not _st_producers:
                     return IntentResolution(
                         grounded_candidates=[], next_action=NextAction.REFUSE,
                         interpretation_delta=delta,
@@ -2579,11 +2615,12 @@ class GovernanceCore:
                             detail=(
                                 f"no org automation produces "
                                 f"{field_ent.sf_api_name}={to_value!r} on create "
-                                f"(no Flow with that effect, no active approval "
-                                f"process) — the org would never perform this "
-                                f"transition. If this is a manual capability, "
-                                f"assert it as an acceptance-claim (set the value, "
-                                f"expect it to be accepted).")))
+                                f"(no Flow with that effect; an approval process "
+                                f"cannot fire on a bare create) — the org would "
+                                f"never perform this transition. If this is a "
+                                f"manual capability, assert it as an "
+                                f"acceptance-claim (set the value, expect it to "
+                                f"be accepted).")))
             _stash_grounding(state, GroundedStateTransition(
                 archetype=archetype, claim_kind=claim_kind, version_seq=at,
                 subject=_Endpoint(
@@ -2773,6 +2810,28 @@ class GovernanceCore:
                     refusal=self._router.emission_deferred(
                         archetype, claim_kind,
                         detail="no record-triggered Flow on the subject"))
+            # B0 hardening (SUB-3, cross-object): the no-name branch bound
+            # flows[0] only as a PROVISIONAL stand-in so a calculated observed
+            # field can reach the same-record calc-field rebind below. The
+            # cross-object shapes (parent-stamp, absence, plain cross-object)
+            # stash and return BEFORE the same-record tail's no-producer check
+            # ever runs — live-observed at the B0 exit gate: a Task-creation
+            # effect no PLS_FB flow produces was attributed to the
+            # alphabetically-first flow (FL01), twice, as stored claims. A
+            # cross-object effect has no calc-field rebind to wait for, so an
+            # empty producer set refuses HERE (ground-or-refuse; attribution
+            # is the claim's whole value — D-299/D-318).
+            if no_producer_floor and hint.get("effect_object"):
+                return IntentResolution(
+                    grounded_candidates=[], next_action=NextAction.REFUSE,
+                    interpretation_delta=delta,
+                    refusal=self._router.emission_deferred(
+                        archetype, claim_kind,
+                        detail=(f"no Flow on the subject verifiably produces "
+                                f"the claimed cross-object effect on "
+                                f"{hint.get('effect_object')!r} — the "
+                                f"automation cannot be attributed, so the "
+                                f"effect stays unverified")))
             automation_ent = formula_ent if formula_ent is not None else flow_ent
             subj_ep = _Endpoint(
                 entity_id=subject.id, entity_type=subject.entity_type,
