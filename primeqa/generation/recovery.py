@@ -123,6 +123,34 @@ def _context_matches(api: str, label: Optional[str],
                len(frozenset(_tokenize(label)) & ctx_tokens) if label else 0)
 
 
+def _phrase_tokens(label: Optional[str], context_text: Optional[str]) -> int:
+    """B0.1 exact-label affinity: the candidate's display label occurs VERBATIM
+    in the requirement text — case-insensitive, whitespace-normalized,
+    word-bounded (alphanumeric boundaries; no stemming, no distance, no fuzz).
+    Returns the label's token count on a hit (longer verbatim labels are more
+    specific — 'PLS FB Order' beats a bare 'Order' contained in the same
+    text), else 0. Live-observed need (D-362 follow-up): token overlap alone
+    let an incidental 'line items' match outrank the requirement's own object
+    on both misses of the post-v29 tally.
+
+    SINGLE-TOKEN labels earn NO phrase bonus (implementation amendment to the
+    design note, documented there): one-word labels ('Record', 'Order',
+    'Case', 'Task') are exactly the common-noun ambiguity class — they appear
+    in ordinary requirement prose without naming the entity, and a lone hit
+    would take the full pool-normalized bonus. The exact-label signal this
+    term exists for is MULTI-WORD verbatim presence."""
+    if not label or not context_text:
+        return 0
+    norm = re.sub(r"\s+", " ", label.strip().lower())
+    tokens = norm.split(" ") if norm else []
+    if len(tokens) < 2:
+        return 0
+    if re.search(r"(?<![0-9a-z])" + re.escape(norm) + r"(?![0-9a-z])",
+                 context_text.lower()):
+        return len(tokens)
+    return 0
+
+
 def rank_candidates(proposed: str,
                     pool: Iterable[tuple[str, Optional[str]]],
                     *, limit: int = DEFAULT_LIMIT,
@@ -147,21 +175,31 @@ def rank_candidates(proposed: str,
         return ()
     ctx_tokens = frozenset(_tokenize(context_text)) if context_text else frozenset()
     seen: set[str] = set()
-    prelim: list[tuple[str, Optional[str], float, int]] = []
+    prelim: list[tuple[str, Optional[str], float, int, int]] = []
     for api, label in pool:
         if not api or api in seen:
             continue
         seen.add(api)
         s = similarity(proposed, api, label)
         if s >= min_score:
-            prelim.append((api, label, s, _context_matches(api, label, ctx_tokens)))
+            # ADMISSION is guess-similarity only — the context and phrase
+            # terms below reorder admitted candidates, never admit new ones.
+            prelim.append((api, label, s,
+                           _context_matches(api, label, ctx_tokens),
+                           _phrase_tokens(label, context_text)))
     if not prelim:
         return ()
     max_ctx = max(p[3] for p in prelim)
+    # B0.1: exact-label affinity bonus, normalized within the ADMITTED pool
+    # (same idiom as the context term). When NO admitted candidate's label
+    # appears verbatim in the requirement, every bonus is 0 and the ordering
+    # is byte-identical to pre-B0.1 (order-only by construction).
+    max_phrase = max(p[4] for p in prelim)
     scored = [
         RecoveryCandidate(api, label, round(
-            0.5 * s + 0.5 * (ctx / max_ctx) if max_ctx else s, 4))
-        for api, label, s, ctx in prelim]
+            (0.5 * s + 0.5 * (ctx / max_ctx) if max_ctx else s)
+            + (0.5 * (ph / max_phrase) if max_phrase else 0.0), 4))
+        for api, label, s, ctx, ph in prelim]
     scored.sort(key=lambda c: (-c.score, c.sf_api_name))
     return tuple(scored[:limit])
 

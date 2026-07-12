@@ -66,6 +66,90 @@ def test_context_text_ranks_the_requirements_own_object_first():
         "Order__c", list(reversed(pool)), context_text=req_text)
 
 
+# ---------------------------------------------------------------------------
+# B0.1 — exact-label affinity (order-only; the five pinned tests)
+# ---------------------------------------------------------------------------
+
+B01_POOL = FB_OBJECT_POOL + [
+    ("WorkOrder", "Work Order"),
+    ("CHANNEL_ORDERS__Service_Order__c", "Service Order"),
+    ("Order", "Order"),
+]
+B01_REQ = ("As a Sales Operations Manager, I want PLS FB Order records to be "
+           "maintained automatically as they move through the order "
+           "lifecycle... shows the up-to-date total value and count of its "
+           "line items as lines are added or amended. External references "
+           "may be typed in any casing.")
+
+
+def test_b01_exact_label_promotion():
+    """The live miss trajectory (runs 44178a2b / c9c6fc99): guess 'Order__c'
+    against a requirement whose text contains the label 'PLS FB Order'
+    verbatim — the requirement's own object must rank FIRST, above the
+    incidental 'line items' token match and the generically-similar
+    standard objects."""
+    cands = recovery.rank_candidates("Order__c", B01_POOL,
+                                     context_text=B01_REQ)
+    assert cands[0].sf_api_name == "PLS_FB_Order__c"
+
+
+def test_b01_no_label_in_text_keeps_pre_b01_ordering():
+    """When NO admitted candidate's label appears verbatim in the context,
+    every phrase bonus is 0 and the ordering must be byte-identical to the
+    pre-B0.1 blend (order-only guarantee)."""
+    pool = [("Alpha_Record__c", "Alpha Record"),
+            ("Beta_Record__c", "Beta Record"),
+            ("Record__c", "Record")]
+    # "record" appears in the prose as a common noun, but the single-token
+    # guard means NO candidate earns a phrase bonus here — ordering must be
+    # byte-identical to the pre-B0.1 blend (main's actual output, pinned).
+    ctx = "the record of the beta stream is kept current"
+    got = [(c.sf_api_name, c.score) for c in
+           recovery.rank_candidates("Record__c", pool, context_text=ctx)]
+    assert got == [("Beta_Record__c", 0.8205), ("Record__c", 0.75),
+                   ("Alpha_Record__c", 0.5595)]
+    # and all phrase bonuses were genuinely zero (single-token guard)
+    assert all(recovery._phrase_tokens(lbl, ctx) == 0 for _, lbl in pool)
+
+
+def test_b01_competing_lexical_matches_longer_label_wins():
+    """Both 'Order' and 'PLS FB Order' occur verbatim in the text — the more
+    specific (longer) label outranks the generic one."""
+    cands = recovery.rank_candidates("Order__c", B01_POOL,
+                                     context_text=B01_REQ, limit=10)
+    apis = [c.sf_api_name for c in cands]
+    assert apis.index("PLS_FB_Order__c") < apis.index("Order")
+    assert recovery._phrase_tokens("PLS FB Order", B01_REQ) == 3
+    # single-token guard: the generic 'Order' label earns NO phrase bonus
+    assert recovery._phrase_tokens("Order", B01_REQ) == 0
+
+
+def test_b01_field_recovery_unchanged_and_word_bounded():
+    """Field offers carry no verbatim-label hits here, so their ordering is
+    untouched; and the phrase test is word-bounded — 'External Ref' must NOT
+    match inside 'External references'."""
+    pool = [("PLS_FB_Order__c.PLS_FB_External_Ref__c", "External Ref"),
+            ("PLS_FB_Order__c.PLS_FB_Priority__c", "Priority"),
+            ("PLS_FB_Order__c.PLS_FB_Amount__c", "Amount")]
+    with_ctx = recovery.rank_candidates(
+        "Order__c.External_Reference__c", pool, context_text=B01_REQ)
+    without = recovery.rank_candidates(
+        "Order__c.External_Reference__c", pool)
+    assert [c.sf_api_name for c in with_ctx][0] == \
+        [c.sf_api_name for c in without][0] == \
+        "PLS_FB_Order__c.PLS_FB_External_Ref__c"
+    assert recovery._phrase_tokens("External Ref", B01_REQ) == 0
+    assert recovery._phrase_tokens("PLS FB Order", "the PLS FB Order record") == 3
+    assert recovery._phrase_tokens("Order", "an order raised") == 0  # 1-token guard
+
+
+def test_b01_deterministic_under_permutation():
+    a = recovery.rank_candidates("Order__c", B01_POOL, context_text=B01_REQ)
+    b = recovery.rank_candidates("Order__c", list(reversed(B01_POOL)),
+                                 context_text=B01_REQ)
+    assert a == b
+
+
 def test_unrelated_pool_yields_nothing():
     """A garbage reference must NOT produce a directory listing."""
     assert recovery.rank_candidates("Zebra_Quantum__c", FB_OBJECT_POOL) == ()
