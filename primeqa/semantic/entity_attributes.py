@@ -730,6 +730,13 @@ def _fb_guard_condition(cond) -> Optional[tuple]:
 # over ONE ``$Record.<Field>`` argument (e.g. ``UPPER(TRIM({!$Record.X__c}))``).
 # Anything else stays ``non_literal_assignment_value`` (unchanged honesty).
 _FB_TRANSFORM_FNS = frozenset({"UPPER", "LOWER", "TRIM"})
+
+# C6 (FL14 / approval slice): the actionType/actionName values that mean
+# "submit this record for approval" — the ONE actionCall class the IR
+# recognizes as a typed behaviour (everything else stays
+# element_outside_grammar:actionCalls). The process is named in the
+# processDefinitionNameOrId input.
+_FB_SUBMIT_ACTION_TYPES = frozenset({"submit"})
 _FB_TRANSFORM_MAX_DEPTH = 3
 
 _FB_TRANSFORM_CALL_RE = _re.compile(r"^\s*([A-Z]+)\s*\(\s*(.*?)\s*\)\s*$",
@@ -742,6 +749,28 @@ _FB_TRANSFORM_ARG_RE = _re.compile(r"^\{!\$Record\.([A-Za-z0-9_]+)\}$")
 # cross-field date arithmetic, functions) stays outside — named refusal.
 _FB_TEMPORAL_RE = _re.compile(
     r"^\s*\{!\$Flow\.CurrentDate\}\s*([+-])\s*(\d+)\s*$")
+
+
+def _fb_parse_submit_action(el) -> Optional[str]:
+    """C6: a submit-for-approval actionCall → the approval process name (from
+    the ``processDefinitionNameOrId`` string input), or None outside the
+    bounded shape (a different actionType, a non-literal process ref). The
+    process name lets the binder attribute the submission to the ONE named
+    ApprovalProcess (the D-320 rails)."""
+    if not isinstance(el, dict):
+        return None
+    atype = el.get("actionType") or el.get("actionName")
+    if atype not in _FB_SUBMIT_ACTION_TYPES:
+        return None
+    for ip in _flow_md_list(el.get("inputParameters")):
+        if isinstance(ip, dict) and ip.get("name") == "processDefinitionNameOrId":
+            proc = _flow_assignment_value(ip.get("value"))
+            if isinstance(proc, str) and proc:
+                return proc
+    # a submit action with no literal process name still submits — but to an
+    # unnameable target; the binder falls back to the subject's single
+    # active approval (D-320 enumeration). Signal recognition with "".
+    return ""
 
 
 def _fb_parse_temporal_formula(formula) -> Optional[int]:
@@ -843,6 +872,15 @@ def _fb_entry_filter_guard(f) -> Optional[tuple]:
         if flag is True:
             return (field, "IsChanged", True)
         return None
+    if op in ("GreaterThanOrEqualTo", "GreaterThan", "LessThanOrEqualTo",
+              "LessThan"):
+        # C6: numeric LEVEL conditions on the trigger (the FL14 large-order
+        # gate, Amount >= 100000) — a state guard the staging must satisfy,
+        # rides the behaviour guard exactly like EqualTo.
+        lit = _flow_assignment_value(value)
+        if lit is None or isinstance(lit, bool):
+            return None
+        return (field, op, lit)
     return None
 
 
@@ -943,7 +981,7 @@ def flow_behaviour(attributes: Optional[dict]) -> dict:
 
     def _behaviour(state, kind=None, guard=(), field=None, value=None,
                    reasons=(), transform=(), source_field=None, negated=(),
-                   offset_days=None, prior=()):
+                   offset_days=None, prior=(), process=None):
         return {"state": state, "kind": kind,
                 "guard": [list(g) for g in entry_guard + tuple(guard)],
                 # C5: the PRE-update state conditions ($Record__Prior) — the
@@ -957,6 +995,9 @@ def flow_behaviour(attributes: Optional[dict]) -> dict:
                 "transform": list(transform), "source_field": source_field,
                 # C4: relative-date stamps — RUN_DATE + offset_days
                 "offset_days": offset_days,
+                # C6: submit-for-approval — the named process (or "" = the
+                # subject's single active approval by enumeration)
+                "process": process,
                 "reasons": list(reasons)}
 
     # ── flow-level gates: not record-triggered / no immediate path ──
@@ -1032,10 +1073,31 @@ def flow_behaviour(attributes: Optional[dict]) -> dict:
                 break
             list_name, el = entry
             if list_name == "assignments":
-                for item in _flow_md_list(el.get("assignmentItems")):
-                    if not isinstance(item, dict):
-                        pr.append("malformed_assignment_item")
-                        continue
+                _items = [it for it in _flow_md_list(el.get("assignmentItems"))
+                          if isinstance(it, dict)]
+                # C6 (subject-safe refinement): an assignment EVERY item of
+                # which targets a non-$Record reference (a flow variable /
+                # collection — the FL14 approver-list build) cannot rewrite
+                # the triggering record's own fields. The record-write
+                # grammar never reads flow variables (transform sources are
+                # $Record fields + formulas only), so this is subject-safe:
+                # demote only itself, walk on. A MIXED assignment (some
+                # $Record, some not) keeps the hard non_record_assignment
+                # demotion (conservative).
+                if _items and all(
+                        _fb_record_field(it.get("assignToReference")) is None
+                        and _fb_prior_field(it.get("assignToReference")) is None
+                        for it in _items):
+                    soft.append("variable_assignment_not_record")
+                    pb.append(_behaviour(
+                        _FB_UNSUPPORTED, guard=guard, negated=negated,
+                        prior=prior,
+                        reasons=["variable_assignment_not_record"]))
+                    connector = el.get("connector")
+                    target = (connector or {}).get("targetReference") \
+                        if isinstance(connector, dict) else None
+                    continue
+                for item in _items:
                     field = _fb_record_field(item.get("assignToReference"))
                     op = item.get("operator")
                     value = _flow_assignment_value(item.get("value"))
@@ -1104,6 +1166,22 @@ def flow_behaviour(attributes: Optional[dict]) -> dict:
                 connector = el.get("connector")
                 target = (connector or {}).get("targetReference") \
                     if isinstance(connector, dict) else None
+            elif list_name == "actionCalls" \
+                    and _fb_parse_submit_action(el) is not None:
+                # C6 (FL14 / approval slice): a submit-for-approval action is
+                # a GROUNDED behaviour — the flow submits the triggering
+                # record to the named approval process (or the subject's
+                # single active approval when unnamed). Submit is terminal in
+                # the bounded grammar (no connector walk beyond it); the
+                # record's own fields are untouched, so it never conflicts
+                # with a same-record write on the path.
+                pb.append(_behaviour(
+                    _FB_GROUNDED, kind="submit_for_approval",
+                    guard=guard, negated=negated, prior=prior,
+                    process=_fb_parse_submit_action(el)))
+                connector = el.get("connector")
+                target = (connector or {}).get("targetReference") \
+                    if isinstance(connector, dict) else None
             elif list_name in _FB_SUBJECT_SAFE_LISTS:
                 # C5 conservatism refinement: this element cannot rewrite
                 # the subject's own fields — it demotes ONLY ITSELF (an
@@ -1135,7 +1213,12 @@ def flow_behaviour(attributes: Optional[dict]) -> dict:
                 if b["state"] == _FB_GROUNDED:
                     b["state"] = state
                 b["reasons"] = sorted(set(b["reasons"]) | set(pr))
-        return pb, pr + soft, p_opaque
+        # return HARD reasons only — SOFT (subject-safe) reasons are already
+        # carried on their own behaviours and must NOT reach the caller's
+        # global demote_reasons (an unconditional path with a subject-safe
+        # element would otherwise demote every grounded sibling — the FL14
+        # approver-list-build-then-submit case).
+        return pb, pr, p_opaque
 
     def _parse_rule(rule):
         """One decision rule -> ``(current_conds, prior_conds)`` (each a
@@ -1465,4 +1548,26 @@ def flow_grounded_transition_effects(attributes: Optional[dict]) -> tuple:
         and b["field"] is not None
     ]
     out.sort(key=lambda d: (d["field"], str(d["value"])))
+    return tuple(out)
+
+
+def flow_grounded_approval_submissions(attributes: Optional[dict]) -> tuple:
+    """The binder-facing projection of the IR's GROUNDED submit-for-approval
+    behaviours (C6 / FL14 slice): ``{"process", "guard", "prior_guard",
+    "negated_guards"}`` per behaviour — the approval process the flow submits
+    the triggering record to (``""`` = the subject's single active approval,
+    bound by the D-320 enumeration), and the fire condition (the entry
+    filters ride ``guard``: Status EqualTo Submitted, Amount >= 100000).
+    The consumer authors the transition + the ProcessInstance-existence
+    assertion on the existing approval evidence rails."""
+    ir = flow_behaviour(attributes)
+    out = [
+        {"process": b["process"],
+         "guard": tuple(tuple(g) for g in b["guard"]),
+         "prior_guard": tuple(tuple(g) for g in b["prior_guard"]),
+         "negated_guards": tuple(tuple(g) for g in b["negated_guards"])}
+        for b in ir["behaviours"]
+        if b["state"] == _FB_GROUNDED and b["kind"] == "submit_for_approval"
+    ]
+    out.sort(key=lambda d: str(d["process"]))
     return tuple(out)

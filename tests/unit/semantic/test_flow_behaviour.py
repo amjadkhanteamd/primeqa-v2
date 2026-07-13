@@ -64,8 +64,8 @@ def test_fl01_binder_projection_exposes_the_effect_pair():
 
 def test_grounded_scope_contract():
     # scope contract: FL01 (literal), FL02 (transform), FL03 (ordered
-    # bands), FL08 (temporal stamp, C4), FL09 (prior-state transition, C5);
-    # nothing else grounds.
+    # bands), FL08 (temporal stamp, C4), FL09 (prior-state transition, C5),
+    # FL14 (submit-for-approval, C6); nothing else grounds.
     grounded = {
         name for name in _all_fixture_names()
         if any(b["state"] == "grounded"
@@ -75,7 +75,8 @@ def test_grounded_scope_contract():
                         "PLS_FB_FL02_Normalize_External_Ref",
                         "PLS_FB_FL03_Tier_Banding",
                         "PLS_FB_FL08_SLA_Stamp",
-                        "PLS_FB_FL09_Reopen_Guard"}
+                        "PLS_FB_FL09_Reopen_Guard",
+                        "PLS_FB_FL14_Approval_Submit"}
 
 
 def test_fl03_grounds_four_band_arms_with_negation_context():
@@ -164,8 +165,6 @@ def test_no_other_flow_contributes_binder_effects():
     # fault-handled ledger create
     ("PLS_FB_FL13_Fault_Logged_Ledger",
      "element_outside_grammar:recordCreates"),
-    # approval submit action
-    ("PLS_FB_FL14_Approval_Submit", "element_outside_grammar:actionCalls"),
     # send-email action
     ("PLS_FB_FL15_Confirmation_Email", "element_outside_grammar:actionCalls"),
     # autolaunched subflow — not record-triggered
@@ -298,8 +297,11 @@ def test_unconditional_literal_assignment_grounds_without_guard():
 
 
 def test_partial_path_demotes_grounded_siblings():
-    # a clean literal assignment FOLLOWED by an out-of-grammar element:
-    # the grounded behaviour must demote (the later element could overwrite)
+    # a clean literal assignment FOLLOWED by a genuinely-UNSAFE element (a
+    # recordUpdates that WRITES fields — could overwrite the subject): the
+    # grounded behaviour hard-demotes (the hard conservatism rule). NB a
+    # subject-safe element (recordLookups/recordCreates) would NOT demote it
+    # — see test_subject_safe_walkthrough_is_bounded.
     attrs = {"Metadata": {
         "start": {"object": "X__c", "triggerType": "RecordBeforeSave",
                   "recordTriggerType": "Create",
@@ -309,9 +311,12 @@ def test_partial_path_demotes_grounded_siblings():
              "assignmentItems": [{"assignToReference": "$Record.F__c",
                                   "operator": "Assign",
                                   "value": {"stringValue": "v"}}],
-             "connector": {"targetReference": "Look"}},
+             "connector": {"targetReference": "Rewrite"}},
         ],
-        "recordLookups": [{"name": "Look"}],
+        "recordUpdates": [{"name": "Rewrite", "inputReference": "other_var",
+                           "inputAssignments": [
+                               {"field": "F__c",
+                                "value": {"stringValue": "z"}}]}],
     }}
     ir = flow_behaviour(attrs)
     assert ir["parse_status"] == "partial"
@@ -382,7 +387,33 @@ def test_out_of_grammar_entry_filter_still_demotes():
 
 
 def test_transform_then_outside_grammar_demotes_conservatively():
-    # conservatism holds for transforms exactly as for literals
+    # hard conservatism holds for transforms exactly as for literals: a
+    # genuinely-unsafe following element (a WRITING recordUpdates) demotes.
+    attrs = {"Metadata": {
+        "start": {"object": "X__c", "triggerType": "RecordBeforeSave",
+                  "recordTriggerType": "Create",
+                  "connector": {"targetReference": "Norm"}},
+        "formulas": [{"name": "f", "dataType": "String",
+                      "expression": "UPPER({!$Record.F__c})"}],
+        "assignments": [
+            {"name": "Norm",
+             "assignmentItems": [{"assignToReference": "$Record.F__c",
+                                  "operator": "Assign",
+                                  "value": {"elementReference": "f"}}],
+             "connector": {"targetReference": "Rewrite"}},
+        ],
+        "recordUpdates": [{"name": "Rewrite", "inputReference": "other_var",
+                           "inputAssignments": [
+                               {"field": "F__c",
+                                "value": {"stringValue": "z"}}]}],
+    }}
+    attrs_ir = flow_behaviour(attrs)
+    assert attrs_ir["parse_status"] == "partial"
+    assert flow_grounded_transforms(attrs) == ()
+
+def test_transform_then_subject_safe_lookup_survives():
+    # the C5/C6 refinement: a subject-safe recordLookups AFTER a transform
+    # does NOT demote it (a Get Records cannot rewrite the subject field)
     attrs = {"Metadata": {
         "start": {"object": "X__c", "triggerType": "RecordBeforeSave",
                   "recordTriggerType": "Create",
@@ -398,9 +429,8 @@ def test_transform_then_outside_grammar_demotes_conservatively():
         ],
         "recordLookups": [{"name": "Look"}],
     }}
-    attrs_ir = flow_behaviour(attrs)
-    assert attrs_ir["parse_status"] == "partial"
-    assert flow_grounded_transforms(attrs) == ()
+    (tr,) = flow_grounded_transforms(attrs)
+    assert tr["field"] == "F__c" and tr["transform"] == ("UPPER",)
 
 
 def test_cross_field_transform_grounds():
@@ -658,3 +688,92 @@ def test_prior_ref_in_ordered_decision_demotes():
     reasons = {r for b in ir["behaviours"] for r in b["reasons"]}
     assert "prior_ref_in_ordered_decision" in reasons
     assert all(b["state"] != "grounded" for b in ir["behaviours"])
+
+
+# ── C6: FL14 grounds a submit-for-approval behaviour ─────────────────
+
+def test_fl14_grounds_submit_for_approval():
+    from primeqa.semantic.entity_attributes import (
+        flow_grounded_approval_submissions)
+    ir = flow_behaviour(_load("PLS_FB_FL14_Approval_Submit"))
+    t = ir["trigger"]
+    assert t["record_trigger_type"] == "Update"
+    assert t["save_phase"] == "after_save"
+    assert t["entry_filters_consumed"] is True
+    grounded = [b for b in ir["behaviours"] if b["state"] == "grounded"]
+    [b] = grounded
+    assert b["kind"] == "submit_for_approval"
+    assert b["process"] == "PLS_FB_Large_Order_Approval"
+    assert b["field"] is None and b["value"] is None
+    # both entry filters ride the guard (Status EqualTo + Amount numeric)
+    assert b["guard"] == [["PLS_FB_Status__c", "EqualTo", "Submitted"],
+                          ["PLS_FB_Amount__c", "GreaterThanOrEqualTo",
+                           100000.0]]
+    # the approver-list build stays honest-refused beside it (partial)
+    assert ir["parse_status"] == "partial"
+    reasons = {r for bb in ir["behaviours"] for r in bb["reasons"]}
+    assert "variable_assignment_not_record" in reasons
+    (sub,) = flow_grounded_approval_submissions(
+        _load("PLS_FB_FL14_Approval_Submit"))
+    assert sub["process"] == "PLS_FB_Large_Order_Approval"
+
+
+def test_numeric_entry_filter_consumes_as_a_level_guard():
+    # C6: Amount >= N entry filters join the consumption grammar
+    attrs = {"Metadata": {
+        "start": {"object": "X__c", "triggerType": "RecordBeforeSave",
+                  "recordTriggerType": "Create", "filterLogic": "and",
+                  "filters": [{"field": "Amount__c",
+                               "operator": "GreaterThanOrEqualTo",
+                               "value": {"numberValue": 100000.0}}],
+                  "connector": {"targetReference": "Set"}},
+        "assignments": [
+            {"name": "Set",
+             "assignmentItems": [{"assignToReference": "$Record.F__c",
+                                  "operator": "Assign",
+                                  "value": {"stringValue": "v"}}]},
+        ],
+    }}
+    ir = flow_behaviour(attrs)
+    assert ir["parse_status"] == "full"
+    [b] = ir["behaviours"]
+    assert b["state"] == "grounded"
+    assert b["guard"] == [["Amount__c", "GreaterThanOrEqualTo", 100000.0]]
+
+
+def test_unrecognized_action_call_still_demotes():
+    # only the submit class grounds — a send-email actionCall (FL15's class)
+    # stays element_outside_grammar:actionCalls
+    attrs = {"Metadata": {
+        "start": {"object": "X__c", "triggerType": "RecordAfterSave",
+                  "recordTriggerType": "Create",
+                  "connector": {"targetReference": "Email"}},
+        "actionCalls": [{"name": "Email", "actionType": "emailSimple",
+                         "actionName": "emailSimple"}],
+    }}
+    ir = flow_behaviour(attrs)
+    assert all(b["state"] != "grounded" for b in ir["behaviours"])
+    reasons = {r for b in ir["behaviours"] for r in b["reasons"]}
+    assert "element_outside_grammar:actionCalls" in reasons
+
+
+def test_mixed_record_and_variable_assignment_stays_hard():
+    # a subject-safe pass is ALL-non-$Record; a mixed assignment (one
+    # $Record write + one variable) keeps the record write's normal path
+    attrs = {"Metadata": {
+        "start": {"object": "X__c", "triggerType": "RecordBeforeSave",
+                  "recordTriggerType": "Create",
+                  "connector": {"targetReference": "Both"}},
+        "assignments": [
+            {"name": "Both", "assignmentItems": [
+                {"assignToReference": "$Record.F__c", "operator": "Assign",
+                 "value": {"stringValue": "v"}},
+                {"assignToReference": "someVar", "operator": "Assign",
+                 "value": {"stringValue": "x"}}]},
+        ],
+    }}
+    ir = flow_behaviour(attrs)
+    # the variable item demotes the record write (mixed = hard)
+    assert all(b["state"] != "grounded" for b in ir["behaviours"])
+    reasons = {r for b in ir["behaviours"] for r in b["reasons"]}
+    assert "non_record_assignment_target" in reasons
