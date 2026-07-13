@@ -3619,14 +3619,22 @@ class GovernanceCore:
                                 automation_primitive="flow"))
                         for _g in _l_stashes:
                             _stash_grounding(state, _g)
+                        # the 1:1 grounding<->presented_candidate invariant
+                        # (finalize's D-339 dedup relies on it): emit ONE
+                        # presented per stashed arm, all REUSING this intent's
+                        # single admitted path_id (c{offset+i}) so coverage
+                        # attributes every arm to the SAME AC and the
+                        # per-intent candidate_paths count stays 1 (later
+                        # intents' c-index offsets unaffected).
+                        _src = grounded[0]
                         presented = [
                             PresentedCandidate(
-                                path_id=c.path_id,
+                                path_id=_src.path_id,
                                 admissibility_layer=AdmissibilityLayer(
-                                    c.admissibility_layer),
-                                summary={"archetype": c.archetype,
-                                         "claim_kind": c.claim_kind})
-                            for c in grounded]
+                                    _src.admissibility_layer),
+                                summary={"archetype": archetype,
+                                         "claim_kind": claim_kind})
+                            for _ in _l_stashes]
                         return IntentResolution(
                             grounded_candidates=presented,
                             next_action=NextAction.PROCEED_TO_EMIT,

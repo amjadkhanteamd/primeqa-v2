@@ -218,6 +218,11 @@ def test_valueless_intent_enumerates_every_band_arm():
     res = core.resolve_intent(intent_input=_intent(None), ctx=_ctx(),
                               state=state)
     assert res.refusal is None, getattr(res.refusal, "payload", None)
+    # the 1:1 grounding<->presented invariant finalize's dedup relies on:
+    # 4 stashed groundings <-> 4 returned presented candidates
+    assert len(res.grounded_candidates) == len(state.groundings) == 4
+    # all arms attribute to the SAME intent path (one AC)
+    assert len({c.path_id for c in res.grounded_candidates}) == 1
     by_value = {g.effect_value: g for g in state.groundings}
     assert set(by_value) == {"Platinum", "Gold", "Silver", "Bronze"}
     expected = {"Platinum": 250000.01, "Gold": 150000,
