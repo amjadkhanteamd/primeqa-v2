@@ -14,6 +14,7 @@ import os
 import pytest
 
 from primeqa.semantic.entity_attributes import (
+    flow_grounded_temporal_effects,
     _fb_parse_transform_formula, apply_transform_chain, flow_behaviour,
     flow_grounded_same_record_effects, flow_grounded_transforms)
 
@@ -62,8 +63,8 @@ def test_fl01_binder_projection_exposes_the_effect_pair():
 # ── the scope contract: nothing else grounds ────────────────────────
 
 def test_grounded_scope_contract():
-    # C1 scope contract: FL01 (literal), FL02 (transform), FL03 (ordered
-    # bands); nothing else grounds.
+    # scope contract: FL01 (literal), FL02 (transform), FL03 (ordered
+    # bands), FL08 (temporal stamp, C4); nothing else grounds.
     grounded = {
         name for name in _all_fixture_names()
         if any(b["state"] == "grounded"
@@ -71,7 +72,8 @@ def test_grounded_scope_contract():
     }
     assert grounded == {"PLS_FB_FL01_Default_Priority",
                         "PLS_FB_FL02_Normalize_External_Ref",
-                        "PLS_FB_FL03_Tier_Banding"}
+                        "PLS_FB_FL03_Tier_Banding",
+                        "PLS_FB_FL08_SLA_Stamp"}
 
 
 def test_fl03_grounds_four_band_arms_with_negation_context():
@@ -150,8 +152,6 @@ def test_no_other_flow_contributes_binder_effects():
     ("PLS_FB_FL06_Duplicate_Flag", "element_outside_grammar:recordLookups"),
     # child-object loop rollup
     ("PLS_FB_FL07_Order_Rollup", "element_outside_grammar:recordLookups"),
-    # formula date assignment on an update-to-meet trigger
-    ("PLS_FB_FL08_SLA_Stamp", "non_literal_assignment_value"),
     # $Record__Prior guard is outside the guard grammar
     ("PLS_FB_FL09_Reopen_Guard", "unparseable_guard_condition"),
     # scheduled path only — nothing observable at save time
@@ -179,14 +179,57 @@ def test_excluded_flows_carry_named_reasons(name, expected_reason):
                for b in ir["behaviours"]), name
 
 
-# ── update-to-meet flows advertise both blockers, not just one ──────
+# ── C4: FL08 grounds as a temporal stamp on an update-to-meet trigger ─
 
-def test_fl08_names_the_update_trigger_demotions_too():
+def test_fl08_grounds_as_a_temporal_stamp():
     ir = flow_behaviour(_load("PLS_FB_FL08_SLA_Stamp"))
-    reasons = {r for b in ir["behaviours"] for r in b["reasons"]}
-    assert "entry_conditions_not_consumed" in reasons
-    assert "updated_to_meet_not_consumed" in reasons
-    assert "trigger_type_not_in_grammar:Update" in reasons
+    assert ir["parse_status"] == "full"
+    t = ir["trigger"]
+    assert t["record_trigger_type"] == "Update"
+    assert t["requires_change_to_meet"] is True
+    assert t["entry_filters_consumed"] is True
+    [b] = ir["behaviours"]
+    assert b["state"] == "grounded"
+    assert b["kind"] == "set_record_field_temporal"
+    assert b["field"] == "PLS_FB_SLA_Deadline__c"
+    assert b["offset_days"] == 5
+    assert b["guard"] == [["PLS_FB_Status__c", "EqualTo", "Submitted"]]
+    assert b["value"] is None and b["transform"] == []
+
+
+def test_fl08_enters_only_the_temporal_projection():
+    attrs = _load("PLS_FB_FL08_SLA_Stamp")
+    # Update-only: the create-scoped projections must all refuse it
+    assert flow_grounded_same_record_effects(attrs) == frozenset()
+    assert flow_grounded_transforms(attrs) == ()
+    (tp,) = flow_grounded_temporal_effects(attrs)
+    assert tp == {"field": "PLS_FB_SLA_Deadline__c", "offset_days": 5,
+                  "guard": (("PLS_FB_Status__c", "EqualTo", "Submitted"),),
+                  "negated_guards": ()}
+
+
+def test_temporal_projection_is_update_trigger_only():
+    # a Create-trigger clone of the FL08 shape stays OUT of the projection
+    # (v1 scope: the transition shape is what updated-to-meet promises)
+    attrs = {"Metadata": {
+        "start": {"object": "X__c", "triggerType": "RecordBeforeSave",
+                  "recordTriggerType": "Create",
+                  "connector": {"targetReference": "Stamp"}},
+        "formulas": [{"name": "f", "dataType": "Date",
+                      "expression": "{!$Flow.CurrentDate} + 3"}],
+        "assignments": [
+            {"name": "Stamp",
+             "assignmentItems": [{"assignToReference": "$Record.Due__c",
+                                  "operator": "Assign",
+                                  "value": {"elementReference": "f"}}]},
+        ],
+    }}
+    assert flow_grounded_temporal_effects(attrs) == ()
+    # ...but the IR itself grounds it (honest representation; a create-
+    # scoped temporal consumer is an evidence-driven future slice)
+    ir = flow_behaviour(attrs)
+    [b] = ir["behaviours"]
+    assert b["state"] == "grounded" and b["offset_days"] == 3
 
 
 # ── never-raises shape tolerance ────────────────────────────────────
@@ -294,15 +337,11 @@ def test_transform_formula_grammar_bounds(expr, expected):
     assert _fb_parse_transform_formula(expr) == expected
 
 
-def test_non_isnull_entry_filter_still_demotes():
-    # an EqualTo entry filter is outside the consumption grammar — the flow
-    # keeps the v1 entry_conditions_not_consumed demotion even with a clean
-    # literal assignment on the path
-    attrs = {"Metadata": {
+def _entry_filter_flow(filters):
+    return {"Metadata": {
         "start": {"object": "X__c", "triggerType": "RecordBeforeSave",
                   "recordTriggerType": "Create", "filterLogic": "and",
-                  "filters": [{"field": "Status__c", "operator": "EqualTo",
-                               "value": {"stringValue": "Open"}}],
+                  "filters": filters,
                   "connector": {"targetReference": "Set"}},
         "assignments": [
             {"name": "Set",
@@ -311,11 +350,35 @@ def test_non_isnull_entry_filter_still_demotes():
                                   "value": {"stringValue": "v"}}]},
         ],
     }}
+
+
+def test_equalto_entry_filter_is_consumed_as_a_guard():
+    # C4: the literal EqualTo entry filter joins the consumption grammar —
+    # the flow grounds and the filter rides the behaviour guard
+    attrs = _entry_filter_flow([{"field": "Status__c", "operator": "EqualTo",
+                                 "value": {"stringValue": "Open"}}])
     ir = flow_behaviour(attrs)
-    reasons = {r for b in ir["behaviours"] for r in b["reasons"]}
-    assert "entry_conditions_not_consumed" in reasons
-    assert all(b["state"] != "grounded" for b in ir["behaviours"])
-    assert flow_grounded_same_record_effects(attrs) == frozenset()
+    assert ir["parse_status"] == "full"
+    [b] = ir["behaviours"]
+    assert b["state"] == "grounded"
+    assert b["guard"] == [["Status__c", "EqualTo", "Open"]]
+
+
+def test_out_of_grammar_entry_filter_still_demotes():
+    # operators beyond IsNull/EqualTo (or a value-less EqualTo) keep the
+    # flow-level entry_conditions_not_consumed demotion
+    for filters in (
+        [{"field": "Status__c", "operator": "Contains",
+          "value": {"stringValue": "Op"}}],
+        [{"field": "Status__c", "operator": "EqualTo",
+          "value": {"elementReference": "someVar"}}],
+    ):
+        attrs = _entry_filter_flow(filters)
+        ir = flow_behaviour(attrs)
+        reasons = {r for b in ir["behaviours"] for r in b["reasons"]}
+        assert "entry_conditions_not_consumed" in reasons, filters
+        assert all(b["state"] != "grounded" for b in ir["behaviours"])
+        assert flow_grounded_same_record_effects(attrs) == frozenset()
 
 
 def test_transform_then_outside_grammar_demotes_conservatively():

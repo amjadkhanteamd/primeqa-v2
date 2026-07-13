@@ -64,6 +64,7 @@ from primeqa.generation.verified_negative import (
     derive_update,
 )
 from primeqa.semantic.formula import parse
+from primeqa.test_representation.temporal import relative_date_offset
 from primeqa.test_representation.models.claims.configuration import (
     ExistenceClaimBody,
     MetadataRelationshipClaimBody,
@@ -2005,6 +2006,19 @@ def _author_positive(g: GroundedPositive) -> EmissionBundle:
     )
 
 
+def _fmt_expected(v) -> str:
+    """Human/identity-facing rendering of an expected value: a symbolic
+    RelativeDate narrates as its MEANING (``<the run date + 5 days>``) —
+    stable and replay-safe, never a raw wire-dict repr; everything else is
+    ``repr`` (the existing idiom)."""
+    off = relative_date_offset(v)
+    if off is None:
+        return repr(v)
+    sign = "+" if off >= 0 else "-"
+    plural = "s" if abs(off) != 1 else ""
+    return f"<the run date {sign} {abs(off)} day{plural}>"
+
+
 def _observe_steps(object_api: str, field_api: str, expected: Any,
                    *, create_fields: Optional[dict] = None,
                    update_fields: Optional[dict] = None) -> list:
@@ -2276,7 +2290,8 @@ def _author_automation_effect(g: GroundedAutomationEffect) -> EmissionBundle:
             initial = f" with {gate} (the initial state)" if create_fields else ""
             details = (f"create a {object_api} record{initial}, update "
                        f"{upd_gate} (the change), read it back, assert the "
-                       f"org re-computed {field_api}={g.effect_value!r}")
+                       f"org re-computed "
+                       f"{field_api}={_fmt_expected(g.effect_value)}")
         elif g.transform_chain:
             chain = "(".join(reversed(g.transform_chain)) \
                 + "(value" + ")" * len(g.transform_chain)

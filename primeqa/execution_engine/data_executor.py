@@ -1170,7 +1170,9 @@ def _run_positive(plan: DataRecipePlan, *, client, environment_id: int, s1=None,
             create_steps + mid + (read_ev,), "errored", err,
             created_records=tracker.records)
 
-    assert_ev = _run_ground(assertion, read_ev, ordinal=base + 1)
+    assert_ev = _run_ground(assertion, read_ev, ordinal=base + 1,
+                            materialise=getattr(client, "materialise_value",
+                                                None))
     outcome = "passed" if assert_ev.held else "failed"
     return _result(
         plan, run_id, started, environment_id,
@@ -1298,13 +1300,21 @@ def _values_equal(observed, asserted) -> bool:
         return False
 
 
-def _run_ground(assertion, read_ev, *, ordinal) -> AssertEvidence:
+def _run_ground(assertion, read_ev, *, ordinal,
+                materialise=None) -> AssertEvidence:
     """Ground ``field == V``: resolve the predicate's ``subject_ref``
     (``<read_step>.<field>``) to the observed value in the read's single row and
     compare it to the carried ``value`` (typed-tolerant, D-211). Fail-loud
     (raise) on a non-equals predicate or a ``subject_ref`` that does not
     reference this read — a recipe defect (teardown has already run, so no
-    record leaks)."""
+    record leaks).
+
+    ``materialise`` (C4): the run's temporal materialiser
+    (``TemporalBoundaryClient.materialise_value``) — a symbolic EXPECTED
+    value (a claim asserting ``field == RelativeDate(RUN_DATE, n)``, the
+    FL08 shape) anchors to the SAME run date the payload boundary used.
+    Absent materialiser + symbolic expected → the comparison honestly fails
+    (never a silent pass)."""
     pred = assertion.predicate
     if pred.predicate not in _SUPPORTED_DATA_PREDICATES:
         raise UnsupportedPredicateError(
@@ -1342,8 +1352,11 @@ def _run_ground(assertion, read_ev, *, ordinal) -> AssertEvidence:
         # (D-227.7) — the automation produced nothing, so equality cannot
         # hold (the honest FAILED evaluation, mirroring exists/not_null).
         field = _sf_field(field, read_ev.sobject)
+        expected = pred.value
+        if materialise is not None:
+            expected = materialise(expected)
         held = (read_ev.row_count > 0
-                and _values_equal(read_ev.rows[0].get(field), pred.value))
+                and _values_equal(read_ev.rows[0].get(field), expected))
     end = _now()
     return AssertEvidence(
         step_id=assertion.step_id, ordinal=ordinal, predicate=pred.predicate,

@@ -712,6 +712,30 @@ _FB_TRANSFORM_CALL_RE = _re.compile(r"^\s*([A-Z]+)\s*\(\s*(.*?)\s*\)\s*$",
                                     _re.S)
 _FB_TRANSFORM_ARG_RE = _re.compile(r"^\{!\$Record\.([A-Za-z0-9_]+)\}$")
 
+# IR v2 (C4 / FL08 slice): the bounded TEMPORAL grammar — a Date formula of
+# the shape ``{!$Flow.CurrentDate} ± <int>`` grounds as a relative-date
+# stamp (offset days from the run's date). Anything else (datetime math,
+# cross-field date arithmetic, functions) stays outside — named refusal.
+_FB_TEMPORAL_RE = _re.compile(
+    r"^\s*\{!\$Flow\.CurrentDate\}\s*([+-])\s*(\d+)\s*$")
+
+
+def _fb_parse_temporal_formula(formula) -> Optional[int]:
+    """``{!$Flow.CurrentDate} + 5`` → ``5`` (offset days; sign honoured);
+    ``None`` outside the bounded grammar. Only ``dataType: Date`` formulas
+    are eligible (a DateTime carries a time-of-day the protocol does not
+    model)."""
+    if not isinstance(formula, dict) or formula.get("dataType") != "Date":
+        return None
+    expr = formula.get("expression")
+    if not isinstance(expr, str):
+        return None
+    m = _FB_TEMPORAL_RE.match(expr)
+    if m is None:
+        return None
+    sign, days = m.groups()
+    return int(days) * (-1 if sign == "-" else 1)
+
 
 def _fb_parse_transform_formula(expression) -> Optional[tuple]:
     """Parse a bounded transform formula into ``(chain, source_field)`` where
@@ -764,22 +788,29 @@ def apply_transform_chain(chain, value):
 
 def _fb_entry_filter_guard(f) -> Optional[tuple]:
     """Parse one start-element entry filter into a guard tuple. Bounded to
-    the ``IsNull`` shape (``{field, operator: "IsNull", value: {booleanValue}}``
-    — the field is a BARE api-name on the trigger object). Anything else →
-    ``None`` and the flow keeps today's ``entry_conditions_not_consumed``
-    demotion."""
+    the ``IsNull`` shape (``{field, operator: "IsNull", value: {booleanValue}}``)
+    and — C4 — the literal ``EqualTo`` shape (the FL08 transition filter,
+    ``Status = "Submitted"``); the field is a BARE api-name on the trigger
+    object. Anything else → ``None`` and the flow keeps today's
+    ``entry_conditions_not_consumed`` demotion."""
     if not isinstance(f, dict):
         return None
     field = f.get("field")
     if not isinstance(field, str) or not field or "." in field:
         return None
-    if f.get("operator") != "IsNull":
-        return None
+    op = f.get("operator")
     value = f.get("value")
-    flag = value.get("booleanValue") if isinstance(value, dict) else None
-    if not isinstance(flag, bool):
-        return None
-    return (field, "IsNull", flag)
+    if op == "IsNull":
+        flag = value.get("booleanValue") if isinstance(value, dict) else None
+        if not isinstance(flag, bool):
+            return None
+        return (field, "IsNull", flag)
+    if op == "EqualTo":
+        lit = _flow_assignment_value(value)
+        if lit is None:
+            return None
+        return (field, "EqualTo", lit)
+    return None
 
 
 def flow_behaviour(attributes: Optional[dict]) -> dict:
@@ -872,7 +903,8 @@ def flow_behaviour(attributes: Optional[dict]) -> dict:
         trig["entry_filters_consumed"] = True
 
     def _behaviour(state, kind=None, guard=(), field=None, value=None,
-                   reasons=(), transform=(), source_field=None, negated=()):
+                   reasons=(), transform=(), source_field=None, negated=(),
+                   offset_days=None):
         return {"state": state, "kind": kind,
                 "guard": [list(g) for g in entry_guard + tuple(guard)],
                 # C1: the negation-context — each entry means NOT(f op v);
@@ -881,6 +913,8 @@ def flow_behaviour(attributes: Optional[dict]) -> dict:
                 "negated_guards": [list(g) for g in negated],
                 "field": field, "value": value,
                 "transform": list(transform), "source_field": source_field,
+                # C4: relative-date stamps — RUN_DATE + offset_days
+                "offset_days": offset_days,
                 "reasons": list(reasons)}
 
     # ── flow-level gates: not record-triggered / no immediate path ──
@@ -968,6 +1002,7 @@ def flow_behaviour(attributes: Optional[dict]) -> dict:
                     if op != "Assign":
                         reasons.append(f"non_assign_operator:{op}")
                     transform = None
+                    offset_days = None
                     if value is None and not reasons:
                         val = item.get("value")
                         ref = (val or {}).get("elementReference") \
@@ -975,7 +1010,12 @@ def flow_behaviour(attributes: Optional[dict]) -> dict:
                         formula = formulas_by_name.get(ref) if ref else None
                         transform = _fb_parse_transform_formula(
                             (formula or {}).get("expression"))
-                    if value is None and transform is None:
+                        if transform is None:
+                            # C4: the temporal grammar — a Date formula of
+                            # the {!$Flow.CurrentDate} ± n shape
+                            offset_days = _fb_parse_temporal_formula(formula)
+                    if value is None and transform is None \
+                            and offset_days is None:
                         reasons.append("non_literal_assignment_value")
                     if reasons:
                         pb.append(_behaviour(
@@ -989,6 +1029,11 @@ def flow_behaviour(attributes: Optional[dict]) -> dict:
                             _FB_GROUNDED, kind="set_record_field_transform",
                             guard=guard, negated=negated, field=field,
                             transform=chain, source_field=source_field))
+                    elif offset_days is not None:
+                        pb.append(_behaviour(
+                            _FB_GROUNDED, kind="set_record_field_temporal",
+                            guard=guard, negated=negated, field=field,
+                            offset_days=offset_days))
                     else:
                         pb.append(_behaviour(
                             _FB_GROUNDED, kind="set_record_field",
@@ -1139,7 +1184,16 @@ def flow_behaviour(attributes: Optional[dict]) -> dict:
     # ── flow-level demotions of otherwise-grounded behaviours ──
     if trig["entry_filter_count"] and not trig["entry_filters_consumed"]:
         demote_reasons.append("entry_conditions_not_consumed")
-    if trig["requires_change_to_meet"]:
+    # C4: "updated to meet" is CONSUMED for Update-trigger flows whose entry
+    # filters parsed — the update-shaped test (create NOT meeting the filter,
+    # update INTO meeting it) realizes exactly that transition. For
+    # create-including triggers the flag stays a demotion (a create-scoped
+    # consumer has no transition to stage; honest limit until evidence
+    # demands it).
+    if trig["requires_change_to_meet"] and not (
+            trig["record_trigger_type"] == "Update"
+            and (trig["entry_filters_consumed"]
+                 or not trig["entry_filter_count"])):
         demote_reasons.append("updated_to_meet_not_consumed")
     # C2 (after-save admission): the save phase is no longer a flow-level
     # demotion — S4 reads post-commit, so after-save writes are observable
@@ -1148,7 +1202,11 @@ def flow_behaviour(attributes: Optional[dict]) -> dict:
     # transform's raw witness would face the validation rules BEFORE the
     # flow runs — unconstructible), and future order-of-execution reasoning
     # (B3) reads trigger.save_phase.
-    if trig["record_trigger_type"] not in ("Create", "CreateAndUpdate"):
+    # C4 admits "Update" (the transition-shaped trigger); consumers that
+    # can only stage a CREATE must exclude Update-only flows themselves —
+    # every projection below carries the create-fireable gate.
+    if trig["record_trigger_type"] not in ("Create", "CreateAndUpdate",
+                                           "Update"):
         demote_reasons.append(
             f"trigger_type_not_in_grammar:{trig['record_trigger_type']}")
 
@@ -1205,6 +1263,11 @@ def flow_grounded_transforms(attributes: Optional[dict]) -> tuple:
     ir = flow_behaviour(attributes)
     if ir["trigger"]["save_phase"] != "before_save":
         return ()
+    # C4 (Update-trigger admission): this projection feeds CREATE-scoped
+    # intents — an Update-only flow never fires on the staged create.
+    if ir["trigger"]["record_trigger_type"] not in ("Create",
+                                                    "CreateAndUpdate"):
+        return ()
     out = [
         {"field": b["field"], "transform": tuple(b["transform"]),
          "source_field": b["source_field"],
@@ -1224,8 +1287,14 @@ def flow_grounded_same_record_effects(attributes: Optional[dict]) -> frozenset:
     triggering record via GROUNDED behaviours only. Unsupported/opaque
     behaviours contribute nothing — honest refusal is preserved upstream.
     Shape-compatible with ``flow_effects()["same_record"]`` so the
-    automation-effect binder consumes both with one code path."""
+    automation-effect binder consumes both with one code path. CREATE-
+    FIREABLE ONLY (C4): the binder it feeds grounds create-scoped claims —
+    an Update-only flow never fires on the staged create, so its literal
+    arms are not producers here."""
     ir = flow_behaviour(attributes)
+    if ir["trigger"]["record_trigger_type"] not in ("Create",
+                                                    "CreateAndUpdate"):
+        return frozenset()
     return frozenset(
         (b["field"], b["value"]) for b in ir["behaviours"]
         if b["state"] == _FB_GROUNDED and b["kind"] == "set_record_field"
@@ -1240,8 +1309,12 @@ def flow_grounded_guarded_effects(attributes: Optional[dict]) -> tuple:
     tuples of ``(field, operator, value)`` triples. Order is the IR's walk
     order (for an ordered decision, rule order — the first-match fact).
     Consumers derive the create state that makes a SPECIFIC arm fire; the
-    frozenset projection remains the binder's match surface."""
+    frozenset projection remains the binder's match surface. Create-fireable
+    only (C4), mirroring the frozenset projection's gate."""
     ir = flow_behaviour(attributes)
+    if ir["trigger"]["record_trigger_type"] not in ("Create",
+                                                    "CreateAndUpdate"):
+        return ()
     return tuple(
         {"field": b["field"], "value": b["value"],
          "guard": tuple(tuple(g) for g in b["guard"]),
@@ -1250,3 +1323,29 @@ def flow_grounded_guarded_effects(attributes: Optional[dict]) -> tuple:
         if b["state"] == _FB_GROUNDED and b["kind"] == "set_record_field"
         and b["field"] is not None
     )
+
+
+def flow_grounded_temporal_effects(attributes: Optional[dict]) -> tuple:
+    """The binder-facing projection of the IR's GROUNDED temporal behaviours
+    (C4 / FL08 slice): ``{"field", "offset_days", "guard",
+    "negated_guards"}`` per behaviour — the field the Flow verifiably stamps
+    with RUN_DATE ± offset_days, and the fire condition. UPDATE-TRIGGER ONLY
+    in v1: the consumer authors the transition shape (create NOT meeting the
+    entry filter, update INTO meeting it), which is the semantics
+    ``doesRequireRecordChangedToMeetCriteria`` promises; a create-scoped
+    temporal stamp waits for evidence that needs it. The trigger's entry
+    filters already ride each behaviour's ``guard``."""
+    ir = flow_behaviour(attributes)
+    if ir["trigger"]["record_trigger_type"] != "Update":
+        return ()
+    out = [
+        {"field": b["field"], "offset_days": b["offset_days"],
+         "guard": tuple(tuple(g) for g in b["guard"]),
+         "negated_guards": tuple(tuple(g) for g in b["negated_guards"])}
+        for b in ir["behaviours"]
+        if b["state"] == _FB_GROUNDED
+        and b["kind"] == "set_record_field_temporal"
+        and b["field"] is not None
+    ]
+    out.sort(key=lambda d: (d["field"], d["offset_days"]))
+    return tuple(out)

@@ -206,3 +206,48 @@ def test_emitted_temporal_experiment():
         kinds.append((relative_date_offset(dv),
                       bool(update.expect_rejection)))
     assert sorted(kinds) == [(-1, True), (0, False), (1, False)]
+
+
+# -- C4: the assertion side ---------------------------------------------------------
+
+def test_boundary_client_materialises_single_values():
+    inner = _Client()
+    ref = TemporalReference(reference_date=date(2026, 7, 10),
+                            reference_timezone="UTC",
+                            captured_at="", source="test")
+    client = TemporalBoundaryClient(inner, ref)
+    assert client.materialise_value(relative_date(5)) == "2026-07-15"
+    assert client.materialise_value("Gold") == "Gold"     # pass-through
+    assert client.materialise_value(None) is None
+
+
+def test_run_ground_materialises_a_symbolic_expected():
+    # the FL08 assert shape: field == RelativeDate(RUN_DATE, +5) anchors to
+    # the SAME run date the payload boundary used
+    from types import SimpleNamespace
+    from primeqa.execution_engine.data_executor import _run_ground
+    inner = _Client()
+    ref = TemporalReference(reference_date=date(2026, 7, 10),
+                            reference_timezone="UTC",
+                            captured_at="", source="test")
+    client = TemporalBoundaryClient(inner, ref)
+    read_ev = SimpleNamespace(step_id="read-back", sobject="X__c",
+                              row_count=1,
+                              rows=[{"D__c": "2026-07-15", "Id": "x1"}])
+    assertion = SimpleNamespace(
+        step_id="assert-1",
+        predicate=SimpleNamespace(predicate="equals",
+                                  subject_ref="read-back.D__c",
+                                  value=relative_date(5)))
+    ev = _run_ground(assertion, read_ev, ordinal=3,
+                     materialise=client.materialise_value)
+    assert ev.held is True
+    # a wrong observed date fails honestly
+    read_ev.rows[0]["D__c"] = "2026-07-14"
+    ev = _run_ground(assertion, read_ev, ordinal=3,
+                     materialise=client.materialise_value)
+    assert ev.held is False
+    # absent materialiser + symbolic expected -> honest fail, never a pass
+    read_ev.rows[0]["D__c"] = "2026-07-15"
+    ev = _run_ground(assertion, read_ev, ordinal=3)
+    assert ev.held is False

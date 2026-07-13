@@ -66,6 +66,18 @@ class TemporalBoundaryClient:
     def reference(self) -> Optional[TemporalReference]:
         return self._reference
 
+    def materialise_value(self, value):
+        """Materialise ONE symbolic value (C4: the assertion side — a claim
+        whose EXPECTED value is a RelativeDate needs the same run-anchored
+        date the payload boundary uses). Captures the run reference lazily,
+        exactly like the payload path; non-symbolic values pass through
+        untouched."""
+        if not is_symbolic(value):
+            return value
+        if self._reference is None:
+            self._reference = capture_temporal_reference(self._inner)
+        return materialise(value, self._reference.reference_date)
+
     def _mat(self, payload):
         if not payload or not any(is_symbolic(v) for v in payload.values()):
             return payload
