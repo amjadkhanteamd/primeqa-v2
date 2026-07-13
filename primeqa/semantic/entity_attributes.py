@@ -702,12 +702,14 @@ def _fb_prior_field(ref) -> Optional[str]:
     return None
 
 
-def _fb_guard_condition(cond) -> Optional[tuple]:
+def _fb_guard_condition(cond, formulas=None):
     """Parse one decision-rule condition into ``(phase, (field, operator,
     value))`` where ``phase`` is ``"current"`` (``$Record.``) or ``"prior"``
-    (``$Record__Prior.``, C5 — the pre-update state an update-shaped test
-    stages as its CREATE). None when outside the bounded grammar (unknown
-    left side, unknown operator, non-literal right value)."""
+    (``$Record__Prior.``, C5). Wave 2 (CP4): a left ref naming a FORMULA
+    element grounds iff the formula is a bare ``$Record`` passthrough
+    (guardable as the field itself); any other formula returns the STRING
+    ``formula_guard_not_deterministic:<FN>`` — an explicit named refusal.
+    None when outside the bounded grammar for every other cause."""
     if not isinstance(cond, dict):
         return None
     ref = cond.get("leftValueReference")
@@ -716,6 +718,12 @@ def _fb_guard_condition(cond) -> Optional[tuple]:
     if field is None:
         field = _fb_prior_field(ref)
         phase = "prior"
+    if field is None and isinstance(ref, str) and ref:
+        status, got = _fb_guard_formula_field(ref, formulas)
+        if status == "field":
+            field, phase = got, "current"
+        elif status == "refused":
+            return got            # the NAMED refusal string
     operator = cond.get("operator")
     if field is None or operator not in _FB_GUARD_OPERATORS:
         return None
@@ -749,6 +757,36 @@ _FB_TRANSFORM_ARG_RE = _re.compile(r"^\{!\$Record\.([A-Za-z0-9_]+)\}$")
 # cross-field date arithmetic, functions) stays outside — named refusal.
 _FB_TEMPORAL_RE = _re.compile(
     r"^\s*\{!\$Flow\.CurrentDate\}\s*([+-])\s*(\d+)\s*$")
+
+# Wave 2 (CP4): the DETERMINISTIC formula-guard subset — a formula whose
+# expression is a bare ``{!$Record.Field}`` passthrough is semantics-
+# preserving in a guard position (the only translation needing no
+# inversion). Everything else refuses BY NAME.
+_FB_FORMULA_PASSTHROUGH_RE = _re.compile(
+    r"^\s*\{!\$Record\.([A-Za-z0-9_]+)\}\s*$")
+_FB_FORMULA_FN_RE = _re.compile(r"([A-Z][A-Z_0-9]{1,30})\s*\(")
+
+
+def _fb_guard_formula_field(name, formulas) -> tuple:
+    """Resolve a decision-condition left ref that names a FORMULA element:
+    ``("field", <bare>)`` when the formula is a bare ``$Record`` passthrough
+    (guardable as the field itself); ``("refused", <named reason>)`` for any
+    other formula — ``formula_guard_not_deterministic:<FN>`` names the first
+    function (or 'expression'); ``("unknown", None)`` when ``name`` is not a
+    formula at all (the caller keeps its existing posture)."""
+    f = (formulas or {}).get(name)
+    if not isinstance(f, dict):
+        return ("unknown", None)
+    expr = f.get("expression")
+    if isinstance(expr, str):
+        m = _FB_FORMULA_PASSTHROUGH_RE.match(expr)
+        if m:
+            return ("field", m.group(1))
+        fn = _FB_FORMULA_FN_RE.search(expr)
+        return ("refused",
+                f"formula_guard_not_deterministic:"
+                f"{fn.group(1) if fn else 'expression'}")
+    return ("refused", "formula_guard_not_deterministic:expression")
 
 
 def _fb_parse_submit_action(el) -> Optional[str]:
@@ -1233,16 +1271,20 @@ def flow_behaviour(attributes: Optional[dict]) -> dict:
 
     def _parse_rule(rule):
         """One decision rule -> ``(current_conds, prior_conds)`` (each a
-        tuple of (field, op, value)) or None when out of grammar. C5: prior
-        conditions ($Record__Prior) are carried separately — a state the
-        update-shaped test stages as its CREATE, never a save-time guard."""
+        tuple of (field, op, value)), None when out of grammar, or a
+        STRING — the CP4 named refusal for a non-deterministic formula
+        guard (surfaced verbatim as the demote reason). C5: prior
+        conditions ($Record__Prior) are carried separately."""
         logic = rule.get("conditionLogic")
         conds = [c for c in _flow_md_list(rule.get("conditions"))
                  if isinstance(c, dict)]
         if logic not in (None, "and") or not conds \
                 or len(conds) > _FB_MAX_RULE_CONDITIONS:
             return None
-        parsed = [_fb_guard_condition(c) for c in conds]
+        parsed = [_fb_guard_condition(c, formulas_by_name) for c in conds]
+        named = next((pc for pc in parsed if isinstance(pc, str)), None)
+        if named is not None:
+            return named
         if any(pc is None for pc in parsed):
             return None
         return (tuple(c for ph, c in parsed if ph == "current"),
@@ -1295,10 +1337,14 @@ def flow_behaviour(attributes: Optional[dict]) -> dict:
                 target = None
                 break
             parsed_rules = [_parse_rule(r) for r in rules]
-            if any(pr_ is None for pr_ in parsed_rules):
-                demote_reasons.append("unparseable_guard_condition")
+            _named = next((pr_ for pr_ in parsed_rules
+                           if isinstance(pr_, str)), None)
+            if _named is not None or any(pr_ is None
+                                         for pr_ in parsed_rules):
+                reason = _named or "unparseable_guard_condition"
+                demote_reasons.append(reason)
                 pre_behaviours.append(_behaviour(
-                    _FB_UNSUPPORTED, reasons=["unparseable_guard_condition"]))
+                    _FB_UNSUPPORTED, reasons=[reason]))
                 target = None
                 break
             # C5: prior-state conditions are bounded to SINGLE-RULE decisions

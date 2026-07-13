@@ -802,3 +802,58 @@ def test_off_decision_behaviours_have_no_branch():
     ir2 = flow_behaviour(_load("PLS_FB_FL02_Normalize_External_Ref"))
     [b2] = ir2["behaviours"]
     assert b2["branch"] is None     # FL02's transform is pre-decision linear
+
+
+# ── Wave 2 (CP4): formula guards — deterministic subset + named refusals ─
+
+def _formula_guard_flow(expression, formulas_extra=None):
+    return {"Metadata": {
+        "start": {"object": "X__c", "triggerType": "RecordBeforeSave",
+                  "recordTriggerType": "Create",
+                  "connector": {"targetReference": "Dec"}},
+        "formulas": [{"name": "fGuard", "dataType": "Number",
+                      "expression": expression}] + (formulas_extra or []),
+        "decisions": [{"name": "Dec", "rules": [
+            {"name": "R1", "conditionLogic": "and",
+             "conditions": [{"leftValueReference": "fGuard",
+                             "operator": "GreaterThanOrEqualTo",
+                             "rightValue": {"numberValue": 10.0}}],
+             "connector": {"targetReference": "Set"}}]}],
+        "assignments": [
+            {"name": "Set",
+             "assignmentItems": [{"assignToReference": "$Record.F__c",
+                                  "operator": "Assign",
+                                  "value": {"stringValue": "v"}}]},
+        ],
+    }}
+
+
+def test_passthrough_formula_guard_grounds_as_the_field():
+    ir = flow_behaviour(_formula_guard_flow("{!$Record.Amount__c}"))
+    grounded = [b for b in ir["behaviours"] if b["state"] == "grounded"]
+    [b] = grounded
+    assert b["guard"] == [["Amount__c", "GreaterThanOrEqualTo", 10.0]]
+
+
+def test_non_deterministic_formula_guard_refuses_by_name():
+    ir = flow_behaviour(_formula_guard_flow(
+        "FLOOR({!$Record.Amount__c} / 100)"))
+    reasons = {r for b in ir["behaviours"] for r in b["reasons"]}
+    assert "formula_guard_not_deterministic:FLOOR" in reasons
+    assert all(b["state"] != "grounded" for b in ir["behaviours"])
+
+
+def test_functionless_formula_guard_refuses_as_expression():
+    ir = flow_behaviour(_formula_guard_flow(
+        "{!$Record.A__c} + {!$Record.B__c}"))
+    reasons = {r for b in ir["behaviours"] for r in b["reasons"]}
+    assert "formula_guard_not_deterministic:expression" in reasons
+
+
+def test_unknown_left_ref_keeps_the_generic_reason():
+    md = _formula_guard_flow("{!$Record.Amount__c}")
+    md["Metadata"]["decisions"][0]["rules"][0]["conditions"][0][
+        "leftValueReference"] = "someVariable"
+    ir = flow_behaviour(md)
+    reasons = {r for b in ir["behaviours"] for r in b["reasons"]}
+    assert "unparseable_guard_condition" in reasons
