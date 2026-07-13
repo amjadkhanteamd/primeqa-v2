@@ -323,3 +323,74 @@ def test_narm_intent_in_a_multi_intent_batch():
     assert len(res.grounded_candidates) == 4
     assert len({c.path_id for c in res.grounded_candidates}) == 1
     assert len(state.groundings) == 4
+
+
+# ---------------------------------------------------------------------------
+# convergence arc — the admission dismissal is no longer a feedback black hole
+# ---------------------------------------------------------------------------
+
+def test_admission_dismissal_carries_field_offer_and_detail():
+    # the replay-ranked #1 shape: automation_name == field_name (the
+    # calculated-field idiom) with a near-miss field name — previously
+    # dismissed with NO detail and NO offer
+    core = _order_world()
+    state = _state()
+    it = _intent("Gold")
+    h = it["intent_descriptor"]["target_subject_hint"]
+    h["field_name"] = "PLS_FB_Order__c.Commercial_Tier__c"
+    h["automation_name"] = "PLS_FB_Order__c.Commercial_Tier__c"
+    res = core.resolve_intent(intent_input=it, ctx=_ctx(), state=state)
+    assert res.refusal is not None
+    pay = res.refusal.payload
+    assert "did not resolve" in str(pay.get("detail"))
+    offer = pay.get("candidates")
+    assert offer and any(
+        c["sf_api_name"] == "PLS_FB_Order__c.PLS_FB_Tier__c"
+        for c in offer["candidates"])
+
+
+def test_admission_dismissal_resolved_field_names_the_capability():
+    # resolved field + bogus automation + non-arm value → the dismissal
+    # teaches the verifiable arms and the framing (no silent dead end)
+    core = _order_world()
+    state = _state()
+    it = _intent("Diamond")
+    it["intent_descriptor"]["target_subject_hint"]["automation_name"] = \
+        "PLS_FB_Order__c.PLS_FB_Tier__c"
+    res = core.resolve_intent(intent_input=it, ctx=_ctx(), state=state)
+    assert res.refusal is not None
+    detail = str(res.refusal.payload.get("detail"))
+    assert "verifiably WRITTEN by automation" in detail
+    assert "automation-effect" in detail
+    assert "Gold" in detail   # the arm values are named
+
+
+def test_admission_dismissal_no_producer_field_says_stop():
+    # resolved field that NO automation writes → honest stop-retrying signal
+    core = _order_world()
+    state = _state()
+    it = _intent("x")
+    h = it["intent_descriptor"]["target_subject_hint"]
+    h["field_name"] = "PLS_FB_Order__c.PLS_FB_Amount__c"
+    h["automation_name"] = "PLS_FB_Order__c.PLS_FB_Amount__c"
+    res = core.resolve_intent(intent_input=it, ctx=_ctx(), state=state)
+    assert res.refusal is not None
+    detail = str(res.refusal.payload.get("detail"))
+    assert "NO automation on the subject verifiably writes it" in detail
+    assert "no_admissible_test" in detail
+
+
+def test_update_trigger_fields_refusal_carries_offer():
+    core = _order_world()
+    state = _state()
+    it = _intent("Gold")
+    it["intent_descriptor"]["target_subject_hint"]["update_trigger_fields"] = [
+        {"field_name": "PLS_FB_Order__c.Amont__c", "value": 60000}]
+    res = core.resolve_intent(intent_input=it, ctx=_ctx(), state=state)
+    assert res.refusal is not None
+    pay = res.refusal.payload
+    assert "update_trigger_fields did not ground" in str(pay.get("detail"))
+    offer = pay.get("candidates")
+    assert offer and any(
+        c["sf_api_name"] == "PLS_FB_Order__c.PLS_FB_Amount__c"
+        for c in offer["candidates"])

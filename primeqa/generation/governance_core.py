@@ -1419,6 +1419,67 @@ def _field_has_verifiable_producer(flow_entities, field_hint,
     return False
 
 
+def _field_capability_summary(flow_entities, field_hint) -> dict:
+    """What the substrate can VERIFY about writes to ``field_hint`` — the
+    structured descriptor shared by admission and grounding feedback (the
+    convergence arc: every field-referencing refusal speaks the same
+    vocabulary). Pure over the Behaviour-IR projections; bounded; never
+    raises. Keys: ``literal_values`` (create-fireable ladder arms),
+    ``transform`` / ``temporal`` / ``transition`` (bools), ``flows`` (the
+    producing flow api names, sorted)."""
+    bare = (field_hint.rsplit(".", 1)[-1]
+            if isinstance(field_hint, str) and field_hint else None)
+    out = {"literal_values": [], "transform": False, "temporal": False,
+           "transition": False, "flows": set()}
+    if bare is None:
+        out["flows"] = []
+        return out
+    try:
+        for ent in flow_entities:
+            attrs = getattr(ent, "attributes", None)
+            for b in flow_grounded_guarded_effects(attrs):
+                if b["field"] == bare:
+                    out["literal_values"].append(b["value"])
+                    out["flows"].add(ent.sf_api_name)
+            for beh, key in ((flow_grounded_transforms(attrs), "transform"),
+                             (flow_grounded_temporal_effects(attrs),
+                              "temporal"),
+                             (flow_grounded_transition_effects(attrs),
+                              "transition")):
+                for b in beh:
+                    if b["field"] == bare:
+                        out[key] = True
+                        out["flows"].add(ent.sf_api_name)
+    except Exception:   # noqa: BLE001 — feedback must never break grounding
+        pass
+    out["literal_values"] = sorted({str(v) for v in out["literal_values"]})
+    out["flows"] = sorted(out["flows"])
+    return out
+
+
+def _capability_line(field_name, summary) -> str:
+    """The model-facing feedback line naming what IS verifiable on the
+    field — appended to refusals so a mis-framed or mis-valued intent can
+    converge instead of dead-ending. Empty when nothing is verifiable."""
+    shapes = []
+    if summary["literal_values"]:
+        vals = summary["literal_values"][:6]
+        shapes.append(f"literal value(s) {vals}")
+    if summary["transform"]:
+        shapes.append("a normalized transform of the input")
+    if summary["temporal"]:
+        shapes.append("a relative-date stamp")
+    if summary["transition"]:
+        shapes.append("a state-transition-guarded write")
+    if not shapes:
+        return ""
+    flows = ", ".join(summary["flows"][:3])
+    return (f" NOTE: {field_name} is verifiably WRITTEN by automation "
+            f"({flows}) as {'; '.join(shapes)} — frame this as an "
+            f"automation-effect claim on that field, and OMIT "
+            f"expected_value where the org derives the value")
+
+
 def _field_regex_patterns(neighborhood, bare_field):
     """The REGEX format patterns the subject's ACTIVE validation rules pin on
     ``bare_field``, plus the names of active rules that MENTION the field but
@@ -1719,18 +1780,56 @@ class AdmissibilityEngine:
             cand.admissibility_layer = AdmissibilityLayer.LAYER_1.value
         else:
             cand.dismissal_reason = "insufficient_grounding"
-            # B0: a value-claim's failed FIELD reference gets a grounded
-            # near-miss offer (rides the ungrounded-claim payload -> the D-340
-            # recovery re-prompt) so a wrong guess can recover instead of
-            # decaying into a blanket model self-refusal. Deliberately FIELDS
-            # ONLY: an automation-effect's automation hint gets NO candidates —
+            # B0: a failed FIELD reference gets a grounded near-miss offer
+            # (rides the ungrounded-claim payload -> the D-340 recovery
+            # re-prompt) so a wrong guess can recover instead of decaying
+            # into a blanket model self-refusal. Deliberately FIELDS ONLY:
+            # an automation-effect's automation hint gets NO candidates —
             # supplying Flow/ApprovalProcess names would let the D-299
             # name-trust binding attach an automation without verifying its
             # effect (live-observed wrong-attribution at the B0 exit gate);
             # the LLM never names automations (D-318), so the substrate must
             # never teach it to.
-            cand.recovery = self._named_ref_recovery(
-                claim_kind, fields, field_hint)
+            # Convergence arc (replay-measured): the automation-effect
+            # Layer-1 dismissal was a FEEDBACK BLACK HOLE — 113/144
+            # historical dismissals were the `automation_name==field_name`
+            # calculated-field idiom with a near-miss field, dismissed with
+            # no detail and no offer, and the model abandoned the AC. The
+            # dismissal now says WHY, honestly: a MISSED field carries the
+            # ranked near-miss offer + tail (fields only — automation names
+            # are never offered, the D-318/B0 law); a RESOLVED field with no
+            # verifiable producer says so with NO offer (the reference was
+            # right — candidates would be noise); a resolved field WITH
+            # producers names the framing that grounds.
+            _ae_field_resolved = (
+                claim_kind == "automation-effect-claim" and field_hint
+                and any(r.entity.sf_api_name == field_hint for r in fields))
+            if not (claim_kind == "automation-effect-claim"
+                    and _ae_field_resolved):
+                cand.recovery = self._named_ref_recovery(
+                    claim_kind, fields, field_hint)
+            if claim_kind == "automation-effect-claim" and field_hint:
+                resolved = _ae_field_resolved
+                if not resolved:
+                    _tail, _ = _field_recovery_tail([field_hint],
+                                                    neighborhood)
+                    cand.dismissal_detail = (
+                        f"the observed field {field_hint!r} did not resolve "
+                        f"on the subject and no automation verifiably "
+                        f"produces the claimed effect." + (_tail or ""))
+                else:
+                    _summ = _field_capability_summary(
+                        [r.entity for r in flows], field_hint)
+                    _cap = _capability_line(field_hint, _summ)
+                    cand.dismissal_detail = (
+                        (f"no automation on the subject verifiably writes "
+                         f"{field_hint!r} the claimed way." + _cap)
+                        if _cap else
+                        (f"{field_hint!r} resolves, but NO automation on "
+                         f"the subject verifiably writes it — do not "
+                         f"re-propose this as an automation effect; if the "
+                         f"requirement still implies it, address it with "
+                         f"no_admissible_test"))
         return cand
 
     def _named_ref_recovery(self, claim_kind: str, fields: list,
@@ -1741,7 +1840,8 @@ class AdmissibilityEngine:
         nothing clears the threshold. Automation hints are deliberately NOT
         recovered (see caller)."""
         try:
-            if claim_kind == "value-claim" and field_hint:
+            if claim_kind in ("value-claim",
+                              "automation-effect-claim") and field_hint:
                 pool = [(r.entity.sf_api_name, r.entity.display_name)
                         for r in fields if r.entity.sf_api_name]
                 cands = _recovery.rank_candidates(field_hint, pool)
@@ -2848,14 +2948,41 @@ class GovernanceCore:
                             archetype, claim_kind, detail=got))
                 trig_obj_ep, trig_lookup_ep = got
             if field_ent is None or to_value is None:
+                # Convergence arc: this refusal was a dead end (no offers,
+                # no framing guidance) — the #2 replay-ranked class (the
+                # SLA/reopen misframe: 100% of KIND_MISFRAME was
+                # state-transition on an automation-written field, and the
+                # kind-swap variant rescues 63% deterministically). A
+                # missed field carries the ranked near-miss tail; a field
+                # the org verifiably WRITES names the automation-effect
+                # framing.
+                _voc, _offer = "", None
+                if field_ent is None and hint.get("field_name"):
+                    _voc, _offer = _field_recovery_tail(
+                        [hint.get("field_name")], neighborhood)
+                _cap = ""
+                _cap_field = None
+                if field_ent is not None:
+                    _cap_field = field_ent.sf_api_name
+                elif _offer and (_offer.get("candidates") or []):
+                    _cap_field = _offer["candidates"][0].get("sf_api_name")
+                if _cap_field:
+                    _st_flow_ents = [
+                        r.entity for r in neighborhood
+                        if r.edge_type == EDGE_FLOW
+                        and r.entity.entity_type == "Flow"]
+                    _cap = _capability_line(
+                        _cap_field,
+                        _field_capability_summary(_st_flow_ents, _cap_field))
                 return IntentResolution(
                     grounded_candidates=[], next_action=NextAction.REFUSE,
                     interpretation_delta=delta,
                     refusal=self._router.emission_deferred(
                         archetype, claim_kind,
-                        detail=("state-transition needs a verifiable to-state: "
-                                "field_name (existing on the subject) + "
-                                "expected_value")))
+                        detail=("state-transition needs a verifiable "
+                                "to-state: field_name (existing on the "
+                                "subject) + expected_value" + _voc + _cap),
+                        candidates=_offer))
             # D-222: the OPTIONAL staged trigger — verified BELONGS_TO the
             # subject like the to-state field; absent or unverifiable -> the
             # unstaged shape (a previously-emittable claim never regresses
@@ -4049,6 +4176,13 @@ class GovernanceCore:
                     proposed_upd, neighborhood,
                     exclude_field=field_ent.sf_api_name)
                 if proposed_upd and not update_trigger_fields:
+                    # Convergence arc: offers for the missed update fields
+                    # (the same B0.2 vocabulary as every other field miss)
+                    _upd_names = [(u or {}).get("field_name")
+                                  for u in (proposed_upd or [])
+                                  if isinstance(u, dict)]
+                    _voc, _offer = _field_recovery_tail(_upd_names,
+                                                        neighborhood)
                     return IntentResolution(
                         grounded_candidates=[], next_action=NextAction.REFUSE,
                         interpretation_delta=delta,
@@ -4057,7 +4191,9 @@ class GovernanceCore:
                             detail=("update_trigger_fields did not ground — "
                                     "the recalculate-on-change premise needs "
                                     "at least one verified (field, value) "
-                                    "pair that is not the observed field")))
+                                    "pair that is not the observed field"
+                                    + _voc),
+                            candidates=_offer))
                 # C4/C5: the substrate-derived TRANSITION replaces model
                 # pairs on the same fields (identity stability, the C3 rule)
                 # — the create stages the before-state, the update the state

@@ -195,3 +195,33 @@ def test_no_temporal_producer_keeps_the_valueless_refusal():
     res = core.resolve_intent(intent_input=_intent(), ctx=_ctx(),
                               state=_state())
     assert res.refusal is not None   # the pre-C4 honest refusal survives
+
+
+# ---------------------------------------------------------------------------
+# convergence arc — the to-state refusal names the offer AND the framing
+# ---------------------------------------------------------------------------
+
+def test_state_transition_to_state_refusal_offers_and_names_the_framing():
+    # the live SLA shape: state-transition-claim with a near-miss field on
+    # an org-STAMPED field — previously a dead end ("needs a verifiable
+    # to-state" with no offers, no guidance); now: ranked field offer + the
+    # capability line naming the automation-effect framing
+    core = _order_world()
+    state = _state()
+    it = _intent()
+    d = it["intent_descriptor"]
+    d["claim_kind_hint"] = "state-transition-claim"
+    d["target_subject_hint"]["field_name"] = \
+        "PLS_FB_Order__c.SLA_Deadline__c"          # near-miss
+    d["target_subject_hint"]["expected_value"] = "2026-07-18"
+    res = core.resolve_intent(intent_input=it, ctx=_ctx(), state=state)
+    assert res.refusal is not None
+    pay = res.refusal.payload
+    detail = str(pay.get("detail"))
+    assert "verifiable to-state" in detail
+    offer = pay.get("candidates")
+    assert offer and any(
+        c["sf_api_name"] == "PLS_FB_Order__c.PLS_FB_SLA_Deadline__c"
+        for c in offer["candidates"])
+    assert "relative-date stamp" in detail
+    assert "automation-effect" in detail

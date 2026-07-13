@@ -182,3 +182,18 @@ def test_outcome_funnel_abandonment():
     assert f["refused_model"] == 1 and f["refused_substrate"] == 2
     assert f["recovery_abandoned_acs"] == [3, 4]
     assert f["claims_written"] == 1
+
+
+def test_classify_negative_underivable_and_no_producer_wordings():
+    ap = ReplayResult(stage="resolved",
+                      refusal_kind="no-admissible-negative-scenario-found",
+                      detail=None)
+    assert classify(_snap(kind="prohibition-claim"), ap, {})[0] == \
+        "NEGATIVE_UNDERIVABLE"
+    ap2 = ReplayResult(
+        stage="resolved", refusal_kind="emission-deferred",
+        detail="automation-effect needs a verifiable effect: field_name + "
+               "expected_value on the subject (or effect_object + "
+               "effect_lookup_field) — no transform, relative-date, or "
+               "classification producer verifiably writes F")
+    assert classify(_snap(), ap2, {})[0] == "NO_PRODUCER"

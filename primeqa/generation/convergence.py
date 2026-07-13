@@ -73,6 +73,10 @@ TAXONOMY: dict = {
     "EMISSION_GAP":
         "groundable but the emission for this claim_kind sub-shape is "
         "not built (substrate gap, not model failure)",
+    "NEGATIVE_UNDERIVABLE":
+        "a negative control whose violation the substrate cannot derive "
+        "from the org's own constraints (the VR negative-derivation "
+        "boundary) — honest refusal by design",
     "GROUNDING_OTHER":
         "a named tail refusal outside the buckets above (audit the note)",
     "MODEL_ABANDONMENT":
@@ -86,7 +90,7 @@ SUBSTRATE_SIDE = {"EMISSION_GAP", "GROUNDING_WITNESS", "ADMISSION_DISMISSAL"}
 MODEL_SIDE = {"LEXICAL_SUBJECT", "LEXICAL_FIELD", "VALUE_SHAPE",
               "KIND_MISFRAME", "MODEL_ABANDONMENT", "MODEL_SELF_REFUSAL"}
 HONEST_LIMIT = {"CAPABILITY_LIMIT_CROSS_OBJECT", "NO_PRODUCER",
-                "GROUNDING_AMBIGUITY"}
+                "GROUNDING_AMBIGUITY", "NEGATIVE_UNDERIVABLE"}
 
 
 # ---------------------------------------------------------------------------
@@ -344,8 +348,12 @@ def classify(snap: IntentSnapshot, as_proposed: ReplayResult,
                 or "nor does any Flow" in detail:
             return ("NO_PRODUCER", detail[:100])
         return ("GROUNDING_AMBIGUITY", detail[:100])
-    if "no Flow on the subject produces" in detail:
+    if "no Flow on the subject produces" in detail \
+            or "no transform, relative-date, or classification producer" \
+            in detail:
         return ("NO_PRODUCER", detail[:100])
+    if kind == "no-admissible-negative-scenario-found":
+        return ("NEGATIVE_UNDERIVABLE", detail[:100] or "negative boundary")
     if kind in ("ungrounded-claim", "UNGROUNDED_CLAIM"):
         return ("ADMISSION_DISMISSAL", detail[:100] or "layer-1 dismissal")
     return ("GROUNDING_OTHER", f"[{kind}] {detail[:100]}")
