@@ -704,3 +704,24 @@ def test_premise_conditioned_wrong_value_refuses():
     res = core.resolve_intent(intent_input=_fl06_intent(expected_value=False),
                               ctx=_ctx(), state=_state())
     assert res.refusal is not None
+
+
+# ---------------------------------------------------------------------------
+# Fault-path honesty — a fault-handler create is never a main-path producer
+# ---------------------------------------------------------------------------
+
+FL13_FIXTURE = os.path.join(os.path.dirname(__file__), "..", "semantic",
+                            "fixtures", "pls_fb_flows",
+                            "PLS_FB_FL13_Fault_Logged_Ledger.json")
+
+
+def test_fault_handler_create_never_grounds_as_main_path_producer():
+    from primeqa.generation.governance_core import _xo_create_producers
+    with open(FL13_FIXTURE) as f:
+        d = json.load(f)
+    flow = _ent("Flow", "PLS_FB_FL13_Fault_Logged_Ledger", "Fault Ledger",
+                attrs={"Metadata": d["Metadata"]})
+    # the MAIN-path ledger create is a producer; the on-fault audit-log
+    # create is NOT (it cannot be provoked deterministically)
+    assert len(_xo_create_producers([flow], "PLS_FB_Ledger_Entry__c")) == 1
+    assert _xo_create_producers([flow], "PLS_FB_Audit_Log__c") == []

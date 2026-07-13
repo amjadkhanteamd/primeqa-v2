@@ -1336,6 +1336,8 @@ def _flows_producing_effect(flow_entities, field_hint, expected_value, effect_ob
             effect_object in eff["cross_object"]
             or any(op["kind"] == "update_records"
                    and op["object"] == effect_object
+                   and not op.get("on_fault_of")
+                   and not op.get("temporal_path")
                    for op in flow_cross_record_effect_ops(attrs)))
         if same or cross:
             out.append(ent)
@@ -1648,7 +1650,11 @@ def _xo_create_producers(flow_entities, effect_object_api):
         for op in flow_cross_record_effect_ops(getattr(ent, "attributes",
                                                        None)):
             if op["kind"] == "create_record" \
-                    and op["object"] == effect_object_api:
+                    and op["object"] == effect_object_api \
+                    and not op.get("on_fault_of") \
+                    and not op.get("temporal_path"):
+                # a fault-handler create is not the main path's producer;
+                # a deferred create is not immediately observable
                 out.append((ent, op))
     return out
 
