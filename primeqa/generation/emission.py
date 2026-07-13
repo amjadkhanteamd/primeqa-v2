@@ -383,6 +383,14 @@ class GroundedAutomationEffect:
     # effect_field == expected — a mis-correlated rollup (the distractor
     # leaking in) and a dead rollup both fail the same assert.
     rollup_spec: Optional[dict] = None
+    # Completion (FL06 slice — premise-conditioned same-record effect): the
+    # SIBLING row whose existence makes the flow's arm fire — {"staged"
+    # ((bare_field, value)...), "correlation" (sibling_field,
+    # subject_field, witness)}. The recipe creates the sibling FIRST, then
+    # the subject sharing the correlation witness, reads the subject back
+    # and asserts the flag — without the sibling the arm provably cannot
+    # fire, so a green means the premise query discriminated.
+    premise_sibling: Optional[dict] = None
     # D-299: the OPTIONAL entry-condition trigger — the (field, value) pairs the
     # create must SET so the Flow's entry gate actually fires (the risk-rating
     # flow gates on StageName='Credit Assessment' AND the KYC/Credit-Score fields
@@ -2344,6 +2352,71 @@ def _author_automation_effect(g: GroundedAutomationEffect) -> EmissionBundle:
         # carried raw (the recipe side; the claim wraps in LiteralValue). Empty
         # trigger_fields () -> today's padding-only shape, byte-identical.
         create_fields = {ep.external_id: val for ep, val in g.trigger_fields}
+        if g.premise_sibling:
+            # Completion (FL06 slice): the premise-conditioned shape — the
+            # sibling is created FIRST (its own save cannot fire the arm:
+            # no match exists yet), then the subject sharing the
+            # correlation witness; the read observes the conditional flag.
+            # All values substrate-derived (deterministic identity).
+            ps = g.premise_sibling
+            field_bare = field_api.split(".", 1)[-1]
+            sib_vals = {f"{object_api}.{f}" if "." not in f else f: v
+                        for f, v in ps["staged"]}
+            gate = ", ".join(f"{k}={v!r}" for k, v in create_fields.items())
+            sib_desc = ", ".join(f"{f}={v!r}" for f, v in ps["staged"])
+            steps = [
+                CreateStep(step_id="create-sibling", target_object=target,
+                           field_values=sib_vals),
+                CreateStep(step_id="create-record", target_object=target,
+                           field_values=dict(create_fields)),
+                ReadStep(step_id="read-effect", target=target,
+                         soql=(f"SELECT Id, {field_bare} FROM {object_api} "
+                               f"WHERE Id = '$create-record.id'"),
+                         fields_to_capture=["Id", field_bare]),
+                DataAssertStep(step_id="assert-effect",
+                               predicate=AssertionPredicate(
+                                   subject_ref=f"read-effect.{field_bare}",
+                                   predicate="equals",
+                                   value=g.effect_value)),
+            ]
+            claim = AutomationEffectClaimBody(
+                automation=automation_ref,
+                automation_primitive=g.automation_primitive,
+                triggering_action=EventDescriptor(
+                    trigger_kind="data-mutation-trigger",
+                    description=(f"creating a {object_api} with {gate} "
+                                 f"when a matching sibling exists "
+                                 f"({sib_desc})")),
+                expected_effect=FieldChangeEffect(changes=StateDescriptor(
+                    field_values={field_api: LiteralValue(
+                        value=g.effect_value)})),
+                affected_fields=[field_ref],
+            )
+            details = (f"create a {object_api} sibling ({sib_desc}), create "
+                       f"the {object_api} under test with {gate}, read it "
+                       f"back, assert the premise-conditioned arm set "
+                       f"{field_bare}={g.effect_value!r} (without the "
+                       f"sibling the arm provably cannot fire)")
+            conditions = SemanticConditionsBody(conditions=[])
+            trigger = DataMutationTriggerBody(
+                operation="create", target=target,
+                identity_context="system", volume="single")
+            recipe = DataRecipeBody(
+                api_choice="rest", identity_context="system",
+                execution_mechanism="direct_api", steps=steps)
+            env = ExecutionEnvironmentBody(auth_assumptions=[AuthAssumption(
+                auth_kind="data_api_user", details=details)])
+            return EmissionBundle(
+                archetype=g.archetype, claim_kind=g.claim_kind,
+                asserted_truth=claim, semantic_conditions=conditions,
+                trigger_kind="data-mutation-trigger",
+                recipe_kind="data-recipe",
+                causal_initiation=trigger, observation_realization=recipe,
+                execution_environment=env,
+                admissibility_layer=AdmissibilityLayer.LAYER_1,
+                caveat_required=requires_caveat(g.claim_kind),
+                caveat_kind=caveat_kind(g.claim_kind),
+            )
         # FL02 slice: the TRANSFORM shape stages the RAW witness ON the effect
         # field itself — the deliberate, documented exception to the k16
         # padding-only rule. Staged != expected by construction (the stash

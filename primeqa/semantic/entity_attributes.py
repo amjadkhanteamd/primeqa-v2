@@ -786,39 +786,18 @@ def _fb_parse_lookup_premise(el) -> Optional[dict]:
     where each filter is ``(field, op, value)`` — ``value`` is a literal or
     ``("$Record", <bare field>)`` for a subject-field correlation (the
     parent-child join the C7 evidence engine will stage). None outside the
-    bounded shape (the element keeps its subject-safe demotion only)."""
+    bounded shape (the element keeps its subject-safe demotion only).
+    Delegates to the SHARED bounded filter grammar (one grammar, two
+    consumers — Completion review: the inline twin drifted a NotEqualTo
+    apart and is gone)."""
     if not isinstance(el, dict):
         return None
     obj = el.get("object")
     if not isinstance(obj, str) or not obj:
         return None
-    if _flow_md_list(el.get("queriedFields")) and False:
-        return None      # queried fields don't bound the premise
-    filters = []
-    for f in _flow_md_list(el.get("filters")):
-        if not isinstance(f, dict):
-            return None
-        fld, op = f.get("field"), f.get("operator")
-        if not isinstance(fld, str) or not fld or "." in fld:
-            return None
-        val = f.get("value")
-        if op == "IsNull":
-            flag = val.get("booleanValue") if isinstance(val, dict) else None
-            if not isinstance(flag, bool):
-                return None
-            filters.append((fld, "IsNull", flag))
-        elif op == "EqualTo":
-            ref = (val or {}).get("elementReference")                 if isinstance(val, dict) else None
-            sub = _fb_record_field(ref) if ref else None
-            if sub is not None:
-                filters.append((fld, "EqualTo", ("$Record", sub)))
-                continue
-            lit = _flow_assignment_value(val)
-            if lit is None:
-                return None
-            filters.append((fld, "EqualTo", lit))
-        else:
-            return None
+    filters = _fb_parse_bounded_filters(el)
+    if filters is None:
+        return None
     return {"object": obj, "filters": tuple(filters),
             "single": bool(el.get("getFirstRecordOnly"))}
 
@@ -855,7 +834,11 @@ def _fb_effect_value(val, formulas) -> tuple:
 
 def _fb_parse_bounded_filters(el):
     """The SHARED bounded filter grammar (premises + filtered updates):
-    list of ``(field, op, literal | ('$Record', bare))`` or None."""
+    list of ``(field, op, literal | ('$Record', bare))`` or None.
+    Operators: ``EqualTo`` (literal or ``$Record`` correlation),
+    ``IsNull`` (bool), and — Completion Program (FL06 slice) —
+    ``NotEqualTo`` with a LITERAL only (an exclusion the staging layer
+    must derive an alternative for, or refuse by name)."""
     filters = []
     for f in _flow_md_list(el.get("filters")):
         if not isinstance(f, dict):
@@ -870,7 +853,8 @@ def _fb_parse_bounded_filters(el):
                 return None
             filters.append((fld, "IsNull", flag))
         elif op == "EqualTo":
-            ref = (val or {}).get("elementReference")                 if isinstance(val, dict) else None
+            ref = (val or {}).get("elementReference") \
+                if isinstance(val, dict) else None
             sub = _fb_record_field(ref) if ref else None
             if sub is not None:
                 filters.append((fld, "EqualTo", ("$Record", sub)))
@@ -879,6 +863,11 @@ def _fb_parse_bounded_filters(el):
             if lit is None:
                 return None
             filters.append((fld, "EqualTo", lit))
+        elif op == "NotEqualTo":
+            lit = _flow_assignment_value(val)
+            if lit is None:
+                return None
+            filters.append((fld, "NotEqualTo", lit))
         else:
             return None
     return filters
@@ -1502,7 +1491,7 @@ def flow_behaviour(attributes: Optional[dict]) -> dict:
                             _FB_UNSUPPORTED, kind="set_record_field",
                             guard=guard, negated=negated, prior=prior,
                             field=field, reasons=reasons,
-                            branch=branch))
+                            branch=branch, premise_guard=premise_guard))
                         pr.extend(reasons)
                     elif transform is not None:
                         chain, source_field = transform
@@ -1510,18 +1499,20 @@ def flow_behaviour(attributes: Optional[dict]) -> dict:
                             _FB_GROUNDED, kind="set_record_field_transform",
                             guard=guard, negated=negated, prior=prior,
                             field=field, transform=chain,
-                            source_field=source_field, branch=branch))
+                            source_field=source_field, branch=branch,
+                            premise_guard=premise_guard))
                     elif offset_days is not None:
                         pb.append(_behaviour(
                             _FB_GROUNDED, kind="set_record_field_temporal",
                             guard=guard, negated=negated, prior=prior,
                             field=field, offset_days=offset_days,
-                            branch=branch))
+                            branch=branch, premise_guard=premise_guard))
                     else:
                         pb.append(_behaviour(
                             _FB_GROUNDED, kind="set_record_field",
                             guard=guard, negated=negated, prior=prior,
-                            field=field, value=value, branch=branch))
+                            field=field, value=value, branch=branch,
+                            premise_guard=premise_guard))
                 connector = el.get("connector")
                 target = (connector or {}).get("targetReference") \
                     if isinstance(connector, dict) else None
@@ -1555,7 +1546,8 @@ def flow_behaviour(attributes: Optional[dict]) -> dict:
                 pb.append(_behaviour(
                     _FB_GROUNDED, kind="submit_for_approval",
                     guard=guard, negated=negated, prior=prior,
-                    process=_fb_parse_submit_action(el), branch=branch))
+                    process=_fb_parse_submit_action(el), branch=branch,
+                    premise_guard=premise_guard))
                 connector = el.get("connector")
                 target = (connector or {}).get("targetReference") \
                     if isinstance(connector, dict) else None
@@ -2095,6 +2087,7 @@ def flow_grounded_transforms(attributes: Optional[dict]) -> tuple:
         if b["state"] == _FB_GROUNDED
         and b["kind"] == "set_record_field_transform"
         and b["field"] is not None
+        and not b.get("premise_guard")
     ]
     out.sort(key=lambda d: (d["field"], d["transform"]))
     return tuple(out)
@@ -2118,6 +2111,7 @@ def flow_grounded_same_record_effects(attributes: Optional[dict]) -> frozenset:
         (b["field"], b["value"]) for b in ir["behaviours"]
         if b["state"] == _FB_GROUNDED and b["kind"] == "set_record_field"
         and b["field"] is not None
+        and not b.get("premise_guard")
     )
 
 
@@ -2141,7 +2135,51 @@ def flow_grounded_guarded_effects(attributes: Optional[dict]) -> tuple:
         for b in ir["behaviours"]
         if b["state"] == _FB_GROUNDED and b["kind"] == "set_record_field"
         and b["field"] is not None
+        and not b.get("premise_guard")
     )
+
+
+def flow_grounded_premise_conditioned_effects(
+        attributes: Optional[dict]) -> tuple:
+    """Completion Program (FL06 slice): GROUNDED literal same-record writes
+    fired ONLY when a cross-record premise is non-empty — the duplicate-
+    check idiom (query siblings correlated on a subject field; if any
+    exists, flag the subject). ``{"field", "value", "guard",
+    "negated_guards", "premise"}`` per behaviour, where the premise is the
+    JOINED captured Get-Records (object + typed filters). v1 bounds:
+    create-fireable trigger; exactly ONE premise condition of the
+    rows-EXIST shape (``IsNull False``); the premise must have been
+    captured. Everything else contributes nothing — the plain projections
+    already EXCLUDE premise-guarded behaviours (a bare create can never
+    make them fire), so the two surfaces partition honestly."""
+    ir = flow_behaviour(attributes)
+    if ir["trigger"]["record_trigger_type"] not in ("Create",
+                                                    "CreateAndUpdate"):
+        return ()
+    by_element = {p.get("element"): p for p in ir.get("premises") or ()}
+    out = []
+    for b in ir["behaviours"]:
+        if not (b["state"] == _FB_GROUNDED
+                and b["kind"] == "set_record_field"
+                and b["field"] is not None and b.get("premise_guard")):
+            continue
+        pg = tuple(tuple(g) for g in b["premise_guard"])
+        if len(pg) != 1 or pg[0][1] != "IsNull" or pg[0][2] is not False:
+            continue
+        prem = by_element.get(pg[0][0])
+        if prem is None:
+            continue
+        out.append({
+            "field": b["field"], "value": b["value"],
+            "guard": tuple(tuple(g) for g in b["guard"]),
+            "negated_guards": tuple(tuple(g) for g in b["negated_guards"]),
+            "premise": {"object": prem["object"],
+                        "filters": tuple(tuple(f)
+                                         for f in prem["filters"]),
+                        "single": bool(prem.get("single")),
+                        "element": prem.get("element")}})
+    out.sort(key=lambda d: (d["field"], str(d["value"])))
+    return tuple(out)
 
 
 def flow_grounded_temporal_effects(attributes: Optional[dict]) -> tuple:
@@ -2165,6 +2203,7 @@ def flow_grounded_temporal_effects(attributes: Optional[dict]) -> tuple:
         if b["state"] == _FB_GROUNDED
         and b["kind"] == "set_record_field_temporal"
         and b["field"] is not None
+        and not b.get("premise_guard")
     ]
     out.sort(key=lambda d: (d["field"], d["offset_days"]))
     return tuple(out)
@@ -2190,6 +2229,7 @@ def flow_grounded_transition_effects(attributes: Optional[dict]) -> tuple:
         for b in ir["behaviours"]
         if b["state"] == _FB_GROUNDED and b["kind"] == "set_record_field"
         and b["field"] is not None
+        and not b.get("premise_guard")
     ]
     out.sort(key=lambda d: (d["field"], str(d["value"])))
     return tuple(out)
@@ -2212,6 +2252,7 @@ def flow_grounded_approval_submissions(attributes: Optional[dict]) -> tuple:
          "negated_guards": tuple(tuple(g) for g in b["negated_guards"])}
         for b in ir["behaviours"]
         if b["state"] == _FB_GROUNDED and b["kind"] == "submit_for_approval"
+        and not b.get("premise_guard")
     ]
     out.sort(key=lambda d: str(d["process"]))
     return tuple(out)

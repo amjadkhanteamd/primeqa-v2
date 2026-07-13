@@ -88,6 +88,7 @@ from primeqa.semantic.entity_attributes import (
     flow_grounded_transition_effects, flow_cross_record_effect_ops,
     flow_collection_aggregates, flow_cross_record_premises,
     flow_subflow_calls, compose_subflow,
+    flow_grounded_premise_conditioned_effects,
     vr_error_message, vr_formula_text, vr_is_active)
 from primeqa.semantic.premise_reasoning import (
     classify_relation, staging_plan, aggregate_expectation)
@@ -98,6 +99,7 @@ from primeqa.generation.witnesses import (
     boundary_witnesses as _boundary_witnesses,
     guard_witness_values as _guard_witness_values,
     picklist_alternative as _picklist_alternative,
+    regex_matching_value as _regex_matching_value,
     synthesize_transform_witness as _synthesize_transform_witness)
 from primeqa.semantic.formula import (Comparison, FieldRef, FunctionCall,
                                        Literal, is_parsed, parse, walk)
@@ -1394,6 +1396,27 @@ def _flows_producing_transition(flow_entities, field_hint, expected_value):
         expected_value=expected_value)
 
 
+def _flows_producing_premise_conditioned(flow_entities, field_hint,
+                                         expected_value):
+    """Completion (FL06 slice): flows whose IR carries a GROUNDED literal
+    same-record write fired only when a sibling premise is NON-EMPTY
+    (``flow_grounded_premise_conditioned_effects``). Value-less intents
+    take the arm's value; a value-ful intent must match it."""
+    bare = (field_hint.rsplit(".", 1)[-1]
+            if isinstance(field_hint, str) and field_hint else None)
+    if bare is None:
+        return []
+    out = []
+    for ent in flow_entities:
+        for beh in flow_grounded_premise_conditioned_effects(
+                getattr(ent, "attributes", None)):
+            if beh["field"] == bare and (
+                    expected_value is None
+                    or _effect_values_equal(beh["value"], expected_value)):
+                out.append((ent, beh))
+    return out
+
+
 def _field_has_verifiable_producer(flow_entities, field_hint,
                                    effect_value, effect_object):
     """True when SOME neighborhood flow verifiably produces the claim's
@@ -1418,6 +1441,8 @@ def _field_has_verifiable_producer(flow_entities, field_hint,
         return True
     if effect_value is not None and _flows_producing_transition(
             ents, field_hint, effect_value):
+        return True
+    if _flows_producing_premise_conditioned(ents, field_hint, effect_value):
         return True
     bare = (field_hint.rsplit(".", 1)[-1]
             if isinstance(field_hint, str) and field_hint else None)
@@ -4415,6 +4440,17 @@ class GovernanceCore:
                                         "dates, classification arms) where "
                                         "the org defines them"),
                                 candidates=_offer))
+                    # Completion (FL06 slice): the premise-conditioned
+                    # same-record producer (duplicate-check idiom) gets its
+                    # turn before the refusal.
+                    _pc_out = self._try_premise_conditioned_resolution(
+                        hint=hint, subject=subject, field_ent=field_ent,
+                        at=at, neighborhood=neighborhood, delta=delta,
+                        archetype=archetype, claim_kind=claim_kind,
+                        excerpt=excerpt, grounded=grounded, state=state,
+                        flows=flows)
+                    if _pc_out is not None:
+                        return _pc_out
                     # Completion E3: before refusing a value-less field no
                     # subject-flow writes, check the roll-up idiom — the
                     # writer may TRIGGER on a child object (FL07's shape:
@@ -4621,6 +4657,16 @@ class GovernanceCore:
                             entity_type=tr_ent.entity_type,
                             external_id=tr_ent.sf_api_name or str(tr_ent.id))
                 if no_producer_floor and primitive != "formula":
+                    # Completion (FL06 slice): the premise-conditioned
+                    # producer's turn (value-ful intents land here).
+                    _pc_out = self._try_premise_conditioned_resolution(
+                        hint=hint, subject=subject, field_ent=field_ent,
+                        at=at, neighborhood=neighborhood, delta=delta,
+                        archetype=archetype, claim_kind=claim_kind,
+                        excerpt=excerpt, grounded=grounded, state=state,
+                        flows=flows)
+                    if _pc_out is not None:
+                        return _pc_out
                     # Completion E3: no producer TRIGGERS_ON the subject —
                     # the writer may live on a CHILD object (the roll-up
                     # idiom). Shared attempt; None -> fall through to the
@@ -5011,6 +5057,180 @@ class GovernanceCore:
     # (identity stability). Distinctive enough that a default/formula value
     # colliding with it by accident is implausible on a fresh record.
     _ROLLUP_SUM_STAGED = 137
+
+    def _try_premise_conditioned_resolution(self, *, hint, subject,
+                                            field_ent, at, neighborhood,
+                                            delta, archetype, claim_kind,
+                                            excerpt, grounded, state, flows):
+        """Completion (FL06 slice) — attempt the PREMISE-CONDITIONED
+        same-record resolution: a flow's arm writes the subject's field
+        only when a sibling premise is non-empty (the duplicate-check
+        idiom). Returns an IntentResolution when the shape applies, else
+        ``None`` (caller falls through). Everything substrate-derived:
+        the correlation witness (format-rule aware), the sibling template
+        (NotEqualTo → picklist alternative), the arm value."""
+        if (field_ent is None or hint.get("effect_object")
+                or hint.get("update_trigger_fields")
+                or hint.get("expected_absence")):
+            return None
+        expected = _identity_safe(hint.get("expected_value"))
+        matches = _flows_producing_premise_conditioned(
+            flows, field_ent.sf_api_name, expected)
+        if not matches:
+            return None
+        if len(matches) > 1:
+            return IntentResolution(
+                grounded_candidates=[], next_action=NextAction.REFUSE,
+                interpretation_delta=delta,
+                refusal=self._router.emission_deferred(
+                    archetype, claim_kind,
+                    detail=(f"{len(matches)} flows conditionally write "
+                            f"{field_ent.sf_api_name!r} on a sibling "
+                            f"premise — the writer is ambiguous")))
+        res = self._ground_premise_conditioned(
+            matches[0], subject, field_ent, at, neighborhood)
+        if isinstance(res, str):
+            return IntentResolution(
+                grounded_candidates=[], next_action=NextAction.REFUSE,
+                interpretation_delta=delta,
+                refusal=self._router.emission_deferred(
+                    archetype, claim_kind, detail=res))
+        p_flow, sibling_spec, p_value, subject_staged = res
+        p_eps = {}
+        for _pf in sorted(subject_staged):
+            _pent = next(
+                (r.entity for r in neighborhood
+                 if r.edge_type == EDGE_BELONGS
+                 and r.entity.entity_type == "Field"
+                 and isinstance(r.entity.sf_api_name, str)
+                 and r.entity.sf_api_name.rsplit(".", 1)[-1] == _pf), None)
+            if _pent is None:
+                return IntentResolution(
+                    grounded_candidates=[], next_action=NextAction.REFUSE,
+                    interpretation_delta=delta,
+                    refusal=self._router.emission_deferred(
+                        archetype, claim_kind,
+                        detail=(f"staged field {_pf!r} does not BELONG "
+                                f"to the subject")))
+            p_eps[_pf] = _Endpoint(
+                entity_id=_pent.id, entity_type=_pent.entity_type,
+                external_id=_pent.sf_api_name or str(_pent.id))
+        _stash_grounding(state, GroundedAutomationEffect(
+            archetype=archetype, claim_kind=claim_kind, version_seq=at,
+            subject=_Endpoint(
+                entity_id=subject.id, entity_type=subject.entity_type,
+                external_id=subject.sf_api_name or str(subject.id)),
+            automation=_Endpoint(
+                entity_id=p_flow.id, entity_type=p_flow.entity_type,
+                external_id=p_flow.sf_api_name or str(p_flow.id)),
+            requirement_excerpt=excerpt,
+            effect_field=_Endpoint(
+                entity_id=field_ent.id, entity_type=field_ent.entity_type,
+                external_id=field_ent.sf_api_name or str(field_ent.id)),
+            effect_value=p_value,
+            trigger_fields=tuple((p_eps[f], subject_staged[f])
+                                 for f in sorted(subject_staged)),
+            automation_primitive="flow",
+            premise_sibling=sibling_spec))
+        presented = [
+            PresentedCandidate(
+                path_id=c.path_id,
+                admissibility_layer=AdmissibilityLayer(
+                    c.admissibility_layer),
+                summary={"archetype": c.archetype,
+                         "claim_kind": c.claim_kind})
+            for c in grounded]
+        return IntentResolution(
+            grounded_candidates=presented,
+            next_action=NextAction.PROCEED_TO_EMIT,
+            interpretation_delta=delta)
+
+    # the deterministic correlation witness when NO format rule pins the
+    # field — uppercase-stable (a same-org normalize transform maps it to
+    # itself, so the sibling correlation survives before-save rewrites)
+    _PREMISE_CORR_WITNESS = "PQAW137X"
+
+    def _ground_premise_conditioned(self, match, subject, field_ent, at,
+                                    neighborhood):
+        """Derive the FL06-class evidence pieces from the matched arm, or
+        the deferral-detail string. Returns ``(flow_ent, sibling_spec,
+        arm_value, subject_staged)`` — sibling_spec = {"staged",
+        "correlation"}; subject_staged = {bare: value} for the subject
+        create (the correlation witness + the arm's guard witnesses)."""
+        flow_ent, beh = match
+        prem = beh["premise"]
+        if prem["object"] != subject.sf_api_name:
+            return (f"the conditioning premise queries {prem['object']!r} "
+                    f"— only the same-object sibling shape is stageable")
+        rel = classify_relation(prem)
+        if rel["kind"] != "sibling_set":
+            return (f"the premise correlates by {rel['kind']} — only the "
+                    f"sibling-set shape is stageable")
+        corr_f, corr_g = rel["correlation_field"], rel["subject_field"]
+        meta = _grounding_field_metadata(neighborhood, self._s1, at)
+        patterns, opaque_rules = _field_regex_patterns(neighborhood, corr_g)
+        if opaque_rules:
+            return (f"active rule(s) {sorted(opaque_rules)} on {corr_g} "
+                    f"are unreadable — a correlation witness cannot be "
+                    f"verified safe")
+        witness = None
+        if patterns:
+            for _pat in sorted(patterns):
+                witness = _regex_matching_value(_pat)
+                if witness:
+                    break
+            if not witness:
+                return (f"no matching-value witness is derivable for the "
+                        f"format rule(s) on {corr_g}")
+        else:
+            witness = self._PREMISE_CORR_WITNESS
+        staged = []
+        for f, op, v in rel["literals"]:
+            if op == "EqualTo":
+                staged.append((f, v))
+            elif op == "IsNull" and v is True:
+                continue
+            elif op == "IsNull" and v is False:
+                return (f"the premise requires non-null {f!r} with no "
+                        f"derivable witness")
+            elif op == "NotEqualTo":
+                _alt = _picklist_alternative(
+                    (meta.get(f) or {}).get("picklist_values"), {v})
+                if _alt is None:
+                    return (f"the premise excludes {f}={v!r} and no "
+                            f"alternative state is derivable")
+                staged.append((f, _alt))
+            else:
+                return f"unstageable premise filter {f!r} {op}"
+        staged.append((corr_f, witness))
+
+        def _scale_of(bare):
+            m = meta.get(bare)
+            try:
+                return (None if m is None or m.get("scale") is None
+                        else int(m["scale"]))
+            except (TypeError, ValueError):
+                return None
+
+        _bare_eff = field_ent.sf_api_name.rsplit(".", 1)[-1]
+        _wstatus, _wit = _guard_witness_values(
+            beh["guard"], beh["negated_guards"],
+            exclude_field=_bare_eff, scale_of=_scale_of)
+        if _wstatus == "refuse":
+            return _wit
+        subject_staged = dict(_wit or {})
+        if subject_staged.get(corr_g, witness) != witness:
+            return (f"the arm's guard pins {corr_g!r} to a value distinct "
+                    f"from the correlation witness — unstageable")
+        subject_staged[corr_g] = witness
+        for _staged_map in (dict(staged), subject_staged):
+            conflict = _staged_vr_conflict_detail(neighborhood, _staged_map)
+            if conflict is not None:
+                return conflict
+        return flow_ent, {
+            "staged": tuple(staged),
+            "correlation": (corr_f, corr_g, witness)}, \
+            beh["value"], subject_staged
 
     def _try_rollup_resolution(self, *, hint, subject, field_ent, at, delta,
                                archetype, claim_kind, excerpt, grounded,

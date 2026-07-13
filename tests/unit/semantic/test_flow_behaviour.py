@@ -74,6 +74,9 @@ def test_grounded_scope_contract():
     assert grounded == {"PLS_FB_FL01_Default_Priority",
                         "PLS_FB_FL02_Normalize_External_Ref",
                         "PLS_FB_FL03_Tier_Banding",
+                        "PLS_FB_FL06_Duplicate_Flag",   # Completion: the
+                        # premise-conditioned arm grounds (WITH its
+                        # premise_guard; plain projections exclude it)
                         "PLS_FB_FL08_SLA_Stamp",
                         "PLS_FB_FL09_Reopen_Guard",
                         "PLS_FB_FL14_Approval_Submit"}
@@ -151,8 +154,6 @@ def test_no_other_flow_contributes_binder_effects():
     ("PLS_FB_FL04_Confirmation_Task", "element_outside_grammar:recordCreates"),
     # after-save fan-out via Get Records
     ("PLS_FB_FL05_Cancellation_Sync", "element_outside_grammar:recordLookups"),
-    # data-dependent duplicate lookup
-    ("PLS_FB_FL06_Duplicate_Flag", "element_outside_grammar:recordLookups"),
     # child-object loop rollup
     ("PLS_FB_FL07_Order_Rollup", "element_outside_grammar:recordLookups"),
     # scheduled path only — nothing observable at save time
@@ -888,9 +889,34 @@ def test_premises_never_ground_anything():
         assert "element_outside_grammar:recordLookups" in reasons, name
 
 
-def test_out_of_bounds_lookup_yields_no_premise():
+def test_fl06_premise_captures_and_conditions_the_flag_arm():
+    # Completion Program (FL06 slice): the NotEqualTo literal joined the
+    # bounded filter grammar, so the duplicate-check premise captures and
+    # the flag arm grounds WITH its premise_guard — while every plain
+    # (bare-create) projection still excludes it: a bare create can never
+    # make a premise-conditioned arm fire.
+    from primeqa.semantic.entity_attributes import (
+        flow_cross_record_premises, flow_grounded_same_record_effects,
+        flow_grounded_guarded_effects,
+        flow_grounded_premise_conditioned_effects)
+    attrs = _load("PLS_FB_FL06_Duplicate_Flag")
+    (p,) = flow_cross_record_premises(attrs)
+    assert p["object"] == "PLS_FB_Order__c"
+    assert ("PLS_FB_Status__c", "NotEqualTo", "Cancelled") in p["filters"]
+    assert flow_grounded_same_record_effects(attrs) == frozenset()
+    assert flow_grounded_guarded_effects(attrs) == ()
+    (beh,) = flow_grounded_premise_conditioned_effects(attrs)
+    assert beh["field"] == "PLS_FB_Duplicate_Flag__c"
+    assert beh["value"] is True
+    assert beh["premise"]["element"] == "Get_Matching_Order"
+
+
+def test_out_of_bounds_lookup_operator_still_yields_no_premise():
+    # the grammar boundary stands: an operator outside
+    # EqualTo/IsNull/NotEqualTo (here GreaterThan) refuses the premise
     from primeqa.semantic.entity_attributes import flow_cross_record_premises
-    # FL06's duplicate check uses filters outside the bounded shape —
-    # honest: no premise, demotion unchanged
-    assert flow_cross_record_premises(_load("PLS_FB_FL06_Duplicate_Flag")) \
-        == ()
+    import copy
+    attrs = copy.deepcopy(_load("PLS_FB_FL06_Duplicate_Flag"))
+    lk = attrs["Metadata"]["recordLookups"][0]
+    lk["filters"][1]["operator"] = "GreaterThan"
+    assert flow_cross_record_premises(attrs) == ()

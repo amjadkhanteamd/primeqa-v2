@@ -595,3 +595,112 @@ def test_composed_absence_intent_still_refuses():
         ctx=_ctx(), state=_state())
     assert res.refusal is not None
     assert "cannot be attributed" in res.refusal.payload["detail"]
+
+
+# ---------------------------------------------------------------------------
+# FL06 — premise-conditioned same-record effect (the duplicate-check idiom)
+# ---------------------------------------------------------------------------
+
+FL06_FIXTURE = os.path.join(os.path.dirname(__file__), "..", "semantic",
+                            "fixtures", "pls_fb_flows",
+                            "PLS_FB_FL06_Duplicate_Flag.json")
+
+
+def _world_fl06(*, status_values=("Draft", "Submitted", "Cancelled")):
+    order = _ent("Object", "PLS_FB_Order__c", "PLS FB Order")
+    status = _ent("Field", "PLS_FB_Order__c.PLS_FB_Status__c", "Status")
+    ext = _ent("Field", "PLS_FB_Order__c.PLS_FB_External_Ref__c",
+               "External Ref")
+    dup = _ent("Field", "PLS_FB_Order__c.PLS_FB_Duplicate_Flag__c",
+               "Duplicate Flag")
+    with open(FL06_FIXTURE) as f:
+        d = json.load(f)
+    flow = _ent("Flow", "PLS_FB_FL06_Duplicate_Flag", "Duplicate Flag",
+                attrs={"Metadata": d["Metadata"]})
+    pvs = uuid4()
+    s1 = _FakeS1(
+        entities=[order, status, ext, dup, flow],
+        rows_by_object={
+            "PLS_FB_Order__c": [
+                SimpleNamespace(edge_type=gc.EDGE_BELONGS, entity=e)
+                for e in (status, ext, dup)] + [
+                SimpleNamespace(edge_type=gc.EDGE_FLOW, entity=flow)],
+        },
+        details={status.id: {"field_type": "picklist",
+                             "picklist_value_set_entity_id": pvs}},
+        picklists={pvs: [{"value_api_name": v, "is_active": True}
+                         for v in status_values]})
+    return gc.GovernanceCore(s1)
+
+
+FL06_EXCERPT = ("an order with the same external reference as an existing "
+                "non-cancelled order is flagged as a duplicate")
+
+
+def _fl06_intent(**kw):
+    d = {"ac_ref": 14, "archetype_hint": "data_behavior",
+         "polarity_hint": "positive",
+         "claim_kind_hint": "automation-effect-claim",
+         "requirement_excerpt": FL06_EXCERPT,
+         "target_subject_hint": {
+             "entity_type": "Object", "sf_api_name": "PLS_FB_Order__c",
+             "field_name": "PLS_FB_Order__c.PLS_FB_Duplicate_Flag__c", **kw}}
+    return {"requirement_excerpt": FL06_EXCERPT, "intent_descriptor": d}
+
+
+def test_premise_conditioned_flag_grounds_with_sibling_staging():
+    core = _world_fl06()
+    state = _state()
+    res = core.resolve_intent(intent_input=_fl06_intent(), ctx=_ctx(),
+                              state=state)
+    assert res.refusal is None, getattr(res.refusal, "payload", None)
+    [g] = state.groundings
+    assert g.automation.external_id == "PLS_FB_FL06_Duplicate_Flag"
+    assert g.effect_value is True                     # the arm's value
+    ps = g.premise_sibling
+    # sibling: NotEqualTo Cancelled -> first alternative (Draft) + the
+    # correlation witness on External_Ref
+    assert dict(ps["staged"]) == {"PLS_FB_Status__c": "Draft",
+                                  "PLS_FB_External_Ref__c": "PQAW137X"}
+    assert ps["correlation"] == ("PLS_FB_External_Ref__c",
+                                 "PLS_FB_External_Ref__c", "PQAW137X")
+    # the subject create carries the SAME witness (the correlation)
+    assert _pairs(g.trigger_fields) == {"PLS_FB_External_Ref__c": "PQAW137X"}
+
+
+def test_premise_conditioned_emission_creates_sibling_first():
+    from primeqa.generation.emission import author_emission
+    core = _world_fl06()
+    state = _state()
+    core.resolve_intent(intent_input=_fl06_intent(expected_value=True),
+                        ctx=_ctx(), state=state)
+    [g] = state.groundings
+    bundle = author_emission(g)
+    steps = bundle.observation_realization.steps
+    kinds = [type(s).__name__ for s in steps]
+    assert kinds == ["CreateStep", "CreateStep", "ReadStep", "AssertStep"]
+    assert steps[0].step_id == "create-sibling"
+    assert steps[0].field_values[
+        "PLS_FB_Order__c.PLS_FB_External_Ref__c"] == "PQAW137X"
+    assert steps[1].field_values[
+        "PLS_FB_Order__c.PLS_FB_External_Ref__c"] == "PQAW137X"
+    assert steps[3].predicate.predicate == "equals"
+    assert steps[3].predicate.value is True
+
+
+def test_premise_conditioned_refuses_without_a_template_alternative():
+    # the Status picklist offers ONLY the excluded state — the sibling
+    # cannot be staged to match the premise; named refusal
+    core = _world_fl06(status_values=("Cancelled",))
+    res = core.resolve_intent(intent_input=_fl06_intent(), ctx=_ctx(),
+                              state=_state())
+    assert res.refusal is not None
+    assert "no alternative state" in res.refusal.payload["detail"]
+
+
+def test_premise_conditioned_wrong_value_refuses():
+    # the arm writes True; a claim of False matches no producer
+    core = _world_fl06()
+    res = core.resolve_intent(intent_input=_fl06_intent(expected_value=False),
+                              ctx=_ctx(), state=_state())
+    assert res.refusal is not None
