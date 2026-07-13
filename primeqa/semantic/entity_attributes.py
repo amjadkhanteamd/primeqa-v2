@@ -1174,6 +1174,7 @@ def flow_behaviour(attributes: Optional[dict]) -> dict:
         "collections": [],
         "effect_ops": [],
         "fault_paths": [],
+        "subflow_calls": [],
         "trigger": {
             "object": None, "save_phase": None, "record_trigger_type": None,
             "entry_filter_count": 0, "requires_change_to_meet": False,
@@ -1311,6 +1312,7 @@ def flow_behaviour(attributes: Optional[dict]) -> dict:
     premises: list = []
     collections: list = []
     effect_ops: list = []
+    subflow_calls: list = []
     demote_reasons: list = []
     opaque_any = False
     grounded_possible = True   # set False only by pre-walk global gates
@@ -1511,6 +1513,27 @@ def flow_behaviour(attributes: Optional[dict]) -> dict:
                 target = (connector or {}).get("targetReference") \
                     if isinstance(connector, dict) else None
             else:
+                # Wave 3 (CP6, the _walk_linear twin): capture the typed
+                # subflow call before the hard stop.
+                if list_name == "subflows":
+                    _in = {}
+                    for ia in _flow_md_list(el.get("inputAssignments")):
+                        if isinstance(ia, dict) \
+                                and isinstance(ia.get("name"), str):
+                            _in[ia["name"]] = _fb_effect_value(
+                                ia.get("value"), formulas_by_name)
+                    subflow_calls.append({
+                        "flow_name": el.get("flowName"),
+                        "inputs": _in,
+                        "outputs": tuple(
+                            oa.get("name") for oa in
+                            _flow_md_list(el.get("outputAssignments"))
+                            if isinstance(oa, dict)),
+                        "element": el.get("name"),
+                        "guard": [list(g) for g in
+                                  entry_guard + tuple(guard)],
+                        "premise_guard": [list(g)
+                                          for g in premise_guard]})
                 reason = f"element_outside_grammar:{list_name}"
                 pr.append(reason)
                 pb.append(_behaviour(_FB_UNSUPPORTED, guard=guard,
@@ -1744,6 +1767,26 @@ def flow_behaviour(attributes: Optional[dict]) -> dict:
                 demote_reasons.append(reason)
                 target = None
         else:
+            # Wave 3 (CP6): a subflow call is CAPTURED (typed inputs) before
+            # the hard stop — a subflow can do anything, so the walk never
+            # proceeds past it uninlined; compose_subflow() grafts the
+            # callee's body into the caller's frame where bounded.
+            if list_name == "subflows":
+                _in = {}
+                for ia in _flow_md_list(el.get("inputAssignments")):
+                    if isinstance(ia, dict) and isinstance(ia.get("name"),
+                                                           str):
+                        _in[ia["name"]] = _fb_effect_value(
+                            ia.get("value"), formulas_by_name)
+                subflow_calls.append({
+                    "flow_name": el.get("flowName"),
+                    "inputs": _in,
+                    "outputs": tuple(
+                        oa.get("name")
+                        for oa in _flow_md_list(el.get("outputAssignments"))
+                        if isinstance(oa, dict)),
+                    "element": el.get("name"),
+                    "guard": [list(g) for g in entry_guard]})
             # A recognized element type outside the bounded grammar.
             reason = f"element_outside_grammar:{list_name}"
             demote_reasons.append(reason)
@@ -1851,6 +1894,7 @@ def flow_behaviour(attributes: Optional[dict]) -> dict:
     out["collections"] = collections
     out["effect_ops"] = effect_ops
     out["fault_paths"] = fault_entries
+    out["subflow_calls"] = subflow_calls
     if not behaviours:
         out["behaviours"] = []
         out["parse_status"] = "empty"
@@ -2093,3 +2137,133 @@ def flow_fault_paths(attributes: Optional[dict]) -> tuple:
     transaction semantics, recorded as a fact."""
     ir = flow_behaviour(attributes)
     return tuple(dict(f) for f in ir.get("fault_paths") or ())
+
+
+def flow_subflow_calls(attributes: Optional[dict]) -> tuple:
+    """Wave 3 (CP6): the typed subflow CALLS on a flow's immediate path —
+    ``{"flow_name", "inputs" {var: typed value}, "outputs", "element",
+    "guard"}``. The walk never proceeds past an uninlined call (a subflow
+    can do anything); :func:`compose_subflow` grafts a bounded callee."""
+    ir = flow_behaviour(attributes)
+    return tuple(
+        {"flow_name": c["flow_name"],
+         "inputs": {k: tuple(v) for k, v in c["inputs"].items()},
+         "outputs": tuple(c["outputs"]), "element": c["element"],
+         "guard": tuple(tuple(g) for g in c.get("guard") or ())}
+        for c in ir.get("subflow_calls") or ())
+
+
+def compose_subflow(caller_attrs: Optional[dict],
+                    callee_attrs_by_name: dict,
+                    max_depth: int = 1) -> tuple:
+    """Wave 3 (CP6): bounded subflow composition. For each captured call
+    whose callee metadata is provided, SUBSTITUTE the caller's input
+    bindings into the callee body (an input var bound to ``subject_ref``
+    becomes a ``$Record.<field>`` reference in the CALLER's frame; a
+    literal binding becomes that literal) and graft the CALLER's trigger
+    onto the callee's start — the platform's own semantics: a subflow runs
+    synchronously in the caller's transaction on the caller's context.
+    Returns one entry per call: ``{"via", "flow_name", "premises",
+    "effect_ops", "refusal"}`` — cycle (callee is the caller or calls
+    back) and depth (callee has its own subflow calls beyond max_depth)
+    refuse BY NAME; unbindable inputs refuse by name; the callee's
+    unrepresented elements keep their honest demotions inside the
+    composed parse."""
+    caller_ir = flow_behaviour(caller_attrs)
+    caller_md = (caller_attrs or {}).get("Metadata") or {}
+    caller_name = (caller_attrs or {}).get("_developer_name") \
+        or (caller_attrs or {}).get("FullName")
+    out = []
+    for call in caller_ir.get("subflow_calls") or ():
+        name = call.get("flow_name")
+        entry = {"via": call.get("element"), "flow_name": name,
+                 "premises": (), "effect_ops": (), "refusal": None}
+        callee = (callee_attrs_by_name or {}).get(name)
+        if callee is None:
+            entry["refusal"] = "callee_metadata_unavailable"
+            out.append(entry)
+            continue
+        if name == caller_name:
+            entry["refusal"] = "subflow_cycle"
+            out.append(entry)
+            continue
+        callee_md = (callee or {}).get("Metadata") or {}
+        if max_depth <= 0 or _flow_md_list(callee_md.get("subflows")):
+            # depth-1 bound: a callee with its OWN calls (or exhausted
+            # depth) refuses — never silent partial inlining
+            entry["refusal"] = ("subflow_cycle" if any(
+                (sf or {}).get("flowName") == caller_name
+                for sf in _flow_md_list(callee_md.get("subflows")))
+                else "subflow_depth_exceeded")
+            out.append(entry)
+            continue
+        # input substitution: only subject_ref / literal bindings compose
+        subst = {}
+        bad = None
+        for var, tv in (call.get("inputs") or {}).items():
+            tv = tuple(tv)
+            if tv[0] == "subject_ref":
+                subst[var] = {"elementReference": f"$Record.{tv[1]}"}
+            elif tv[0] == "literal":
+                subst[var] = None   # literal: replace value dict directly
+                subst[(var, "literal")] = tv[1]
+            else:
+                bad = f"unbindable_subflow_input:{var}:{tv[0]}"
+                break
+        if bad:
+            entry["refusal"] = bad
+            out.append(entry)
+            continue
+
+        def _rewrite(o):
+            if isinstance(o, dict):
+                ref = o.get("elementReference")
+                if isinstance(ref, str) and ref in subst:
+                    if subst[ref] is not None:
+                        return {**{k: v for k, v in o.items()
+                                   if k != "elementReference"},
+                                **subst[ref]}
+                    lit = subst[(ref, "literal")]
+                    key = ("numberValue" if isinstance(lit, (int, float))
+                           and not isinstance(lit, bool) else
+                           "booleanValue" if isinstance(lit, bool)
+                           else "stringValue")
+                    return {k: v for k, v in o.items()
+                            if k != "elementReference"} | {key: lit}
+                return {k: _rewrite(v) for k, v in o.items()}
+            if isinstance(o, list):
+                return [_rewrite(v) for v in o]
+            if isinstance(o, str) and o in subst and subst[o] is not None:
+                return subst[o]["elementReference"]
+            return o
+
+        rewritten = _rewrite(callee_md)
+        callee_start = (rewritten.get("start") or {})
+        graft_conn = callee_start.get("connector") \
+            or ({"targetReference": rewritten.get("startElementReference")}
+                if rewritten.get("startElementReference") else None)
+        if not graft_conn:
+            entry["refusal"] = "callee_has_no_walkable_start"
+            out.append(entry)
+            continue
+        merged = dict(rewritten)
+        merged["start"] = {**(caller_md.get("start") or {}),
+                           "connector": graft_conn,
+                           "filters": [], "filterLogic": None}
+        cir = flow_behaviour({"Metadata": merged})
+        entry["premises"] = tuple(
+            {**{k: p[k] for k in ("object", "filters", "single")},
+             "guard": tuple(tuple(g) for g in
+                            (call.get("guard") or [])),
+             "element": p.get("element"), "via_subflow": name}
+            for p in cir.get("premises") or ())
+        entry["effect_ops"] = tuple(
+            {"kind": e["kind"], "object": e["object"],
+             "assignments": {k: tuple(v)
+                             for k, v in e["assignments"].items()},
+             "element": e.get("element"), "via_subflow": name,
+             "fault": e.get("fault"),
+             "filters": tuple(e.get("filters") or ()) or None}
+            for e in cir.get("effect_ops") or ())
+        out.append(entry)
+    return tuple(out)

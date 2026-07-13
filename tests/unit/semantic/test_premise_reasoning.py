@@ -216,3 +216,63 @@ def test_unobservable_fault_path_is_explicit():
     assert fp["observable"] is False
     assert "fault_handler_outside_grammar" in fp["reason"]
     assert fp["rollback_scope"] == "flow_transaction"
+
+
+# ── Wave 3 (CP6): subflow architecture ───────────────────────────────
+
+def _fl12_and_sf01():
+    with open(os.path.join(FIXTURE_DIR,
+                           "PLS_FB_FL12_Fulfilment_Orchestrator.json")) as f:
+        fl12 = json.load(f)
+    with open(os.path.join(FIXTURE_DIR,
+                           "PLS_FB_SF01_Close_Tasks.json")) as f:
+        sf01 = json.load(f)
+    caller = {"Metadata": fl12["Metadata"],
+              "_developer_name": "PLS_FB_FL12_Fulfilment_Orchestrator"}
+    return caller, {"PLS_FB_SF01_Close_Tasks": {"Metadata": sf01["Metadata"]}}
+
+
+def test_subflow_call_captured_with_typed_inputs():
+    from primeqa.semantic.entity_attributes import flow_subflow_calls
+    caller, _ = _fl12_and_sf01()
+    (c,) = flow_subflow_calls(caller)
+    assert c["flow_name"] == "PLS_FB_SF01_Close_Tasks"
+    assert c["inputs"] == {"OrderId": ("subject_ref", "Id")}
+    assert c["element"] == "Call_Close_Tasks"
+
+
+def test_compose_subflow_substitutes_the_caller_frame():
+    from primeqa.semantic.entity_attributes import compose_subflow
+    caller, callees = _fl12_and_sf01()
+    (e,) = compose_subflow(caller, callees)
+    assert e["refusal"] is None
+    (p,) = e["premises"]
+    # SF01's OrderId-filtered lookup becomes a $Record.Id correlation in
+    # the CALLER's frame, with the caller's entry guard carried
+    assert ("PLS_FB_Order__c", "EqualTo", ("$Record", "Id")) in \
+        tuple(tuple(f) if not isinstance(f, tuple) else f
+              for f in map(tuple, p["filters"]))
+    assert p["via_subflow"] == "PLS_FB_SF01_Close_Tasks"
+    # SF01's collection-input update stays honestly unrepresented
+    assert e["effect_ops"] == ()
+
+
+def test_compose_subflow_cycle_depth_and_availability_refuse_by_name():
+    from primeqa.semantic.entity_attributes import compose_subflow
+    caller, callees = _fl12_and_sf01()
+    (e,) = compose_subflow(caller, {})
+    assert e["refusal"] == "callee_metadata_unavailable"
+    # a callee with its own subflow calls exceeds depth 1
+    deep = {"PLS_FB_SF01_Close_Tasks": {"Metadata": {
+        "start": {"connector": {"targetReference": "S"}},
+        "subflows": [{"name": "S", "flowName": "Another"}]}}}
+    (e,) = compose_subflow(caller, deep)
+    assert e["refusal"] == "subflow_depth_exceeded"
+    # a callee calling BACK is a cycle
+    cyc = {"PLS_FB_SF01_Close_Tasks": {"Metadata": {
+        "start": {"connector": {"targetReference": "S"}},
+        "subflows": [{"name": "S",
+                      "flowName":
+                          "PLS_FB_FL12_Fulfilment_Orchestrator"}]}}}
+    (e,) = compose_subflow(caller, cyc)
+    assert e["refusal"] == "subflow_cycle"
