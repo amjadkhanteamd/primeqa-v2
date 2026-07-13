@@ -192,16 +192,18 @@ Duplication-minimising sequence (each item unlocks everything below it that
 shares its machinery; nothing is built twice):
 
 ```
-C1  IR guard-chain generalisation        → A, C, E, H (+ filter staging for B)
-C2  after-save admission                 → B family (7 flows' precondition)
-C3  interval witnesses + N-arm emission  → FL03 EXERCISED   ← this session
-C4  temporal transform + update-phase    → FL08 EXERCISED
-C5  prior-state guards                   → FL09 (partial: literal write)
-C6  actionCall/approval recognition      → FL14 EXERCISED
+C1  IR guard-chain generalisation        → A, C, E, H          ✅ DONE  e4008d8
+C2  after-save admission                 → B family precondition ✅ DONE af00e30
+C3  interval witnesses + N-arm emission  → FL03 EXERCISED (live) ✅ DONE 27a998d
+    C3b value-less N-arm enumeration     → FL03 tier ACs live    ✅ DONE bcd80c2 (+fix 0b5de72)
+C4  temporal transform + update-phase    → FL08 EXERCISED (live) ✅ DONE f17ce54
+C5  prior-state guards                   → FL09 EXERCISED (live) ✅ DONE 490af98
+C6  actionCall/approval recognition (IR) → FL14 IR (REQ-B-gated) ✅ DONE b2933e8
+    B0.2 field-miss recovery offers      → convergence fix       ✅ DONE 4fbf81d
 ────────────────────────────────────────────────────────────
-C7  cross-record premises + set/count    → FL06, FL05, FL07   (own session)
+C7  cross-record premises + set/count    → FL06, FL05, FL07   (own session — new EVIDENCE class)
 C8  composition (subflow, faults)        → FL12, FL13         (own session)
-C9  bounded-eventual read                → FL11               (S4 touch)
+C9  bounded-eventual read                → FL11               (own session — S4 touch)
 GATED: FL10 (execution-model decision) · BY DESIGN: FL15 (no build)
 ```
 
@@ -210,3 +212,48 @@ five families; C3 completes the first family end-to-end (proving the pattern
 again live); C4–C6 are small, independent, and each exercises one flow with
 existing evidence rails. C7–C9 introduce new *evidence/execution* classes and
 deserve fresh sessions with their own gates.
+
+**C1–C6 shipped (this session).** All "existing-evidence-rails" families
+(A/B/C/E/H-IR) are grounded and, where a loaded requirement exercises them
+(FL03/FL08/FL09 via req-320), live-proven. FL14's IR grounds but its
+emission + live gate wait on REQ-B (the large-order-approval requirement),
+which is not loaded — loading a benchmark requirement is out of scope under
+the frozen-benchmark constraint. C7/C8/C9 remain: each introduces a
+genuinely new evidence or execution class (correlated multi-record
+assertions; subflow inlining + fault paths; bounded-eventual reads) — the
+mission's own "own session" designation and stop-condition #3 ("a
+fundamentally new reasoning problem"). FL10 is the human-judgement gate
+(stop-condition #2).
+
+### Architectural discoveries (C1–C6)
+
+1. **Per-path conservatism has two axes, not one.** C1 split the demotion
+   rule by *sibling exclusivity* (decision arms are mutually exclusive at run
+   time, so one arm's out-of-grammar element does not demote another). C5
+   then split it again by *subject-safety* (an element that provably cannot
+   rewrite the triggering record's own fields — recordCreates, recordLookups,
+   variable-only assignments — demotes only itself). C6 exposed that the
+   subject-safe refinement was inconsistently applied: soft reasons leaked
+   into the caller's global demote on *unconditional* paths (decision arms
+   were already correct). The unified rule: **hard reasons demote the path;
+   soft reasons demote only their own behaviour, on every path shape.**
+
+2. **"The org defines the value" is a recurring class, not a one-off.** FL02
+   (canonical form), FL08 (relative-date offset), and FL03 (classification
+   arm) all share the shape: the requirement names the *field and mechanism*
+   but not the *value*, so a value-ful intent is uninventable and the
+   substrate must derive it. C3b generalised FL02's value-less grounding into
+   N-arm enumeration; the field-miss refusal was reworded to stop demanding a
+   value the model would have to fabricate.
+
+3. **Transitions are one shape with two sources.** C4 (temporal) and C5
+   (prior-state) both author a create→update transition where the substrate
+   derives both states. They differ only in what defines the "before" state
+   (C4: a picklist alternative to the entry filter; C5: the `$Record__Prior`
+   guard) — and share the picklist-alternative witness (`witnesses.
+   picklist_alternative`) and the create/update merge rail.
+
+4. **A submit-for-approval is a new effect class, cleanly bounded.** C6 showed
+   the actionCall grammar can admit exactly one action type (submit) as a
+   typed behaviour without opening the door to arbitrary action recognition —
+   every other actionCall stays honest-refused.
