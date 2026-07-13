@@ -857,3 +857,40 @@ def test_unknown_left_ref_keeps_the_generic_reason():
     ir = flow_behaviour(md)
     reasons = {r for b in ir["behaviours"] for r in b["reasons"]}
     assert "unparseable_guard_condition" in reasons
+
+
+# ── Wave 2 (CP6): cross-record premises — representation only ─────────
+
+def test_bounded_lookups_become_typed_premises():
+    from primeqa.semantic.entity_attributes import flow_cross_record_premises
+    (p,) = flow_cross_record_premises(_load("PLS_FB_FL05_Cancellation_Sync"))
+    assert p["object"] == "PLS_FB_Fulfilment_Task__c"
+    assert ("PLS_FB_Order__c", "EqualTo", ("$Record", "Id")) in p["filters"]
+    assert ("PLS_FB_Status__c", "EqualTo", "Open") in p["filters"]
+    assert p["single"] is False and p["element"] == "Get_Open_Tasks"
+    # single-record variant (FL12) + the child-correlation shape (FL07)
+    (p12,) = flow_cross_record_premises(
+        _load("PLS_FB_FL12_Fulfilment_Orchestrator"))
+    assert p12["single"] is True
+    (p7,) = flow_cross_record_premises(_load("PLS_FB_FL07_Order_Rollup"))
+    assert p7["filters"] == (
+        ("PLS_FB_Order__c", "EqualTo", ("$Record", "PLS_FB_Order__c")),)
+
+
+def test_premises_never_ground_anything():
+    # representation only: parse status, grounded sets, and every named
+    # demotion reason are BYTE-UNCHANGED for the premise-carrying flows
+    for name in ("PLS_FB_FL05_Cancellation_Sync", "PLS_FB_FL07_Order_Rollup",
+                 "PLS_FB_FL12_Fulfilment_Orchestrator"):
+        ir = flow_behaviour(_load(name))
+        assert all(b["state"] != "grounded" for b in ir["behaviours"]), name
+        reasons = {r for b in ir["behaviours"] for r in b["reasons"]}
+        assert "element_outside_grammar:recordLookups" in reasons, name
+
+
+def test_out_of_bounds_lookup_yields_no_premise():
+    from primeqa.semantic.entity_attributes import flow_cross_record_premises
+    # FL06's duplicate check uses filters outside the bounded shape —
+    # honest: no premise, demotion unchanged
+    assert flow_cross_record_premises(_load("PLS_FB_FL06_Duplicate_Flag")) \
+        == ()

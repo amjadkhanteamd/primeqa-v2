@@ -767,6 +767,52 @@ _FB_FORMULA_PASSTHROUGH_RE = _re.compile(
 _FB_FORMULA_FN_RE = _re.compile(r"([A-Z][A-Z_0-9]{1,30})\s*\(")
 
 
+# Wave 2 (CP6): the cross-record PREMISE grammar — a bounded Get-Records
+# element becomes a typed premise (representation ONLY; grounding/evidence
+# stay with the future C7 slice). Bounded: a literal object, filters all
+# IsNull / literal-EqualTo / $Record-ref-EqualTo shapes.
+def _fb_parse_lookup_premise(el) -> Optional[dict]:
+    """A bounded recordLookups element → ``{"object", "filters", "single"}``
+    where each filter is ``(field, op, value)`` — ``value`` is a literal or
+    ``("$Record", <bare field>)`` for a subject-field correlation (the
+    parent-child join the C7 evidence engine will stage). None outside the
+    bounded shape (the element keeps its subject-safe demotion only)."""
+    if not isinstance(el, dict):
+        return None
+    obj = el.get("object")
+    if not isinstance(obj, str) or not obj:
+        return None
+    if _flow_md_list(el.get("queriedFields")) and False:
+        return None      # queried fields don't bound the premise
+    filters = []
+    for f in _flow_md_list(el.get("filters")):
+        if not isinstance(f, dict):
+            return None
+        fld, op = f.get("field"), f.get("operator")
+        if not isinstance(fld, str) or not fld or "." in fld:
+            return None
+        val = f.get("value")
+        if op == "IsNull":
+            flag = val.get("booleanValue") if isinstance(val, dict) else None
+            if not isinstance(flag, bool):
+                return None
+            filters.append((fld, "IsNull", flag))
+        elif op == "EqualTo":
+            ref = (val or {}).get("elementReference")                 if isinstance(val, dict) else None
+            sub = _fb_record_field(ref) if ref else None
+            if sub is not None:
+                filters.append((fld, "EqualTo", ("$Record", sub)))
+                continue
+            lit = _flow_assignment_value(val)
+            if lit is None:
+                return None
+            filters.append((fld, "EqualTo", lit))
+        else:
+            return None
+    return {"object": obj, "filters": tuple(filters),
+            "single": bool(el.get("getFirstRecordOnly"))}
+
+
 def _fb_guard_formula_field(name, formulas) -> tuple:
     """Resolve a decision-condition left ref that names a FORMULA element:
     ``("field", <bare>)`` when the formula is a bare ``$Record`` passthrough
@@ -959,6 +1005,7 @@ def flow_behaviour(attributes: Optional[dict]) -> dict:
     exists so refusals stay honest and named."""
     out = {
         "ir_version": FLOW_BEHAVIOUR_IR_VERSION,
+        "premises": [],
         "trigger": {
             "object": None, "save_phase": None, "record_trigger_type": None,
             "entry_filter_count": 0, "requires_change_to_meet": False,
@@ -1090,6 +1137,7 @@ def flow_behaviour(attributes: Optional[dict]) -> dict:
     # band 3 demotes with its own reasons. Flow-level demotions (filters,
     # phase, trigger type) still apply to every behaviour.
     behaviours: list = []
+    premises: list = []
     demote_reasons: list = []
     opaque_any = False
     grounded_possible = True   # set False only by pre-walk global gates
@@ -1238,6 +1286,17 @@ def flow_behaviour(attributes: Optional[dict]) -> dict:
                 # honest); earlier same-record behaviours on the path
                 # survive. The walk continues THROUGH it (a later unsafe
                 # element still hard-demotes everything).
+                # Wave 2 (CP6): a BOUNDED Get Records additionally records a
+                # typed cross-record PREMISE — representation only; the
+                # honesty placeholder (the effect side stays unrepresented)
+                # is unchanged, so nothing new grounds.
+                if list_name == "recordLookups":
+                    _prem = _fb_parse_lookup_premise(el)
+                    if _prem is not None:
+                        _prem["guard"] = [list(g) for g in
+                                          entry_guard + tuple(guard)]
+                        _prem["element"] = el.get("name")
+                        premises.append(_prem)
                 reason = f"element_outside_grammar:{list_name}"
                 soft.append(reason)
                 pb.append(_behaviour(_FB_UNSUPPORTED, guard=guard,
@@ -1410,6 +1469,17 @@ def flow_behaviour(attributes: Optional[dict]) -> dict:
             target = None
         else:
             # A recognized element type outside the bounded grammar.
+            # Wave 2 (CP6): a BOUNDED Get Records still records its typed
+            # cross-record PREMISE before the stop — representation only;
+            # the demotion and stop semantics are unchanged (nothing new
+            # grounds; the pre-decision stepper deliberately keeps the
+            # stricter pre-C5 stop).
+            if list_name == "recordLookups":
+                _prem = _fb_parse_lookup_premise(el)
+                if _prem is not None:
+                    _prem["guard"] = [list(g) for g in entry_guard]
+                    _prem["element"] = el.get("name")
+                    premises.append(_prem)
             reason = f"element_outside_grammar:{list_name}"
             demote_reasons.append(reason)
             pre_behaviours.append(_behaviour(_FB_UNSUPPORTED, reasons=[reason]))
@@ -1466,6 +1536,7 @@ def flow_behaviour(attributes: Optional[dict]) -> dict:
             # the previously-grounded ones.
             b["reasons"] = sorted(set(b["reasons"]) | set(demote_reasons))
 
+    out["premises"] = premises
     if not behaviours:
         out["behaviours"] = []
         out["parse_status"] = "empty"
@@ -1633,3 +1704,20 @@ def flow_grounded_approval_submissions(attributes: Optional[dict]) -> tuple:
     ]
     out.sort(key=lambda d: str(d["process"]))
     return tuple(out)
+
+
+def flow_cross_record_premises(attributes: Optional[dict]) -> tuple:
+    """Wave 2 (CP6): the typed cross-record PREMISES a flow's immediate path
+    reads — bounded Get-Records elements as ``{"object", "filters",
+    "single", "guard", "element"}`` where a filter value may be the
+    correlation marker ``("$Record", <bare subject field>)``. Representation
+    ONLY: premises are NOT producers (no admission or grounding change);
+    the future cross-record evidence slice (C7) stages sibling records and
+    count/each_matches assertions against exactly this shape."""
+    ir = flow_behaviour(attributes)
+    return tuple(
+        {"object": p["object"], "filters": tuple(p["filters"]),
+         "single": p["single"],
+         "guard": tuple(tuple(g) for g in p.get("guard") or ()),
+         "element": p.get("element")}
+        for p in ir.get("premises") or ())
