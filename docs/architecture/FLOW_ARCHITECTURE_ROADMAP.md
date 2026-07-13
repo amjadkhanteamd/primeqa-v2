@@ -213,7 +213,18 @@ again live); C4–C6 are small, independent, and each exercises one flow with
 existing evidence rails. C7–C9 introduce new *evidence/execution* classes and
 deserve fresh sessions with their own gates.
 
-**C1–C6 shipped (this session).** All "existing-evidence-rails" families
+**Wave 2 shipped (2026-07-13, after C1–C6):** CP2 branch identity
+(`<decision>:<rule>` provenance, non-identity-bearing); CP3 boundary
+witnesses (`witnesses.boundary_witnesses` + edge-staged fire claims behind
+`enable_bva_boundaries`; suppression = the mutual-exclusivity law); CP4
+formula guards (bare `$Record` passthrough grounds; every other formula
+refuses as `formula_guard_not_deterministic:<FN>`); CP6 cross-record
+premises (`flow_cross_record_premises` — typed Get-Records representation
+with `$Record`-correlation markers; NOT producers; C7 plugs in here).
+FL05/FL07/FL12 premises captured; FL06's NotEqualTo filter is the honest
+out-of-bounds pin.
+
+**C1–C6 shipped (the prior session).** All "existing-evidence-rails" families
 (A/B/C/E/H-IR) are grounded and, where a loaded requirement exercises them
 (FL03/FL08/FL09 via req-320), live-proven. FL14's IR grounds but its
 emission + live gate wait on REQ-B (the large-order-approval requirement),
