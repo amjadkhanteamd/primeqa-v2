@@ -981,7 +981,8 @@ def flow_behaviour(attributes: Optional[dict]) -> dict:
 
     def _behaviour(state, kind=None, guard=(), field=None, value=None,
                    reasons=(), transform=(), source_field=None, negated=(),
-                   offset_days=None, prior=(), process=None):
+                   offset_days=None, prior=(), process=None,
+                   branch=None):
         return {"state": state, "kind": kind,
                 "guard": [list(g) for g in entry_guard + tuple(guard)],
                 # C5: the PRE-update state conditions ($Record__Prior) — the
@@ -998,6 +999,13 @@ def flow_behaviour(attributes: Optional[dict]) -> dict:
                 # C6: submit-for-approval — the named process (or "" = the
                 # subject's single active approval by enumeration)
                 "process": process,
+                # Wave 2 (CP2): deterministic branch identity —
+                # "<decision>:<rule>" / "<decision>:default"; None
+                # off-decision. Provenance metadata for attribution and
+                # witness naming, NEVER claim-identity-bearing (guards
+                # already hash the semantics; renamed-but-identical rules
+                # must keep identical claim identities).
+                "branch": branch,
                 "reasons": list(reasons)}
 
     # ── flow-level gates: not record-triggered / no immediate path ──
@@ -1048,7 +1056,8 @@ def flow_behaviour(attributes: Optional[dict]) -> dict:
     opaque_any = False
     grounded_possible = True   # set False only by pre-walk global gates
 
-    def _walk_linear(start_target, guard, negated, prior=()):
+    def _walk_linear(start_target, guard, negated, prior=(),
+                     branch=None):
         """Walk one linear path (no further decisions) to completion.
         Returns (path_behaviours, path_reasons, path_opaque)."""
         pb: list = []
@@ -1126,7 +1135,8 @@ def flow_behaviour(attributes: Optional[dict]) -> dict:
                         pb.append(_behaviour(
                             _FB_UNSUPPORTED, kind="set_record_field",
                             guard=guard, negated=negated, prior=prior,
-                            field=field, reasons=reasons))
+                            field=field, reasons=reasons,
+                            branch=branch))
                         pr.extend(reasons)
                     elif transform is not None:
                         chain, source_field = transform
@@ -1134,17 +1144,18 @@ def flow_behaviour(attributes: Optional[dict]) -> dict:
                             _FB_GROUNDED, kind="set_record_field_transform",
                             guard=guard, negated=negated, prior=prior,
                             field=field, transform=chain,
-                            source_field=source_field))
+                            source_field=source_field, branch=branch))
                     elif offset_days is not None:
                         pb.append(_behaviour(
                             _FB_GROUNDED, kind="set_record_field_temporal",
                             guard=guard, negated=negated, prior=prior,
-                            field=field, offset_days=offset_days))
+                            field=field, offset_days=offset_days,
+                            branch=branch))
                     else:
                         pb.append(_behaviour(
                             _FB_GROUNDED, kind="set_record_field",
                             guard=guard, negated=negated, prior=prior,
-                            field=field, value=value))
+                            field=field, value=value, branch=branch))
                 connector = el.get("connector")
                 target = (connector or {}).get("targetReference") \
                     if isinstance(connector, dict) else None
@@ -1178,7 +1189,7 @@ def flow_behaviour(attributes: Optional[dict]) -> dict:
                 pb.append(_behaviour(
                     _FB_GROUNDED, kind="submit_for_approval",
                     guard=guard, negated=negated, prior=prior,
-                    process=_fb_parse_submit_action(el)))
+                    process=_fb_parse_submit_action(el), branch=branch))
                 connector = el.get("connector")
                 target = (connector or {}).get("targetReference") \
                     if isinstance(connector, dict) else None
@@ -1315,6 +1326,7 @@ def flow_behaviour(attributes: Optional[dict]) -> dict:
                     reasons=["multi_condition_rule_in_ordered_decision"]))
                 target = None
                 break
+            _dec_name = el.get("name") or "decision"
             arms = []
             for i, rule in enumerate(rules):
                 rule_conn = rule.get("connector")
@@ -1322,7 +1334,8 @@ def flow_behaviour(attributes: Optional[dict]) -> dict:
                     if isinstance(rule_conn, dict) else None
                 negated = tuple(cc[0] for cc, _pc in parsed_rules[:i])
                 cc_i, pc_i = parsed_rules[i]
-                arms.append((arm_target, cc_i, negated, pc_i))
+                arms.append((arm_target, cc_i, negated, pc_i,
+                             f"{_dec_name}:{rule.get('name') or i}"))
             if default_target:
                 arms.append((default_target,
                              (),
@@ -1330,8 +1343,10 @@ def flow_behaviour(attributes: Optional[dict]) -> dict:
                              if all(len(cc) == 1
                                     for cc, _pc in parsed_rules)
                              else None,
-                             ()))
-            for arm_target, arm_guard, arm_negated, arm_prior in arms:
+                             (),
+                             f"{_dec_name}:default"))
+            for arm_target, arm_guard, arm_negated, arm_prior, \
+                    arm_branch in arms:
                 if arm_negated is None:
                     demote_reasons.append(
                         "multi_condition_rule_in_ordered_decision")
@@ -1342,7 +1357,8 @@ def flow_behaviour(attributes: Optional[dict]) -> dict:
                 if not arm_target:
                     continue        # an armless rule writes nothing
                 pb, pr, p_op = _walk_linear(arm_target, arm_guard,
-                                            arm_negated, prior=arm_prior)
+                                            arm_negated, prior=arm_prior,
+                                            branch=arm_branch)
                 behaviours.extend(pb)
                 opaque_any = opaque_any or p_op
             target = None

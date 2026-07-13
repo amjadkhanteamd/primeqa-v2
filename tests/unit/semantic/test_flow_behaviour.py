@@ -777,3 +777,28 @@ def test_mixed_record_and_variable_assignment_stays_hard():
     assert all(b["state"] != "grounded" for b in ir["behaviours"])
     reasons = {r for b in ir["behaviours"] for r in b["reasons"]}
     assert "non_record_assignment_target" in reasons
+
+
+# ── Wave 2 (CP2): deterministic branch identity ───────────────────────
+
+def test_fan_out_behaviours_carry_branch_provenance():
+    ir = flow_behaviour(_load("PLS_FB_FL03_Tier_Banding"))
+    branches = {b["value"]: b["branch"] for b in ir["behaviours"]}
+    # every arm names its decision:rule; the default arm says so; all
+    # four are distinct and deterministic
+    assert len(set(branches.values())) == 4
+    assert all(bv and ":" in bv for bv in branches.values())
+    assert branches["Bronze"].endswith(":default")
+    # replaying the parse yields byte-identical branch ids
+    ir2 = flow_behaviour(_load("PLS_FB_FL03_Tier_Banding"))
+    assert [b["branch"] for b in ir2["behaviours"]] == \
+        [b["branch"] for b in ir["behaviours"]]
+
+
+def test_off_decision_behaviours_have_no_branch():
+    ir = flow_behaviour(_load("PLS_FB_FL01_Default_Priority"))
+    [b] = ir["behaviours"]
+    assert b["branch"] is not None  # FL01's write IS on a decision arm
+    ir2 = flow_behaviour(_load("PLS_FB_FL02_Normalize_External_Ref"))
+    [b2] = ir2["behaviours"]
+    assert b2["branch"] is None     # FL02's transform is pre-decision linear
