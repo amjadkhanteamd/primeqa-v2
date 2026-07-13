@@ -1141,8 +1141,13 @@ def flow_behaviour(attributes: Optional[dict]) -> dict:
         demote_reasons.append("entry_conditions_not_consumed")
     if trig["requires_change_to_meet"]:
         demote_reasons.append("updated_to_meet_not_consumed")
-    if trig["save_phase"] != "before_save":
-        demote_reasons.append("after_save_not_in_grammar")
+    # C2 (after-save admission): the save phase is no longer a flow-level
+    # demotion — S4 reads post-commit, so after-save writes are observable
+    # exactly like before-save ones. The phase remains a grounding PROPERTY:
+    # the transform projection enforces before_save itself (an after-save
+    # transform's raw witness would face the validation rules BEFORE the
+    # flow runs — unconstructible), and future order-of-execution reasoning
+    # (B3) reads trigger.save_phase.
     if trig["record_trigger_type"] not in ("Create", "CreateAndUpdate"):
         demote_reasons.append(
             f"trigger_type_not_in_grammar:{trig['record_trigger_type']}")
@@ -1191,10 +1196,15 @@ def flow_grounded_transforms(attributes: Optional[dict]) -> tuple:
     verifiably REWRITES on the triggering record, the application-order
     function chain, the field it reads, and the fire guard (consumed entry
     filters + decision guard). Unsupported/opaque behaviours contribute
-    nothing (honest refusal upstream). Only before-save transforms exist in
-    the grammar, so consumers may rely on the run-before-validation-rules
-    order-of-execution fact."""
+    nothing (honest refusal upstream). BEFORE-SAVE ONLY (enforced here since
+    C2 admitted after-save flows to the walk): an after-save transform's raw
+    witness would face the validation rules BEFORE the flow runs, so no
+    passing test is constructible — the run-before-validation-rules
+    order-of-execution fact this projection's consumers rely on holds by
+    construction."""
     ir = flow_behaviour(attributes)
+    if ir["trigger"]["save_phase"] != "before_save":
+        return ()
     out = [
         {"field": b["field"], "transform": tuple(b["transform"]),
          "source_field": b["source_field"],

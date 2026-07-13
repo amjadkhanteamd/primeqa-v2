@@ -457,3 +457,52 @@ def test_single_rule_decision_keeps_conjunctive_grammar():
     assert ir["parse_status"] == "full"
     [b] = ir["behaviours"]
     assert b["state"] == "grounded" and len(b["guard"]) == 2
+
+# ── C2: after-save admission — phase is a property, not a demotion ────
+
+def test_after_save_literal_flow_grounds():
+    # phase-safety for literals holds by k16 (the create never stages the
+    # effect field) + post-commit reads: an after-save flow's write is
+    # observable exactly like a before-save one
+    attrs = {"Metadata": {
+        "start": {"object": "X__c", "triggerType": "RecordAfterSave",
+                  "recordTriggerType": "Create",
+                  "connector": {"targetReference": "Set"}},
+        "assignments": [
+            {"name": "Set",
+             "assignmentItems": [{"assignToReference": "$Record.F__c",
+                                  "operator": "Assign",
+                                  "value": {"stringValue": "v"}}]},
+        ],
+    }}
+    ir = flow_behaviour(attrs)
+    assert ir["parse_status"] == "full"
+    assert ir["trigger"]["save_phase"] == "after_save"
+    [b] = ir["behaviours"]
+    assert b["state"] == "grounded"
+    assert flow_grounded_same_record_effects(attrs) == frozenset(
+        {("F__c", "v")})
+
+
+def test_after_save_transform_is_excluded_from_the_transform_projection():
+    # an after-save transform's raw witness would face the validation rules
+    # BEFORE the flow runs — no passing test is constructible, so the
+    # projection (whose consumers rely on the runs-before-VRs fact)
+    # excludes the whole flow even though the IR grounds the behaviour
+    attrs = {"Metadata": {
+        "start": {"object": "X__c", "triggerType": "RecordAfterSave",
+                  "recordTriggerType": "Create",
+                  "connector": {"targetReference": "Norm"}},
+        "formulas": [{"name": "f", "dataType": "String",
+                      "expression": "UPPER({!$Record.F__c})"}],
+        "assignments": [
+            {"name": "Norm",
+             "assignmentItems": [{"assignToReference": "$Record.F__c",
+                                  "operator": "Assign",
+                                  "value": {"elementReference": "f"}}]},
+        ],
+    }}
+    ir = flow_behaviour(attrs)
+    [b] = ir["behaviours"]
+    assert b["state"] == "grounded"          # the IR carries the behaviour…
+    assert flow_grounded_transforms(attrs) == ()   # …the projection refuses
