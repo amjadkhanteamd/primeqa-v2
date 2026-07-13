@@ -643,6 +643,8 @@ def _project_positive(steps, *, recipe_id) -> tuple:
             target=read.target,
             soql=read.soql,
             fields_to_capture=tuple(read.fields_to_capture),
+            # C9: the bounded-eventual spec survives projection
+            eventual=getattr(read, "eventual", None),
         ),
         PlannedAssertion(
             step_id=assertion.step_id,

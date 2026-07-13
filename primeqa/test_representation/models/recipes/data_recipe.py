@@ -88,6 +88,15 @@ class ReadStep(_StepBase):
     target: OperationalRef
     soql: Optional[str] = None
     fields_to_capture: list[str] = []
+    eventual: Optional[dict] = None
+    """C9 (bounded-eventual observation): when set, the executor retries
+    an EMPTY read until rows appear or the deadline passes —
+    ``{"timeout_s": int, "poll_s": number, "reason": str}`` (scalars
+    only; the executor clamps both bounds). ``None`` (the default) is
+    the immediate read, byte-identical to every pre-C9 recipe. The
+    honest semantics: a green means OBSERVED WITHIN the window; an
+    empty read at deadline fails the assert exactly like an immediate
+    miss — a bounded window can never prove absence."""
 
 
 class UpdateStep(_StepBase):

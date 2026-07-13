@@ -165,6 +165,9 @@ class PlannedDataRead:
     soql: Optional[str]
     fields_to_capture: tuple[str, ...]
     kind: Literal["read"] = "read"
+    # C9: the bounded-eventual spec carried from the recipe's ReadStep —
+    # None = the immediate read (every pre-C9 plan byte-identical).
+    eventual: Optional[dict] = None
 
 
 @dataclass(frozen=True)

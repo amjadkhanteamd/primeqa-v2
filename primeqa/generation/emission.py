@@ -391,6 +391,13 @@ class GroundedAutomationEffect:
     # and asserts the flag — without the sibling the arm provably cannot
     # fire, so a green means the premise query discriminated.
     premise_sibling: Optional[dict] = None
+    # C9 (FL11 slice): the bounded-eventual read spec for an ASYNC create
+    # producer — {"timeout_s", "poll_s", "reason"}. Rides the emitted
+    # ReadStep verbatim (the S4 executor clamps); the triggering-action
+    # narration names the asynchronous window (identity-bearing: an async
+    # observation is a different claim than an immediate one). None = the
+    # immediate shape, byte-identical.
+    eventual_read: Optional[dict] = None
     # D-299: the OPTIONAL entry-condition trigger — the (field, value) pairs the
     # create must SET so the Flow's entry gate actually fires (the risk-rating
     # flow gates on StageName='Credit Assessment' AND the KYC/Credit-Score fields
@@ -2585,6 +2592,15 @@ def _author_automation_effect(g: GroundedAutomationEffect) -> EmissionBundle:
             xo_event = EventDescriptor(
                 trigger_kind="data-mutation-trigger",
                 description=f"creating a {object_api} with {gate}")
+        if g.eventual_read:
+            # C9: identity-bearing — the asynchronous observation is a
+            # different claim than an immediate one
+            xo_event = EventDescriptor(
+                trigger_kind="data-mutation-trigger",
+                description=(xo_event.description
+                             + " — the effect lands on the platform's "
+                               "asynchronous path (observed within a "
+                               "bounded window)"))
         if g.premise_children:
             # Completion E2: the SET-UPDATE shape — the flow updates a
             # correlated set of PRE-EXISTING rows. Chain: create the subject
@@ -2769,6 +2785,9 @@ def _author_automation_effect(g: GroundedAutomationEffect) -> EmissionBundle:
                 soql=f"{select} WHERE {lookup_bare} = '$create-record.id'",
                 fields_to_capture=(["Id"] if g.effect_field is None
                                    else ["Id", field_bare]),
+                # C9: retry-until-deadline for async producers (None = the
+                # immediate read, byte-identical)
+                eventual=g.eventual_read,
             ),
             DataAssertStep(step_id="assert-effect", predicate=assert_pred),
         ]

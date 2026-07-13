@@ -787,6 +787,12 @@ _SUPPORTED_DATA_PREDICATES = frozenset(
 # 0-row result stands. Same-record reads pass on attempt 1.
 _READ_RETRY_ATTEMPTS = 3
 _READ_RETRY_DELAY_S = 2.0
+# C9 (bounded-eventual reads): defaults + hard clamps for the eventual spec —
+# recipe-carried values are advisory, the executor owns the bounds.
+_EVENTUAL_TIMEOUT_S = 120.0
+_EVENTUAL_MAX_TIMEOUT_S = 300.0
+_EVENTUAL_POLL_S = 5.0
+_EVENTUAL_MIN_POLL_S = 2.0
 
 
 
@@ -1231,7 +1237,35 @@ def _read_with_retry(read, sobject, state, client, *, ordinal):
     ``_READ_RETRY_ATTEMPTS`` times (``_READ_RETRY_DELAY_S`` apart) — the org's
     automation may commit its side effect moments after the trigger create.
     Transport errors and non-empty reads return immediately; the returned
-    evidence records how many attempts were issued."""
+    evidence records how many attempts were issued.
+
+    C9 (bounded-eventual observation): a read carrying an ``eventual`` spec
+    retries an empty result until the DEADLINE instead — the platform's
+    asynchronous paths (run-after-commit) land seconds later, outside the
+    immediate grace window. Both bounds are executor-clamped
+    (``_EVENTUAL_MAX_TIMEOUT_S`` / ``_EVENTUAL_MIN_POLL_S``) so an emission
+    value can never make a run hang. The grading is unchanged: an empty
+    read at deadline fails the assert exactly like an immediate miss — a
+    bounded window can never prove absence, which is why absence claims
+    refuse eventual producers at grounding."""
+    spec = getattr(read, "eventual", None)
+    if spec:
+        timeout = min(float(spec.get("timeout_s") or _EVENTUAL_TIMEOUT_S),
+                      _EVENTUAL_MAX_TIMEOUT_S)
+        poll = max(float(spec.get("poll_s") or _EVENTUAL_POLL_S),
+                   _EVENTUAL_MIN_POLL_S)
+        deadline = time.monotonic() + timeout
+        attempt = 0
+        while True:
+            attempt += 1
+            ev, err = _run_read_back(read, sobject, state, client,
+                                     ordinal=ordinal)
+            remaining = deadline - time.monotonic()
+            if err is not None or ev.row_count > 0 or remaining <= 0:
+                if err is None and attempt > 1:
+                    ev = replace(ev, attempts=attempt)
+                return ev, err
+            time.sleep(min(poll, remaining))
     attempt = 0
     while True:
         attempt += 1

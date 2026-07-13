@@ -1450,3 +1450,100 @@ def test_null_asserted_fields_scope_by_object_prefix():
         _plan(), client=client, environment_id=_ENV_ID, s1=_s1(),
         null_asserted_fields={"Contact.Blank__c"})
     assert ev.outcome == "errored"      # padding-field rejection — unchanged
+
+
+# ---------------------------------------------------------------------------
+# C9 — bounded-eventual reads (async run-after-commit producers, FL11)
+# ---------------------------------------------------------------------------
+
+class _EventualStubClient(_StubClient):
+    """query returns empty until the Nth call, then the row — the async
+    platform path landing its side effect mid-window."""
+
+    def __init__(self, *, lands_on_attempt, row, **kw):
+        super().__init__(**kw)
+        self._lands_on = lands_on_attempt
+        self._row = row
+
+    def query(self, soql):
+        self.queries.append(soql)
+        if len(self.queries) >= self._lands_on:
+            return [dict(self._row)]
+        return []
+
+
+def _eventual_plan(spec):
+    plan = _effect_plan()
+    read = plan.steps[1]
+    from dataclasses import replace as _rp
+    return _rp(plan, steps=(plan.steps[0], _rp(read, eventual=spec),
+                            plan.steps[2]))
+
+
+def test_eventual_read_polls_until_the_effect_lands(monkeypatch):
+    import primeqa.execution_engine.data_executor as dx
+    sleeps = []
+    monkeypatch.setattr(dx.time, "sleep", lambda s: sleeps.append(s))
+    client = _EventualStubClient(
+        lands_on_attempt=7, row={"Id": "a0X001", "attributes": {}},
+        create_result=_success("001TRIG"))
+    ev = execute_data_recipe(
+        _eventual_plan({"timeout_s": 120, "poll_s": 5,
+                        "reason": "async_after_commit"}),
+        client=client, environment_id=_ENV_ID, s1=_s1())
+    assert ev.outcome == "passed"
+    read_ev = [s for s in ev.steps if s.kind == "read"][0]
+    # 7 attempts — far beyond the immediate grace window's 3
+    assert read_ev.attempts == 7
+    assert all(s == 5.0 for s in sleeps)
+    # the eventually-observed effect record still tears down
+    assert ("Order_Log__c", "a0X001") in client.deletes
+
+
+def test_eventual_read_deadline_fails_honestly(monkeypatch):
+    import primeqa.execution_engine.data_executor as dx
+    monkeypatch.setattr(dx.time, "sleep", lambda s: None)
+    # a fake monotonic clock: each call advances 10s, so a 30s budget
+    # exhausts after a bounded number of polls — never a hang
+    t = {"now": 0.0}
+
+    def _mono():
+        t["now"] += 10.0
+        return t["now"]
+    monkeypatch.setattr(dx.time, "monotonic", _mono)
+    client = _StubClient(create_result=_success("001TRIG"), query_result=[])
+    ev = execute_data_recipe(
+        _eventual_plan({"timeout_s": 30, "poll_s": 5,
+                        "reason": "async_after_commit"}),
+        client=client, environment_id=_ENV_ID, s1=_s1())
+    # the effect never landed: FAILED (the finding), never errored/hung
+    assert ev.outcome == "failed"
+    assert ev.error is None
+    assert len(client.queries) >= 2
+
+
+def test_eventual_spec_is_clamped(monkeypatch):
+    import primeqa.execution_engine.data_executor as dx
+    sleeps = []
+    monkeypatch.setattr(dx.time, "sleep", lambda s: sleeps.append(s))
+    client = _EventualStubClient(
+        lands_on_attempt=2, row={"Id": "a0X001", "attributes": {}},
+        create_result=_success("001TRIG"))
+    # an emission asking for a 0.01s poll gets the executor's floor
+    ev = execute_data_recipe(
+        _eventual_plan({"timeout_s": 60, "poll_s": 0.01,
+                        "reason": "async_after_commit"}),
+        client=client, environment_id=_ENV_ID, s1=_s1())
+    assert ev.outcome == "passed"
+    assert sleeps == [2.0]                       # _EVENTUAL_MIN_POLL_S
+
+
+def test_read_without_eventual_keeps_the_immediate_grace_window(monkeypatch):
+    import primeqa.execution_engine.data_executor as dx
+    sleeps = []
+    monkeypatch.setattr(dx.time, "sleep", lambda s: sleeps.append(s))
+    client = _StubClient(create_result=_success("001TRIG"), query_result=[])
+    ev = execute_data_recipe(_effect_plan(), client=client,
+                             environment_id=_ENV_ID, s1=_s1())
+    read_ev = [s for s in ev.steps if s.kind == "read"][0]
+    assert read_ev.attempts == 3                 # pre-C9, byte-identical

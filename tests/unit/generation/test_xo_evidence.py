@@ -725,3 +725,129 @@ def test_fault_handler_create_never_grounds_as_main_path_producer():
     # create is NOT (it cannot be provoked deterministically)
     assert len(_xo_create_producers([flow], "PLS_FB_Ledger_Entry__c")) == 1
     assert _xo_create_producers([flow], "PLS_FB_Audit_Log__c") == []
+
+
+# ---------------------------------------------------------------------------
+# C9 — bounded-eventual observation (FL11: async enrichment log)
+# ---------------------------------------------------------------------------
+
+FL11_FIXTURE = os.path.join(os.path.dirname(__file__), "..", "semantic",
+                            "fixtures", "pls_fb_flows",
+                            "PLS_FB_FL11_Async_Enrichment.json")
+
+
+def _world_fl11():
+    order = _ent("Object", "PLS_FB_Order__c", "PLS FB Order")
+    status = _ent("Field", "PLS_FB_Order__c.PLS_FB_Status__c", "Status")
+    log = _ent("Object", "PLS_FB_Audit_Log__c", "PLS FB Audit Log")
+    l_order = _ent("Field", "PLS_FB_Audit_Log__c.PLS_FB_Order__c", "Order")
+    l_kind = _ent("Field", "PLS_FB_Audit_Log__c.PLS_FB_Kind__c", "Kind")
+    with open(FL11_FIXTURE) as f:
+        d = json.load(f)
+    flow = _ent("Flow", "PLS_FB_FL11_Async_Enrichment", "Async Enrichment",
+                attrs={"Metadata": d["Metadata"]})
+    pvs = uuid4()
+    s1 = _FakeS1(
+        entities=[order, status, log, l_order, l_kind, flow],
+        rows_by_object={
+            "PLS_FB_Order__c": [
+                SimpleNamespace(edge_type=gc.EDGE_BELONGS, entity=status),
+                SimpleNamespace(edge_type=gc.EDGE_FLOW, entity=flow)],
+            "PLS_FB_Audit_Log__c": [
+                SimpleNamespace(edge_type=gc.EDGE_BELONGS, entity=e)
+                for e in (l_order, l_kind)],
+        },
+        details={status.id: {"field_type": "picklist",
+                             "picklist_value_set_entity_id": pvs}},
+        picklists={pvs: [{"value_api_name": v, "is_active": True}
+                         for v in ("Draft", "Submitted", "Confirmed")]})
+    return gc.GovernanceCore(s1)
+
+
+FL11_EXCERPT = ("shortly after an order is confirmed, an enrichment audit "
+                "log entry appears for it")
+
+
+def _fl11_intent(**kw):
+    d = {"ac_ref": 15, "archetype_hint": "data_behavior",
+         "polarity_hint": "positive",
+         "claim_kind_hint": "automation-effect-claim",
+         "requirement_excerpt": FL11_EXCERPT,
+         "target_subject_hint": {
+             "entity_type": "Object", "sf_api_name": "PLS_FB_Order__c",
+             "effect_object": "PLS_FB_Audit_Log__c", **kw}}
+    return {"requirement_excerpt": FL11_EXCERPT, "intent_descriptor": d}
+
+
+def test_async_create_grounds_with_the_eventual_read():
+    core = _world_fl11()
+    state = _state()
+    res = core.resolve_intent(intent_input=_fl11_intent(), ctx=_ctx(),
+                              state=state)
+    assert res.refusal is None, getattr(res.refusal, "payload", None)
+    [g] = state.groundings
+    assert g.automation.external_id == "PLS_FB_FL11_Async_Enrichment"
+    assert g.effect_lookup_field.external_id == \
+        "PLS_FB_Audit_Log__c.PLS_FB_Order__c"          # substrate-derived
+    assert g.eventual_read == {"timeout_s": 120, "poll_s": 5,
+                               "reason": "async_after_commit"}
+    # entry transition from the async op's guard (Update trigger)
+    assert _pairs(g.trigger_fields) == {"PLS_FB_Status__c": "Draft"}
+    assert _pairs(g.update_trigger_fields) == \
+        {"PLS_FB_Status__c": "Confirmed"}
+
+
+def test_async_emission_marks_the_read_and_the_narration():
+    from primeqa.generation.emission import author_emission
+    core = _world_fl11()
+    state = _state()
+    core.resolve_intent(intent_input=_fl11_intent(
+        effect_field="PLS_FB_Kind__c"), ctx=_ctx(), state=state)
+    [g] = state.groundings
+    assert g.effect_value == "AsyncEnrichment"          # the op's literal
+    bundle = author_emission(g)
+    read = next(s for s in bundle.observation_realization.steps
+                if type(s).__name__ == "ReadStep")
+    assert read.eventual == {"timeout_s": 120, "poll_s": 5,
+                             "reason": "async_after_commit"}
+    assert "asynchronous" in \
+        bundle.asserted_truth.triggering_action.description
+    # deterministic identity, and DISTINCT from an immediate claim's shape
+    from primeqa.test_representation.identity_hash import compute_identity_hash
+    b2 = author_emission(g)
+    assert compute_identity_hash(bundle.archetype, bundle.claim_kind,
+                                 bundle.asserted_truth,
+                                 bundle.semantic_conditions) == \
+        compute_identity_hash(b2.archetype, b2.claim_kind,
+                              b2.asserted_truth, b2.semantic_conditions)
+
+
+def test_async_absence_refuses_by_name():
+    core = _world_fl11()
+    res = core.resolve_intent(
+        intent_input=_fl11_intent(expected_absence=True,
+                                  effect_lookup_field="PLS_FB_Order__c"),
+        ctx=_ctx(), state=_state())
+    assert res.refusal is not None
+    assert "not provable" in res.refusal.payload["detail"]
+
+
+def test_async_plan_bridge_carries_the_eventual_spec():
+    from primeqa.generation.emission import author_emission
+    core = _world_fl11()
+    state = _state()
+    core.resolve_intent(intent_input=_fl11_intent(), ctx=_ctx(), state=state)
+    [g] = state.groundings
+    bundle = author_emission(g)
+    from primeqa.execution_engine.bridge import build_data_recipe_plan
+    from types import SimpleNamespace as NS
+    rr = NS(recipe_id=uuid4(), version_seq=1, claim_test_id=uuid4(),
+            claim_version_seq=None, recipe_kind="data-recipe",
+            trigger_kind="data-mutation-trigger",
+            causal_initiation=bundle.causal_initiation,
+            observation_realization=bundle.observation_realization,
+            execution_environment=bundle.execution_environment)
+    plan = build_data_recipe_plan(rr)
+    read = next(s for s in plan.steps if s.kind == "read")
+    assert read.eventual == {"timeout_s": 120, "poll_s": 5,
+                             "reason": "async_after_commit"}

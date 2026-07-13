@@ -1638,6 +1638,28 @@ def _flows_producing_rollup(flow_entities, subject_api, field_hint):
     return out
 
 
+def _xo_eventual_create_producers(flow_entities, effect_object_api):
+    """C9 (FL11 slice): flows whose typed IR creates the effect object on
+    an ASYNC run-after-commit path — observability ``bounded_eventual``
+    (the platform commits the side effect seconds later, in the same
+    logical action). Scheduled paths (``deferred_reobservation_required``)
+    stay excluded — a +2-day effect is not observable within one run.
+    [(entity, op)]; fault-path ops excluded as everywhere."""
+    out = []
+    if not effect_object_api:
+        return out
+    for ent in flow_entities:
+        for op in flow_cross_record_effect_ops(getattr(ent, "attributes",
+                                                       None)):
+            if op["kind"] == "create_record" \
+                    and op["object"] == effect_object_api \
+                    and not op.get("on_fault_of") \
+                    and op.get("temporal_path") \
+                    and op.get("observability") == "bounded_eventual":
+                out.append((ent, op))
+    return out
+
+
 def _xo_create_producers(flow_entities, effect_object_api):
     """Completion Program E1: the flows whose TYPED effect ops include a
     create_record on ``effect_object_api`` — [(entity, op)]. Richer than
@@ -3681,6 +3703,31 @@ class GovernanceCore:
                 # (the C4/C5 discipline) — presence only (an absence case
                 # must not stage the firing transition).
                 _xo_ops = _xo_create_producers(flows, effect_object_api)
+                # C9 (FL11 slice): an ASYNC bounded-eventual create producer
+                # takes the same E1 rails when no immediate producer exists —
+                # the grounding is identical, the READ becomes retry-until-
+                # deadline. Absence refuses here BY NAME: a bounded window
+                # can never prove the record will not appear.
+                _xo_eventual = None
+                if not _xo_ops:
+                    _evt = _xo_eventual_create_producers(
+                        flows, effect_object_api)
+                    if _evt and raw_absence:
+                        return IntentResolution(
+                            grounded_candidates=[],
+                            next_action=NextAction.REFUSE,
+                            interpretation_delta=delta,
+                            refusal=self._router.emission_deferred(
+                                archetype, claim_kind,
+                                detail=(f"{_evt[0][0].sf_api_name} creates "
+                                        f"the {effect_object_api} record on "
+                                        f"an ASYNCHRONOUS path — absence "
+                                        f"within a bounded window is not "
+                                        f"provable (the record may land "
+                                        f"after any deadline)")))
+                    if len(_evt) == 1:
+                        _xo_ops = _evt
+                        _xo_eventual = dict(self._EVENTUAL_READ_SPEC)
                 xo_hint = hint
                 _xo_transition = None
                 if len(_xo_ops) == 1:
@@ -4056,6 +4103,8 @@ class GovernanceCore:
                     trigger_fields=xo_triggers,
                     update_trigger_fields=xo_update_fields,
                     automation_primitive=primitive,     # D-308 (see above)
+                    # C9: the bounded-eventual read spec (async producers)
+                    eventual_read=_xo_eventual,
                     # D-307: the absence mirror (gated fail-closed above —
                     # cross-object, no effect_field/effect_value, strict bool).
                     expected_absence=expected_absence))
@@ -5063,6 +5112,11 @@ class GovernanceCore:
     # (identity stability). Distinctive enough that a default/formula value
     # colliding with it by accident is implausible on a fresh record.
     _ROLLUP_SUM_STAGED = 137
+
+    # C9 (bounded-eventual observation): the recipe-carried spec for an
+    # async producer's read — advisory; the S4 executor owns the clamps.
+    _EVENTUAL_READ_SPEC = {"timeout_s": 120, "poll_s": 5,
+                           "reason": "async_after_commit"}
 
     def _try_premise_conditioned_resolution(self, *, hint, subject,
                                             field_ent, at, neighborhood,
