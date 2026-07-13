@@ -31,6 +31,7 @@ from primeqa.semantic.entity_attributes import apply_transform_chain
 from primeqa.generation.verified_negative import regex_matching_value
 
 __all__ = [
+    "boundary_witnesses",
     "picklist_alternative",
     "regex_matching_value",
     "synthesize_transform_witness",
@@ -187,6 +188,53 @@ def picklist_alternative(picklist_values, exclude) -> Optional[str]:
         if v not in exclude:
             return v
     return None
+
+
+def boundary_witnesses(constraints, scale: int) -> tuple:
+    """Wave 2 (CP3): the EDGE values of the band the constraints describe —
+    for each ORIGINAL threshold, the two adjacent quantized values with
+    their side relative to the band: ``(value, "inside"|"outside",
+    threshold)``. Composes the D-346 boundary discipline for first-match
+    ladders: the inside edge must fire THIS arm, the outside edge must
+    fire the neighbour — together they pin the threshold exactly.
+    Deterministic; same constraint grammar as :func:`interval_witness`
+    (``(op, threshold, negated)`` triples on ONE field); ``()`` outside
+    the grammar or when a candidate fails re-verification."""
+    if not constraints:
+        return ()
+    unit = Decimal(1).scaleb(-int(scale or 0))
+    checks = []
+    for op, threshold, negated in constraints:
+        t = _as_decimal(threshold)
+        if t is None or op not in _NUMERIC_OPS:
+            return ()
+        checks.append((op, t, bool(negated)))
+
+    def _inside(v: Decimal) -> bool:
+        return all(_holds(v, op, t) is not neg for op, t, neg in checks)
+
+    out = []
+    for _op, t, _neg in checks:
+        for cand in (t, t - unit, t + unit):
+            cand = cand.quantize(unit)
+            side = "inside" if _inside(cand) else "outside"
+            val = int(cand) if cand == cand.to_integral_value() \
+                else float(cand)
+            entry = (val, side, int(t) if t == t.to_integral_value()
+                     else float(t))
+            if entry not in out:
+                out.append(entry)
+    # keep only the tightest straddle per threshold: the edge value ON or
+    # nearest the threshold per side (drop duplicates two units away)
+    per: dict = {}
+    for val, side, t in out:
+        key = (t, side)
+        best = per.get(key)
+        if best is None or abs(Decimal(str(val)) - Decimal(str(t))) \
+                < abs(Decimal(str(best)) - Decimal(str(t))):
+            per[key] = val
+    return tuple(sorted(
+        (v, side, t) for (t, side), v in per.items()))
 
 
 def guard_witness_values(guard, negated_guards, exclude_field: str,

@@ -394,3 +394,42 @@ def test_update_trigger_fields_refusal_carries_offer():
     assert offer and any(
         c["sf_api_name"] == "PLS_FB_Order__c.PLS_FB_Amount__c"
         for c in offer["candidates"])
+
+
+# ---------------------------------------------------------------------------
+# Wave 2 (CP3) — boundary arms behind enable_bva_boundaries
+# ---------------------------------------------------------------------------
+
+def _ctx_bva(at=128):
+    return SimpleNamespace(
+        semantic_context=SimpleNamespace(s1_version_seq=at),
+        requirement_text="PLS FB Order lifecycle",
+        operational_context=SimpleNamespace(enable_bva_boundaries=True))
+
+
+def test_bva_flag_adds_edge_staged_fire_claims():
+    core = _order_world()
+    state = _state()
+    res = core.resolve_intent(intent_input=_intent(None), ctx=_ctx_bva(),
+                              state=state)
+    assert res.refusal is None
+    staged = sorted((g.effect_value, _staged(g)["PLS_FB_Amount__c"])
+                    for g in state.groundings)
+    # interior fire arms still present
+    for pair in [("Bronze", 9999.99), ("Gold", 150000),
+                 ("Platinum", 250000.01), ("Silver", 30000)]:
+        assert pair in staged
+    # edge-staged arms: every threshold pinned from both sides
+    for pair in [("Platinum", 250000), ("Gold", 249999.99),
+                 ("Gold", 50000), ("Silver", 49999.99),
+                 ("Silver", 10000), ("Bronze", 9999.99)]:
+        assert pair in staged, pair
+    # identities distinct: groundings == presented (finalize invariant)
+    assert len(res.grounded_candidates) == len(state.groundings)
+
+
+def test_bva_off_is_byte_identical_to_before():
+    core = _order_world()
+    state = _state()
+    core.resolve_intent(intent_input=_intent(None), ctx=_ctx(), state=state)
+    assert len(state.groundings) == 4      # interior arms only

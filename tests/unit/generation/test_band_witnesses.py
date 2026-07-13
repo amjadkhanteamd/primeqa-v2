@@ -156,3 +156,33 @@ def test_multi_field_guards_derive_independently():
         negated_guards=(),
         exclude_field=TIER, scale_of=lambda b: 0)
     assert status == "ok" and wit == {AMT: 11, "Qty__c": 3}
+
+
+# ── Wave 2 (CP3): boundary witnesses ─────────────────────────────────
+
+from primeqa.generation.witnesses import boundary_witnesses
+
+
+def test_boundary_witnesses_straddle_every_threshold():
+    # Gold: >=50000 ∧ ¬(>=250000) at scale 2 → the four tight edges
+    got = boundary_witnesses([(GTE, 50000.0, False), (GTE, 250000.0, True)], 2)
+    assert (50000, "inside", 50000) in got
+    assert (49999.99, "outside", 50000) in got
+    assert (249999.99, "inside", 250000) in got
+    assert (250000, "outside", 250000) in got
+    assert len(got) == 4
+
+
+def test_boundary_witnesses_default_band_and_bounds():
+    got = boundary_witnesses([(GTE, 10000.0, True)], 0)
+    assert (9999, "inside", 10000) in got
+    assert (10000, "outside", 10000) in got
+    # out-of-grammar → ()
+    assert boundary_witnesses([("EqualTo", 5, False)], 0) == ()
+    assert boundary_witnesses([], 0) == ()
+
+
+def test_boundary_witnesses_deterministic():
+    a = boundary_witnesses([(GTE, 50000.0, False), (GTE, 250000.0, True)], 2)
+    b = boundary_witnesses([(GTE, 250000.0, True), (GTE, 50000.0, False)], 2)
+    assert a == b

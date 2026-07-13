@@ -91,6 +91,7 @@ from primeqa.test_representation.temporal import relative_date
 # witness synthesis lives behind ONE entry point (DEBT E2, closed at C3);
 # the transform witness moved there from this module unchanged
 from primeqa.generation.witnesses import (
+    boundary_witnesses as _boundary_witnesses,
     guard_witness_values as _guard_witness_values,
     picklist_alternative as _picklist_alternative,
     synthesize_transform_witness as _synthesize_transform_witness)
@@ -3684,6 +3685,9 @@ class GovernanceCore:
                             flow_ent is None or no_producer_floor
                             or flow_ent.id == _ladder[0][0].id):
                         l_ent, l_arms = _ladder[0]
+                        _bva_on = bool(getattr(
+                            getattr(ctx, "operational_context", None),
+                            "enable_bva_boundaries", False))
                         if field_is_calculated(field_ent.attributes):
                             return IntentResolution(
                                 grounded_candidates=[],
@@ -3792,6 +3796,50 @@ class GovernanceCore:
                                 effect_value=_b["value"],
                                 trigger_fields=_pairs,
                                 automation_primitive="flow"))
+                            # Wave 2 (CP3): BOUNDARY arms — behind the same
+                            # org-independent enable_bva_boundaries flag the
+                            # D-346 discipline uses. Each arm's INSIDE edge
+                            # values (exactly ON/next to each original
+                            # threshold, re-verified against the arm's full
+                            # constraint set) become additional fire claims
+                            # staged AT the edge; the union across arms pins
+                            # every threshold from both sides (arm X's
+                            # inside edge at t is the neighbour's outside).
+                            # Same rails as the interior stash — distinct
+                            # identity via the staged edge value; still ONE
+                            # guard field by construction here.
+                            if _bva_on and len(_wit) == 1:
+                                (_gf1, _), = _wit.items()
+                                _conds1 = [
+                                    (op, v, False) for f, op, v
+                                    in _b["guard"] if f == _gf1
+                                ] + [(op, v, True) for f, op, v
+                                     in _b["negated_guards"] if f == _gf1]
+                                for _bv, _side, _t in _boundary_witnesses(
+                                        _conds1, _lscale(_gf1) or 0):
+                                    if _side != "inside" or _bv == _wit[_gf1]:
+                                        continue
+                                    _bpairs = tuple(
+                                        (_weps[f], _bv if f == _gf1
+                                         else _wit[f])
+                                        for f in sorted(_wit))
+                                    if _staged_vr_conflict_detail(
+                                            neighborhood,
+                                            {ep.external_id: v
+                                             for ep, v in _bpairs}) is not None:
+                                        continue   # edge collides with a VR:
+                                    #              skip the probe, never refuse
+                                    #              the whole enumeration
+                                    _l_stashes.append(GroundedAutomationEffect(
+                                        archetype=archetype,
+                                        claim_kind=claim_kind,
+                                        version_seq=at, subject=subj_ep,
+                                        automation=_l_ep,
+                                        requirement_excerpt=excerpt,
+                                        effect_field=_l_field_ep,
+                                        effect_value=_b["value"],
+                                        trigger_fields=_bpairs,
+                                        automation_primitive="flow"))
                         for _g in _l_stashes:
                             _stash_grounding(state, _g)
                         # the 1:1 grounding<->presented_candidate invariant
