@@ -1253,6 +1253,32 @@ def _resolve_subject_field_name(neighborhood, name):
     return None
 
 
+def _field_recovery_tail(proposed_names, neighborhood):
+    """B0.2: ranked near-miss offers for failed FIELD references, from the
+    subject's own BELONGS inventory (Field is inside the D-362 recovery
+    boundary — lexical entities recover; behavioural ones never do). Returns
+    ``(tail, offer)`` for the FIRST unresolved name with candidates: the
+    model-facing feedback tail (alternatives, never a conclusion) and its
+    telemetry payload. ``("", None)`` when everything resolves or nothing
+    clears the similarity bar — callers keep their existing fallback (the
+    raw field inventory). Live-observed need (the FB-V1 tier ACs): the
+    alphabetized inventory line's first 8 names were all standard fields,
+    hiding every custom name the model actually needed inside '+16 more' —
+    ranked recovery surfaces the near-miss directly."""
+    pool = [(r.entity.sf_api_name, r.entity.display_name)
+            for r in neighborhood
+            if r.edge_type == EDGE_BELONGS
+            and r.entity.entity_type == "Field" and r.entity.sf_api_name]
+    known = {api for api, _ in pool}
+    for fld in proposed_names:
+        if fld and fld not in known:
+            cands = _recovery.rank_candidates(fld, pool)
+            if cands:
+                return (_recovery.format_candidates(cands),
+                        _recovery.offer_payload("Field", fld, cands))
+    return ("", None)
+
+
 def _subject_field_inventory_line(neighborhood, limit: int = 8) -> str:
     """A compact, deterministic vocabulary line for field-miss refusal details
     (the D-340 recovery feedback truncates at ~160 chars — bare names only)."""
@@ -1565,12 +1591,14 @@ class AdmissibilityEngine:
             grounds = bool(field_hint) and any(
                 r.entity.sf_api_name == field_hint for r in fields)
             if not grounds and field_hint:
-                # B1 arc: the named field did not resolve (unique resolution
-                # already ran upstream) — carry the subject's vocabulary so
-                # the recovery re-prompt can converge instead of re-guessing.
+                # B1 arc + B0.2: the named field did not resolve — a RANKED
+                # near-miss offer converges the re-prompt; the raw inventory
+                # stays the fallback when nothing clears the bar.
+                _tail, _ = _field_recovery_tail([field_hint], neighborhood)
                 cand.dismissal_detail = (
-                    f"field {field_hint!r} does not resolve on the subject; "
-                    + _subject_field_inventory_line(neighborhood))
+                    f"field {field_hint!r} does not resolve on the subject;"
+                    + (_tail or " "
+                       + _subject_field_inventory_line(neighborhood)))
         elif claim_kind == "automation-effect-claim":
             flows = [r for r in neighborhood
                      if r.edge_type == EDGE_FLOW and r.entity.entity_type == "Flow"]
@@ -1724,14 +1752,17 @@ class RefusalRouter:
             "detail_layer": "grounding"})
 
     def emission_deferred(self, archetype: str, claim_kind: str,
-                          detail: Optional[str] = None) -> RefusalDirective:
+                          detail: Optional[str] = None,
+                          candidates: Optional[dict] = None) -> RefusalDirective:
         """A groundable claim whose emission for this claim_kind isn't built yet
         (D-105). Operational/substrate-runtime: the requirement is admissible,
         but the emission machinery is deferred (D-097.6) — an honest capability
         boundary that lifts as kinds land, NOT an input-quality invalidity.
         ``detail`` overrides the generic message when a SPECIFIC sub-shape
-        defers (D-210.1 — e.g. cross-object transitions)."""
-        return RefusalDirective(RefusalKind.EMISSION_DEFERRED, {
+        defers (D-210.1 — e.g. cross-object transitions). ``candidates`` (B0.2)
+        carries a near-miss offer payload exactly as ``no_relevant_context``
+        does — provenance: substrate."""
+        payload: dict[str, Any] = {
             "detail": detail or (
                 f"{archetype}/{claim_kind} is groundable, but emission for "
                 f"this claim_kind is not yet built"),
@@ -1739,7 +1770,10 @@ class RefusalRouter:
             "detail_layer": "grounding",
             "archetype": archetype,
             "claim_kind": claim_kind,
-        })
+        }
+        if candidates:
+            payload["candidates"] = candidates
+        return RefusalDirective(RefusalKind.EMISSION_DEFERRED, payload)
 
     def from_dismissed(self, cand: _Candidate, *, is_negative: bool) -> RefusalDirective:
         """Map an all-dismissed reasoning outcome to the outcome-level
@@ -2425,12 +2459,18 @@ class GovernanceCore:
             grounded_conds, invalid = _ground_rejection_conditions(
                 proposed, neighborhood, at)
             if invalid:
+                # B0.2: same near-miss offer the prohibition clauses get —
+                # a clause field that does not BELONG recovers lexically.
+                _tail, _offer = _field_recovery_tail(
+                    [(c or {}).get("field") for c in (proposed or [])],
+                    neighborhood)
                 return IntentResolution(
                     grounded_candidates=[], next_action=NextAction.REFUSE,
                     interpretation_delta=delta,
                     refusal=self._router.emission_deferred(
                         archetype, claim_kind,
-                        detail="; ".join(invalid)))
+                        detail="; ".join(invalid) + _tail,
+                        candidates=_offer))
             if not grounded_conds:
                 return IntentResolution(
                     grounded_candidates=[], next_action=NextAction.REFUSE,
@@ -3412,12 +3452,17 @@ class GovernanceCore:
                             entity_id=t_ent.id, entity_type=t_ent.entity_type,
                             external_id=t_ent.sf_api_name or str(t_ent.id))
                 if field_ent is None or effect_value is None:
-                    # B1 arc: a field-name miss carries the subject's real
-                    # vocabulary so the recovery re-prompt can converge
-                    # (the proposed name already failed unique resolution).
-                    _voc = ("; " + _subject_field_inventory_line(neighborhood)
-                            if field_ent is None and hint.get("field_name")
-                            else "")
+                    # B0.2: a field-name miss gets a RANKED near-miss offer
+                    # (the inventory line alphabetized standard fields first
+                    # and hid every custom name in '+N more' — the tier-AC
+                    # live failure); inventory stays the fallback.
+                    _voc, _offer = "", None
+                    if field_ent is None and hint.get("field_name"):
+                        _voc, _offer = _field_recovery_tail(
+                            [hint.get("field_name")], neighborhood)
+                        if not _voc:
+                            _voc = "; " + _subject_field_inventory_line(
+                                neighborhood)
                     return IntentResolution(
                         grounded_candidates=[], next_action=NextAction.REFUSE,
                         interpretation_delta=delta,
@@ -3426,7 +3471,8 @@ class GovernanceCore:
                             detail=("automation-effect needs a verifiable "
                                     "effect: field_name + expected_value on "
                                     "the subject, or effect_object + "
-                                    "effect_lookup_field" + _voc)))
+                                    "effect_lookup_field" + _voc),
+                            candidates=_offer))
                 # R2 (req-302 robustness): a numeric effect field refuses a
                 # non-numeric expected value HERE — the "<computed>"
                 # placeholder class never reaches a claim body again.

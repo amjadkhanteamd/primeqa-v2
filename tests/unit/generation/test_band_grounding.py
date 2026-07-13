@@ -180,3 +180,28 @@ def test_unreadable_scale_refuses_with_named_detail():
                               state=_state())
     assert res.refusal is not None
     assert "scale" in res.refusal.payload.get("detail", "")
+
+
+# ---------------------------------------------------------------------------
+# B0.2 — field-miss recovery (the live tier-AC failure class)
+# ---------------------------------------------------------------------------
+
+def test_field_miss_offers_ranked_recovery_candidates():
+    # the model's guess 'Commercial_Tier__c' must surface PLS_FB_Tier__c as
+    # a ranked candidate — the alphabetized inventory line hid every custom
+    # name behind '+N more'
+    core = _order_world()
+    state = _state()
+    bad = _intent("Gold")
+    bad["intent_descriptor"]["target_subject_hint"]["field_name"] = \
+        "PLS_FB_Order__c.Commercial_Tier__c"
+    res = core.resolve_intent(intent_input=bad, ctx=_ctx(), state=state)
+    assert res.refusal is not None
+    detail = res.refusal.payload.get("detail", "")
+    assert "PLS_FB_Order__c.PLS_FB_Tier__c" in detail
+    assert "re-propose" in detail
+    offer = res.refusal.payload.get("candidates")
+    assert offer and offer["source"] == "substrate"
+    assert offer["proposed"] == "PLS_FB_Order__c.Commercial_Tier__c"
+    assert any(c["sf_api_name"] == "PLS_FB_Order__c.PLS_FB_Tier__c"
+               for c in offer["candidates"])
