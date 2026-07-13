@@ -2118,9 +2118,16 @@ class GovernanceCore:
         for i, pi in enumerate(per_intent):
             res = self._resolve_one(pi, ctx, state)
             # Decomposition returns <=1 grounded candidate per intent (D-207
-            # decision 7) — intent-scoped selection is deliberately unbuilt.
-            assert len(res.grounded_candidates) <= 1, \
-                "multi-intent propose met >1 grounded candidate for one intent"
+            # decision 7) — intent-scoped SELECTION is deliberately unbuilt.
+            # C3b exception: N-arm emission (a value-less classification intent
+            # that enumerates every ladder arm) returns N grounded candidates
+            # with PROCEED_TO_EMIT — all EMITTED, none selected among — and
+            # they all share this intent's path slot (reindexed below), so the
+            # merged delta stays collision-free. The ban is on an unresolved
+            # multi-candidate SELECTION in a batch, not on multi-arm emission.
+            assert (len(res.grounded_candidates) <= 1
+                    or res.next_action == NextAction.PROCEED_TO_EMIT), \
+                "multi-intent propose met an unresolved selection for one intent"
             _reindex_paths(res, i + offset)
             d = res.interpretation_delta or {}
             merged["candidate_paths"].extend(d.get("candidate_paths") or [])

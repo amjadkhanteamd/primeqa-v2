@@ -287,3 +287,39 @@ def test_valueful_arm_with_guessed_automation_grounds_one_arm():
     res = core.resolve_intent(intent_input=it, ctx=_ctx(), state=state)
     assert res.refusal is None
     assert [g.effect_value for g in state.groundings] == ["Gold"]
+
+
+# ---------------------------------------------------------------------------
+# multi-intent batch — the LIVE shape (the model proposes several intents)
+# ---------------------------------------------------------------------------
+
+def test_narm_intent_in_a_multi_intent_batch():
+    # the live crash: a value-less tier intent alongside another intent in
+    # ONE propose call. _resolve_many must tolerate N grounded candidates for
+    # the tier intent (all sharing its path slot), not assert <=1.
+    core = _order_world()
+    state = _state()
+    tier = dict(_intent(None)["intent_descriptor"])
+    tier["requirement_excerpt"] = EXCERPT
+    tier["ac_ref"] = 5
+    # a second, deliberately-ungroundable intent (a bogus field) so the batch
+    # is genuinely multi-intent
+    other = {"ac_ref": 6, "archetype_hint": "data_behavior",
+             "polarity_hint": "positive",
+             "claim_kind_hint": "automation-effect-claim",
+             "requirement_excerpt": EXCERPT,
+             "target_subject_hint": {
+                 "entity_type": "Object", "sf_api_name": "PLS_FB_Order__c",
+                 "field_name": "PLS_FB_Order__c.No_Such__c",
+                 "expected_value": "x"}}
+    res = core.resolve_intent(
+        intent_input={"intent_descriptors": [tier, other]},
+        ctx=_ctx(), state=state)
+    # the tier intent grounds all four arms; the bogus one refuses (partial)
+    assert {g.effect_value for g in state.groundings} == {
+        "Platinum", "Gold", "Silver", "Bronze"}
+    # all four tier candidates reindex to the tier intent's slot (c0), and
+    # groundings<->presented stay aligned for finalize
+    assert len(res.grounded_candidates) == 4
+    assert len({c.path_id for c in res.grounded_candidates}) == 1
+    assert len(state.groundings) == 4
