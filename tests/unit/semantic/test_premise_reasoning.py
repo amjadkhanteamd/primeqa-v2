@@ -314,3 +314,29 @@ def test_fl10_scheduled_offset_is_typed_and_deferred():
     # no fabricated observability, no captured ops
     assert _ops("PLS_FB_FL10_Stale_Order_Escalation") == ()
     assert all(b["state"] != "grounded" for b in ir["behaviours"])
+
+
+# ── Wave 3 (CP8): composition — provenance preserved end-to-end ──────
+
+def test_fl12_composition_preserves_provenance_throughout():
+    # FL12 composes: entry filter + lookup (premise) + premise-guarded
+    # decision + subflow call (+ its composed premise) — every layer
+    # carries its provenance
+    from primeqa.semantic.entity_attributes import (
+        flow_behaviour, flow_cross_record_premises, flow_subflow_calls,
+        compose_subflow)
+    caller, callees = _fl12_and_sf01()
+    ir = flow_behaviour(caller)
+    # the direct premise (Get_Open_Task) with element provenance
+    prems = flow_cross_record_premises(caller)
+    assert any(p["element"] == "Get_Open_Task" for p in prems)
+    # the call carries the entry guard + branch context reached it
+    (call,) = flow_subflow_calls(caller)
+    assert call["guard"] == (("PLS_FB_Status__c", "EqualTo", "Fulfilled"),)
+    # the composed premise says WHICH subflow it came through
+    (comp,) = compose_subflow(caller, callees)
+    (cp,) = comp["premises"]
+    assert cp["via_subflow"] == "PLS_FB_SF01_Close_Tasks"
+    # honest demotions never disappear under composition
+    reasons = {r for b in ir["behaviours"] for r in b["reasons"]}
+    assert "element_outside_grammar:subflows" in reasons
