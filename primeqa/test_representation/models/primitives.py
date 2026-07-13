@@ -412,7 +412,7 @@ class RejectionExpectation(BaseModel):
 
 # Predicates that require ``value`` to be provided.
 _ASSERTION_VALUE_BEARING_PREDICATES = {
-    "equals", "not_equals", "matches_pattern",
+    "equals", "not_equals", "matches_pattern", "count_equals",
 }
 # Predicates that require ``value`` to be absent.
 _ASSERTION_VALUE_FREE_PREDICATES = {"exists", "is_null", "not_null", "not_exists"}
@@ -451,13 +451,16 @@ class AssertionPredicate(BaseModel):
         "is_null",
         "not_null",
         "matches_pattern",
+        "count_equals",
     ]
     """The assertion predicate. Closed taxonomy; ``not_null`` added by
     D-227 (an automation stamp like ``$Flow.CurrentDate`` has no stable
     literal to ``equals`` against — the claim asserts the org wrote
     SOME value); ``not_exists`` added by D-307 (the automation-ABSENCE
     claim asserts the correlated record does NOT exist — value-free,
-    exists' mirror)."""
+    exists' mirror); ``count_equals`` added by the Completion Program E2
+    (a set-update over correlated records asserts the filtered read
+    returned EXACTLY N rows — under- and over-update both fail)."""
 
     value: Optional[Any] = None
     """Comparison value. Required for the value-bearing

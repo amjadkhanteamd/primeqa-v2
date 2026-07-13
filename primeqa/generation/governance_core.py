@@ -1322,7 +1322,15 @@ def _flows_producing_effect(flow_entities, field_hint, expected_value, effect_ob
         same = bare is not None and expected_value is not None and any(
             fld == bare and _effect_values_equal(val, expected_value)
             for (fld, val) in same_pairs)
-        cross = bool(effect_object) and effect_object in eff["cross_object"]
+        # Completion E2: a typed update_records op on the effect object is a
+        # verifiable producer too (the flow provably writes that object) —
+        # the D-318 glance only saw recordCreates. Grounding still refuses
+        # downstream unless the E2 branch can derive the full evidence shape.
+        cross = bool(effect_object) and (
+            effect_object in eff["cross_object"]
+            or any(op["kind"] == "update_records"
+                   and op["object"] == effect_object
+                   for op in flow_cross_record_effect_ops(attrs)))
         if same or cross:
             out.append(ent)
     return out
@@ -1479,6 +1487,23 @@ def _capability_line(field_name, summary) -> str:
             f"({flows}) as {'; '.join(shapes)} — frame this as an "
             f"automation-effect claim on that field, and OMIT "
             f"expected_value where the org derives the value")
+
+
+def _xo_update_producers(flow_entities, effect_object_api):
+    """Completion E2: the flows whose typed effect ops UPDATE a correlated
+    set on ``effect_object_api`` — [(entity, op)]. The op's filters carry
+    the pre-state template + correlation; its assignments the updated
+    values."""
+    out = []
+    if not effect_object_api:
+        return out
+    for ent in flow_entities:
+        for op in flow_cross_record_effect_ops(getattr(ent, "attributes",
+                                                       None)):
+            if op["kind"] == "update_records" \
+                    and op["object"] == effect_object_api:
+                out.append((ent, op))
+    return out
 
 
 def _xo_create_producers(flow_entities, effect_object_api):
@@ -3501,6 +3526,199 @@ class GovernanceCore:
                         if _xt_create:
                             _xo_transition = {"create": _xt_create,
                                               "update": _xt_update}
+                # Completion E2: exactly ONE flow verifiably UPDATES a
+                # correlated set on the effect object (FL05's shape). The
+                # entire staging is substrate-derived from the op itself:
+                # the pre-state template from its FILTERS, the correlation
+                # from its ($Record, Id) marker, the updated value from its
+                # ASSIGNMENTS, the entry transition from its guard, and the
+                # DISTRACTOR row (template value flipped to a third state)
+                # whose exclusion the count assert enforces. Presence only.
+                _xo_upd_ops = [] if _xo_ops else _xo_update_producers(
+                    flows, effect_object_api)
+                if len(_xo_upd_ops) == 1 and not raw_absence \
+                        and not xo_hint.get("effect_via_lookup_field"):
+                    _u_ent, _u_op = _xo_upd_ops[0]
+                    _u_refusal = None
+                    _u_corr = next(
+                        (f for f, op_, v in _u_op.get("filters") or ()
+                         if op_ == "EqualTo" and isinstance(v, tuple)
+                         and tuple(v) == ("$Record", "Id")), None)
+                    _u_template = [
+                        (f, v) for f, op_, v in _u_op.get("filters") or ()
+                        if op_ == "EqualTo"
+                        and not isinstance(v, tuple)]
+                    _u_assigns = {
+                        f: tuple(tv)
+                        for f, tv in _u_op["assignments"].items()
+                        if tuple(tv)[0] == "literal"}
+                    _u_field = (str(xo_hint.get("effect_field"))
+                                .rsplit(".", 1)[-1]
+                                if xo_hint.get("effect_field")
+                                else (next(iter(sorted(_u_assigns)))
+                                      if len(_u_assigns) == 1 else None))
+                    if _u_corr is None:
+                        _u_refusal = ("the update op has no ($Record, Id) "
+                                      "correlation — cannot isolate the "
+                                      "updated set")
+                    elif _u_field is None or _u_field not in _u_assigns:
+                        _u_refusal = (f"the update op does not verifiably "
+                                      f"assign {_u_field!r} — name one of "
+                                      f"{sorted(_u_assigns)}")
+                    if _u_refusal is None:
+                        _u_updated = _u_assigns[_u_field][1]
+                        # the distractor: a third state (∉ template ∪ updated)
+                        _u_flip = None
+                        _u_tmpl_map = dict(_u_template)
+                        if _u_field in _u_tmpl_map:
+                            _u_effmeta = _grounding_field_metadata(
+                                self._admit.scoped_neighborhood(
+                                    self._admit.resolve_subject(
+                                        "Object", effect_object_api,
+                                        at)[0], at), self._s1, at)
+                            _alt = _picklist_alternative(
+                                (_u_effmeta.get(_u_field) or {}).get(
+                                    "picklist_values"),
+                                {_u_tmpl_map[_u_field], _u_updated})
+                            if _alt is None:
+                                _u_refusal = (
+                                    f"cannot derive a distractor state on "
+                                    f"{_u_field!r} distinct from the "
+                                    f"template and updated values")
+                            else:
+                                _u_flip = (_u_field, _alt)
+                    if _u_refusal is not None:
+                        return IntentResolution(
+                            grounded_candidates=[],
+                            next_action=NextAction.REFUSE,
+                            interpretation_delta=delta,
+                            refusal=self._router.emission_deferred(
+                                archetype, claim_kind, detail=_u_refusal))
+                    # entry transition (Update trigger + EqualTo guard):
+                    # identical derivation to the E1 create path
+                    _u_trig = flow_behaviour(
+                        getattr(_u_ent, "attributes", None))["trigger"]
+                    _u_transition = None
+                    if (_u_trig["record_trigger_type"] == "Update"
+                            and _u_op["guard"]
+                            and all(g[1] == "EqualTo"
+                                    for g in _u_op["guard"])):
+                        _ugmeta = _grounding_field_metadata(
+                            neighborhood, self._s1, at)
+                        _ut_create, _ut_update = {}, {}
+                        for _gf, _gop, _gv in _u_op["guard"]:
+                            _alt2 = _picklist_alternative(
+                                (_ugmeta.get(_gf) or {}).get(
+                                    "picklist_values"), {_gv})
+                            if _alt2 is None:
+                                _ut_create = None
+                                break
+                            _ut_update[_gf] = _gv
+                            _ut_create[_gf] = _alt2
+                        if _ut_create:
+                            _u_transition = {"create": _ut_create,
+                                             "update": _ut_update}
+                    if _u_transition is None:
+                        return IntentResolution(
+                            grounded_candidates=[],
+                            next_action=NextAction.REFUSE,
+                            interpretation_delta=delta,
+                            refusal=self._router.emission_deferred(
+                                archetype, claim_kind,
+                                detail=("the set-update producer's entry "
+                                        "transition is not derivable "
+                                        "(non-EqualTo guard or no picklist "
+                                        "alternative) — the update that "
+                                        "fires it cannot be staged")))
+                    _u2 = dict(xo_hint)
+                    _u2["effect_lookup_field"] = _u_corr
+                    _u2["effect_field"] = _u_field
+                    _u2["effect_value"] = _u_updated
+                    grounded_eff = self._ground_cross_object_effect(
+                        _u2, effect_object_api, at)
+                    if isinstance(grounded_eff, str):
+                        return IntentResolution(
+                            grounded_candidates=[],
+                            next_action=NextAction.REFUSE,
+                            interpretation_delta=delta,
+                            refusal=self._router.emission_deferred(
+                                archetype, claim_kind, detail=grounded_eff))
+                    eff_ep, lookup_ep, eff_field_ep = grounded_eff
+                    _ueps = {}
+                    for _xf in sorted(set(_u_transition["create"])
+                                      | set(_u_transition["update"])):
+                        _xent = next(
+                            (r.entity for r in neighborhood
+                             if r.edge_type == EDGE_BELONGS
+                             and r.entity.entity_type == "Field"
+                             and isinstance(r.entity.sf_api_name, str)
+                             and r.entity.sf_api_name
+                             .rsplit(".", 1)[-1] == _xf), None)
+                        if _xent is None:
+                            return IntentResolution(
+                                grounded_candidates=[],
+                                next_action=NextAction.REFUSE,
+                                interpretation_delta=delta,
+                                refusal=self._router.emission_deferred(
+                                    archetype, claim_kind,
+                                    detail=(f"entry-guard field {_xf!r} "
+                                            f"does not BELONG to the "
+                                            f"subject")))
+                        _ueps[_xf] = _Endpoint(
+                            entity_id=_xent.id,
+                            entity_type=_xent.entity_type,
+                            external_id=_xent.sf_api_name or str(_xent.id))
+                    _u_triggers = tuple(
+                        (_ueps[f], _u_transition["create"][f])
+                        for f in sorted(_u_transition["create"]))
+                    _u_updates = tuple(
+                        (_ueps[f], _u_transition["update"][f])
+                        for f in sorted(_u_transition["update"]))
+                    conflict = _staged_vr_conflict_detail(
+                        neighborhood,
+                        {ep.external_id: v for ep, v in _u_triggers},
+                        staged_update={ep.external_id: v
+                                       for ep, v in _u_updates})
+                    if conflict is not None:
+                        return IntentResolution(
+                            grounded_candidates=[],
+                            next_action=NextAction.REFUSE,
+                            interpretation_delta=delta,
+                            refusal=self._router.emission_deferred(
+                                archetype, claim_kind, detail=conflict))
+                    _stash_grounding(state, GroundedAutomationEffect(
+                        archetype=archetype, claim_kind=claim_kind,
+                        version_seq=at, subject=subj_ep,
+                        automation=_Endpoint(
+                            entity_id=_u_ent.id,
+                            entity_type=_u_ent.entity_type,
+                            external_id=_u_ent.sf_api_name
+                            or str(_u_ent.id)),
+                        requirement_excerpt=excerpt,
+                        effect_field=eff_field_ep,
+                        effect_value=_u_updated,
+                        effect_object=eff_ep,
+                        effect_lookup_field=lookup_ep,
+                        trigger_fields=_u_triggers,
+                        update_trigger_fields=_u_updates,
+                        automation_primitive="flow",
+                        premise_children={
+                            "count": 2,
+                            "template": tuple(_u_template),
+                            "distractor": _u_flip,
+                            "updated_value": _u_updated}))
+                    presented = [
+                        PresentedCandidate(
+                            path_id=c.path_id,
+                            admissibility_layer=AdmissibilityLayer(
+                                c.admissibility_layer),
+                            summary={"archetype": c.archetype,
+                                     "claim_kind": c.claim_kind})
+                        for c in grounded]
+                    return IntentResolution(
+                        grounded_candidates=presented,
+                        next_action=NextAction.PROCEED_TO_EMIT,
+                        interpretation_delta=delta)
                 grounded_eff = self._ground_cross_object_effect(
                     xo_hint, effect_object_api, at)
                 if isinstance(grounded_eff, str):       # the deferral detail

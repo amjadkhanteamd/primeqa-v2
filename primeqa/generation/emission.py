@@ -365,6 +365,14 @@ class GroundedAutomationEffect:
     effect_lookup_field: Optional[_Endpoint] = None  # cross-object correlate
     # D-227 parent-stamp: the SUBJECT's own lookup to the effect parent.
     effect_via_lookup_field: Optional[_Endpoint] = None
+    # Completion E2 (update_records evidence): the PRE-STAGED correlated
+    # rows the producing flow will update — {"count", "template"
+    # ((field, value)...), "distractor" (field, value), "updated_value"}.
+    # The recipe creates the subject in the NOT-entry state, stages count
+    # matching children + ONE distractor, updates the subject INTO the
+    # entry state, then reads WHERE correlate AND field=updated_value and
+    # asserts count_equals(count) — over- and under-update both fail.
+    premise_children: Optional[dict] = None
     # D-299: the OPTIONAL entry-condition trigger — the (field, value) pairs the
     # create must SET so the Flow's entry gate actually fires (the risk-rating
     # flow gates on StageName='Credit Assessment' AND the KYC/Credit-Score fields
@@ -2408,6 +2416,104 @@ def _author_automation_effect(g: GroundedAutomationEffect) -> EmissionBundle:
             xo_event = EventDescriptor(
                 trigger_kind="data-mutation-trigger",
                 description=f"creating a {object_api} with {gate}")
+        if g.premise_children:
+            # Completion E2: the SET-UPDATE shape — the flow updates a
+            # correlated set of PRE-EXISTING rows. Chain: create the subject
+            # in the NOT-entry state; stage `count` MATCHING children (the
+            # op's own filter template, correlated via the lookup) plus ONE
+            # DISTRACTOR child (template value flipped to a third state);
+            # update the subject INTO the entry state (the flow fires);
+            # read WHERE correlate AND field=updated and assert the EXACT
+            # count — a missed matching row (under-update) or a swept-in
+            # distractor (the flow ignoring its own filter, over-update)
+            # both fail the same assert. All values substrate-derived from
+            # the producing op (deterministic identity).
+            pc = g.premise_children
+            field_api = g.effect_field.external_id
+            field_bare = field_api.split(".", 1)[-1]
+            n = pc["count"]
+            tmpl = dict(pc["template"])
+            child_base = {f"{effect_api}.{f}" if "." not in f else f: v
+                          for f, v in tmpl.items()}
+            child_base[lookup_api] = "$create-record.id"
+            steps = [CreateStep(step_id="create-record",
+                                target_object=target,
+                                field_values=dict(create_fields))]
+            for i in range(n):
+                steps.append(CreateStep(
+                    step_id=f"create-child-{i+1}",
+                    target_object=LogicalRef(entity_type="Object",
+                                             external_id=effect_api),
+                    field_values=dict(child_base)))
+            if pc.get("distractor"):
+                dfld, dval = pc["distractor"]
+                dvals = dict(child_base)
+                dvals[f"{effect_api}.{dfld}"
+                      if "." not in dfld else dfld] = dval
+                steps.append(CreateStep(
+                    step_id="create-distractor",
+                    target_object=LogicalRef(entity_type="Object",
+                                             external_id=effect_api),
+                    field_values=dvals))
+            steps.append(UpdateStep(
+                step_id="update-record", target=target,
+                field_changes=dict(xo_update_fields)))
+            steps.append(ReadStep(
+                step_id="read-effect",
+                target=LogicalRef(entity_type="Object",
+                                  external_id=effect_api),
+                soql=(f"SELECT Id, {field_bare} FROM {effect_api} "
+                      f"WHERE {lookup_bare} = '$create-record.id' "
+                      f"AND {field_bare} = '{pc['updated_value']}'"),
+                fields_to_capture=["Id", field_bare]))
+            steps.append(DataAssertStep(
+                step_id="assert-effect",
+                predicate=AssertionPredicate(
+                    subject_ref="read-effect.Id",
+                    predicate="count_equals", value=n)))
+            effect = FieldChangeEffect(changes=StateDescriptor(
+                field_values={field_api: LiteralValue(
+                    value=pc["updated_value"])}))
+            claim = AutomationEffectClaimBody(
+                automation=automation_ref,
+                automation_primitive=g.automation_primitive,
+                triggering_action=EventDescriptor(
+                    trigger_kind="data-mutation-trigger",
+                    description=(
+                        f"creating a {object_api}{gated} with {n} matching "
+                        f"{effect_api} children (+1 non-matching)")),
+                expected_effect=effect,
+                affected_fields=[IdentityBearingRef(
+                    entity_type=g.effect_field.entity_type,
+                    entity_id=g.effect_field.entity_id,
+                    version_seq=g.version_seq, external_id=field_api)],
+            )
+            details = (f"create a {object_api}{gated}, stage {n} matching "
+                       f"{effect_api} children + 1 distractor, update the "
+                       f"{object_api} into the entry state, assert EXACTLY "
+                       f"{n} children carry "
+                       f"{field_bare}={pc['updated_value']!r} (the "
+                       f"distractor must stay untouched)")
+            conditions = SemanticConditionsBody(conditions=[])
+            trigger = DataMutationTriggerBody(
+                operation="update", target=target,
+                identity_context="system", volume="single")
+            recipe = DataRecipeBody(
+                api_choice="rest", identity_context="system",
+                execution_mechanism="direct_api", steps=steps)
+            env = ExecutionEnvironmentBody(auth_assumptions=[AuthAssumption(
+                auth_kind="data_api_user", details=details)])
+            return EmissionBundle(
+                archetype=g.archetype, claim_kind=g.claim_kind,
+                asserted_truth=claim, semantic_conditions=conditions,
+                trigger_kind="data-mutation-trigger",
+                recipe_kind="data-recipe",
+                causal_initiation=trigger, observation_realization=recipe,
+                execution_environment=env,
+                admissibility_layer=AdmissibilityLayer.LAYER_1,
+                caveat_required=requires_caveat(g.claim_kind),
+                caveat_kind=caveat_kind(g.claim_kind),
+            )
         if g.expected_absence:
             # D-307: the ABSENCE mirror — same staged create, same correlate
             # read, the assert INVERTS (no row may exist). The v2 body IS the

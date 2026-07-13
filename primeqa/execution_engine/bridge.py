@@ -598,14 +598,29 @@ def _project_positive(steps, *, recipe_id) -> tuple:
             step_id=a.step_id, action=a.action, comment=a.comment,
             setup_step_id=terminal.step_id)
         for a in arc)
+    # Completion E2: the update binds to the LAST create whose target
+    # object matches the update's own target — in every pre-E2 shape the
+    # terminal create IS that record (single-create chains; the D-227
+    # subject-then-trigger chains never carry an update), so behaviour is
+    # unchanged there; in the premise-children chain (subject first, staged
+    # children after) the SUBJECT is the matching create, not the terminal
+    # child.
+    _upd_setup = terminal
+    if update is not None:
+        _upd_setup = next(
+            (steps[i] for i in range(creates_end - 1, -1, -1)
+             if isinstance(steps[i], CreateStep)
+             and steps[i].target_object.external_id
+             == update.target.external_id), terminal)
     planned_update = () if update is None else (
         PlannedUpdate(
             step_id=update.step_id,
             target_object=update.target,
             field_changes=dict(update.field_changes),
             expect_rejection=None,
-            # binds to the TERMINAL create — the record under observation.
-            setup_step_id=terminal.step_id,
+            # binds to the last create matching the update's TARGET OBJECT
+            # (the record under observation).
+            setup_step_id=_upd_setup.step_id,
             # D-305.1 (review B1) applied forward: the flag must SURVIVE
             # projection or the update leg's defining failure grade is dead code.
             expect_acceptance=getattr(update, "expect_acceptance", False),

@@ -779,7 +779,7 @@ def _recall_pending_approval(client, record_id) -> CleanupRecord:
 # `equals` (field == V) and `exists` (the read found a row — the cross-object
 # automation-effect assert, D-210); others are deferred (fail-loud until built).
 _SUPPORTED_DATA_PREDICATES = frozenset(
-    {"equals", "exists", "not_null", "not_exists"})
+    {"equals", "exists", "not_null", "not_exists", "count_equals"})
 
 # D-210: a side-effect read may observe a record the org's automation creates
 # moments AFTER the trigger create commits (async Flow paths). An empty read
@@ -1339,6 +1339,13 @@ def _run_ground(assertion, read_ev, *, ordinal,
         # absence is asserted); any observed row is the honest FAILED
         # evaluation (the automation fired when it must not).
         held = read_ev.row_count == 0
+    elif pred.predicate == "count_equals":
+        # Completion E2: the correlated-set cardinality assert — the read's
+        # WHERE carries the correlation AND the updated value, so BOTH
+        # under-update (a matching row missed) and over-update (the
+        # distractor row wrongly swept in — the flow ignored its own
+        # filter) fail the exact count. 0 rows is an honest evaluation.
+        held = read_ev.row_count == pred.value
     elif pred.predicate == "not_null":
         # D-227: the stamp assert — the automation wrote SOME value (e.g.
         # $Flow.CurrentDate has no stable literal to equals against). 0 rows
