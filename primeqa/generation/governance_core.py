@@ -87,6 +87,7 @@ from primeqa.semantic.entity_attributes import (
     flow_grounded_temporal_effects, flow_grounded_transforms,
     flow_grounded_transition_effects, flow_cross_record_effect_ops,
     flow_collection_aggregates, flow_cross_record_premises,
+    flow_subflow_calls, compose_subflow,
     vr_error_message, vr_formula_text, vr_is_active)
 from primeqa.semantic.premise_reasoning import (
     classify_relation, staging_plan, aggregate_expectation)
@@ -1492,20 +1493,43 @@ def _capability_line(field_name, summary) -> str:
             f"expected_value where the org derives the value")
 
 
-def _xo_update_producers(flow_entities, effect_object_api):
+def _xo_update_producers(flow_entities, effect_object_api,
+                         callee_registry=None):
     """Completion E2: the flows whose typed effect ops UPDATE a correlated
     set on ``effect_object_api`` — [(entity, op)]. The op's filters carry
     the pre-state template + correlation; its assignments the updated
-    values."""
+    values. Fault-path and temporal-path ops are excluded (a fault
+    handler is not the claim's main-path producer; a deferred effect is
+    not immediately observable).
+
+    Completion (composition): with a ``callee_registry`` ({flow api name:
+    attributes}), a flow with NO direct match additionally offers its
+    COMPOSED subflow effects (``compose_subflow`` — caller-frame
+    correlation, the call-site guard as the op guard) — the FL12→SF01
+    shape. Attribution stays on the CALLER (the record-triggered flow the
+    org actually fires); ``via_subflow`` provenance rides the op."""
     out = []
     if not effect_object_api:
         return out
     for ent in flow_entities:
-        for op in flow_cross_record_effect_ops(getattr(ent, "attributes",
-                                                       None)):
-            if op["kind"] == "update_records" \
-                    and op["object"] == effect_object_api:
-                out.append((ent, op))
+        attrs = getattr(ent, "attributes", None)
+        direct = [
+            op for op in flow_cross_record_effect_ops(attrs)
+            if op["kind"] == "update_records"
+            and op["object"] == effect_object_api
+            and not op.get("on_fault_of") and not op.get("temporal_path")]
+        for op in direct:
+            out.append((ent, op))
+        if not direct and callee_registry:
+            for entry in compose_subflow(attrs, callee_registry):
+                if entry.get("refusal"):
+                    continue
+                for op in entry.get("effect_ops") or ():
+                    if op["kind"] == "update_records" \
+                            and op["object"] == effect_object_api \
+                            and not op.get("on_fault_of") \
+                            and not op.get("temporal_path"):
+                        out.append((ent, op))
     return out
 
 
@@ -3414,16 +3438,39 @@ class GovernanceCore:
             # empty producer set refuses HERE (ground-or-refuse; attribution
             # is the claim's whole value — D-299/D-318).
             if no_producer_floor and hint.get("effect_object"):
-                return IntentResolution(
-                    grounded_candidates=[], next_action=NextAction.REFUSE,
-                    interpretation_delta=delta,
-                    refusal=self._router.emission_deferred(
-                        archetype, claim_kind,
-                        detail=(f"no Flow on the subject verifiably produces "
-                                f"the claimed cross-object effect on "
-                                f"{hint.get('effect_object')!r} — the "
-                                f"automation cannot be attributed, so the "
-                                f"effect stays unverified")))
+                # Completion (composition): a caller flow may produce the
+                # effect THROUGH a subflow (FL12→SF01) — the composed view
+                # is verifiable attribution, so the SUB-3 gate lets exactly
+                # one such producer fall through to the xo evidence branch
+                # (which re-derives the producer itself). Ambiguity and
+                # zero both keep the refusal.
+                _cmp_reg = None
+                if any(flow_subflow_calls(getattr(f, "attributes", None))
+                       for f in flows):
+                    _cmp_reg = {
+                        e.sf_api_name: getattr(e, "attributes", None)
+                        for e in self._s1.get_entities("Flow", at_seq=at)
+                        if e.sf_api_name}
+                _cmp_upd = _xo_update_producers(
+                    flows, hint.get("effect_object"),
+                    callee_registry=_cmp_reg) if _cmp_reg else []
+                # fall through ONLY into the E2 branch's own preconditions —
+                # absence / parent-stamp shapes must keep refusing here (the
+                # provisional flows[0] binding would otherwise reach the
+                # plain xo grounding and mis-attribute, the SUB-3 bug)
+                if (len(_cmp_upd) != 1 or hint.get("expected_absence")
+                        or hint.get("effect_via_lookup_field")):
+                    return IntentResolution(
+                        grounded_candidates=[], next_action=NextAction.REFUSE,
+                        interpretation_delta=delta,
+                        refusal=self._router.emission_deferred(
+                            archetype, claim_kind,
+                            detail=(f"no Flow on the subject verifiably "
+                                    f"produces the claimed cross-object "
+                                    f"effect on "
+                                    f"{hint.get('effect_object')!r} — the "
+                                    f"automation cannot be attributed, so "
+                                    f"the effect stays unverified")))
             automation_ent = formula_ent if formula_ent is not None else flow_ent
             subj_ep = _Endpoint(
                 entity_id=subject.id, entity_type=subject.entity_type,
@@ -3660,8 +3707,20 @@ class GovernanceCore:
                 # ASSIGNMENTS, the entry transition from its guard, and the
                 # DISTRACTOR row (template value flipped to a third state)
                 # whose exclusion the count assert enforces. Presence only.
+                # Completion (composition): a caller flow with subflow
+                # calls offers its COMPOSED effects too — the registry is
+                # built lazily (an org-wide read happens only when some
+                # neighborhood flow actually calls a subflow).
+                _callee_reg = None
+                if not _xo_ops and any(
+                        flow_subflow_calls(getattr(f, "attributes", None))
+                        for f in flows):
+                    _callee_reg = {
+                        e.sf_api_name: getattr(e, "attributes", None)
+                        for e in self._s1.get_entities("Flow", at_seq=at)
+                        if e.sf_api_name}
                 _xo_upd_ops = [] if _xo_ops else _xo_update_producers(
-                    flows, effect_object_api)
+                    flows, effect_object_api, callee_registry=_callee_reg)
                 if len(_xo_upd_ops) == 1 and not raw_absence \
                         and not xo_hint.get("effect_via_lookup_field"):
                     _u_ent, _u_op = _xo_upd_ops[0]

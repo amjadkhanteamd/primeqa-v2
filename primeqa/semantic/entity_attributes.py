@@ -978,6 +978,80 @@ def _fb_parse_loop_aggregate(el, index) -> Optional[dict]:
             "after": after}
 
 
+def _fb_parse_loop_update(el, index) -> Optional[dict]:
+    """Completion Program (composition): the bounded COLLECTION-UPDATE
+    idiom — the standard 'modify each queried row, then update the
+    collection' pattern (SF01's shape). A loop over a captured premise
+    whose body (a) ASSIGNS literal values onto the loop item's fields and
+    (b) Adds the item to exactly one collection variable, then returns to
+    the loop; the no-more-values path leads DIRECTLY to a recordUpdates
+    consuming exactly that collection via ``inputReference`` (no filters,
+    no inputAssignments). Semantics: every premise row receives the
+    per-item assignments — the same meaning as a filtered update_records
+    whose filters are the premise's own. Returns ``{"source", "loop",
+    "assignments" {field: ("literal", v)}, "collection", "element",
+    "fault", "after"}`` or None (out of idiom — the loop keeps its hard
+    demotion; never guessed)."""
+    if not isinstance(el, dict):
+        return None
+    src = el.get("collectionReference")
+    loop_name = el.get("name")
+    if not isinstance(src, str) or not src or not loop_name:
+        return None
+    nxt = (el.get("nextValueConnector") or {}).get("targetReference") \
+        if isinstance(el.get("nextValueConnector"), dict) else None
+    after = (el.get("noMoreValuesConnector") or {}).get("targetReference") \
+        if isinstance(el.get("noMoreValuesConnector"), dict) else None
+    if not nxt or not after:
+        return None
+    body = index.get(nxt)
+    if body is None or body[0] != "assignments":
+        return None
+    _, bel = body
+    assigns, coll = {}, None
+    for it in _flow_md_list(bel.get("assignmentItems")):
+        if not isinstance(it, dict):
+            return None
+        ref = it.get("assignToReference")
+        val = it.get("value") if isinstance(it.get("value"), dict) else {}
+        if it.get("operator") == "Assign" and isinstance(ref, str) \
+                and ref.startswith(loop_name + "."):
+            fld = ref[len(loop_name) + 1:]
+            lit = next((val[k] for k in ("stringValue", "numberValue",
+                                         "booleanValue")
+                        if val.get(k) is not None), None)
+            if not fld or "." in fld or lit is None:
+                return None
+            assigns[fld] = ("literal", lit)
+        elif it.get("operator") == "Add" and isinstance(ref, str) \
+                and "." not in ref and not ref.startswith("$") \
+                and val.get("elementReference") == loop_name:
+            if coll is not None:
+                return None
+            coll = ref
+        else:
+            return None
+    body_next = (bel.get("connector") or {}).get("targetReference") \
+        if isinstance(bel.get("connector"), dict) else None
+    if body_next != loop_name or not assigns or coll is None:
+        return None
+    upd = index.get(after)
+    if upd is None or upd[0] != "recordUpdates":
+        return None
+    _, uel = upd
+    if uel.get("inputReference") != coll \
+            or _flow_md_list(uel.get("filters")) \
+            or _flow_md_list(uel.get("inputAssignments")):
+        return None
+    fc = uel.get("faultConnector")
+    fault = (fc or {}).get("targetReference") if isinstance(fc, dict) else None
+    u_after = (uel.get("connector") or {}).get("targetReference") \
+        if isinstance(uel.get("connector"), dict) else None
+    return {"source": src, "loop": loop_name, "assignments": assigns,
+            "collection": coll, "element": uel.get("name"),
+            "fault": fault, "after": u_after}
+
+
 def _fb_guard_formula_field(name, formulas) -> tuple:
     """Resolve a decision-condition left ref that names a FORMULA element:
     ``("field", <bare>)`` when the formula is a bare ``$Record`` passthrough
@@ -1788,6 +1862,8 @@ def flow_behaviour(attributes: Optional[dict]) -> dict:
             # continues from the noMoreValues path; an out-of-idiom loop
             # keeps the hard stop.
             _agg = _fb_parse_loop_aggregate(el, index)
+            _lu = None if _agg is not None \
+                else _fb_parse_loop_update(el, index)
             reason = "element_outside_grammar:loops"
             pre_behaviours.append(_behaviour(_FB_UNSUPPORTED,
                                              reasons=[reason]))
@@ -1797,6 +1873,29 @@ def flow_behaviour(attributes: Optional[dict]) -> dict:
                     {k: _agg[k] for k in ("source", "loop", "aggregates",
                                           "guard")})
                 target = _agg["after"]
+            elif _lu is not None:
+                # Completion Program (composition): the COLLECTION-UPDATE
+                # idiom — the loop's rows come from an already-captured
+                # premise, so the typed op is a filtered update_records
+                # whose filters ARE the premise's (identical semantics).
+                # Only a premise on a DIFFERENT object than the trigger
+                # composes (subject-safety); the update element itself is
+                # consumed, and the walk continues past it.
+                _p = next((p for p in premises
+                           if p.get("element") == _lu["source"]), None)
+                if _p is not None and _p.get("object") != trig["object"]:
+                    effect_ops.append({
+                        "kind": "update_records", "object": _p["object"],
+                        "filters": tuple(tuple(f) for f in _p["filters"]),
+                        "assignments": _lu["assignments"],
+                        "guard": [list(g) for g in entry_guard],
+                        "premise_guard": [], "branch": None,
+                        "element": _lu["element"], "fault": _lu["fault"],
+                        "via_collection": _lu["loop"]})
+                    target = _lu["after"]
+                else:
+                    demote_reasons.append(reason)
+                    target = None
             else:
                 demote_reasons.append(reason)
                 target = None
@@ -2176,7 +2275,8 @@ def flow_cross_record_effect_ops(attributes: Optional[dict]) -> tuple:
              "fault": e.get("fault"),
              "on_fault_of": e.get("on_fault_of"),
              "temporal_path": e.get("temporal_path"),
-             "observability": e.get("observability")}
+             "observability": e.get("observability"),
+             "via_collection": e.get("via_collection")}
         if "filters" in e:
             d["filters"] = tuple(e["filters"])
         out.append(d)
@@ -2319,6 +2419,15 @@ def compose_subflow(caller_attrs: Optional[dict],
                              for k, v in e["assignments"].items()},
              "element": e.get("element"), "via_subflow": name,
              "fault": e.get("fault"),
+             # the CALLER's own conditions gate the composed effect (the
+             # graft strips entry filters, so the call-site guard is the
+             # only surviving carrier — required for transition staging)
+             "guard": tuple(tuple(g) for g in (call.get("guard") or ())),
+             "premise_guard": tuple(
+                 tuple(g) for g in (call.get("premise_guard") or ())),
+             "on_fault_of": e.get("on_fault_of"),
+             "temporal_path": e.get("temporal_path"),
+             "via_collection": e.get("via_collection"),
              "filters": tuple(e.get("filters") or ()) or None}
             for e in cir.get("effect_ops") or ())
         out.append(entry)

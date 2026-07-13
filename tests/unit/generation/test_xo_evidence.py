@@ -474,3 +474,124 @@ def test_rollup_absent_flow_still_refuses():
         intent_input=_rollup_intent("PLS_FB_Order__c.PLS_FB_Order_Total__c"),
         ctx=_ctx(), state=_state())
     assert res.refusal is not None
+
+
+# ---------------------------------------------------------------------------
+# Composition — FL12→SF01: the caller's subflow closes the open tasks
+# (collection-update idiom composed into the caller frame, E2 evidence)
+# ---------------------------------------------------------------------------
+
+FL12_FIXTURE = os.path.join(os.path.dirname(__file__), "..", "semantic",
+                            "fixtures", "pls_fb_flows",
+                            "PLS_FB_FL12_Fulfilment_Orchestrator.json")
+SF01_FIXTURE = os.path.join(os.path.dirname(__file__), "..", "semantic",
+                            "fixtures", "pls_fb_flows",
+                            "PLS_FB_SF01_Close_Tasks.json")
+
+
+def _world_fl12():
+    order = _ent("Object", "PLS_FB_Order__c", "PLS FB Order")
+    status = _ent("Field", "PLS_FB_Order__c.PLS_FB_Status__c", "Status",
+                  attrs={"data_type": "Picklist"})
+    task = _ent("Object", "PLS_FB_Fulfilment_Task__c", "PLS FB Fulfilment Task")
+    t_order = _ent("Field", "PLS_FB_Fulfilment_Task__c.PLS_FB_Order__c",
+                   "Order")
+    t_status = _ent("Field", "PLS_FB_Fulfilment_Task__c.PLS_FB_Status__c",
+                    "Status")
+    with open(FL12_FIXTURE) as f:
+        d12 = json.load(f)
+    with open(SF01_FIXTURE) as f:
+        dsf = json.load(f)
+    fl12 = _ent("Flow", "PLS_FB_FL12_Fulfilment_Orchestrator",
+                "Fulfilment Orchestrator", attrs={"Metadata": d12["Metadata"]})
+    # SF01 is autolaunched: reachable ONLY via the org-wide Flow read,
+    # never via any TRIGGERS_ON neighborhood
+    sf01 = _ent("Flow", "PLS_FB_SF01_Close_Tasks", "Close Tasks",
+                attrs={"Metadata": dsf["Metadata"]})
+    pvs_o, pvs_t = uuid4(), uuid4()
+    s1 = _FakeS1(
+        entities=[order, status, task, t_order, t_status, fl12, sf01],
+        rows_by_object={
+            "PLS_FB_Order__c": [
+                SimpleNamespace(edge_type=gc.EDGE_BELONGS, entity=status),
+                SimpleNamespace(edge_type=gc.EDGE_FLOW, entity=fl12)],
+            "PLS_FB_Fulfilment_Task__c": [
+                SimpleNamespace(edge_type=gc.EDGE_BELONGS, entity=e)
+                for e in (t_order, t_status)],
+        },
+        details={status.id: {"field_type": "picklist",
+                             "picklist_value_set_entity_id": pvs_o},
+                 t_status.id: {"field_type": "picklist",
+                               "picklist_value_set_entity_id": pvs_t}},
+        picklists={
+            pvs_o: [{"value_api_name": v, "is_active": True}
+                    for v in ("Draft", "Submitted", "Fulfilled")],
+            pvs_t: [{"value_api_name": v, "is_active": True}
+                    for v in ("Open", "Completed", "Cancelled")]})
+    return gc.GovernanceCore(s1)
+
+
+FL12_EXCERPT = ("when an order is fulfilled, its open fulfilment tasks are "
+                "closed out")
+
+
+def _fl12_intent(**kw):
+    d = {"ac_ref": 13, "archetype_hint": "data_behavior",
+         "polarity_hint": "positive",
+         "claim_kind_hint": "automation-effect-claim",
+         "requirement_excerpt": FL12_EXCERPT,
+         "target_subject_hint": {
+             "entity_type": "Object", "sf_api_name": "PLS_FB_Order__c",
+             "effect_object": "PLS_FB_Fulfilment_Task__c", **kw}}
+    return {"requirement_excerpt": FL12_EXCERPT, "intent_descriptor": d}
+
+
+def test_composed_subflow_update_grounds_with_caller_attribution():
+    core = _world_fl12()
+    state = _state()
+    res = core.resolve_intent(intent_input=_fl12_intent(), ctx=_ctx(),
+                              state=state)
+    assert res.refusal is None, getattr(res.refusal, "payload", None)
+    [g] = state.groundings
+    # attribution: the CALLER — the record-triggered flow the org fires
+    assert g.automation.external_id == "PLS_FB_FL12_Fulfilment_Orchestrator"
+    assert g.effect_lookup_field.external_id == \
+        "PLS_FB_Fulfilment_Task__c.PLS_FB_Order__c"
+    assert g.effect_value == "Completed"          # SF01's per-item literal
+    pc = g.premise_children
+    assert dict(pc["template"]) == {"PLS_FB_Status__c": "Open"}
+    assert pc["distractor"] == ("PLS_FB_Status__c", "Cancelled")
+    assert pc["updated_value"] == "Completed"
+    # entry transition from the CALL-SITE guard (Status=Fulfilled):
+    # create NOT-Fulfilled, update INTO Fulfilled
+    assert _pairs(g.trigger_fields) == {"PLS_FB_Status__c": "Draft"}
+    assert _pairs(g.update_trigger_fields) == \
+        {"PLS_FB_Status__c": "Fulfilled"}
+
+
+def test_composed_grounding_is_deterministic():
+    outs = []
+    for _ in range(3):
+        core = _world_fl12()
+        state = _state()
+        core.resolve_intent(intent_input=_fl12_intent(), ctx=_ctx(),
+                            state=state)
+        [g] = state.groundings
+        outs.append((g.automation.external_id, g.effect_value,
+                     tuple(sorted(_pairs(g.trigger_fields).items())),
+                     g.premise_children["distractor"]))
+    assert len(set(outs)) == 1
+
+
+def test_composed_absence_intent_still_refuses():
+    # the SUB-3 law: an absence shape must never ride the provisional
+    # flows[0] binding into a wrong attribution — refusal, with the
+    # cannot-be-attributed detail
+    core = _world_fl12()
+    res = core.resolve_intent(
+        intent_input=_fl12_intent(expected_absence=True, trigger_fields=[
+            {"field_name": "PLS_FB_Order__c.PLS_FB_Status__c",
+             "value": "Draft"}]),
+        ctx=_ctx(), state=_state())
+    assert res.refusal is not None
+    assert "cannot be attributed" in res.refusal.payload["detail"]

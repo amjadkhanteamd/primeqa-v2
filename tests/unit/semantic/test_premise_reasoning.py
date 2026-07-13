@@ -253,8 +253,22 @@ def test_compose_subflow_substitutes_the_caller_frame():
         tuple(tuple(f) if not isinstance(f, tuple) else f
               for f in map(tuple, p["filters"]))
     assert p["via_subflow"] == "PLS_FB_SF01_Close_Tasks"
-    # SF01's collection-input update stays honestly unrepresented
-    assert e["effect_ops"] == ()
+    # Completion Program (composition): SF01's collection-update idiom now
+    # composes to a TYPED update op in the caller frame — premise filters
+    # as the op's filters, the per-item literal as the assignment, the
+    # CALL-SITE guard carried, the fault-log create marked on_fault_of.
+    upd = next(o for o in e["effect_ops"] if o["kind"] == "update_records")
+    assert upd["object"] == "PLS_FB_Fulfilment_Task__c"
+    assert upd["assignments"] == {"PLS_FB_Status__c": ("literal",
+                                                       "Completed")}
+    assert ("PLS_FB_Order__c", "EqualTo", ("$Record", "Id")) in upd["filters"]
+    assert ("PLS_FB_Status__c", "EqualTo", "Open") in upd["filters"]
+    assert upd["guard"] == (("PLS_FB_Status__c", "EqualTo", "Fulfilled"),)
+    assert upd["via_subflow"] == "PLS_FB_SF01_Close_Tasks"
+    assert upd["via_collection"] == "Loop_Tasks"
+    assert upd["on_fault_of"] is None
+    flog = next(o for o in e["effect_ops"] if o["kind"] == "create_record")
+    assert flog["on_fault_of"] == "Update_Tasks"    # fault path, not main
 
 
 def test_compose_subflow_cycle_depth_and_availability_refuse_by_name():
