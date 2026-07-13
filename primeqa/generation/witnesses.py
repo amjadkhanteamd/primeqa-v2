@@ -31,6 +31,7 @@ from primeqa.semantic.entity_attributes import apply_transform_chain
 from primeqa.generation.verified_negative import regex_matching_value
 
 __all__ = [
+    "picklist_alternative",
     "regex_matching_value",
     "synthesize_transform_witness",
     "interval_witness",
@@ -173,6 +174,18 @@ def interval_witness(constraints, scale: int):
         ok = all(_holds(cand, op, t) is not neg for op, t, neg in checks)
         if ok:
             return int(cand) if cand == cand.to_integral_value() else float(cand)
+    return None
+
+
+def picklist_alternative(picklist_values, exclude) -> Optional[str]:
+    """The FIRST active picklist value not in ``exclude`` — the deterministic
+    "some other state" witness both transition shapes need (C4: a create
+    that does NOT meet the entry filter; C5: an update that leaves the
+    prior state). ``None`` when the value set is absent or exhausted —
+    callers refuse with their own named detail."""
+    for v in picklist_values or ():
+        if v not in exclude:
+            return v
     return None
 
 

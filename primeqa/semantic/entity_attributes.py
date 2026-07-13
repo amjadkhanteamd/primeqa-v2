@@ -675,6 +675,14 @@ _FB_ELEMENT_LISTS = (
 
 _FB_MAX_WALK = 24  # generous bound; benchmark paths are <6 elements
 
+# C5: out-of-grammar elements that provably CANNOT rewrite the triggering
+# record's own fields — a create makes a NEW row, a lookup only reads. They
+# demote ONLY THEMSELVES (their unrepresented effect stays honest-refused);
+# earlier same-record effects on the path survive. Everything else keeps
+# the hard conservatism rule (an unparsed recordUpdates/actionCall/delete
+# could rewrite or remove the subject).
+_FB_SUBJECT_SAFE_LISTS = frozenset({"recordCreates", "recordLookups"})
+
 
 def _fb_record_field(ref) -> Optional[str]:
     """``$Record.<Field>`` → bare field api-name; anything else → None."""
@@ -685,20 +693,36 @@ def _fb_record_field(ref) -> Optional[str]:
     return None
 
 
+def _fb_prior_field(ref) -> Optional[str]:
+    """``$Record__Prior.<Field>`` → bare field api-name (C5); else None."""
+    if isinstance(ref, str) and ref.startswith("$Record__Prior."):
+        rest = ref[len("$Record__Prior."):]
+        if rest and "." not in rest:
+            return rest
+    return None
+
+
 def _fb_guard_condition(cond) -> Optional[tuple]:
-    """Parse one decision-rule condition into ``(field, operator, value)``.
-    None when outside the bounded grammar (non-$Record left side, unknown
-    operator, non-literal right value)."""
+    """Parse one decision-rule condition into ``(phase, (field, operator,
+    value))`` where ``phase`` is ``"current"`` (``$Record.``) or ``"prior"``
+    (``$Record__Prior.``, C5 — the pre-update state an update-shaped test
+    stages as its CREATE). None when outside the bounded grammar (unknown
+    left side, unknown operator, non-literal right value)."""
     if not isinstance(cond, dict):
         return None
-    field = _fb_record_field(cond.get("leftValueReference"))
+    ref = cond.get("leftValueReference")
+    field = _fb_record_field(ref)
+    phase = "current"
+    if field is None:
+        field = _fb_prior_field(ref)
+        phase = "prior"
     operator = cond.get("operator")
     if field is None or operator not in _FB_GUARD_OPERATORS:
         return None
     value = _flow_assignment_value(cond.get("rightValue"))
     if value is None:
         return None
-    return (field, operator, value)
+    return (phase, (field, operator, value))
 
 
 # IR v2 (FL02 slice): the bounded TRANSFORM grammar — a formula-valued
@@ -810,6 +834,15 @@ def _fb_entry_filter_guard(f) -> Optional[tuple]:
         if lit is None:
             return None
         return (field, "EqualTo", lit)
+    if op == "IsChanged":
+        # C5: a transition FACT, not a state predicate — consumed onto the
+        # trigger (entry_changed_fields), never into a behaviour guard. Only
+        # the affirmative form is bounded (IsChanged false is a
+        # stability premise no update-shaped test realizes).
+        flag = value.get("booleanValue") if isinstance(value, dict) else None
+        if flag is True:
+            return (field, "IsChanged", True)
+        return None
     return None
 
 
@@ -853,7 +886,7 @@ def flow_behaviour(attributes: Optional[dict]) -> dict:
         "trigger": {
             "object": None, "save_phase": None, "record_trigger_type": None,
             "entry_filter_count": 0, "requires_change_to_meet": False,
-            "entry_filters_consumed": False,
+            "entry_filters_consumed": False, "entry_changed_fields": [],
             "has_scheduled_paths": False, "has_async_path": False,
             "is_record_triggered": False,
         },
@@ -899,14 +932,23 @@ def flow_behaviour(attributes: Optional[dict]) -> dict:
     entry_guard: tuple = ()
     if entry_filters and all(g is not None for g in entry_guard_parsed) \
             and start.get("filterLogic") in (None, "and"):
-        entry_guard = tuple(entry_guard_parsed)
+        # C5: IsChanged is a transition FACT — it rides the trigger (the
+        # update-shaped consumer must stage a real change on the field),
+        # never a behaviour's state guard.
+        entry_guard = tuple(g for g in entry_guard_parsed
+                            if g[1] != "IsChanged")
+        trig["entry_changed_fields"] = sorted(
+            {g[0] for g in entry_guard_parsed if g[1] == "IsChanged"})
         trig["entry_filters_consumed"] = True
 
     def _behaviour(state, kind=None, guard=(), field=None, value=None,
                    reasons=(), transform=(), source_field=None, negated=(),
-                   offset_days=None):
+                   offset_days=None, prior=()):
         return {"state": state, "kind": kind,
                 "guard": [list(g) for g in entry_guard + tuple(guard)],
+                # C5: the PRE-update state conditions ($Record__Prior) — the
+                # update-shaped test stages these as its CREATE
+                "prior_guard": [list(g) for g in prior],
                 # C1: the negation-context — each entry means NOT(f op v);
                 # first-match ordered decisions put every PRIOR rule's
                 # condition here for the later arms and the default arm.
@@ -965,11 +1007,12 @@ def flow_behaviour(attributes: Optional[dict]) -> dict:
     opaque_any = False
     grounded_possible = True   # set False only by pre-walk global gates
 
-    def _walk_linear(start_target, guard, negated):
+    def _walk_linear(start_target, guard, negated, prior=()):
         """Walk one linear path (no further decisions) to completion.
         Returns (path_behaviours, path_reasons, path_opaque)."""
         pb: list = []
         pr: list = []
+        soft: list = []
         p_opaque = False
         seen: set = set()
         steps = 0
@@ -1020,25 +1063,26 @@ def flow_behaviour(attributes: Optional[dict]) -> dict:
                     if reasons:
                         pb.append(_behaviour(
                             _FB_UNSUPPORTED, kind="set_record_field",
-                            guard=guard, negated=negated, field=field,
-                            reasons=reasons))
+                            guard=guard, negated=negated, prior=prior,
+                            field=field, reasons=reasons))
                         pr.extend(reasons)
                     elif transform is not None:
                         chain, source_field = transform
                         pb.append(_behaviour(
                             _FB_GROUNDED, kind="set_record_field_transform",
-                            guard=guard, negated=negated, field=field,
-                            transform=chain, source_field=source_field))
+                            guard=guard, negated=negated, prior=prior,
+                            field=field, transform=chain,
+                            source_field=source_field))
                     elif offset_days is not None:
                         pb.append(_behaviour(
                             _FB_GROUNDED, kind="set_record_field_temporal",
-                            guard=guard, negated=negated, field=field,
-                            offset_days=offset_days))
+                            guard=guard, negated=negated, prior=prior,
+                            field=field, offset_days=offset_days))
                     else:
                         pb.append(_behaviour(
                             _FB_GROUNDED, kind="set_record_field",
-                            guard=guard, negated=negated, field=field,
-                            value=value))
+                            guard=guard, negated=negated, prior=prior,
+                            field=field, value=value))
                 connector = el.get("connector")
                 target = (connector or {}).get("targetReference") \
                     if isinstance(connector, dict) else None
@@ -1047,26 +1091,57 @@ def flow_behaviour(attributes: Optional[dict]) -> dict:
                 pr.append("nested_decision")
                 pb.append(_behaviour(
                     _FB_UNSUPPORTED, guard=guard, negated=negated,
-                    reasons=["nested_decision"]))
+                    prior=prior, reasons=["nested_decision"]))
                 break
+            elif list_name == "recordUpdates" \
+                    and el.get("inputReference") == "$Record" \
+                    and not _flow_md_list(el.get("inputAssignments")) \
+                    and not _flow_md_list(el.get("filters")):
+                # C5: the after-save PERSIST idiom — writing the already-
+                # assigned $Record back, no new values, no filters. A pure
+                # no-op for the IR (the assignments upstream ARE the
+                # behaviour); the walk continues.
+                connector = el.get("connector")
+                target = (connector or {}).get("targetReference") \
+                    if isinstance(connector, dict) else None
+            elif list_name in _FB_SUBJECT_SAFE_LISTS:
+                # C5 conservatism refinement: this element cannot rewrite
+                # the subject's own fields — it demotes ONLY ITSELF (an
+                # unsupported placeholder keeps its unrepresented effect
+                # honest); earlier same-record behaviours on the path
+                # survive. The walk continues THROUGH it (a later unsafe
+                # element still hard-demotes everything).
+                reason = f"element_outside_grammar:{list_name}"
+                soft.append(reason)
+                pb.append(_behaviour(_FB_UNSUPPORTED, guard=guard,
+                                     negated=negated, prior=prior,
+                                     reasons=[reason]))
+                connector = el.get("connector")
+                target = (connector or {}).get("targetReference") \
+                    if isinstance(connector, dict) else None
             else:
                 reason = f"element_outside_grammar:{list_name}"
                 pr.append(reason)
                 pb.append(_behaviour(_FB_UNSUPPORTED, guard=guard,
-                                     negated=negated, reasons=[reason]))
+                                     negated=negated, prior=prior,
+                                     reasons=[reason]))
                 break
-        # per-path conservatism: any reason on this path demotes ITS grounded
-        # behaviours (a later element on the SAME path could overwrite)
+        # per-path conservatism: any HARD reason on this path demotes ITS
+        # grounded behaviours (a later element on the SAME path could
+        # overwrite); soft (subject-safe) reasons demoted only themselves.
         if pr:
             state = _FB_OPAQUE if p_opaque else _FB_UNSUPPORTED
             for b in pb:
                 if b["state"] == _FB_GROUNDED:
                     b["state"] = state
                 b["reasons"] = sorted(set(b["reasons"]) | set(pr))
-        return pb, pr, p_opaque
+        return pb, pr + soft, p_opaque
 
     def _parse_rule(rule):
-        """One decision rule -> (conds tuple) or (None) when out of grammar."""
+        """One decision rule -> ``(current_conds, prior_conds)`` (each a
+        tuple of (field, op, value)) or None when out of grammar. C5: prior
+        conditions ($Record__Prior) are carried separately — a state the
+        update-shaped test stages as its CREATE, never a save-time guard."""
         logic = rule.get("conditionLogic")
         conds = [c for c in _flow_md_list(rule.get("conditions"))
                  if isinstance(c, dict)]
@@ -1076,7 +1151,8 @@ def flow_behaviour(attributes: Optional[dict]) -> dict:
         parsed = [_fb_guard_condition(c) for c in conds]
         if any(pc is None for pc in parsed):
             return None
-        return tuple(parsed)
+        return (tuple(c for ph, c in parsed if ph == "current"),
+                tuple(c for ph, c in parsed if ph == "prior"))
 
     # step to (at most) the first decision; then fan out
     pre_behaviours: list = []
@@ -1131,12 +1207,24 @@ def flow_behaviour(attributes: Optional[dict]) -> dict:
                     _FB_UNSUPPORTED, reasons=["unparseable_guard_condition"]))
                 target = None
                 break
+            # C5: prior-state conditions are bounded to SINGLE-RULE decisions
+            # — a prior-ref rule's negation-context (for later first-match
+            # arms) would need prior-state disjunctions the grammar does not
+            # carry.
+            if len(rules) > 1 and any(pc for _cc, pc in parsed_rules):
+                demote_reasons.append("prior_ref_in_ordered_decision")
+                pre_behaviours.append(_behaviour(
+                    _FB_UNSUPPORTED,
+                    reasons=["prior_ref_in_ordered_decision"]))
+                target = None
+                break
             # C1: first-match negation-context is sound only when every
             # PRIOR rule is single-condition (¬(A∧B) is a disjunction the
             # guard grammar does not carry). Multi-rule decisions therefore
             # require all rules single-condition; the single-rule decision
             # keeps the conjunctive grammar (FL01 unchanged).
-            if len(rules) > 1 and any(len(pr_) != 1 for pr_ in parsed_rules):
+            if len(rules) > 1 and any(len(cc) != 1
+                                      for cc, _pc in parsed_rules):
                 demote_reasons.append(
                     "multi_condition_rule_in_ordered_decision")
                 pre_behaviours.append(_behaviour(
@@ -1149,15 +1237,18 @@ def flow_behaviour(attributes: Optional[dict]) -> dict:
                 rule_conn = rule.get("connector")
                 arm_target = (rule_conn or {}).get("targetReference") \
                     if isinstance(rule_conn, dict) else None
-                negated = tuple(pr_[0] for pr_ in parsed_rules[:i])
-                arms.append((arm_target, parsed_rules[i], negated))
+                negated = tuple(cc[0] for cc, _pc in parsed_rules[:i])
+                cc_i, pc_i = parsed_rules[i]
+                arms.append((arm_target, cc_i, negated, pc_i))
             if default_target:
                 arms.append((default_target,
                              (),
-                             tuple(pr_[0] for pr_ in parsed_rules)
-                             if all(len(pr_) == 1 for pr_ in parsed_rules)
-                             else None))
-            for arm_target, arm_guard, arm_negated in arms:
+                             tuple(cc[0] for cc, _pc in parsed_rules)
+                             if all(len(cc) == 1
+                                    for cc, _pc in parsed_rules)
+                             else None,
+                             ()))
+            for arm_target, arm_guard, arm_negated, arm_prior in arms:
                 if arm_negated is None:
                     demote_reasons.append(
                         "multi_condition_rule_in_ordered_decision")
@@ -1167,7 +1258,8 @@ def flow_behaviour(attributes: Optional[dict]) -> dict:
                     continue
                 if not arm_target:
                     continue        # an armless rule writes nothing
-                pb, pr, p_op = _walk_linear(arm_target, arm_guard, arm_negated)
+                pb, pr, p_op = _walk_linear(arm_target, arm_guard,
+                                            arm_negated, prior=arm_prior)
                 behaviours.extend(pb)
                 opaque_any = opaque_any or p_op
             target = None
@@ -1348,4 +1440,29 @@ def flow_grounded_temporal_effects(attributes: Optional[dict]) -> tuple:
         and b["field"] is not None
     ]
     out.sort(key=lambda d: (d["field"], d["offset_days"]))
+    return tuple(out)
+
+
+def flow_grounded_transition_effects(attributes: Optional[dict]) -> tuple:
+    """The binder-facing projection of the IR's GROUNDED literal effects on
+    an UPDATE-trigger flow (C5 / FL09 slice): ``{"field", "value", "guard",
+    "prior_guard", "negated_guards"}`` per behaviour. The consumer authors
+    the transition shape — the create stages the PRIOR-state conditions,
+    the update stages a state satisfying the current guard (and changing
+    every ``trigger.entry_changed_fields`` field). Update-trigger only by
+    construction: these arms never fire on a create, which is why the
+    create-scoped literal projections exclude them."""
+    ir = flow_behaviour(attributes)
+    if ir["trigger"]["record_trigger_type"] != "Update":
+        return ()
+    out = [
+        {"field": b["field"], "value": b["value"],
+         "guard": tuple(tuple(g) for g in b["guard"]),
+         "prior_guard": tuple(tuple(g) for g in b["prior_guard"]),
+         "negated_guards": tuple(tuple(g) for g in b["negated_guards"])}
+        for b in ir["behaviours"]
+        if b["state"] == _FB_GROUNDED and b["kind"] == "set_record_field"
+        and b["field"] is not None
+    ]
+    out.sort(key=lambda d: (d["field"], str(d["value"])))
     return tuple(out)

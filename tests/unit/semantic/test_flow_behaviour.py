@@ -64,7 +64,8 @@ def test_fl01_binder_projection_exposes_the_effect_pair():
 
 def test_grounded_scope_contract():
     # scope contract: FL01 (literal), FL02 (transform), FL03 (ordered
-    # bands), FL08 (temporal stamp, C4); nothing else grounds.
+    # bands), FL08 (temporal stamp, C4), FL09 (prior-state transition, C5);
+    # nothing else grounds.
     grounded = {
         name for name in _all_fixture_names()
         if any(b["state"] == "grounded"
@@ -73,7 +74,8 @@ def test_grounded_scope_contract():
     assert grounded == {"PLS_FB_FL01_Default_Priority",
                         "PLS_FB_FL02_Normalize_External_Ref",
                         "PLS_FB_FL03_Tier_Banding",
-                        "PLS_FB_FL08_SLA_Stamp"}
+                        "PLS_FB_FL08_SLA_Stamp",
+                        "PLS_FB_FL09_Reopen_Guard"}
 
 
 def test_fl03_grounds_four_band_arms_with_negation_context():
@@ -152,8 +154,6 @@ def test_no_other_flow_contributes_binder_effects():
     ("PLS_FB_FL06_Duplicate_Flag", "element_outside_grammar:recordLookups"),
     # child-object loop rollup
     ("PLS_FB_FL07_Order_Rollup", "element_outside_grammar:recordLookups"),
-    # $Record__Prior guard is outside the guard grammar
-    ("PLS_FB_FL09_Reopen_Guard", "unparseable_guard_condition"),
     # scheduled path only — nothing observable at save time
     ("PLS_FB_FL10_Stale_Order_Escalation", "scheduled_path_only"),
     # async path only
@@ -569,3 +569,92 @@ def test_after_save_transform_is_excluded_from_the_transform_projection():
     [b] = ir["behaviours"]
     assert b["state"] == "grounded"          # the IR carries the behaviour…
     assert flow_grounded_transforms(attrs) == ()   # …the projection refuses
+
+
+# ── C5: FL09 grounds its literal write behind a prior-state guard ────
+
+def test_fl09_grounds_the_reopen_write_with_prior_guard():
+    ir = flow_behaviour(_load("PLS_FB_FL09_Reopen_Guard"))
+    t = ir["trigger"]
+    assert t["record_trigger_type"] == "Update"
+    assert t["save_phase"] == "after_save"
+    assert t["entry_filters_consumed"] is True
+    assert t["entry_changed_fields"] == ["PLS_FB_Status__c"]
+    grounded = [b for b in ir["behaviours"] if b["state"] == "grounded"]
+    [b] = grounded
+    assert b["kind"] == "set_record_field"
+    assert b["field"] == "PLS_FB_Reopened__c" and b["value"] is True
+    assert b["guard"] == [["PLS_FB_Status__c", "NotEqualTo", "Fulfilled"]]
+    assert b["prior_guard"] == [["PLS_FB_Status__c", "EqualTo", "Fulfilled"]]
+    # the audit-log create stays honest-refused BESIDE the grounded write
+    # (subject-safe refinement: a create cannot rewrite the subject's own
+    # fields) — parse_status partial, reason named
+    assert ir["parse_status"] == "partial"
+    reasons = {r for b in ir["behaviours"] for r in b["reasons"]}
+    assert "element_outside_grammar:recordCreates" in reasons
+
+
+def test_subject_safe_walkthrough_is_bounded():
+    # an unsafe element AFTER a subject-safe one still hard-demotes the
+    # earlier literal (the walk continues through creates/lookups, so a
+    # later recordUpdates keeps the conservatism rule)
+    attrs = {"Metadata": {
+        "start": {"object": "X__c", "triggerType": "RecordBeforeSave",
+                  "recordTriggerType": "Create",
+                  "connector": {"targetReference": "Set"}},
+        "assignments": [
+            {"name": "Set",
+             "assignmentItems": [{"assignToReference": "$Record.F__c",
+                                  "operator": "Assign",
+                                  "value": {"stringValue": "v"}}],
+             "connector": {"targetReference": "Make"}},
+        ],
+        "recordCreates": [{"name": "Make",
+                           "connector": {"targetReference": "Rewrite"}}],
+        "recordUpdates": [{"name": "Rewrite", "inputReference": "other_var"}],
+    }}
+    ir = flow_behaviour(attrs)
+    assert all(b["state"] != "grounded" for b in ir["behaviours"])
+    assert flow_grounded_same_record_effects(attrs) == frozenset()
+
+
+def test_self_persist_record_update_is_a_noop():
+    # the after-save persist idiom: recordUpdates(inputReference=$Record,
+    # no assignments, no filters) — walked through, nothing demoted
+    attrs = {"Metadata": {
+        "start": {"object": "X__c", "triggerType": "RecordAfterSave",
+                  "recordTriggerType": "Create",
+                  "connector": {"targetReference": "Set"}},
+        "assignments": [
+            {"name": "Set",
+             "assignmentItems": [{"assignToReference": "$Record.F__c",
+                                  "operator": "Assign",
+                                  "value": {"stringValue": "v"}}],
+             "connector": {"targetReference": "Persist"}},
+        ],
+        "recordUpdates": [{"name": "Persist", "inputReference": "$Record"}],
+    }}
+    ir = flow_behaviour(attrs)
+    assert ir["parse_status"] == "full"
+    [b] = ir["behaviours"]
+    assert b["state"] == "grounded" and b["value"] == "v"
+
+
+def test_prior_ref_in_ordered_decision_demotes():
+    # prior refs are bounded to single-rule decisions — a multi-rule
+    # first-match ladder with a prior condition demotes with the named
+    # reason (its negation-context would need prior-state disjunctions)
+    md = _decision_flow(
+        rules=[_rule("R1", "A__c", "GreaterThanOrEqualTo", 10, "S1"),
+               {"name": "R2", "conditionLogic": "and",
+                "conditions": [
+                    {"leftValueReference": "$Record__Prior.B__c",
+                     "operator": "EqualTo",
+                     "rightValue": {"stringValue": "x"}}],
+                "connector": {"targetReference": "S2"}}],
+        extra={"assignments": [_assign("S1", "F__c", "a"),
+                               _assign("S2", "F__c", "b")]})
+    ir = flow_behaviour(md)
+    reasons = {r for b in ir["behaviours"] for r in b["reasons"]}
+    assert "prior_ref_in_ordered_decision" in reasons
+    assert all(b["state"] != "grounded" for b in ir["behaviours"])

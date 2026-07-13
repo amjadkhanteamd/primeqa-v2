@@ -82,15 +82,17 @@ from primeqa.generation.vr_conflict import (
 )
 from primeqa.semantic.entity_attributes import (
     apply_transform_chain, field_formula_text, field_is_calculated,
-    field_treat_null_as_zero, flow_effects, flow_grounded_guarded_effects,
-    flow_grounded_same_record_effects, flow_grounded_temporal_effects,
-    flow_grounded_transforms, vr_error_message, vr_formula_text,
-    vr_is_active)
+    field_treat_null_as_zero, flow_behaviour, flow_effects,
+    flow_grounded_guarded_effects, flow_grounded_same_record_effects,
+    flow_grounded_temporal_effects, flow_grounded_transforms,
+    flow_grounded_transition_effects, vr_error_message,
+    vr_formula_text, vr_is_active)
 from primeqa.test_representation.temporal import relative_date
 # witness synthesis lives behind ONE entry point (DEBT E2, closed at C3);
 # the transform witness moved there from this module unchanged
 from primeqa.generation.witnesses import (
     guard_witness_values as _guard_witness_values,
+    picklist_alternative as _picklist_alternative,
     synthesize_transform_witness as _synthesize_transform_witness)
 from primeqa.semantic.formula import (Comparison, FieldRef, FunctionCall,
                                        Literal, is_parsed, parse, walk)
@@ -1359,6 +1361,25 @@ def _flows_producing_temporal(flow_entities, field_hint):
         for beh in flow_grounded_temporal_effects(getattr(ent, "attributes",
                                                           None)):
             if beh["field"] == bare:
+                out.append((ent, beh))
+    return out
+
+
+def _flows_producing_transition(flow_entities, field_hint, expected_value):
+    """C5 (FL09 slice): the neighborhood Flows whose Behaviour IR carries a
+    GROUNDED literal effect on an UPDATE-trigger flow matching the claim's
+    (field, value) — transition producers
+    (``flow_grounded_transition_effects``). Returns
+    ``[(entity, behaviour dict), ...]``."""
+    bare = (field_hint.rsplit(".", 1)[-1]
+            if isinstance(field_hint, str) and field_hint else None)
+    if bare is None or expected_value is None:
+        return []
+    out = []
+    for ent in flow_entities:
+        for beh in flow_grounded_transition_effects(getattr(ent, "attributes",
+                                                            None)):
+            if beh["field"] == bare                     and _effect_values_equal(beh["value"], expected_value):
                 out.append((ent, beh))
     return out
 
@@ -3418,11 +3439,10 @@ class GovernanceCore:
                                               f"outside the v1 transition "
                                               f"grammar (EqualTo only)")
                                 break
-                            _alts = [pv for pv in
-                                     (_tgmeta.get(_gf) or {}).get(
-                                         "picklist_values") or ()
-                                     if pv != _gv]
-                            if not _alts:
+                            _alt = _picklist_alternative(
+                                (_tgmeta.get(_gf) or {}).get(
+                                    "picklist_values"), {_gv})
+                            if _alt is None:
                                 _t_refusal = (f"cannot derive a create state "
                                               f"that does NOT meet the entry "
                                               f"filter on {_gf!r} — no "
@@ -3430,7 +3450,7 @@ class GovernanceCore:
                                               f"value")
                                 break
                             _t_update[_gf] = _gv
-                            _t_create[_gf] = _alts[0]
+                            _t_create[_gf] = _alt
                         if _t_refusal is None and not _t_update:
                             _t_refusal = ("the temporal arm has no consumable "
                                           "entry filter — the transition that "
@@ -3537,6 +3557,122 @@ class GovernanceCore:
                 # ground the claim against an automation that may not cause the
                 # effect (a wrong-green). REFUSE, mirroring the named branch's
                 # posture on the identical empty-producer case (ground-or-refuse).
+                # C5 (FL09 slice): before refusing, try the TRANSITION
+                # producers — an Update-trigger flow whose grounded literal
+                # arm matches the claimed (field, value). The prior-state
+                # guard ($Record__Prior) becomes the CREATE, the current
+                # guard becomes the UPDATE (EqualTo → the literal;
+                # NotEqualTo → a picklist alternative), and every
+                # entry_changed_fields field must genuinely change between
+                # the two. Underivable → the named refusal (never a guess).
+                transition_meta = None
+                if no_producer_floor and primitive != "formula":
+                    tr_producers = _flows_producing_transition(
+                        flows, field_ent.sf_api_name, effect_value)
+                    if len(tr_producers) > 1:
+                        return IntentResolution(
+                            grounded_candidates=[], next_action=NextAction.REFUSE,
+                            interpretation_delta=delta,
+                            refusal=self._router.emission_deferred(
+                                archetype, claim_kind,
+                                detail=(f"{len(tr_producers)} Update-trigger "
+                                        f"Flows verifiably produce the claimed "
+                                        f"effect — cannot attribute")))
+                    if len(tr_producers) == 1:
+                        tr_ent, tr_beh = tr_producers[0]
+                        _bare_obs = field_ent.sf_api_name.rsplit(".", 1)[-1]
+                        _trmeta = _grounding_field_metadata(
+                            neighborhood, self._s1, at)
+                        _tr_create: dict = {}
+                        _tr_update: dict = {}
+                        _tr_refusal = None
+                        if tr_beh["negated_guards"]:
+                            _tr_refusal = ("the transition arm carries a "
+                                           "negation-context — outside the v1 "
+                                           "transition grammar")
+                        for cond in (() if _tr_refusal
+                                     else tr_beh["prior_guard"]):
+                            _gf, _gop, _gv = cond
+                            if _gf == _bare_obs:
+                                _tr_refusal = (f"the arm's prior-state guard "
+                                               f"rides the observed field "
+                                               f"{_gf!r} — cannot stage")
+                                break
+                            if _gop != "EqualTo":
+                                _tr_refusal = (f"prior-state guard {_gf!r} "
+                                               f"{_gop} is outside the v1 "
+                                               f"transition grammar "
+                                               f"(EqualTo only)")
+                                break
+                            _tr_create[_gf] = _gv
+                        for cond in (() if _tr_refusal else tr_beh["guard"]):
+                            _gf, _gop, _gv = cond
+                            if _gop == "IsNull":
+                                continue          # omission-satisfied
+                            if _gf == _bare_obs:
+                                _tr_refusal = (f"the arm's guard rides the "
+                                               f"observed field {_gf!r} — "
+                                               f"cannot stage")
+                                break
+                            if _gop == "EqualTo":
+                                _tr_update[_gf] = _gv
+                            elif _gop == "NotEqualTo":
+                                _alt = _picklist_alternative(
+                                    (_trmeta.get(_gf) or {}).get(
+                                        "picklist_values"),
+                                    {_gv, _tr_create.get(_gf)})
+                                if _alt is None:
+                                    _tr_refusal = (
+                                        f"cannot derive an update state on "
+                                        f"{_gf!r} that differs from "
+                                        f"{_gv!r} — no alternative active "
+                                        f"picklist value")
+                                    break
+                                _tr_update[_gf] = _alt
+                            else:
+                                _tr_refusal = (f"guard {_gf!r} {_gop} is "
+                                               f"outside the v1 transition "
+                                               f"grammar")
+                                break
+                        if _tr_refusal is None:
+                            # every declared changed-field must GENUINELY
+                            # change between the staged create and update
+                            _changed = flow_behaviour(
+                                getattr(tr_ent, "attributes", None)
+                            )["trigger"]["entry_changed_fields"]
+                            for _cf in _changed:
+                                if _cf == _bare_obs:
+                                    _tr_refusal = (
+                                        f"the entry filter requires a change "
+                                        f"on the observed field {_cf!r} — "
+                                        f"cannot stage")
+                                    break
+                                if _cf not in _tr_create                                         or _cf not in _tr_update                                         or _tr_create[_cf] == _tr_update[_cf]:
+                                    _tr_refusal = (
+                                        f"the entry filter requires a real "
+                                        f"change on {_cf!r} but the derived "
+                                        f"transition does not stage one")
+                                    break
+                        if _tr_refusal is None and not _tr_update:
+                            _tr_refusal = ("the transition arm derives no "
+                                           "update state — nothing fires it")
+                        if _tr_refusal is not None:
+                            return IntentResolution(
+                                grounded_candidates=[],
+                                next_action=NextAction.REFUSE,
+                                interpretation_delta=delta,
+                                refusal=self._router.emission_deferred(
+                                    archetype, claim_kind,
+                                    detail=_tr_refusal))
+                        transition_meta = {"create": _tr_create,
+                                           "update": _tr_update}
+                        flow_ent = tr_ent
+                        primitive = "flow"
+                        no_producer_floor = False
+                        flow_ep = _Endpoint(
+                            entity_id=tr_ent.id,
+                            entity_type=tr_ent.entity_type,
+                            external_id=tr_ent.sf_api_name or str(tr_ent.id))
                 if no_producer_floor and primitive != "formula":
                     return IntentResolution(
                         grounded_candidates=[], next_action=NextAction.REFUSE,
@@ -3662,14 +3798,17 @@ class GovernanceCore:
                                     "the recalculate-on-change premise needs "
                                     "at least one verified (field, value) "
                                     "pair that is not the observed field")))
-                # C4: the substrate-derived TRANSITION replaces model pairs on
-                # the same fields (identity stability, the C3 rule) — create
-                # stages NOT-meeting, update stages newly-meeting; both then
-                # ride the existing D-306.1 checks + the VR-conflict overlay.
-                if temporal_meta is not None:
+                # C4/C5: the substrate-derived TRANSITION replaces model
+                # pairs on the same fields (identity stability, the C3 rule)
+                # — the create stages the before-state, the update the state
+                # that fires the arm; both then ride the existing D-306.1
+                # checks + the VR-conflict overlay.
+                _tmeta = temporal_meta if temporal_meta is not None \
+                    else transition_meta
+                if _tmeta is not None:
                     _teps = {}
-                    for _tf in sorted(set(temporal_meta["create"])
-                                      | set(temporal_meta["update"])):
+                    for _tf in sorted(set(_tmeta["create"])
+                                      | set(_tmeta["update"])):
                         _tent = next(
                             (r.entity for r in neighborhood
                              if r.edge_type == EDGE_BELONGS
@@ -3694,15 +3833,15 @@ class GovernanceCore:
                     trigger_fields = tuple(
                         (ep, v) for ep, v in trigger_fields
                         if ep.external_id.rsplit(".", 1)[-1]
-                        not in temporal_meta["create"]
-                    ) + tuple((_teps[f], temporal_meta["create"][f])
-                              for f in sorted(temporal_meta["create"]))
+                        not in _tmeta["create"]
+                    ) + tuple((_teps[f], _tmeta["create"][f])
+                              for f in sorted(_tmeta["create"]))
                     update_trigger_fields = tuple(
                         (ep, v) for ep, v in update_trigger_fields
                         if ep.external_id.rsplit(".", 1)[-1]
-                        not in temporal_meta["update"]
-                    ) + tuple((_teps[f], temporal_meta["update"][f])
-                              for f in sorted(temporal_meta["update"]))
+                        not in _tmeta["update"]
+                    ) + tuple((_teps[f], _tmeta["update"][f])
+                              for f in sorted(_tmeta["update"]))
                 if update_trigger_fields:
                     # D-306.1 (review): the change must be REAL and STAGEABLE.
                     # (a) A PATCH cannot stage a calculated/read-only field —
