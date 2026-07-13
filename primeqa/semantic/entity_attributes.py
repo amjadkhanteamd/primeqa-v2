@@ -813,6 +813,56 @@ def _fb_parse_lookup_premise(el) -> Optional[dict]:
             "single": bool(el.get("getFirstRecordOnly"))}
 
 
+# Wave 3 (CP2): the bounded LOOP-AGGREGATE idiom — a loop over a captured
+# premise whose body is ONE assignment element of pure accumulations
+# (``var Add <loop>.<Field>`` = Sum; ``var Add 1`` = Count) that returns to
+# the loop. Anything else keeps the loop's hard demotion.
+def _fb_parse_loop_aggregate(el, index) -> Optional[dict]:
+    """A bounded loop element → ``{"source", "loop", "aggregates":
+    [{"fn", "field", "into"}], "after"}`` or None. ``source`` is the
+    collectionReference (a Get-Records element name); ``after`` is the
+    noMoreValues target the walk continues from."""
+    if not isinstance(el, dict):
+        return None
+    src = el.get("collectionReference")
+    loop_name = el.get("name")
+    if not isinstance(src, str) or not src or not loop_name:
+        return None
+    nxt = (el.get("nextValueConnector") or {}).get("targetReference")         if isinstance(el.get("nextValueConnector"), dict) else None
+    after = (el.get("noMoreValuesConnector") or {}).get("targetReference")         if isinstance(el.get("noMoreValuesConnector"), dict) else None
+    if not nxt:
+        return None
+    body = index.get(nxt)
+    if body is None or body[0] != "assignments":
+        return None
+    _, bel = body
+    aggs = []
+    for it in _flow_md_list(bel.get("assignmentItems")):
+        if not isinstance(it, dict) or it.get("operator") != "Add":
+            return None
+        var = it.get("assignToReference")
+        if not isinstance(var, str) or "." in var or var.startswith("$"):
+            return None
+        val = it.get("value") or {}
+        ref = val.get("elementReference") if isinstance(val, dict) else None
+        num = val.get("numberValue") if isinstance(val, dict) else None
+        if isinstance(ref, str) and ref.startswith(loop_name + "."):
+            fld = ref[len(loop_name) + 1:]
+            if fld and "." not in fld:
+                aggs.append({"fn": "Sum", "field": fld, "into": var})
+                continue
+            return None
+        if num == 1:
+            aggs.append({"fn": "Count", "field": None, "into": var})
+            continue
+        return None
+    body_next = (bel.get("connector") or {}).get("targetReference")         if isinstance(bel.get("connector"), dict) else None
+    if body_next != loop_name or not aggs:
+        return None       # the body must return to the loop; pure idiom only
+    return {"source": src, "loop": loop_name, "aggregates": aggs,
+            "after": after}
+
+
 def _fb_guard_formula_field(name, formulas) -> tuple:
     """Resolve a decision-condition left ref that names a FORMULA element:
     ``("field", <bare>)`` when the formula is a bare ``$Record`` passthrough
@@ -1006,6 +1056,7 @@ def flow_behaviour(attributes: Optional[dict]) -> dict:
     out = {
         "ir_version": FLOW_BEHAVIOUR_IR_VERSION,
         "premises": [],
+        "collections": [],
         "trigger": {
             "object": None, "save_phase": None, "record_trigger_type": None,
             "entry_filter_count": 0, "requires_change_to_meet": False,
@@ -1138,6 +1189,7 @@ def flow_behaviour(attributes: Optional[dict]) -> dict:
     # phase, trigger type) still apply to every behaviour.
     behaviours: list = []
     premises: list = []
+    collections: list = []
     demote_reasons: list = []
     opaque_any = False
     grounded_possible = True   # set False only by pre-walk global gates
@@ -1467,19 +1519,46 @@ def flow_behaviour(attributes: Optional[dict]) -> dict:
                 behaviours.extend(pb)
                 opaque_any = opaque_any or p_op
             target = None
-        else:
-            # A recognized element type outside the bounded grammar.
-            # Wave 2 (CP6): a BOUNDED Get Records still records its typed
-            # cross-record PREMISE before the stop — representation only;
-            # the demotion and stop semantics are unchanged (nothing new
-            # grounds; the pre-decision stepper deliberately keeps the
-            # stricter pre-C5 stop).
+        elif list_name in _FB_SUBJECT_SAFE_LISTS:
+            # Wave 3 (CP2, resolving DEBT D5): the pre-decision stepper now
+            # walks THROUGH subject-safe elements exactly like _walk_linear
+            # — a lookup/create cannot rewrite the subject, so it demotes
+            # only itself; premises are captured; the walk continues (a
+            # later unsafe element still hard-stops). This lets loops and
+            # post-lookup elements be REACHED and represented.
             if list_name == "recordLookups":
                 _prem = _fb_parse_lookup_premise(el)
                 if _prem is not None:
                     _prem["guard"] = [list(g) for g in entry_guard]
                     _prem["element"] = el.get("name")
                     premises.append(_prem)
+            reason = f"element_outside_grammar:{list_name}"
+            pre_behaviours.append(_behaviour(_FB_UNSUPPORTED,
+                                             reasons=[reason]))
+            # soft: never joins demote_reasons (self-demotion only)
+            connector = el.get("connector")
+            target = (connector or {}).get("targetReference") \
+                if isinstance(connector, dict) else None
+        elif list_name == "loops":
+            # Wave 3 (CP2): the bounded loop-aggregate idiom is CAPTURED
+            # (representation; effects stay ungrounded) and the walk
+            # continues from the noMoreValues path; an out-of-idiom loop
+            # keeps the hard stop.
+            _agg = _fb_parse_loop_aggregate(el, index)
+            reason = "element_outside_grammar:loops"
+            pre_behaviours.append(_behaviour(_FB_UNSUPPORTED,
+                                             reasons=[reason]))
+            if _agg is not None:
+                _agg["guard"] = [list(g) for g in entry_guard]
+                collections.append(
+                    {k: _agg[k] for k in ("source", "loop", "aggregates",
+                                          "guard")})
+                target = _agg["after"]
+            else:
+                demote_reasons.append(reason)
+                target = None
+        else:
+            # A recognized element type outside the bounded grammar.
             reason = f"element_outside_grammar:{list_name}"
             demote_reasons.append(reason)
             pre_behaviours.append(_behaviour(_FB_UNSUPPORTED, reasons=[reason]))
@@ -1537,6 +1616,7 @@ def flow_behaviour(attributes: Optional[dict]) -> dict:
             b["reasons"] = sorted(set(b["reasons"]) | set(demote_reasons))
 
     out["premises"] = premises
+    out["collections"] = collections
     if not behaviours:
         out["behaviours"] = []
         out["parse_status"] = "empty"
@@ -1721,3 +1801,21 @@ def flow_cross_record_premises(attributes: Optional[dict]) -> tuple:
          "guard": tuple(tuple(g) for g in p.get("guard") or ()),
          "element": p.get("element")}
         for p in ir.get("premises") or ())
+
+
+def flow_collection_aggregates(attributes: Optional[dict]) -> tuple:
+    """Wave 3 (CP2): the bounded loop-aggregate ops a flow's immediate path
+    performs over its captured premises — ``{"source", "loop",
+    "aggregates" [{"fn": Sum|Count, "field", "into"}], "guard"}``.
+    Representation only (the loop's downstream effects stay ungrounded);
+    the evidence layer composes these with the premise staging plans:
+    Count's expectation = the plan's row count, Sum's = rows × the staged
+    per-row value of ``field``."""
+    ir = flow_behaviour(attributes)
+    return tuple(
+        {"source": c["source"], "loop": c["loop"],
+         "aggregates": tuple(
+             {"fn": a["fn"], "field": a["field"], "into": a["into"]}
+             for a in c["aggregates"]),
+         "guard": tuple(tuple(g) for g in c.get("guard") or ())}
+        for c in ir.get("collections") or ())

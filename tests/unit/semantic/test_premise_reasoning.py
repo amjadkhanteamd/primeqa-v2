@@ -82,3 +82,39 @@ def test_deterministic_and_bounded():
     assert set(CARDINALITY) == {"exists", "not_exists", "count_equals",
                                 "count_at_least", "count_less_than",
                                 "single_record"}
+
+
+# ── Wave 3 (CP2): collections ────────────────────────────────────────
+
+def test_fl07_loop_aggregates_are_captured():
+    from primeqa.semantic.entity_attributes import flow_collection_aggregates
+    with open(os.path.join(FIXTURE_DIR,
+                           "PLS_FB_FL07_Order_Rollup.json")) as f:
+        d = json.load(f)
+    (c,) = flow_collection_aggregates({"Metadata": d["Metadata"]})
+    assert c["source"] == "Get_All_Lines" and c["loop"] == "Loop_Lines"
+    assert ({"fn": "Sum", "field": "PLS_FB_Line_Total__c",
+             "into": "varTotal"} in [dict(a) for a in c["aggregates"]])
+    assert ({"fn": "Count", "field": None, "into": "varCount"}
+            in [dict(a) for a in c["aggregates"]])
+
+
+def test_aggregate_expectations_compose_with_plans():
+    from primeqa.semantic.premise_reasoning import aggregate_expectation
+    p = _premise("PLS_FB_FL07_Order_Rollup")
+    plan = staging_plan(p, "count_equals", 3)
+    assert aggregate_expectation("Count", plan) == 3
+    assert aggregate_expectation("Sum", plan, staged_value=100.0) == 300.0
+    assert "sum_needs" in aggregate_expectation("Sum", plan)
+    assert "unsupported_aggregate" in aggregate_expectation("Avg", plan)
+
+
+def test_forall_composes_as_not_exists_plus_violating_distractor():
+    from primeqa.semantic.premise_reasoning import forall_plan
+    p = _premise("PLS_FB_FL05_Cancellation_Sync")
+    plan = forall_plan(p, "PLS_FB_Status__c")
+    assert "refusal" not in plan
+    assert plan["create_matching"] == 0
+    assert plan["distractor"]["flip_field"] == "PLS_FB_Status__c"
+    assert plan["assert"]["predicate"] == "forall_via_not_exists"
+    assert "not_a_literal" in forall_plan(p, "Nope__c")["refusal"]

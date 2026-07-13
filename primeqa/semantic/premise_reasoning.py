@@ -148,3 +148,42 @@ def staging_plan(premise: dict, predicate: str,
         "distractor": distractor,
         "assert": {"predicate": predicate, "n": n},
     }
+
+
+def aggregate_expectation(fn: str, plan: dict, staged_value=None):
+    """The DETERMINISTIC expected result of a bounded aggregate over a
+    staging plan's matching rows: ``Count`` → the plan's row count;
+    ``Sum`` → rows × ``staged_value`` (the per-row value the evidence
+    layer stages on the aggregated field — same value every row, by
+    construction). Named refusal string outside the grammar."""
+    if "refusal" in plan:
+        return plan["refusal"]
+    k = plan.get("create_matching", 0)
+    if fn == "Count":
+        return k
+    if fn == "Sum":
+        if staged_value is None or isinstance(staged_value, bool) \
+                or not isinstance(staged_value, (int, float)):
+            return "sum_needs_a_staged_numeric_per_row_value"
+        return k * staged_value
+    return f"unsupported_aggregate:{fn}"
+
+
+def forall_plan(premise: dict, flip_field: str) -> dict:
+    """ForAll(condition) over a premise's rows == NOT EXISTS a violating
+    row. The plan: stage the not_exists shape PLUS one would-be-violating
+    row marked as the flipped distractor — a green then proves the
+    universally-quantified condition discriminates. Refuses when the
+    premise itself refuses or ``flip_field`` is not one of its literal
+    EqualTo filters (nothing to violate deterministically)."""
+    base = staging_plan(premise, "not_exists")
+    if "refusal" in base:
+        return base
+    lits = dict((f, v) for f, v in base["template"])
+    if flip_field not in lits:
+        return {"refusal": f"forall_flip_field_not_a_literal:{flip_field}"}
+    return {**base,
+            "distractor": {"flip_field": flip_field,
+                           "from_value": lits[flip_field]},
+            "assert": {"predicate": "forall_via_not_exists",
+                       "n": None, "flip_field": flip_field}}
