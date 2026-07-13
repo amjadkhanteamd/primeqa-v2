@@ -85,8 +85,8 @@ from primeqa.semantic.entity_attributes import (
     field_treat_null_as_zero, flow_behaviour, flow_effects,
     flow_grounded_guarded_effects, flow_grounded_same_record_effects,
     flow_grounded_temporal_effects, flow_grounded_transforms,
-    flow_grounded_transition_effects, vr_error_message,
-    vr_formula_text, vr_is_active)
+    flow_grounded_transition_effects, flow_cross_record_effect_ops,
+    vr_error_message, vr_formula_text, vr_is_active)
 from primeqa.test_representation.temporal import relative_date
 # witness synthesis lives behind ONE entry point (DEBT E2, closed at C3);
 # the transform witness moved there from this module unchanged
@@ -1479,6 +1479,23 @@ def _capability_line(field_name, summary) -> str:
             f"({flows}) as {'; '.join(shapes)} — frame this as an "
             f"automation-effect claim on that field, and OMIT "
             f"expected_value where the org derives the value")
+
+
+def _xo_create_producers(flow_entities, effect_object_api):
+    """Completion Program E1: the flows whose TYPED effect ops include a
+    create_record on ``effect_object_api`` — [(entity, op)]. Richer than
+    the D-318 glance: the op carries the correlation assignment, the
+    literal/relative-date field values, the guard, and the branch."""
+    out = []
+    if not effect_object_api:
+        return out
+    for ent in flow_entities:
+        for op in flow_cross_record_effect_ops(getattr(ent, "attributes",
+                                                       None)):
+            if op["kind"] == "create_record" \
+                    and op["object"] == effect_object_api:
+                out.append((ent, op))
+    return out
 
 
 def _field_regex_patterns(neighborhood, bare_field):
@@ -3421,8 +3438,71 @@ class GovernanceCore:
                     # binds).
                     automation_primitive=primitive))
             elif effect_object_api:
+                # Completion Program E1: when exactly ONE flow's TYPED IR
+                # creates this effect object, three model-dependent pieces
+                # become SUBSTRATE-DERIVED (deterministic, org-defined):
+                # the correlation (the op's subject_ref-Id assignment IS
+                # the lookup field), the asserted value for a named-but-
+                # unvalued effect field (the op's literal or relative-date
+                # assignment — the org-defines-the-value class, extended
+                # cross-object), and the attribution (the producing flow
+                # binds by its verified effect, not by name). An
+                # Update-trigger producer additionally derives the
+                # create→update TRANSITION from its EqualTo entry guard
+                # (the C4/C5 discipline) — presence only (an absence case
+                # must not stage the firing transition).
+                _xo_ops = _xo_create_producers(flows, effect_object_api)
+                xo_hint = hint
+                _xo_transition = None
+                if len(_xo_ops) == 1:
+                    _xo_ent, _xo_op = _xo_ops[0]
+                    xo_hint = dict(hint)
+                    if not xo_hint.get("effect_lookup_field"):
+                        _corr = next(
+                            (f for f, tv in _xo_op["assignments"].items()
+                             if tuple(tv) == ("subject_ref", "Id")), None)
+                        if _corr:
+                            xo_hint["effect_lookup_field"] = _corr
+                    _efn = xo_hint.get("effect_field")
+                    if _efn and xo_hint.get("effect_value") is None:
+                        _tv = _xo_op["assignments"].get(
+                            str(_efn).rsplit(".", 1)[-1])
+                        _tv = tuple(_tv) if _tv else None
+                        if _tv and _tv[0] == "literal":
+                            xo_hint["effect_value"] = _tv[1]
+                        elif _tv and _tv[0] == "relative_date":
+                            xo_hint["effect_value"] = relative_date(_tv[1])
+                    flow_ent = _xo_ent
+                    primitive = "flow"
+                    no_producer_floor = False
+                    flow_ep = _Endpoint(
+                        entity_id=_xo_ent.id,
+                        entity_type=_xo_ent.entity_type,
+                        external_id=_xo_ent.sf_api_name or str(_xo_ent.id))
+                    _xo_trig = flow_behaviour(
+                        getattr(_xo_ent, "attributes", None))["trigger"]
+                    if (_xo_trig["record_trigger_type"] == "Update"
+                            and not raw_absence
+                            and _xo_op["guard"]
+                            and all(g[1] == "EqualTo"
+                                    for g in _xo_op["guard"])):
+                        _xgmeta = _grounding_field_metadata(
+                            neighborhood, self._s1, at)
+                        _xt_create, _xt_update = {}, {}
+                        for _gf, _gop, _gv in _xo_op["guard"]:
+                            _alt = _picklist_alternative(
+                                (_xgmeta.get(_gf) or {}).get(
+                                    "picklist_values"), {_gv})
+                            if _alt is None:
+                                _xt_create = None
+                                break
+                            _xt_update[_gf] = _gv
+                            _xt_create[_gf] = _alt
+                        if _xt_create:
+                            _xo_transition = {"create": _xt_create,
+                                              "update": _xt_update}
                 grounded_eff = self._ground_cross_object_effect(
-                    hint, effect_object_api, at)
+                    xo_hint, effect_object_api, at)
                 if isinstance(grounded_eff, str):       # the deferral detail
                     return IntentResolution(
                         grounded_candidates=[], next_action=NextAction.REFUSE,
@@ -3435,8 +3515,8 @@ class GovernanceCore:
                 # padding-only create never provokes the Task) — the same
                 # D-299 rail as above.
                 xo_triggers = _ground_trigger_fields(
-                    hint.get("trigger_fields"), neighborhood,
-                    exclude_field=hint.get("effect_field"))
+                    xo_hint.get("trigger_fields"), neighborhood,
+                    exclude_field=xo_hint.get("effect_field"))
                 if expected_absence and not xo_triggers:
                     # D-307.1 (review B2): drop-never-refuse INVERTS under
                     # absence — for presence a padding-only create degrades to
@@ -3468,7 +3548,8 @@ class GovernanceCore:
                 # the effect IS the correlated record's creation (the SideEffect arm
                 # in emission). Refuse (invent-nothing) → the model re-proposes with
                 # a value or drops the field; D-302 surfaces it as a partial refusal.
-                xo_effect_value = _identity_safe(hint.get("effect_value"))
+                xo_effect_value = _identity_safe(
+                    xo_hint.get("effect_value"))
                 if not expected_absence and eff_field_ep is not None \
                         and xo_effect_value is None:
                     return IntentResolution(
@@ -3481,6 +3562,40 @@ class GovernanceCore:
                                     "unvalued field effect is not verifiable (drop "
                                     "the field to assert only that the correlated "
                                     "record is created)")))
+                # E1: the substrate-derived TRANSITION replaces model
+                # pairs on the same fields (the C3 identity rule) — the
+                # create stages the NOT-meeting state, the update the entry
+                # state that fires the producer.
+                xo_update_fields = ()
+                if _xo_transition is not None:
+                    _xeps = {}
+                    _xmiss = None
+                    for _xf in sorted(set(_xo_transition["create"])
+                                      | set(_xo_transition["update"])):
+                        _xent = next(
+                            (r.entity for r in neighborhood
+                             if r.edge_type == EDGE_BELONGS
+                             and r.entity.entity_type == "Field"
+                             and isinstance(r.entity.sf_api_name, str)
+                             and r.entity.sf_api_name
+                             .rsplit(".", 1)[-1] == _xf), None)
+                        if _xent is None:
+                            _xmiss = _xf
+                            break
+                        _xeps[_xf] = _Endpoint(
+                            entity_id=_xent.id,
+                            entity_type=_xent.entity_type,
+                            external_id=_xent.sf_api_name or str(_xent.id))
+                    if _xmiss is None:
+                        xo_triggers = tuple(
+                            (ep, v) for ep, v in xo_triggers
+                            if ep.external_id.rsplit(".", 1)[-1]
+                            not in _xo_transition["create"]
+                        ) + tuple((_xeps[f], _xo_transition["create"][f])
+                                  for f in sorted(_xo_transition["create"]))
+                        xo_update_fields = tuple(
+                            (_xeps[f], _xo_transition["update"][f])
+                            for f in sorted(_xo_transition["update"]))
                 # D-337: the subject create carries the staged entry-gate
                 # values — if they provably fire one of the SUBJECT's active
                 # VRs the create bounces and no correlated record (presence
@@ -3488,7 +3603,9 @@ class GovernanceCore:
                 # own VRs are the org's concern, not the recipe's.
                 conflict = _staged_vr_conflict_detail(
                     neighborhood,
-                    {ep.external_id: v for ep, v in xo_triggers})
+                    {ep.external_id: v for ep, v in xo_triggers},
+                    staged_update={ep.external_id: v
+                                   for ep, v in xo_update_fields})
                 if conflict is not None:
                     return IntentResolution(
                         grounded_candidates=[], next_action=NextAction.REFUSE,
@@ -3503,6 +3620,7 @@ class GovernanceCore:
                     effect_value=xo_effect_value,
                     effect_object=eff_ep, effect_lookup_field=lookup_ep,
                     trigger_fields=xo_triggers,
+                    update_trigger_fields=xo_update_fields,
                     automation_primitive=primitive,     # D-308 (see above)
                     # D-307: the absence mirror (gated fail-closed above —
                     # cross-object, no effect_field/effect_value, strict bool).

@@ -2212,10 +2212,13 @@ def _author_automation_effect(g: GroundedAutomationEffect) -> EmissionBundle:
     # D-306: the update-observe phase is SAME-RECORD only (the recompute is
     # observed on the record whose state changed). The stash gate refuses the
     # cross-object/parent-stamp combinations upstream; construction-proof here.
-    if g.update_trigger_fields and g.effect_object is not None:
+    if g.update_trigger_fields and g.effect_object is not None \
+            and g.effect_via_lookup_field is not None:
+        # parent-stamp + update transition remains unbuilt (no consumer);
+        # the PLAIN cross-object update transition is the E1 shape below.
         raise ValueError(
-            "update_trigger_fields on a cross-object/parent-stamp automation "
-            "effect — the update-observe shape is same-record only (D-306)")
+            "update_trigger_fields on a parent-stamp automation effect — "
+            "the update-observe transition is not built for that shape")
     if g.transform_chain and (g.effect_object is not None
                               or g.update_trigger_fields):
         raise ValueError(
@@ -2381,9 +2384,26 @@ def _author_automation_effect(g: GroundedAutomationEffect) -> EmissionBundle:
         lookup_bare = lookup_api.split(".", 1)[-1]
         create_fields = {ep.external_id: val for ep, val in g.trigger_fields}
         gate = ", ".join(f"{k}={v!r}" for k, v in create_fields.items())
+        # E1: the cross-object UPDATE transition — the subject is created in
+        # the NOT-meeting state and updated INTO the producer's entry state;
+        # the read then observes the correlated effect. Identity-bearing
+        # narration (a transitioned claim never collides with a create-only
+        # one).
+        xo_update_fields = {ep.external_id: val
+                            for ep, val in g.update_trigger_fields}
+        xo_upd_gate = ", ".join(f"{k}={v!r}"
+                                for k, v in xo_update_fields.items())
         xo_event = event
         gated = ""
-        if create_fields:
+        if xo_update_fields:
+            gated = (f" with {gate}" if create_fields else "") \
+                + f", then updating {xo_upd_gate}"
+            xo_event = EventDescriptor(
+                trigger_kind="data-mutation-trigger",
+                description=(f"creating a {object_api}"
+                             + (f" with {gate}" if create_fields else "")
+                             + f" then updating {xo_upd_gate}"))
+        elif create_fields:
             gated = f" with {gate}"
             xo_event = EventDescriptor(
                 trigger_kind="data-mutation-trigger",
@@ -2462,6 +2482,12 @@ def _author_automation_effect(g: GroundedAutomationEffect) -> EmissionBundle:
         steps = [
             CreateStep(step_id="create-record", target_object=target,
                        field_values=dict(create_fields)),
+        ]
+        if xo_update_fields:
+            steps.append(UpdateStep(
+                step_id="update-record", target=target,
+                field_changes=dict(xo_update_fields)))
+        steps += [
             ReadStep(
                 step_id="read-effect",
                 target=LogicalRef(entity_type="Object", external_id=effect_api),
