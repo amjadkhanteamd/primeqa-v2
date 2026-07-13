@@ -86,7 +86,10 @@ from primeqa.semantic.entity_attributes import (
     flow_grounded_guarded_effects, flow_grounded_same_record_effects,
     flow_grounded_temporal_effects, flow_grounded_transforms,
     flow_grounded_transition_effects, flow_cross_record_effect_ops,
+    flow_collection_aggregates, flow_cross_record_premises,
     vr_error_message, vr_formula_text, vr_is_active)
+from primeqa.semantic.premise_reasoning import (
+    classify_relation, staging_plan, aggregate_expectation)
 from primeqa.test_representation.temporal import relative_date
 # witness synthesis lives behind ONE entry point (DEBT E2, closed at C3);
 # the transform witness moved there from this module unchanged
@@ -1506,6 +1509,84 @@ def _xo_update_producers(flow_entities, effect_object_api):
     return out
 
 
+def _flows_producing_rollup(flow_entities, subject_api, field_hint):
+    """Completion E3: flows TRIGGERED ON ANOTHER OBJECT whose typed IR
+    rolls an aggregate up onto the SUBJECT — the FL07 shape, and the
+    general Salesforce roll-up idiom (parent field = Count/Sum over its
+    children).
+
+    A flow matches when ALL of (conservative, every piece typed):
+    - record-triggered on a child object (≠ subject), no entry filters,
+      no temporal path, no fault provenance;
+    - ONE update_records op targeting ``subject_api`` whose sole filter
+      is the parent correlation ``Id EqualTo ($Record, L)`` and whose
+      assignment to the claimed bare field is ``("var", V)``;
+    - a bounded collection aggregate (Count / Sum) writing into ``V``,
+      unguarded, whose source premise queries the TRIGGER object
+      correlated by the SAME lookup ``L`` (the sibling set — every child
+      of the same parent).
+
+    Returns ``[(entity, spec)]``; spec = {child_object, lookup, fn,
+    source_field, premise} — everything the evidence derivation needs."""
+    bare = (field_hint.rsplit(".", 1)[-1]
+            if isinstance(field_hint, str) and field_hint else None)
+    out = []
+    if bare is None or not subject_api:
+        return out
+    for ent in flow_entities:
+        attrs = getattr(ent, "attributes", None)
+        trig = flow_behaviour(attrs).get("trigger") or {}
+        child_api = trig.get("object")
+        if (not trig.get("is_record_triggered") or not child_api
+                or child_api == subject_api
+                or trig.get("entry_filter_count")):
+            continue
+        for op in flow_cross_record_effect_ops(attrs):
+            if (op["kind"] != "update_records"
+                    or op["object"] != subject_api
+                    or op.get("guard") or op.get("premise_guard")
+                    or op.get("on_fault_of") or op.get("temporal_path")):
+                continue
+            filt = op.get("filters") or []
+            if len(filt) != 1:
+                continue
+            f, fop, v = filt[0]
+            if not (f == "Id" and fop == "EqualTo" and isinstance(v, tuple)
+                    and len(v) == 2 and v[0] == "$Record"):
+                continue
+            lookup = v[1]
+            assign = (op.get("assignments") or {}).get(bare)
+            if not (isinstance(assign, (tuple, list)) and len(assign) == 2
+                    and assign[0] == "var"):
+                continue
+            var = assign[1]
+            for coll in flow_collection_aggregates(attrs):
+                if coll.get("guard"):
+                    continue
+                agg = next((a for a in coll.get("aggregates", ())
+                            if a.get("into") == var
+                            and a.get("fn") in ("Count", "Sum")), None)
+                if agg is None:
+                    continue
+                premise = next(
+                    (p for p in flow_cross_record_premises(attrs)
+                     if p.get("element") == coll.get("source")
+                     and p.get("object") == child_api
+                     and not p.get("guard")), None)
+                if premise is None:
+                    continue
+                rel = classify_relation(premise)
+                if not (rel["kind"] == "sibling_set"
+                        and rel["correlation_field"] == lookup
+                        and rel["subject_field"] == lookup):
+                    continue
+                out.append((ent, {
+                    "child_object": child_api, "lookup": lookup,
+                    "fn": agg["fn"], "source_field": agg.get("field"),
+                    "premise": premise}))
+    return out
+
+
 def _xo_create_producers(flow_entities, effect_object_api):
     """Completion Program E1: the flows whose TYPED effect ops include a
     create_record on ``effect_object_api`` — [(entity, op)]. Richer than
@@ -1681,6 +1762,23 @@ class AdmissibilityEngine:
                 if r.edge_type == EDGE_BELONGS
                 and r.entity.entity_type == "Field" and r.entity.sf_api_name]
 
+    def _rollup_admits(self, subject, field_hint, effect_value_hint,
+                       effect_object_hint, at_seq) -> bool:
+        """Completion E3 — the admission twin of the emission tail's
+        roll-up grounding: a flow triggered on a CHILD object verifiably
+        aggregates the sibling set onto this subject field. Value-less,
+        same-record-framed intents only (exactly what the tail grounds:
+        the aggregate's value is chosen by the evidence, so a proposed
+        value can never verifiably match). Bounded org-wide scan — the
+        producer is, by definition, outside the subject's TRIGGERS_ON
+        neighborhood, which is why the per-neighborhood checks miss it."""
+        if (not field_hint or effect_value_hint is not None
+                or effect_object_hint or at_seq is None):
+            return False
+        return bool(_flows_producing_rollup(
+            self._s1.get_entities("Flow", at_seq=at_seq),
+            subject.sf_api_name, field_hint))
+
     def is_negative(self, claim_kind: str, polarity_hint: str) -> bool:
         return claim_kind in _INHERENTLY_NEGATIVE or polarity_hint == "negative"
 
@@ -1689,7 +1787,8 @@ class AdmissibilityEngine:
                  path_id: str = "c0", field_hint: Optional[str] = None,
                  automation_hint: Optional[str] = None,
                  effect_value_hint=None,
-                 effect_object_hint: Optional[str] = None) -> _Candidate:
+                 effect_object_hint: Optional[str] = None,
+                 at_seq: Optional[int] = None) -> _Candidate:
         """Derive the requirement-anchored candidate and determine Layer-1
         admissibility. Substrate-authored; returns a single _Candidate."""
         cand = _Candidate(
@@ -1713,7 +1812,8 @@ class AdmissibilityEngine:
             return self._evaluate_negative(cand, claim_kind, neighborhood)
         return self._evaluate_positive(cand, claim_kind, neighborhood, field_hint,
                                        automation_hint, effect_value_hint,
-                                       effect_object_hint)
+                                       effect_object_hint, subject=subject,
+                                       at_seq=at_seq)
 
     def _evaluate_negative(self, cand: _Candidate, claim_kind: str, neighborhood: list) -> _Candidate:
         dim = _NEGATIVE_LAYER1_DIM.get(claim_kind)
@@ -1735,7 +1835,9 @@ class AdmissibilityEngine:
                            field_hint: Optional[str] = None,
                            automation_hint: Optional[str] = None,
                            effect_value_hint=None,
-                           effect_object_hint: Optional[str] = None) -> _Candidate:
+                           effect_object_hint: Optional[str] = None,
+                           subject: Optional[Entity] = None,
+                           at_seq: Optional[int] = None) -> _Candidate:
         # Positive grounding needs supporting structure (a Field BELONGS_TO the
         # subject Object). A **value-claim** asserts ``field == V``, so it grounds
         # only when the *named* field exists (verify-at-grounding, D-115.3): an
@@ -1803,8 +1905,14 @@ class AdmissibilityEngine:
                     grounds = _field_has_verifiable_producer(
                         [r.entity for r in flows], field_hint,
                         effect_value_hint, effect_object_hint)
+                if not grounds:
+                    grounds = self._rollup_admits(
+                        subject, field_hint, effect_value_hint,
+                        effect_object_hint, at_seq)
             else:
-                grounds = bool(flows)
+                grounds = bool(flows) or self._rollup_admits(
+                    subject, field_hint, effect_value_hint,
+                    effect_object_hint, at_seq)
             if (not grounds and effect_object_hint == "ProcessInstance"
                     and not _names_a_subject_approval(neighborhood, automation_hint)):
                 # D-320: an approval-process effect (ProcessInstance) is the org's
@@ -2405,7 +2513,8 @@ class GovernanceCore:
                                     field_hint=hint.get("field_name"),
                                     automation_hint=hint.get("automation_name"),
                                     effect_value_hint=hint.get("expected_value"),
-                                    effect_object_hint=hint.get("effect_object"))
+                                    effect_object_hint=hint.get("effect_object"),
+                                    at_seq=at)
         candidates = self._decomp.enumerate_candidates(base)
         grounded = [c for c in candidates if c.status == "admissibly_grounded"]
         delta = self._delta(neighborhood, candidates)
@@ -3268,6 +3377,23 @@ class GovernanceCore:
                         flow_ent = flows[0] if flows else None
                         no_producer_floor = True
             if flow_ent is None and formula_ent is None:
+                # Completion E3: a subject with ZERO own flows can still be
+                # a roll-up TARGET (the writer triggers on a child object) —
+                # the admission gate admitted exactly this shape, so the
+                # tail must attempt it before the defensive refusal.
+                _r_out = self._try_rollup_resolution(
+                    hint=hint, subject=subject,
+                    field_ent=next(
+                        (r.entity for r in neighborhood
+                         if r.edge_type == EDGE_BELONGS
+                         and r.entity.entity_type == "Field"
+                         and r.entity.sf_api_name == hint.get("field_name")),
+                        None),
+                    at=at, delta=delta, archetype=archetype,
+                    claim_kind=claim_kind, excerpt=excerpt,
+                    grounded=grounded, state=state)
+                if _r_out is not None:
+                    return _r_out
                 # defensive: positives admit on this edge; negatives may reach
                 # here without one
                 return IntentResolution(
@@ -4230,6 +4356,17 @@ class GovernanceCore:
                                         "dates, classification arms) where "
                                         "the org defines them"),
                                 candidates=_offer))
+                    # Completion E3: before refusing a value-less field no
+                    # subject-flow writes, check the roll-up idiom — the
+                    # writer may TRIGGER on a child object (FL07's shape:
+                    # parent count/total = aggregate over its lines).
+                    _r_out = self._try_rollup_resolution(
+                        hint=hint, subject=subject, field_ent=field_ent,
+                        at=at, delta=delta, archetype=archetype,
+                        claim_kind=claim_kind, excerpt=excerpt,
+                        grounded=grounded, state=state)
+                    if _r_out is not None:
+                        return _r_out
                     return IntentResolution(
                         grounded_candidates=[], next_action=NextAction.REFUSE,
                         interpretation_delta=delta,
@@ -4425,6 +4562,17 @@ class GovernanceCore:
                             entity_type=tr_ent.entity_type,
                             external_id=tr_ent.sf_api_name or str(tr_ent.id))
                 if no_producer_floor and primitive != "formula":
+                    # Completion E3: no producer TRIGGERS_ON the subject —
+                    # the writer may live on a CHILD object (the roll-up
+                    # idiom). Shared attempt; None -> fall through to the
+                    # honest refusal below.
+                    _r_out = self._try_rollup_resolution(
+                        hint=hint, subject=subject, field_ent=field_ent,
+                        at=at, delta=delta, archetype=archetype,
+                        claim_kind=claim_kind, excerpt=excerpt,
+                        grounded=grounded, state=state)
+                    if _r_out is not None:
+                        return _r_out
                     # C3b disclosure: when the field HAS a verifiable ladder
                     # writer but the proposed value matches no arm, name the
                     # real arm values (substrate discloses grounded
@@ -4798,6 +4946,147 @@ class GovernanceCore:
             entity_id=lookup_ent.id, entity_type=lookup_ent.entity_type,
             external_id=lookup_ent.sf_api_name or str(lookup_ent.id))
         return trig_ep, lookup_ep
+
+    # Completion E3: the per-row value staged on a Sum aggregate's source
+    # field — one deterministic constant (expected = k × this), never varied
+    # (identity stability). Distinctive enough that a default/formula value
+    # colliding with it by accident is implausible on a fresh record.
+    _ROLLUP_SUM_STAGED = 137
+
+    def _try_rollup_resolution(self, *, hint, subject, field_ent, at, delta,
+                               archetype, claim_kind, excerpt, grounded,
+                               state):
+        """Completion E3 — attempt the ROLL-UP resolution: a flow triggered
+        on a CHILD object aggregates the sibling set (Count / Sum) onto the
+        subject's field. Returns an IntentResolution (grounded PROCEED or a
+        named refusal) when the roll-up shape applies, or ``None`` so the
+        caller falls through to its own refusal. Value-less, same-record-
+        framed intents only — the aggregate's value is parameterized by the
+        EVIDENCE (k staged rows), so a model-proposed value can never
+        verifiably match. Bounded org-wide scan: by definition the producer
+        is not in the subject's TRIGGERS_ON neighborhood."""
+        if (field_ent is None
+                or _identity_safe(hint.get("expected_value")) is not None
+                or hint.get("effect_object")
+                or hint.get("update_trigger_fields")):
+            return None
+        rollups = _flows_producing_rollup(
+            self._s1.get_entities("Flow", at_seq=at),
+            subject.sf_api_name, field_ent.sf_api_name)
+        if not rollups:
+            return None
+        if len(rollups) > 1:
+            return IntentResolution(
+                grounded_candidates=[], next_action=NextAction.REFUSE,
+                interpretation_delta=delta,
+                refusal=self._router.emission_deferred(
+                    archetype, claim_kind,
+                    detail=(f"{len(rollups)} flows roll an aggregate up "
+                            f"onto this field — the writer is ambiguous, "
+                            f"so the effect cannot be attributed")))
+        res = self._ground_rollup_effect(rollups[0], subject, field_ent, at)
+        if isinstance(res, str):
+            return IntentResolution(
+                grounded_candidates=[], next_action=NextAction.REFUSE,
+                interpretation_delta=delta,
+                refusal=self._router.emission_deferred(
+                    archetype, claim_kind, detail=res))
+        r_flow, r_spec, r_expected = res
+        _stash_grounding(state, GroundedAutomationEffect(
+            archetype=archetype, claim_kind=claim_kind,
+            version_seq=at,
+            subject=_Endpoint(
+                entity_id=subject.id, entity_type=subject.entity_type,
+                external_id=subject.sf_api_name or str(subject.id)),
+            automation=_Endpoint(
+                entity_id=r_flow.id, entity_type=r_flow.entity_type,
+                external_id=r_flow.sf_api_name or str(r_flow.id)),
+            requirement_excerpt=excerpt,
+            effect_field=_Endpoint(
+                entity_id=field_ent.id, entity_type=field_ent.entity_type,
+                external_id=field_ent.sf_api_name or str(field_ent.id)),
+            effect_value=r_expected,
+            automation_primitive="flow",
+            rollup_spec=r_spec))
+        presented = [
+            PresentedCandidate(
+                path_id=c.path_id,
+                admissibility_layer=AdmissibilityLayer(
+                    c.admissibility_layer),
+                summary={"archetype": c.archetype,
+                         "claim_kind": c.claim_kind})
+            for c in grounded]
+        return IntentResolution(
+            grounded_candidates=presented,
+            next_action=NextAction.PROCEED_TO_EMIT,
+            interpretation_delta=delta)
+
+    def _ground_rollup_effect(self, match, subject, field_ent, at):
+        """Completion E3: derive the full roll-up evidence shape from the
+        single matched producer, verifying every name against S1 at the
+        pinned version. Returns ``(flow_ent, rollup_spec, expected)`` or
+        the deferral-detail STRING (never guesses).
+
+        Derivation: ``staging_plan`` (k=2 sibling rows + the premise's
+        literal template) → per-row staged values (+ the Sum source field's
+        constant) → ``aggregate_expectation`` (Count → k; Sum → k×staged)
+        → child-object VR-conflict gate on the staged rows."""
+        flow_ent, spec = match
+        child_api = spec["child_object"]
+        plan = staging_plan(spec["premise"], "count_equals", n=2)
+        if "refusal" in plan:
+            return (f"the rollup's child premise is not stageable "
+                    f"({plan['refusal']}) — the sibling set cannot be "
+                    f"deterministically provisioned")
+        if plan["required_any"]:
+            return (f"the rollup's child premise requires non-null values "
+                    f"on {sorted(plan['required_any'])} with no derivable "
+                    f"witness — the sibling set cannot be provisioned")
+        children = self._admit.resolve_subject("Object", child_api, at)
+        if len(children) != 1:
+            return (f"the rollup's child object {child_api!r} does not "
+                    f"resolve uniquely in the org model")
+        child_neigh = self._admit.scoped_neighborhood(children[0], at)
+        child_fields = {
+            r.entity.sf_api_name.rsplit(".", 1)[-1]
+            for r in child_neigh
+            if r.edge_type == EDGE_BELONGS
+            and r.entity.entity_type == "Field"
+            and isinstance(r.entity.sf_api_name, str)}
+        if spec["lookup"] not in child_fields:
+            return (f"the rollup's correlation lookup {spec['lookup']!r} "
+                    f"does not exist on {child_api} — cannot stage the "
+                    f"sibling set")
+        staged = list(plan["template"])
+        if spec["fn"] == "Sum":
+            src = spec["source_field"]
+            if not src or src not in child_fields:
+                return (f"the Sum rollup's source field {src!r} does not "
+                        f"exist on {child_api} — cannot stage per-row "
+                        f"values")
+            _cmeta = _grounding_field_metadata(child_neigh, self._s1, at)
+            _ftype = (_cmeta.get(src) or {}).get("field_type")
+            if _ftype not in ("currency", "number", "double", "percent",
+                              "int"):
+                return (f"the Sum rollup's source field {src!r} is "
+                        f"{_ftype or 'of unknown type'} — a numeric "
+                        f"per-row value cannot be staged")
+            staged.append((src, self._ROLLUP_SUM_STAGED))
+            expected = aggregate_expectation(
+                "Sum", plan, staged_value=self._ROLLUP_SUM_STAGED)
+        else:
+            expected = aggregate_expectation("Count", plan)
+        if isinstance(expected, str):
+            return (f"the rollup's expected value is not derivable "
+                    f"({expected})")
+        conflict = _staged_vr_conflict_detail(
+            child_neigh, dict(staged))
+        if conflict is not None:
+            return conflict
+        return flow_ent, {
+            "child_object": child_api, "lookup": spec["lookup"],
+            "count": plan["create_matching"], "staged": tuple(staged),
+            "fn": spec["fn"], "expected": expected}, expected
 
     def _ground_cross_object_effect(self, hint: dict, effect_object_api: str,
                                     at: int, *, lookup_required: bool = True):

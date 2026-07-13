@@ -330,3 +330,147 @@ def test_set_update_refuses_without_a_distractor_state():
     assert res.refusal is not None
     assert state.groundings == []
     assert "distractor" in res.refusal.payload["detail"].lower()
+
+
+# ---------------------------------------------------------------------------
+# E3 — roll-up evidence (FL07: order totals reflect the sum of its lines)
+# ---------------------------------------------------------------------------
+
+FL07_FIXTURE = os.path.join(os.path.dirname(__file__), "..", "semantic",
+                            "fixtures", "pls_fb_flows",
+                            "PLS_FB_FL07_Order_Rollup.json")
+
+
+def _world_fl07(*, line_total_type="currency", with_flow=True):
+    order = _ent("Object", "PLS_FB_Order__c", "PLS FB Order")
+    o_total = _ent("Field", "PLS_FB_Order__c.PLS_FB_Order_Total__c",
+                   "Order Total")
+    o_count = _ent("Field", "PLS_FB_Order__c.PLS_FB_Line_Count__c",
+                   "Line Count")
+    line = _ent("Object", "PLS_FB_Order_Line__c", "PLS FB Order Line")
+    l_order = _ent("Field", "PLS_FB_Order_Line__c.PLS_FB_Order__c", "Order")
+    l_total = _ent("Field", "PLS_FB_Order_Line__c.PLS_FB_Line_Total__c",
+                   "Line Total")
+    with open(FL07_FIXTURE) as f:
+        d = json.load(f)
+    flow = _ent("Flow", "PLS_FB_FL07_Order_Rollup", "Order Rollup",
+                attrs={"Metadata": d["Metadata"]})
+    entities = [order, o_total, o_count, line, l_order, l_total]
+    if with_flow:
+        entities.append(flow)
+    s1 = _FakeS1(
+        entities=entities,
+        rows_by_object={
+            "PLS_FB_Order__c": [
+                SimpleNamespace(edge_type=gc.EDGE_BELONGS, entity=e)
+                for e in (o_total, o_count)],
+            "PLS_FB_Order_Line__c": [
+                SimpleNamespace(edge_type=gc.EDGE_BELONGS, entity=e)
+                for e in (l_order, l_total)],
+        },
+        details={l_total.id: {"field_type": line_total_type}})
+    return gc.GovernanceCore(s1)
+
+
+ROLLUP_EXCERPT = ("the order total and line count always reflect the "
+                  "order's lines")
+
+
+def _rollup_intent(field, **kw):
+    d = {"ac_ref": 11, "archetype_hint": "data_behavior",
+         "polarity_hint": "positive",
+         "claim_kind_hint": "automation-effect-claim",
+         "requirement_excerpt": ROLLUP_EXCERPT,
+         "target_subject_hint": {
+             "entity_type": "Object", "sf_api_name": "PLS_FB_Order__c",
+             "field_name": field, **kw}}
+    return {"requirement_excerpt": ROLLUP_EXCERPT, "intent_descriptor": d}
+
+
+def test_rollup_sum_grounds_with_derived_expectation():
+    core = _world_fl07()
+    state = _state()
+    res = core.resolve_intent(
+        intent_input=_rollup_intent("PLS_FB_Order__c.PLS_FB_Order_Total__c"),
+        ctx=_ctx(), state=state)
+    assert res.refusal is None, getattr(res.refusal, "payload", None)
+    [g] = state.groundings
+    assert g.automation.external_id == "PLS_FB_FL07_Order_Rollup"
+    rs = g.rollup_spec
+    assert rs["child_object"] == "PLS_FB_Order_Line__c"
+    assert rs["lookup"] == "PLS_FB_Order__c"
+    assert rs["fn"] == "Sum"
+    assert rs["count"] == 2
+    assert dict(rs["staged"]) == {"PLS_FB_Line_Total__c": 137}
+    assert rs["expected"] == 274                    # 2 × the staged constant
+    assert g.effect_value == 274
+
+
+def test_rollup_count_grounds_without_staged_source():
+    core = _world_fl07()
+    state = _state()
+    res = core.resolve_intent(
+        intent_input=_rollup_intent("PLS_FB_Order__c.PLS_FB_Line_Count__c"),
+        ctx=_ctx(), state=state)
+    assert res.refusal is None, getattr(res.refusal, "payload", None)
+    [g] = state.groundings
+    rs = g.rollup_spec
+    assert rs["fn"] == "Count"
+    assert rs["staged"] == ()                       # nothing to stage per row
+    assert rs["expected"] == 2 and g.effect_value == 2
+
+
+def test_rollup_emission_authors_the_two_parent_shape():
+    from primeqa.generation.emission import author_emission
+    core = _world_fl07()
+    state = _state()
+    core.resolve_intent(intent_input=_rollup_intent("PLS_FB_Order__c.PLS_FB_Order_Total__c"),
+                        ctx=_ctx(), state=state)
+    [g] = state.groundings
+    bundle = author_emission(g)
+    steps = bundle.observation_realization.steps
+    kinds = [type(s).__name__ for s in steps]
+    # parent + 2 children + parent-2 + distractor child + read + assert
+    assert kinds == ["CreateStep", "CreateStep", "CreateStep", "CreateStep",
+                     "CreateStep", "ReadStep", "AssertStep"]
+    assert steps[1].field_values[
+        "PLS_FB_Order_Line__c.PLS_FB_Order__c"] == "$create-record.id"
+    assert steps[4].field_values[
+        "PLS_FB_Order_Line__c.PLS_FB_Order__c"] == "$create-parent-2.id"
+    assert "WHERE Id = '$create-record.id'" in steps[5].soql
+    assert steps[6].predicate.predicate == "equals"
+    assert steps[6].predicate.value == 274
+    # deterministic identity
+    from primeqa.test_representation.identity_hash import compute_identity_hash
+    b2 = author_emission(g)
+    assert compute_identity_hash(bundle.archetype, bundle.claim_kind,
+                                 bundle.asserted_truth,
+                                 bundle.semantic_conditions) == \
+        compute_identity_hash(b2.archetype, b2.claim_kind,
+                              b2.asserted_truth, b2.semantic_conditions)
+
+
+def test_rollup_refuses_value_ful_and_nonnumeric_source():
+    # a proposed expected_value can never verifiably match an aggregate the
+    # EVIDENCE parameterizes — the intent refuses (value-less is the shape)
+    core = _world_fl07()
+    res = core.resolve_intent(
+        intent_input=_rollup_intent("PLS_FB_Order__c.PLS_FB_Order_Total__c",
+                                    expected_value="500"),
+        ctx=_ctx(), state=_state())
+    assert res.refusal is not None
+    # a text-typed source field cannot take a staged numeric per-row value
+    core2 = _world_fl07(line_total_type="text")
+    res2 = core2.resolve_intent(
+        intent_input=_rollup_intent("PLS_FB_Order__c.PLS_FB_Order_Total__c"),
+        ctx=_ctx(), state=_state())
+    assert res2.refusal is not None
+    assert "numeric" in res2.refusal.payload["detail"]
+
+
+def test_rollup_absent_flow_still_refuses():
+    core = _world_fl07(with_flow=False)
+    res = core.resolve_intent(
+        intent_input=_rollup_intent("PLS_FB_Order__c.PLS_FB_Order_Total__c"),
+        ctx=_ctx(), state=_state())
+    assert res.refusal is not None

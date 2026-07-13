@@ -373,6 +373,16 @@ class GroundedAutomationEffect:
     # entry state, then reads WHERE correlate AND field=updated_value and
     # asserts count_equals(count) — over- and under-update both fail.
     premise_children: Optional[dict] = None
+    # Completion E3 (roll-up evidence): the SUBJECT-as-parent aggregate —
+    # a flow triggered on a CHILD object aggregates the sibling set and
+    # stamps the result on the subject. {"child_object", "lookup" (bare),
+    # "count", "staged" ((field, value)... per child row), "fn"
+    # ("Count"|"Sum"), "expected"}. The recipe creates the subject, stages
+    # ``count`` children under it + ONE child under a SECOND parent (the
+    # correlation distractor), reads the subject back and asserts
+    # effect_field == expected — a mis-correlated rollup (the distractor
+    # leaking in) and a dead rollup both fail the same assert.
+    rollup_spec: Optional[dict] = None
     # D-299: the OPTIONAL entry-condition trigger — the (field, value) pairs the
     # create must SET so the Flow's entry gate actually fires (the risk-rating
     # flow gates on StageName='Credit Assessment' AND the KYC/Credit-Score fields
@@ -2216,6 +2226,92 @@ def _author_automation_effect(g: GroundedAutomationEffect) -> EmissionBundle:
                             description=f"creating a {object_api}")
     target = LogicalRef(entity_type="Object", external_id=object_api)
     trigger_op = "create"
+
+    if g.rollup_spec:
+        # Completion E3: the ROLL-UP shape — a flow triggered on a CHILD
+        # object aggregates the sibling set (Count / Sum) and stamps the
+        # result on the subject-as-parent. Chain: create the subject, stage
+        # `count` children under it (each carrying the substrate-derived
+        # per-row values), create a SECOND parent with ONE child under it
+        # (the correlation distractor — a rollup that ignored its own
+        # correlation would sweep it in and the expected value would be
+        # off), read the subject back, assert effect_field == expected.
+        # Every value substrate-derived from the producing op + aggregate
+        # (deterministic identity).
+        rs = g.rollup_spec
+        child_api = rs["child_object"]
+        lookup_key = (f"{child_api}.{rs['lookup']}"
+                      if "." not in rs["lookup"] else rs["lookup"])
+        field_api = g.effect_field.external_id
+        field_bare = field_api.split(".", 1)[-1]
+        n = rs["count"]
+        child_vals = {f"{child_api}.{f}" if "." not in f else f: v
+                      for f, v in rs["staged"]}
+        child_target = LogicalRef(entity_type="Object", external_id=child_api)
+        steps = [CreateStep(step_id="create-record", target_object=target,
+                            field_values={})]
+        for i in range(n):
+            steps.append(CreateStep(
+                step_id=f"create-child-{i+1}", target_object=child_target,
+                field_values={**child_vals, lookup_key: "$create-record.id"}))
+        steps.append(CreateStep(step_id="create-parent-2",
+                                target_object=target, field_values={}))
+        steps.append(CreateStep(
+            step_id="create-distractor", target_object=child_target,
+            field_values={**child_vals, lookup_key: "$create-parent-2.id"}))
+        steps.append(ReadStep(
+            step_id="read-effect", target=target,
+            soql=(f"SELECT Id, {field_bare} FROM {object_api} "
+                  f"WHERE Id = '$create-record.id'"),
+            fields_to_capture=["Id", field_bare]))
+        steps.append(DataAssertStep(
+            step_id="assert-effect",
+            predicate=AssertionPredicate(
+                subject_ref=f"read-effect.{field_bare}",
+                predicate="equals", value=rs["expected"])))
+        staged_desc = ", ".join(f"{f}={v!r}" for f, v in rs["staged"]) \
+            or "no staged fields"
+        claim = AutomationEffectClaimBody(
+            automation=automation_ref,
+            automation_primitive=g.automation_primitive,
+            triggering_action=EventDescriptor(
+                trigger_kind="data-mutation-trigger",
+                description=(f"creating {n} {child_api} children of a "
+                             f"{object_api} (each with {staged_desc}; +1 "
+                             f"child under a second {object_api})")),
+            expected_effect=FieldChangeEffect(changes=StateDescriptor(
+                field_values={field_api: LiteralValue(
+                    value=rs["expected"])})),
+            affected_fields=[IdentityBearingRef(
+                entity_type=g.effect_field.entity_type,
+                entity_id=g.effect_field.entity_id,
+                version_seq=g.version_seq, external_id=field_api)],
+        )
+        details = (f"create a {object_api}, stage {n} {child_api} children "
+                   f"under it ({staged_desc}) + 1 child under a second "
+                   f"{object_api} (the correlation distractor), read the "
+                   f"first {object_api} back, assert the {rs['fn']} rollup "
+                   f"set {field_bare}={rs['expected']!r}")
+        conditions = SemanticConditionsBody(conditions=[])
+        trigger = DataMutationTriggerBody(
+            operation="create", target=child_target,
+            identity_context="system", volume="single")
+        recipe = DataRecipeBody(
+            api_choice="rest", identity_context="system",
+            execution_mechanism="direct_api", steps=steps)
+        env = ExecutionEnvironmentBody(auth_assumptions=[AuthAssumption(
+            auth_kind="data_api_user", details=details)])
+        return EmissionBundle(
+            archetype=g.archetype, claim_kind=g.claim_kind,
+            asserted_truth=claim, semantic_conditions=conditions,
+            trigger_kind="data-mutation-trigger",
+            recipe_kind="data-recipe",
+            causal_initiation=trigger, observation_realization=recipe,
+            execution_environment=env,
+            admissibility_layer=AdmissibilityLayer.LAYER_1,
+            caveat_required=requires_caveat(g.claim_kind),
+            caveat_kind=caveat_kind(g.claim_kind),
+        )
 
     # D-306: the update-observe phase is SAME-RECORD only (the recompute is
     # observed on the record whose state changed). The stash gate refuses the
