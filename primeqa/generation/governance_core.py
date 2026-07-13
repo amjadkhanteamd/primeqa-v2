@@ -82,8 +82,14 @@ from primeqa.generation.vr_conflict import (
 )
 from primeqa.semantic.entity_attributes import (
     apply_transform_chain, field_formula_text, field_is_calculated,
-    field_treat_null_as_zero, flow_effects, flow_grounded_same_record_effects,
-    flow_grounded_transforms, vr_error_message, vr_formula_text, vr_is_active)
+    field_treat_null_as_zero, flow_effects, flow_grounded_guarded_effects,
+    flow_grounded_same_record_effects, flow_grounded_transforms,
+    vr_error_message, vr_formula_text, vr_is_active)
+# witness synthesis lives behind ONE entry point (DEBT E2, closed at C3);
+# the transform witness moved there from this module unchanged
+from primeqa.generation.witnesses import (
+    guard_witness_values as _guard_witness_values,
+    synthesize_transform_witness as _synthesize_transform_witness)
 from primeqa.semantic.formula import (Comparison, FieldRef, FunctionCall,
                                        Literal, is_parsed, parse, walk)
 from primeqa.semantic.query import Entity, SemanticOrgModel
@@ -1347,57 +1353,6 @@ def _field_regex_patterns(neighborhood, bare_field):
             # machinery does not model (e.g. a length rule) — fail closed
             opaque.add(e.sf_api_name or "?")
     return sorted(patterns), sorted(opaque)
-
-
-def _synthesize_transform_witness(chain, patterns, opaque_rules):
-    """FL02 slice: derive the (canonical, raw) witness pair for a transform
-    test — ``canonical`` satisfies every synthesizable format rule and
-    ``raw`` is the deterministic de-transformation the create stages
-    (post-save the org must produce ``canonical``). Returns the pair, or a
-    refusal-detail STRING when honesty demands it (opaque governing rule, an
-    unsynthesizable pattern, or a chain whose inversion cannot produce a
-    distinguishing raw value)."""
-    from primeqa.generation.verified_negative import regex_matching_value
-    if opaque_rules:
-        return (f"active validation rule(s) {opaque_rules} govern the "
-                f"transformed field but their formulas are not readable — "
-                f"cannot derive a witness the save is known to accept")
-    if patterns:
-        canonical = regex_matching_value(patterns[0])
-        if canonical is None:
-            return (f"the field's format pattern {patterns[0]!r} is outside "
-                    f"the bounded synthesis grammar — cannot derive a "
-                    f"format-valid witness")
-        for pat in patterns[1:]:
-            try:
-                if not _re_mod.fullmatch(pat, canonical):
-                    return (f"no single witness satisfies every governing "
-                            f"format pattern ({patterns})")
-            except _re_mod.error:
-                return f"format pattern {pat!r} is not compilable"
-        # the canonical must be a FIXED POINT of the chain — the org stores
-        # the transformed value, so a format whose members the chain rewrites
-        # out of the format is a genuinely inconsistent flow+rule pair.
-        if apply_transform_chain(chain, canonical) != canonical:
-            return (f"the format-valid witness {canonical!r} is not stable "
-                    f"under the transform chain {list(chain)} — the flow "
-                    f"would rewrite values out of their own format rule")
-    else:
-        # no format rule constrains the field: normalize the deterministic
-        # seed through the chain so the canonical IS the post-save value.
-        canonical = apply_transform_chain(chain, "Sample Value 1")
-    raw = canonical
-    for fn in reversed(chain):
-        if fn == "UPPER":
-            raw = raw.lower()
-        elif fn == "LOWER":
-            raw = raw.upper()
-        elif fn == "TRIM":
-            raw = " " + raw + " "
-    if raw == canonical or apply_transform_chain(chain, raw) != canonical:
-        return (f"cannot construct a raw witness the transform chain "
-                f"{list(chain)} distinguishably normalizes to a valid value")
-    return (canonical, raw)
 
 
 def _active_approvals(neighborhood) -> list:
@@ -3450,6 +3405,85 @@ class GovernanceCore:
                 trigger_fields = _ground_trigger_fields(
                     hint.get("trigger_fields"), neighborhood,
                     exclude_field=field_ent.sf_api_name)
+                # C3 (band-interval witnesses): when the bound Flow's IR
+                # carries the grounded producer arm for THIS (field, value)
+                # effect and that arm has a fire condition, the SUBSTRATE
+                # derives the create state that makes the arm fire — an
+                # in-band value strictly interior to the arm's interval
+                # (positive guard ∧ the negation-context of every prior
+                # first-match rule). Substrate-derived pairs REPLACE
+                # model-proposed pairs on the same field: the model's
+                # in-band pick varies run to run, the witness never does
+                # (per-band identity stability is the point). Fail-closed:
+                # an empty band, unreadable scale, or a guard shape outside
+                # the witness grammar REFUSES with the named limit; an arm
+                # whose conditions are all omission-satisfied (IsNull / the
+                # k16-excluded effect field — FL01's shape) stages nothing.
+                if (primitive == "flow" and flow_ent is not None
+                        and not no_producer_floor and transform_meta is None):
+                    _bare_eff = field_ent.sf_api_name.rsplit(".", 1)[-1]
+                    _arm = next(
+                        (b for b in flow_grounded_guarded_effects(
+                            getattr(flow_ent, "attributes", None))
+                         if b["field"] == _bare_eff
+                         and _effect_values_equal(b["value"], effect_value)),
+                        None)
+                    if _arm is not None and (_arm["guard"]
+                                             or _arm["negated_guards"]):
+                        _gmeta = _grounding_field_metadata(
+                            neighborhood, self._s1, at)
+
+                        def _scale_of(bare):
+                            m = _gmeta.get(bare)
+                            try:
+                                return (None if m is None or m.get("scale")
+                                        is None else int(m["scale"]))
+                            except (TypeError, ValueError):
+                                return None
+
+                        _wstatus, _wit = _guard_witness_values(
+                            _arm["guard"], _arm["negated_guards"],
+                            exclude_field=_bare_eff, scale_of=_scale_of)
+                        if _wstatus == "refuse":
+                            return IntentResolution(
+                                grounded_candidates=[],
+                                next_action=NextAction.REFUSE,
+                                interpretation_delta=delta,
+                                refusal=self._router.emission_deferred(
+                                    archetype, claim_kind, detail=_wit))
+                        if _wit:
+                            _weps = {}
+                            for _wf in sorted(_wit):
+                                _went = next(
+                                    (r.entity for r in neighborhood
+                                     if r.edge_type == EDGE_BELONGS
+                                     and r.entity.entity_type == "Field"
+                                     and isinstance(r.entity.sf_api_name, str)
+                                     and r.entity.sf_api_name
+                                     .rsplit(".", 1)[-1] == _wf), None)
+                                if _went is None:
+                                    return IntentResolution(
+                                        grounded_candidates=[],
+                                        next_action=NextAction.REFUSE,
+                                        interpretation_delta=delta,
+                                        refusal=self._router.emission_deferred(
+                                            archetype, claim_kind,
+                                            detail=(f"the arm's guard field "
+                                                    f"{_wf!r} does not BELONG "
+                                                    f"to the subject at the "
+                                                    f"pinned version — cannot "
+                                                    f"stage the fire state")))
+                                _weps[_wf] = _Endpoint(
+                                    entity_id=_went.id,
+                                    entity_type=_went.entity_type,
+                                    external_id=_went.sf_api_name
+                                    or str(_went.id))
+                            trigger_fields = tuple(
+                                (ep, v) for ep, v in trigger_fields
+                                if ep.external_id.rsplit(".", 1)[-1]
+                                not in _wit
+                            ) + tuple((_weps[f], _wit[f])
+                                      for f in sorted(_wit))
                 # D-304 (revised at impl): NO formula-input filter. The
                 # value-formula grammar is unparsed by the condition parser
                 # (both the fixture and the live LTV formula return NotParsed),

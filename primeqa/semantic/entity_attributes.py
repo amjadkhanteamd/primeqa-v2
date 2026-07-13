@@ -1231,3 +1231,22 @@ def flow_grounded_same_record_effects(attributes: Optional[dict]) -> frozenset:
         if b["state"] == _FB_GROUNDED and b["kind"] == "set_record_field"
         and b["field"] is not None
     )
+
+
+def flow_grounded_guarded_effects(attributes: Optional[dict]) -> tuple:
+    """The guard-aware sibling of :func:`flow_grounded_same_record_effects`
+    (C3): each GROUNDED literal behaviour with its full fire condition —
+    ``{"field", "value", "guard", "negated_guards"}``, both condition sets as
+    tuples of ``(field, operator, value)`` triples. Order is the IR's walk
+    order (for an ordered decision, rule order — the first-match fact).
+    Consumers derive the create state that makes a SPECIFIC arm fire; the
+    frozenset projection remains the binder's match surface."""
+    ir = flow_behaviour(attributes)
+    return tuple(
+        {"field": b["field"], "value": b["value"],
+         "guard": tuple(tuple(g) for g in b["guard"]),
+         "negated_guards": tuple(tuple(g) for g in b["negated_guards"])}
+        for b in ir["behaviours"]
+        if b["state"] == _FB_GROUNDED and b["kind"] == "set_record_field"
+        and b["field"] is not None
+    )
