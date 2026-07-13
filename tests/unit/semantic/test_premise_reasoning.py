@@ -118,3 +118,63 @@ def test_forall_composes_as_not_exists_plus_violating_distractor():
     assert plan["distractor"]["flip_field"] == "PLS_FB_Status__c"
     assert plan["assert"]["predicate"] == "forall_via_not_exists"
     assert "not_a_literal" in forall_plan(p, "Nope__c")["refusal"]
+
+
+# ── Wave 3 (CP4): typed cross-record effect ops ──────────────────────
+
+def _ops(name):
+    from primeqa.semantic.entity_attributes import flow_cross_record_effect_ops
+    with open(os.path.join(FIXTURE_DIR, f"{name}.json")) as f:
+        d = json.load(f)
+    return flow_cross_record_effect_ops({"Metadata": d["Metadata"]})
+
+
+def test_fl04_create_effect_fully_typed():
+    (o,) = _ops("PLS_FB_FL04_Confirmation_Task")
+    assert o["kind"] == "create_record"
+    assert o["object"] == "PLS_FB_Fulfilment_Task__c"
+    a = o["assignments"]
+    assert a["PLS_FB_Order__c"] == ("subject_ref", "Id")
+    assert a["PLS_FB_Status__c"] == ("literal", "Open")
+    assert a["PLS_FB_Due_Date__c"] == ("relative_date", 3)
+    assert o["fault"] is None
+
+
+def test_fl05_set_update_effect_typed_with_premise_filters():
+    (o,) = _ops("PLS_FB_FL05_Cancellation_Sync")
+    assert o["kind"] == "update_records"
+    assert o["object"] == "PLS_FB_Fulfilment_Task__c"
+    assert ("PLS_FB_Order__c", "EqualTo", ("$Record", "Id")) in o["filters"]
+    assert ("PLS_FB_Status__c", "EqualTo", "Open") in o["filters"]
+    assert o["assignments"]["PLS_FB_Status__c"] == ("literal", "Cancelled")
+
+
+def test_fl13_create_carries_the_fault_hook():
+    (o,) = _ops("PLS_FB_FL13_Fault_Logged_Ledger")
+    assert o["object"] == "PLS_FB_Ledger_Entry__c"
+    assert o["fault"] == "Create_Fault_Log"       # the CP5 hook
+    assert o["assignments"]["PLS_FB_Order__c"] == ("subject_ref", "Id")
+
+
+def test_fl07_parent_update_vars_resolve_to_aggregates():
+    (o,) = _ops("PLS_FB_FL07_Order_Rollup")
+    assert o["kind"] == "update_records"
+    assert o["assignments"]["PLS_FB_Order_Total__c"] == ("var", "varTotal")
+    # the var names tie to the CP2 collection aggregates
+    from primeqa.semantic.entity_attributes import flow_collection_aggregates
+    with open(os.path.join(FIXTURE_DIR,
+                           "PLS_FB_FL07_Order_Rollup.json")) as f:
+        d = json.load(f)
+    (c,) = flow_collection_aggregates({"Metadata": d["Metadata"]})
+    assert {a["into"] for a in c["aggregates"]} == {"varTotal", "varCount"}
+
+
+def test_effect_ops_never_ground_behaviours():
+    for name in ("PLS_FB_FL04_Confirmation_Task",
+                 "PLS_FB_FL05_Cancellation_Sync",
+                 "PLS_FB_FL13_Fault_Logged_Ledger"):
+        from primeqa.semantic.entity_attributes import flow_behaviour
+        with open(os.path.join(FIXTURE_DIR, f"{name}.json")) as f:
+            d = json.load(f)
+        ir = flow_behaviour({"Metadata": d["Metadata"]})
+        assert all(b["state"] != "grounded" for b in ir["behaviours"]), name

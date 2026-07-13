@@ -702,7 +702,7 @@ def _fb_prior_field(ref) -> Optional[str]:
     return None
 
 
-def _fb_guard_condition(cond, formulas=None):
+def _fb_guard_condition(cond, formulas=None, premise_elements=()):
     """Parse one decision-rule condition into ``(phase, (field, operator,
     value))`` where ``phase`` is ``"current"`` (``$Record.``) or ``"prior"``
     (``$Record__Prior.``, C5). Wave 2 (CP4): a left ref naming a FORMULA
@@ -725,6 +725,16 @@ def _fb_guard_condition(cond, formulas=None):
         elif status == "refused":
             return got            # the NAMED refusal string
     operator = cond.get("operator")
+    # Wave 3 (CP4): a condition on a CAPTURED premise element's emptiness
+    # (``<GetRecords> IsNull``) is the CARDINALITY exists predicate in
+    # guard position — typed as a PREMISE guard, staged via the CP1 plans.
+    if field is None and isinstance(ref, str) \
+            and ref in (premise_elements or ()) and operator == "IsNull":
+        val = cond.get("rightValue")
+        flag = val.get("booleanValue") if isinstance(val, dict) else None
+        if isinstance(flag, bool):
+            return ("premise", (ref, "IsNull", flag))
+        return None
     if field is None or operator not in _FB_GUARD_OPERATORS:
         return None
     value = _flow_assignment_value(cond.get("rightValue"))
@@ -811,6 +821,111 @@ def _fb_parse_lookup_premise(el) -> Optional[dict]:
             return None
     return {"object": obj, "filters": tuple(filters),
             "single": bool(el.get("getFirstRecordOnly"))}
+
+
+# Wave 3 (CP4): typed values inside cross-record effect assignments.
+def _fb_effect_value(val, formulas) -> tuple:
+    """One inputAssignment value → a TYPED tuple: ``("literal", v)`` /
+    ``("subject_ref", <bare field>)`` (a ``$Record.X`` read) /
+    ``("relative_date", n)`` (a bounded temporal formula) /
+    ``("fault_message",)`` (``$Flow.FaultMessage``) / ``("var", name)``
+    (a flow variable — resolvable to an aggregate where CP2 captured one)
+    / ``("opaque", <ref>)`` — explicit, never a guess."""
+    lit = _flow_assignment_value(val)
+    if lit is not None:
+        return ("literal", lit)
+    ref = val.get("elementReference") if isinstance(val, dict) else None
+    if not isinstance(ref, str) or not ref:
+        return ("opaque", None)
+    sub = _fb_record_field(ref)
+    if sub is not None:
+        return ("subject_ref", sub)
+    if ref == "$Flow.FaultMessage":
+        return ("fault_message",)
+    f = (formulas or {}).get(ref)
+    if isinstance(f, dict):
+        n = _fb_parse_temporal_formula(f)
+        if n is not None:
+            return ("relative_date", n)
+        return ("opaque", ref)
+    if not ref.startswith("$"):
+        return ("var", ref)
+    return ("opaque", ref)
+
+
+def _fb_parse_bounded_filters(el):
+    """The SHARED bounded filter grammar (premises + filtered updates):
+    list of ``(field, op, literal | ('$Record', bare))`` or None."""
+    filters = []
+    for f in _flow_md_list(el.get("filters")):
+        if not isinstance(f, dict):
+            return None
+        fld, op = f.get("field"), f.get("operator")
+        if not isinstance(fld, str) or not fld or "." in fld:
+            return None
+        val = f.get("value")
+        if op == "IsNull":
+            flag = val.get("booleanValue") if isinstance(val, dict) else None
+            if not isinstance(flag, bool):
+                return None
+            filters.append((fld, "IsNull", flag))
+        elif op == "EqualTo":
+            ref = (val or {}).get("elementReference")                 if isinstance(val, dict) else None
+            sub = _fb_record_field(ref) if ref else None
+            if sub is not None:
+                filters.append((fld, "EqualTo", ("$Record", sub)))
+                continue
+            lit = _flow_assignment_value(val)
+            if lit is None:
+                return None
+            filters.append((fld, "EqualTo", lit))
+        else:
+            return None
+    return filters
+
+
+def _fb_parse_create_effect(el, formulas) -> Optional[dict]:
+    """A recordCreates element → ``{"kind": "create_record", "object",
+    "assignments" {field: typed value}, "fault"}`` or None."""
+    if not isinstance(el, dict):
+        return None
+    obj = el.get("object")
+    if not isinstance(obj, str) or not obj:
+        return None
+    assigns = {}
+    for ia in _flow_md_list(el.get("inputAssignments")):
+        if not isinstance(ia, dict) or not isinstance(ia.get("field"), str):
+            return None
+        assigns[ia["field"]] = _fb_effect_value(ia.get("value"), formulas)
+    fc = el.get("faultConnector")
+    fault = (fc or {}).get("targetReference")         if isinstance(fc, dict) else None
+    return {"kind": "create_record", "object": obj,
+            "assignments": assigns, "fault": fault}
+
+
+def _fb_parse_update_effect(el, formulas) -> Optional[dict]:
+    """A filtered recordUpdates element → ``{"kind": "update_records",
+    "object", "filters", "assignments"}`` or None (out of grammar)."""
+    if not isinstance(el, dict):
+        return None
+    obj = el.get("object")
+    if not isinstance(obj, str) or not obj:
+        return None
+    filters = _fb_parse_bounded_filters(el)
+    if filters is None:
+        return None
+    assigns = {}
+    for ia in _flow_md_list(el.get("inputAssignments")):
+        if not isinstance(ia, dict) or not isinstance(ia.get("field"), str):
+            return None
+        assigns[ia["field"]] = _fb_effect_value(ia.get("value"), formulas)
+    if not assigns:
+        return None
+    fc = el.get("faultConnector")
+    fault = (fc or {}).get("targetReference")         if isinstance(fc, dict) else None
+    return {"kind": "update_records", "object": obj,
+            "filters": tuple(filters), "assignments": assigns,
+            "fault": fault}
 
 
 # Wave 3 (CP2): the bounded LOOP-AGGREGATE idiom — a loop over a captured
@@ -1057,6 +1172,7 @@ def flow_behaviour(attributes: Optional[dict]) -> dict:
         "ir_version": FLOW_BEHAVIOUR_IR_VERSION,
         "premises": [],
         "collections": [],
+        "effect_ops": [],
         "trigger": {
             "object": None, "save_phase": None, "record_trigger_type": None,
             "entry_filter_count": 0, "requires_change_to_meet": False,
@@ -1118,7 +1234,7 @@ def flow_behaviour(attributes: Optional[dict]) -> dict:
     def _behaviour(state, kind=None, guard=(), field=None, value=None,
                    reasons=(), transform=(), source_field=None, negated=(),
                    offset_days=None, prior=(), process=None,
-                   branch=None):
+                   branch=None, premise_guard=()):
         return {"state": state, "kind": kind,
                 "guard": [list(g) for g in entry_guard + tuple(guard)],
                 # C5: the PRE-update state conditions ($Record__Prior) — the
@@ -1142,6 +1258,9 @@ def flow_behaviour(attributes: Optional[dict]) -> dict:
                 # already hash the semantics; renamed-but-identical rules
                 # must keep identical claim identities).
                 "branch": branch,
+                # Wave 3 (CP4): premise-emptiness conditions on the arm —
+                # (element, "IsNull", flag); staged via the CP1 plans.
+                "premise_guard": [list(g) for g in premise_guard],
                 "reasons": list(reasons)}
 
     # ── flow-level gates: not record-triggered / no immediate path ──
@@ -1190,12 +1309,13 @@ def flow_behaviour(attributes: Optional[dict]) -> dict:
     behaviours: list = []
     premises: list = []
     collections: list = []
+    effect_ops: list = []
     demote_reasons: list = []
     opaque_any = False
     grounded_possible = True   # set False only by pre-walk global gates
 
     def _walk_linear(start_target, guard, negated, prior=(),
-                     branch=None):
+                     branch=None, premise_guard=()):
         """Walk one linear path (no further decisions) to completion.
         Returns (path_behaviours, path_reasons, path_opaque)."""
         pb: list = []
@@ -1331,6 +1451,30 @@ def flow_behaviour(attributes: Optional[dict]) -> dict:
                 connector = el.get("connector")
                 target = (connector or {}).get("targetReference") \
                     if isinstance(connector, dict) else None
+            elif list_name == "recordUpdates" \
+                    and isinstance(el.get("object"), str) \
+                    and el.get("object") != trig["object"]:
+                # Wave 3 (CP4, the _walk_linear twin of the stepper branch):
+                # a filtered update on a DIFFERENT object than the trigger
+                # cannot rewrite the subject — typed capture +
+                # self-demotion + walk-through.
+                _eff = _fb_parse_update_effect(el, formulas_by_name)
+                if _eff is not None:
+                    _eff["guard"] = [list(g) for g in
+                                     entry_guard + tuple(guard)]
+                    _eff["branch"] = branch
+                    _eff["premise_guard"] = [list(g)
+                                             for g in premise_guard]
+                    _eff["element"] = el.get("name")
+                    effect_ops.append(_eff)
+                reason = "element_outside_grammar:recordUpdates"
+                soft.append(reason)
+                pb.append(_behaviour(_FB_UNSUPPORTED, guard=guard,
+                                     negated=negated, prior=prior,
+                                     reasons=[reason]))
+                connector = el.get("connector")
+                target = (connector or {}).get("targetReference") \
+                    if isinstance(connector, dict) else None
             elif list_name in _FB_SUBJECT_SAFE_LISTS:
                 # C5 conservatism refinement: this element cannot rewrite
                 # the subject's own fields — it demotes ONLY ITSELF (an
@@ -1349,6 +1493,14 @@ def flow_behaviour(attributes: Optional[dict]) -> dict:
                                           entry_guard + tuple(guard)]
                         _prem["element"] = el.get("name")
                         premises.append(_prem)
+                elif list_name == "recordCreates":
+                    _eff = _fb_parse_create_effect(el, formulas_by_name)
+                    if _eff is not None:
+                        _eff["guard"] = [list(g) for g in
+                                         entry_guard + tuple(guard)]
+                        _eff["branch"] = branch
+                        _eff["element"] = el.get("name")
+                        effect_ops.append(_eff)
                 reason = f"element_outside_grammar:{list_name}"
                 soft.append(reason)
                 pb.append(_behaviour(_FB_UNSUPPORTED, guard=guard,
@@ -1392,14 +1544,18 @@ def flow_behaviour(attributes: Optional[dict]) -> dict:
         if logic not in (None, "and") or not conds \
                 or len(conds) > _FB_MAX_RULE_CONDITIONS:
             return None
-        parsed = [_fb_guard_condition(c, formulas_by_name) for c in conds]
+        parsed = [_fb_guard_condition(
+            c, formulas_by_name,
+            premise_elements={pp.get("element") for pp in premises})
+            for c in conds]
         named = next((pc for pc in parsed if isinstance(pc, str)), None)
         if named is not None:
             return named
         if any(pc is None for pc in parsed):
             return None
         return (tuple(c for ph, c in parsed if ph == "current"),
-                tuple(c for ph, c in parsed if ph == "prior"))
+                tuple(c for ph, c in parsed if ph == "prior"),
+                tuple(c for ph, c in parsed if ph == "premise"))
 
     # step to (at most) the first decision; then fan out
     pre_behaviours: list = []
@@ -1462,7 +1618,8 @@ def flow_behaviour(attributes: Optional[dict]) -> dict:
             # — a prior-ref rule's negation-context (for later first-match
             # arms) would need prior-state disjunctions the grammar does not
             # carry.
-            if len(rules) > 1 and any(pc for _cc, pc in parsed_rules):
+            if len(rules) > 1 and any(
+                    (pc or pm) for _cc, pc, pm in parsed_rules):
                 demote_reasons.append("prior_ref_in_ordered_decision")
                 pre_behaviours.append(_behaviour(
                     _FB_UNSUPPORTED,
@@ -1475,7 +1632,7 @@ def flow_behaviour(attributes: Optional[dict]) -> dict:
             # require all rules single-condition; the single-rule decision
             # keeps the conjunctive grammar (FL01 unchanged).
             if len(rules) > 1 and any(len(cc) != 1
-                                      for cc, _pc in parsed_rules):
+                                      for cc, _pc, _pm in parsed_rules):
                 demote_reasons.append(
                     "multi_condition_rule_in_ordered_decision")
                 pre_behaviours.append(_behaviour(
@@ -1489,21 +1646,22 @@ def flow_behaviour(attributes: Optional[dict]) -> dict:
                 rule_conn = rule.get("connector")
                 arm_target = (rule_conn or {}).get("targetReference") \
                     if isinstance(rule_conn, dict) else None
-                negated = tuple(cc[0] for cc, _pc in parsed_rules[:i])
-                cc_i, pc_i = parsed_rules[i]
-                arms.append((arm_target, cc_i, negated, pc_i,
+                negated = tuple(cc[0] for cc, _pc, _pm
+                                in parsed_rules[:i])
+                cc_i, pc_i, pm_i = parsed_rules[i]
+                arms.append((arm_target, cc_i, negated, pc_i, pm_i,
                              f"{_dec_name}:{rule.get('name') or i}"))
             if default_target:
                 arms.append((default_target,
                              (),
-                             tuple(cc[0] for cc, _pc in parsed_rules)
+                             tuple(cc[0] for cc, _pc, _pm in parsed_rules)
                              if all(len(cc) == 1
-                                    for cc, _pc in parsed_rules)
+                                    for cc, _pc, _pm in parsed_rules)
                              else None,
-                             (),
+                             (), (),
                              f"{_dec_name}:default"))
             for arm_target, arm_guard, arm_negated, arm_prior, \
-                    arm_branch in arms:
+                    arm_premise, arm_branch in arms:
                 if arm_negated is None:
                     demote_reasons.append(
                         "multi_condition_rule_in_ordered_decision")
@@ -1515,7 +1673,8 @@ def flow_behaviour(attributes: Optional[dict]) -> dict:
                     continue        # an armless rule writes nothing
                 pb, pr, p_op = _walk_linear(arm_target, arm_guard,
                                             arm_negated, prior=arm_prior,
-                                            branch=arm_branch)
+                                            branch=arm_branch,
+                                            premise_guard=arm_premise)
                 behaviours.extend(pb)
                 opaque_any = opaque_any or p_op
             target = None
@@ -1532,10 +1691,36 @@ def flow_behaviour(attributes: Optional[dict]) -> dict:
                     _prem["guard"] = [list(g) for g in entry_guard]
                     _prem["element"] = el.get("name")
                     premises.append(_prem)
+            elif list_name == "recordCreates":
+                _eff = _fb_parse_create_effect(el, formulas_by_name)
+                if _eff is not None:
+                    _eff["guard"] = [list(g) for g in entry_guard]
+                    _eff["branch"] = None
+                    _eff["element"] = el.get("name")
+                    effect_ops.append(_eff)
             reason = f"element_outside_grammar:{list_name}"
             pre_behaviours.append(_behaviour(_FB_UNSUPPORTED,
                                              reasons=[reason]))
             # soft: never joins demote_reasons (self-demotion only)
+            connector = el.get("connector")
+            target = (connector or {}).get("targetReference") \
+                if isinstance(connector, dict) else None
+        elif list_name == "recordUpdates" \
+                and isinstance(el.get("object"), str) \
+                and el.get("object") != trig["object"]:
+            # Wave 3 (CP4): a filtered update on a DIFFERENT object than
+            # the trigger object provably cannot rewrite the subject —
+            # subject-safe: typed capture + self-demotion + walk-through.
+            # Same-object updates keep the hard stop (conservative).
+            _eff = _fb_parse_update_effect(el, formulas_by_name)
+            if _eff is not None:
+                _eff["guard"] = [list(g) for g in entry_guard]
+                _eff["branch"] = None
+                _eff["element"] = el.get("name")
+                effect_ops.append(_eff)
+            reason = "element_outside_grammar:recordUpdates"
+            pre_behaviours.append(_behaviour(_FB_UNSUPPORTED,
+                                             reasons=[reason]))
             connector = el.get("connector")
             target = (connector or {}).get("targetReference") \
                 if isinstance(connector, dict) else None
@@ -1617,6 +1802,7 @@ def flow_behaviour(attributes: Optional[dict]) -> dict:
 
     out["premises"] = premises
     out["collections"] = collections
+    out["effect_ops"] = effect_ops
     if not behaviours:
         out["behaviours"] = []
         out["parse_status"] = "empty"
@@ -1819,3 +2005,30 @@ def flow_collection_aggregates(attributes: Optional[dict]) -> tuple:
              for a in c["aggregates"]),
          "guard": tuple(tuple(g) for g in c.get("guard") or ())}
         for c in ir.get("collections") or ())
+
+
+def flow_cross_record_effect_ops(attributes: Optional[dict]) -> tuple:
+    """Wave 3 (CP4): the TYPED cross-record effect operations a flow's
+    immediate path performs — ``create_record`` (object + typed
+    assignments: literal / subject_ref / relative_date / fault_message /
+    var / opaque — explicit, never guessed) and ``update_records``
+    (different-object filtered updates; filters reuse the premise grammar
+    incl. ``$Record`` correlation markers). ``fault`` names the element's
+    fault-connector target (the CP5 hook). Representation for the
+    related-record evidence layer; captured effects do NOT ground
+    behaviours (the honesty placeholders stay)."""
+    ir = flow_behaviour(attributes)
+    out = []
+    for e in ir.get("effect_ops") or ():
+        d = {"kind": e["kind"], "object": e["object"],
+             "assignments": {k: tuple(v) for k, v in
+                             e["assignments"].items()},
+             "guard": tuple(tuple(g) for g in e.get("guard") or ()),
+             "premise_guard": tuple(tuple(g) for g in
+                                    e.get("premise_guard") or ()),
+             "branch": e.get("branch"), "element": e.get("element"),
+             "fault": e.get("fault")}
+        if "filters" in e:
+            d["filters"] = tuple(e["filters"])
+        out.append(d)
+    return tuple(out)
