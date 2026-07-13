@@ -276,3 +276,41 @@ def test_compose_subflow_cycle_depth_and_availability_refuse_by_name():
                           "PLS_FB_FL12_Fulfilment_Orchestrator"}]}}}
     (e,) = compose_subflow(caller, cyc)
     assert e["refusal"] == "subflow_cycle"
+
+
+# ── Wave 3 (CP7): scheduled + async temporal paths ───────────────────
+
+def test_fl11_async_path_effect_is_bounded_eventual():
+    from primeqa.semantic.entity_attributes import flow_behaviour
+    with open(os.path.join(FIXTURE_DIR,
+                           "PLS_FB_FL11_Async_Enrichment.json")) as f:
+        d = json.load(f)
+    attrs = {"Metadata": d["Metadata"]}
+    ir = flow_behaviour(attrs)
+    (tp,) = ir["trigger"]["temporal_paths"]
+    assert tp["kind"] == "async_after_commit"
+    assert tp["observability"] == "bounded_eventual"
+    (o,) = _ops("PLS_FB_FL11_Async_Enrichment")
+    assert o["kind"] == "create_record"
+    assert o["object"] == "PLS_FB_Audit_Log__c"
+    assert o["observability"] == "bounded_eventual"
+    assert o["temporal_path"] == "async"
+
+
+def test_fl10_scheduled_offset_is_typed_and_deferred():
+    from primeqa.semantic.entity_attributes import flow_behaviour
+    with open(os.path.join(
+            FIXTURE_DIR, "PLS_FB_FL10_Stale_Order_Escalation.json")) as f:
+        d = json.load(f)
+    ir = flow_behaviour({"Metadata": d["Metadata"]})
+    (tp,) = ir["trigger"]["temporal_paths"]
+    assert tp == {"name": "Two_Days_After_Submitted",
+                  "connector": "Get_Current_Order",
+                  "kind": "scheduled_offset", "offset_number": 2,
+                  "offset_unit": "Days",
+                  "time_source": "RecordTriggerEvent",
+                  "observability": "deferred_reobservation_required"}
+    # its path body (lookup → nested decision) stays honestly demoted —
+    # no fabricated observability, no captured ops
+    assert _ops("PLS_FB_FL10_Stale_Order_Escalation") == ()
+    assert all(b["state"] != "grounded" for b in ir["behaviours"])

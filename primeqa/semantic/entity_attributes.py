@@ -1212,6 +1212,35 @@ def flow_behaviour(attributes: Optional[dict]) -> dict:
                                  for p in scheduled)
     trig["has_scheduled_paths"] = any(p.get("pathType") != "AsyncAfterCommit"
                                       for p in scheduled)
+    # Wave 3 (CP7): TYPED temporal paths — the extended temporal model.
+    # Async (AsyncAfterCommit) runs within the run's own bounded-eventual
+    # window (observable via a retry-until read — the C9 evidence class);
+    # scheduled offsets execute OUTSIDE any test run (observable only by a
+    # deferred re-observation — an execution-model decision, D-366/FL10):
+    # both are REPRESENTED with their observability stated, never
+    # fabricated.
+    trig["temporal_paths"] = []
+    for p in scheduled:
+        entry = {"name": p.get("name")
+                 or ("async" if p.get("pathType") == "AsyncAfterCommit"
+                     else "scheduled"),
+                 "connector": (p.get("connector") or {}).get(
+                     "targetReference")
+                 if isinstance(p.get("connector"), dict) else None}
+        if p.get("pathType") == "AsyncAfterCommit":
+            entry.update({"kind": "async_after_commit",
+                          "observability": "bounded_eventual"})
+        elif p.get("offsetNumber") is not None:
+            entry.update({
+                "kind": "scheduled_offset",
+                "offset_number": p.get("offsetNumber"),
+                "offset_unit": p.get("offsetUnit"),
+                "time_source": p.get("timeSource"),
+                "observability": "deferred_reobservation_required"})
+        else:
+            entry.update({"kind": "unsupported_schedule",
+                          "observability": "unobservable"})
+        trig["temporal_paths"].append(entry)
     trig["is_record_triggered"] = save_phase is not None and trig["object"] is not None
 
     # IR v2: consume entry filters when EVERY one parses in the bounded
@@ -1275,15 +1304,17 @@ def flow_behaviour(attributes: Optional[dict]) -> dict:
     connector = start.get("connector")
     target = (connector or {}).get("targetReference") \
         if isinstance(connector, dict) else None
+    _no_immediate = None
     if not target:
-        reasons = ["no_immediate_path"]
+        # Wave 3 (CP7): a flow with ONLY temporal paths no longer early-
+        # returns — the honesty placeholder is recorded and control falls
+        # through so the per-path walks (below) can represent the paths'
+        # own effects with their stated observability.
+        _no_immediate = ["no_immediate_path"]
         if trig["has_async_path"]:
-            reasons.append("async_path_only")
+            _no_immediate.append("async_path_only")
         if trig["has_scheduled_paths"]:
-            reasons.append("scheduled_path_only")
-        out["behaviours"].append(_behaviour(_FB_UNSUPPORTED, reasons=reasons))
-        out["parse_status"] = "partial"
-        return out
+            _no_immediate.append("scheduled_path_only")
 
     # ── formula index: name → formula element (transform grammar source) ──
     formulas_by_name: dict = {
@@ -1583,6 +1614,9 @@ def flow_behaviour(attributes: Optional[dict]) -> dict:
 
     # step to (at most) the first decision; then fan out
     pre_behaviours: list = []
+    if _no_immediate:
+        pre_behaviours.append(_behaviour(_FB_UNSUPPORTED,
+                                         reasons=_no_immediate))
     seen0: set = set()
     steps0 = 0
     while target:
@@ -1890,6 +1924,26 @@ def flow_behaviour(attributes: Optional[dict]) -> dict:
                 "rollback_scope": ("save_transaction"
                                    if trig["save_phase"] == "before_save"
                                    else "flow_transaction")})
+    # ── Wave 3 (CP7): walk each temporal path's own connector with the
+    # SAME walk machinery — captured effects carry ``temporal_path``
+    # provenance and the path's stated observability. Path bodies that
+    # fall outside the grammar keep honest named demotions inside the
+    # path's own behaviours (which join the flow's, per-path conservatism
+    # intact: temporal paths are alternative arms, mutually exclusive
+    # with the immediate path at run time).
+    for _tp in trig.get("temporal_paths") or ():
+        if not _tp.get("connector"):
+            continue
+        _before = len(effect_ops)
+        _tpb, _tpr, _tpo = _walk_linear(_tp["connector"], (), (),
+                                        branch=f"path:{_tp.get('name')}")
+        for _b in _tpb:
+            _b["temporal_path"] = _tp.get("name")
+        behaviours.extend(_tpb)
+        opaque_any = opaque_any or _tpo
+        for _op in effect_ops[_before:]:
+            _op["temporal_path"] = _tp.get("name")
+            _op["observability"] = _tp.get("observability")
     out["premises"] = premises
     out["collections"] = collections
     out["effect_ops"] = effect_ops
@@ -2120,7 +2174,9 @@ def flow_cross_record_effect_ops(attributes: Optional[dict]) -> tuple:
                                     e.get("premise_guard") or ()),
              "branch": e.get("branch"), "element": e.get("element"),
              "fault": e.get("fault"),
-             "on_fault_of": e.get("on_fault_of")}
+             "on_fault_of": e.get("on_fault_of"),
+             "temporal_path": e.get("temporal_path"),
+             "observability": e.get("observability")}
         if "filters" in e:
             d["filters"] = tuple(e["filters"])
         out.append(d)
