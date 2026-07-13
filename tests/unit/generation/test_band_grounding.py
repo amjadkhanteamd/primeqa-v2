@@ -256,3 +256,34 @@ def test_wrong_value_refusal_discloses_the_arm_values():
     for band in ("Bronze", "Gold", "Platinum", "Silver"):
         assert band in detail
     assert "omit expected_value" in detail
+
+
+# ---------------------------------------------------------------------------
+# reachability — the model guesses an automation name (the live failure)
+# ---------------------------------------------------------------------------
+
+def test_valueless_intent_with_guessed_automation_still_enumerates():
+    # the live tier gap: the model names a non-existent automation on a
+    # value-less intent. Admission used to dismiss (ungrounded-claim) and
+    # the named-branch used to refuse — both BEFORE the N-arm code. Now the
+    # field's verifiable ladder producer admits and the tail falls through.
+    core = _order_world()
+    state = _state()
+    it = _intent(None)
+    it["intent_descriptor"]["target_subject_hint"]["automation_name"] = \
+        "Tier_Classification_Flow"
+    res = core.resolve_intent(intent_input=it, ctx=_ctx(), state=state)
+    assert res.refusal is None, getattr(res.refusal, "payload", None)
+    assert {g.effect_value for g in state.groundings} == {
+        "Platinum", "Gold", "Silver", "Bronze"}
+
+
+def test_valueful_arm_with_guessed_automation_grounds_one_arm():
+    core = _order_world()
+    state = _state()
+    it = _intent("Gold")
+    it["intent_descriptor"]["target_subject_hint"]["automation_name"] = \
+        "Some_Guess"
+    res = core.resolve_intent(intent_input=it, ctx=_ctx(), state=state)
+    assert res.refusal is None
+    assert [g.effect_value for g in state.groundings] == ["Gold"]

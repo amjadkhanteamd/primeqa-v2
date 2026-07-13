@@ -1381,6 +1381,44 @@ def _flows_producing_transition(flow_entities, field_hint, expected_value):
         expected_value=expected_value)
 
 
+def _field_has_verifiable_producer(flow_entities, field_hint,
+                                   effect_value, effect_object):
+    """True when SOME neighborhood flow verifiably produces the claim's
+    effect on ``field_hint`` — the Layer-1 admission twin of the emission
+    tail's reachability. Admission must admit exactly what the tail can
+    ground, or a capability that the tail owns (value-less ladder/transform/
+    temporal grounding, C3b/C4) is unreachable live: the model names a
+    guessed automation, the name does not resolve, and a value-less intent
+    then fails the value-ful ``_flows_producing_effect`` check and is
+    dismissed BEFORE the tail runs (the live tier/SLA gap). Covers: value-ful
+    literal/cross-object (``_flows_producing_effect``), value-less transform
+    (FL02) + temporal (FL08), value-ful transition (FL09), and the
+    create-fireable ladder writer (FL03 — value-less enumerates all arms,
+    value-ful matches one). The tail still refuses if it cannot DERIVE a
+    witness (ground-or-refuse); this only widens the door to it."""
+    ents = list(flow_entities)
+    if _flows_producing_effect(ents, field_hint, effect_value, effect_object):
+        return True
+    if _flows_producing_transform(ents, field_hint):
+        return True
+    if _flows_producing_temporal(ents, field_hint):
+        return True
+    if effect_value is not None and _flows_producing_transition(
+            ents, field_hint, effect_value):
+        return True
+    bare = (field_hint.rsplit(".", 1)[-1]
+            if isinstance(field_hint, str) and field_hint else None)
+    if bare is not None:
+        for ent in ents:
+            for beh in flow_grounded_guarded_effects(
+                    getattr(ent, "attributes", None)):
+                if beh["field"] == bare and (
+                        effect_value is None
+                        or _effect_values_equal(beh["value"], effect_value)):
+                    return True
+    return False
+
+
 def _field_regex_patterns(neighborhood, bare_field):
     """The REGEX format patterns the subject's ACTIVE validation rules pin on
     ``bare_field``, plus the names of active rules that MENTION the field but
@@ -1652,9 +1690,15 @@ class AdmissibilityEngine:
                     # when a Flow TRIGGERS_ON the subject actually PRODUCES the claimed
                     # effect (its Metadata writes field=value or creates effect_object).
                     # The binding block then binds THAT Flow by its effect.
-                    grounds = bool(_flows_producing_effect(
+                    # B1 arc (C3b/C4/C5): a value-LESS producer (transform,
+                    # temporal, ladder arm) or a value-ful transition producer
+                    # also admits — the emission tail owns these, so admission
+                    # must reach them (the live tier/SLA dismissal was here: a
+                    # guessed automation name + a value-less intent failed the
+                    # value-ful effect check and never reached the tail).
+                    grounds = _field_has_verifiable_producer(
                         [r.entity for r in flows], field_hint,
-                        effect_value_hint, effect_object_hint))
+                        effect_value_hint, effect_object_hint)
             else:
                 grounds = bool(flows)
             if (not grounds and effect_object_hint == "ProcessInstance"
@@ -2997,18 +3041,18 @@ class GovernanceCore:
                                         f"({sorted(p.sf_api_name for p in producers)}) "
                                         f"— name the specific automation")))
                     else:
-                        return IntentResolution(
-                            grounded_candidates=[], next_action=NextAction.REFUSE,
-                            interpretation_delta=delta,
-                            refusal=self._router.emission_deferred(
-                                archetype, claim_kind,
-                                detail=(f"the requirement-named automation "
-                                        f"{automation_name!r} is neither a Flow "
-                                        f"that TRIGGERS_ON the subject (found "
-                                        f"{sorted(f.sf_api_name for f in flows)}) "
-                                        f"nor an active approval process on it "
-                                        f"nor a calculated field on it, nor does "
-                                        f"any Flow on it produce the claimed effect")))
+                        # B1 arc (C3b/C4/C5): the named automation is an
+                        # unresolvable GUESS (D-318: the LLM cannot know the
+                        # org's internal names) AND no value-ful producer
+                        # matches — do NOT refuse here; fall through exactly
+                        # like the no-name branch so the VALUE-LESS producers
+                        # (transform / temporal / ladder arms) get their turn.
+                        # A genuinely-unproducible field then refuses at the
+                        # downstream no_producer_floor gate WITH the arm
+                        # disclosure (more useful than the old name-only
+                        # message).
+                        flow_ent = flows[0] if flows else None
+                        no_producer_floor = True
             else:
                 # D-320: no name — an approval-process effect (ProcessInstance) binds
                 # the single active approval on the subject (the model omitted the
