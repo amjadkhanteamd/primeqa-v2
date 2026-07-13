@@ -1327,61 +1327,58 @@ def _flows_producing_effect(flow_entities, field_hint, expected_value, effect_ob
     return out
 
 
-def _flows_producing_transform(flow_entities, field_hint):
-    """FL02 slice: the neighborhood Flows whose Flow Behaviour IR carries a
-    GROUNDED transform on the claim's field — the before-save rewrite
-    producers (``flow_grounded_transforms``). Returns ``[(entity, behaviour
-    dict), ...]``; a flow the parser does not fully understand contributes
-    nothing (honest refusal upstream). The effect-first twin of
-    ``_flows_producing_effect`` for value-LESS normalization intents."""
+def _flows_producing_by_projection(flow_entities, field_hint, projection,
+                                   expected_value=None):
+    """The shared field-projection attribution: the neighborhood Flows whose
+    Behaviour IR ``projection`` carries a GROUNDED behaviour on the claim's
+    bare field (and, when ``expected_value`` is given, matching that value).
+    Returns ``[(entity, behaviour dict), ...]``; a flow the parser does not
+    fully understand contributes nothing (honest refusal upstream). The one
+    owner behind the transform / temporal / transition producers — each is
+    ``[(ent, beh) for ent in flows for beh in projection(ent) if
+    beh matches]``, they differ only in which projection and whether value
+    is checked."""
     bare = (field_hint.rsplit(".", 1)[-1]
             if isinstance(field_hint, str) and field_hint else None)
     if bare is None:
         return []
     out = []
     for ent in flow_entities:
-        for beh in flow_grounded_transforms(getattr(ent, "attributes", None)):
-            if beh["field"] == bare:
+        for beh in projection(getattr(ent, "attributes", None)):
+            if beh["field"] == bare and (
+                    expected_value is None
+                    or _effect_values_equal(beh["value"], expected_value)):
                 out.append((ent, beh))
     return out
+
+
+def _flows_producing_transform(flow_entities, field_hint):
+    """FL02 slice: Flows whose IR carries a GROUNDED before-save transform on
+    the claim's field (``flow_grounded_transforms``) — value-LESS
+    normalization producers."""
+    return _flows_producing_by_projection(
+        flow_entities, field_hint, flow_grounded_transforms)
 
 
 def _flows_producing_temporal(flow_entities, field_hint):
-    """C4 (FL08 slice): the neighborhood Flows whose Behaviour IR carries a
-    GROUNDED temporal stamp (RUN_DATE ± offset_days) on the claim's field —
-    Update-trigger transition producers (``flow_grounded_temporal_effects``).
-    Returns ``[(entity, behaviour dict), ...]``; same posture as the
-    transform twin."""
-    bare = (field_hint.rsplit(".", 1)[-1]
-            if isinstance(field_hint, str) and field_hint else None)
-    if bare is None:
-        return []
-    out = []
-    for ent in flow_entities:
-        for beh in flow_grounded_temporal_effects(getattr(ent, "attributes",
-                                                          None)):
-            if beh["field"] == bare:
-                out.append((ent, beh))
-    return out
+    """C4 (FL08 slice): Flows whose IR carries a GROUNDED temporal stamp
+    (RUN_DATE ± offset_days) on the claim's field
+    (``flow_grounded_temporal_effects``) — Update-trigger stamp producers."""
+    return _flows_producing_by_projection(
+        flow_entities, field_hint, flow_grounded_temporal_effects)
 
 
 def _flows_producing_transition(flow_entities, field_hint, expected_value):
-    """C5 (FL09 slice): the neighborhood Flows whose Behaviour IR carries a
-    GROUNDED literal effect on an UPDATE-trigger flow matching the claim's
-    (field, value) — transition producers
-    (``flow_grounded_transition_effects``). Returns
-    ``[(entity, behaviour dict), ...]``."""
-    bare = (field_hint.rsplit(".", 1)[-1]
-            if isinstance(field_hint, str) and field_hint else None)
-    if bare is None or expected_value is None:
+    """C5 (FL09 slice): Flows whose IR carries a GROUNDED literal effect on an
+    UPDATE-trigger flow matching the claim's (field, value)
+    (``flow_grounded_transition_effects``) — prior-state transition
+    producers. A value-less intent (``expected_value is None``) matches no
+    transition producer (the transition shape needs the target state)."""
+    if expected_value is None:
         return []
-    out = []
-    for ent in flow_entities:
-        for beh in flow_grounded_transition_effects(getattr(ent, "attributes",
-                                                            None)):
-            if beh["field"] == bare                     and _effect_values_equal(beh["value"], expected_value):
-                out.append((ent, beh))
-    return out
+    return _flows_producing_by_projection(
+        flow_entities, field_hint, flow_grounded_transition_effects,
+        expected_value=expected_value)
 
 
 def _field_regex_patterns(neighborhood, bare_field):
