@@ -201,11 +201,35 @@ C5  prior-state guards                   → FL09 EXERCISED (live) ✅ DONE 490a
 C6  actionCall/approval recognition (IR) → FL14 IR (REQ-B-gated) ✅ DONE b2933e8
     B0.2 field-miss recovery offers      → convergence fix       ✅ DONE 4fbf81d
 ────────────────────────────────────────────────────────────
-C7  cross-record premises + set/count    → FL06, FL05, FL07   (own session — new EVIDENCE class)
-C8  composition (subflow, faults)        → FL12, FL13         (own session)
-C9  bounded-eventual read                → FL11               (own session — S4 touch)
+C7  cross-record premises + set/count    → FL06, FL05, FL07   ✅ DONE (Completion Program, D-371)
+C8  composition (subflow, faults)        → FL12, FL13         ✅ DONE (D-371: FL12 end-to-end; FL13 main-path E1 + fault arm honestly excluded)
+C9  bounded-eventual read                → FL11               (own session — S4 step grammar)
 GATED: FL10 (execution-model decision) · BY DESIGN: FL15 (no build)
 ```
+
+**Completion Program shipped (2026-07-13, D-371).** The related-record
+EVIDENCE layer is complete for immediate-path record-triggered flows:
+- **E1 create** (FL04): substrate-derived correlation + asserted values +
+  entry transition from the typed create op.
+- **E2 set-update** (FL05): template/correlation/updated-value/distractor
+  from the typed update op; ONE correlated read + `count_equals(N)` —
+  under- and over-update fail the same assert.
+- **E3 roll-up** (FL07): parent-framed claims ground by bounded org-wide
+  attribution (the producer triggers on the child); `staging_plan` +
+  `aggregate_expectation` derive siblings, a second-parent distractor, and
+  the deterministic expected. Replay: the four FL07 benchmark ACs
+  (ac11/ac12) converged from real persisted runs (217→221).
+- **Premise-conditioned same-record** (FL06): NotEqualTo joined the shared
+  filter grammar; the flag arm grounds WITH its premise_guard; the plain
+  projections exclude premise-guarded arms (the honesty partition);
+  evidence = sibling-first staging with a format-rule-aware correlation
+  witness.
+- **Composition** (FL12→SF01): the collection-update idiom types as a
+  filtered update op; composed subflow ops (call-site guard riding) reach
+  the E2 branch; attribution on the caller.
+Remaining: C9 (FL11) — the one unbuilt evidence class (retry-until read);
+FL10 gated on the execution-model decision; FL15 no-build by design; FL14
+emission gated on REQ-B.
 
 Rationale: C1+C2 are pure-IR, offline-verifiable, and are prerequisites for
 five families; C3 completes the first family end-to-end (proving the pattern
@@ -221,8 +245,9 @@ formula guards (bare `$Record` passthrough grounds; every other formula
 refuses as `formula_guard_not_deterministic:<FN>`); CP6 cross-record
 premises (`flow_cross_record_premises` — typed Get-Records representation
 with `$Record`-correlation markers; NOT producers; C7 plugs in here).
-FL05/FL07/FL12 premises captured; FL06's NotEqualTo filter is the honest
-out-of-bounds pin.
+FL05/FL07/FL12 premises captured; FL06's NotEqualTo filter was the honest
+out-of-bounds pin until the Completion Program widened the shared grammar
+(the boundary pin moved to GreaterThan).
 
 **C1–C6 shipped (the prior session).** All "existing-evidence-rails" families
 (A/B/C/E/H-IR) are grounded and, where a loaded requirement exercises them
