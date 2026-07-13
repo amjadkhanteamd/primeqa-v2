@@ -203,7 +203,7 @@ C6  actionCall/approval recognition (IR) → FL14 IR (REQ-B-gated) ✅ DONE b293
 ────────────────────────────────────────────────────────────
 C7  cross-record premises + set/count    → FL06, FL05, FL07   ✅ DONE (Completion Program, D-371)
 C8  composition (subflow, faults)        → FL12, FL13         ✅ DONE (D-371: FL12 end-to-end; FL13 main-path E1 + fault arm honestly excluded)
-C9  bounded-eventual read                → FL11               (own session — S4 step grammar)
+C9  bounded-eventual read                → FL11               ✅ DONE (D-372: eventual read spec, executor-clamped deadline retry; async absence refuses by name)
 GATED: FL10 (execution-model decision) · BY DESIGN: FL15 (no build)
 ```
 
@@ -227,9 +227,9 @@ EVIDENCE layer is complete for immediate-path record-triggered flows:
 - **Composition** (FL12→SF01): the collection-update idiom types as a
   filtered update op; composed subflow ops (call-site guard riding) reach
   the E2 branch; attribution on the caller.
-Remaining: C9 (FL11) — the one unbuilt evidence class (retry-until read);
-FL10 gated on the execution-model decision; FL15 no-build by design; FL14
-emission gated on REQ-B.
+Remaining: FL10 gated on the execution-model decision; FL15 no-build by
+design; FL14 emission gated on REQ-B. (C9/FL11 closed at D-372 — the
+bounded-eventual read; async absence refuses by name.)
 
 Rationale: C1+C2 are pure-IR, offline-verifiable, and are prerequisites for
 five families; C3 completes the first family end-to-end (proving the pattern

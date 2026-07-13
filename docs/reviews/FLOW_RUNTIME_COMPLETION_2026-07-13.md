@@ -105,3 +105,20 @@ subsystem is **the S4 execution-evidence layer (C9 + live closure)**:
    scoreboard rebaseline;
 after which the decision-loop wiring (theme 3 — substrate run results →
 risk score → GO/NO-GO on the NEW engine) is the vision-critical successor.
+
+
+---
+
+## Addendum — C9 shipped (same session, D-372, commit eba4ed9)
+
+The recommendation's first item landed immediately after the report:
+**bounded-eventual observation**. `ReadStep`/`PlannedDataRead` carry an
+optional `eventual` spec; the executor retries an empty read until a
+deadline (hard-clamped 300s/2s — advisory spec, executor-owned bounds);
+grading unchanged; async producers (`bounded_eventual` observability)
+take the E1 rails with the eventual read stamped and an identity-bearing
+async narration; absence against an async producer refuses by name (a
+bounded window can never prove non-appearance — closing a latent
+wrong-green). FL11 grounds end-to-end offline. Full tree 4346 green;
+replay byte-identical. The only non-evidenced flows are now FL10
+(human-gated execution-model decision) and FL15 (by design).
