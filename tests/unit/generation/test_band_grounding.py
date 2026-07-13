@@ -94,8 +94,9 @@ def _intent(expected_value, trigger_fields=None):
          "requirement_excerpt": EXCERPT,
          "target_subject_hint": {
              "entity_type": "Object", "sf_api_name": "PLS_FB_Order__c",
-             "field_name": "PLS_FB_Order__c.PLS_FB_Tier__c",
-             "expected_value": expected_value}}
+             "field_name": "PLS_FB_Order__c.PLS_FB_Tier__c"}}
+    if expected_value is not None:
+        d["target_subject_hint"]["expected_value"] = expected_value
     if trigger_fields is not None:
         d["target_subject_hint"]["trigger_fields"] = trigger_fields
     return {"requirement_excerpt": EXCERPT, "intent_descriptor": d}
@@ -205,3 +206,48 @@ def test_field_miss_offers_ranked_recovery_candidates():
     assert offer["proposed"] == "PLS_FB_Order__c.Commercial_Tier__c"
     assert any(c["sf_api_name"] == "PLS_FB_Order__c.PLS_FB_Tier__c"
                for c in offer["candidates"])
+
+
+# ---------------------------------------------------------------------------
+# C3b — value-less ladder enumeration (the requirement never names the tiers)
+# ---------------------------------------------------------------------------
+
+def test_valueless_intent_enumerates_every_band_arm():
+    core = _order_world()
+    state = _state()
+    res = core.resolve_intent(intent_input=_intent(None), ctx=_ctx(),
+                              state=state)
+    assert res.refusal is None, getattr(res.refusal, "payload", None)
+    by_value = {g.effect_value: g for g in state.groundings}
+    assert set(by_value) == {"Platinum", "Gold", "Silver", "Bronze"}
+    expected = {"Platinum": 250000.01, "Gold": 150000,
+                "Silver": 30000, "Bronze": 9999.99}
+    for band, g in by_value.items():
+        assert g.automation.external_id == "PLS_FB_FL03_Tier_Banding", band
+        assert g.automation_primitive == "flow"
+        assert _staged(g) == {"PLS_FB_Amount__c": expected[band]}, band
+
+
+def test_valueless_enumeration_is_deterministic():
+    outs = []
+    for _ in range(3):
+        core = _order_world()
+        state = _state()
+        core.resolve_intent(intent_input=_intent(None), ctx=_ctx(),
+                            state=state)
+        outs.append(tuple((g.effect_value,
+                           tuple(sorted(_staged(g).items())))
+                          for g in state.groundings))
+    assert len(set(outs)) == 1 and len(outs[0]) == 4
+
+
+def test_wrong_value_refusal_discloses_the_arm_values():
+    core = _order_world()
+    res = core.resolve_intent(intent_input=_intent("Diamond"), ctx=_ctx(),
+                              state=_state())
+    assert res.refusal is not None
+    detail = res.refusal.payload.get("detail", "")
+    assert "writes one of" in detail
+    for band in ("Bronze", "Gold", "Platinum", "Silver"):
+        assert band in detail
+    assert "omit expected_value" in detail

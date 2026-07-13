@@ -3471,18 +3471,198 @@ class GovernanceCore:
                         flow_ep = _Endpoint(
                             entity_id=t_ent.id, entity_type=t_ent.entity_type,
                             external_id=t_ent.sf_api_name or str(t_ent.id))
+                # C3b (N-arm emission): a VALUE-LESS same-record intent
+                # whose field a single create-fireable Flow verifiably
+                # writes via GROUNDED literal arm(s). The requirement
+                # classifies without naming the org's states (tiers, bands
+                # — FL03's ladder is flow-internal, exactly like FL02's
+                # canonical form and FL08's offset), so the SUBSTRATE
+                # enumerates: ONE grounded claim per distinct arm value,
+                # each staged with its own fire witness (the C3 interval
+                # machinery), each VR-conflict-checked. D-207's ordered
+                # groundings + the D-339 identity dedup already carry
+                # N bundles per intent.
+                if (field_ent is not None and effect_value is None
+                        and transform_meta is None and temporal_meta is None
+                        and not hint.get("update_trigger_fields")):
+                    _bare_l = field_ent.sf_api_name.rsplit(".", 1)[-1]
+                    _ladder = []
+                    for _lent in flows:
+                        _larms = [
+                            b for b in flow_grounded_guarded_effects(
+                                getattr(_lent, "attributes", None))
+                            if b["field"] == _bare_l]
+                        if _larms:
+                            _ladder.append((_lent, _larms))
+                    if len(_ladder) > 1:
+                        return IntentResolution(
+                            grounded_candidates=[],
+                            next_action=NextAction.REFUSE,
+                            interpretation_delta=delta,
+                            refusal=self._router.emission_deferred(
+                                archetype, claim_kind,
+                                detail=(f"{len(_ladder)} Flows verifiably "
+                                        f"write {field_ent.sf_api_name!r} — "
+                                        f"cannot attribute the "
+                                        f"classification")))
+                    if len(_ladder) == 1 and (
+                            flow_ent is None or no_producer_floor
+                            or flow_ent.id == _ladder[0][0].id):
+                        l_ent, l_arms = _ladder[0]
+                        if field_is_calculated(field_ent.attributes):
+                            return IntentResolution(
+                                grounded_candidates=[],
+                                next_action=NextAction.REFUSE,
+                                interpretation_delta=delta,
+                                refusal=self._router.emission_deferred(
+                                    archetype, claim_kind,
+                                    detail=(f"{field_ent.sf_api_name!r} is "
+                                            f"CALCULATED — a Flow cannot be "
+                                            f"credited for a formula field")))
+                        _lgmeta = _grounding_field_metadata(
+                            neighborhood, self._s1, at)
+
+                        def _lscale(bare):
+                            m = _lgmeta.get(bare)
+                            try:
+                                return (None if m is None
+                                        or m.get("scale") is None
+                                        else int(m["scale"]))
+                            except (TypeError, ValueError):
+                                return None
+
+                        _seen_vals: set = set()
+                        _l_stashes = []
+                        _l_ep = _Endpoint(
+                            entity_id=l_ent.id, entity_type=l_ent.entity_type,
+                            external_id=l_ent.sf_api_name or str(l_ent.id))
+                        _l_field_ep = _Endpoint(
+                            entity_id=field_ent.id,
+                            entity_type=field_ent.entity_type,
+                            external_id=field_ent.sf_api_name
+                            or str(field_ent.id))
+                        for _b in l_arms:
+                            if _b["value"] in _seen_vals:
+                                continue
+                            _seen_vals.add(_b["value"])
+                            _nd = _numeric_effect_guard(
+                                field_ent, _b["value"], self._s1, at)
+                            if _nd is not None:
+                                return IntentResolution(
+                                    grounded_candidates=[],
+                                    next_action=NextAction.REFUSE,
+                                    interpretation_delta=delta,
+                                    refusal=self._router.emission_deferred(
+                                        archetype, claim_kind, detail=_nd))
+                            _wstat, _wit = _guard_witness_values(
+                                _b["guard"], _b["negated_guards"],
+                                exclude_field=_bare_l, scale_of=_lscale)
+                            if _wstat == "refuse":
+                                return IntentResolution(
+                                    grounded_candidates=[],
+                                    next_action=NextAction.REFUSE,
+                                    interpretation_delta=delta,
+                                    refusal=self._router.emission_deferred(
+                                        archetype, claim_kind,
+                                        detail=(f"arm "
+                                                f"{_bare_l}={_b['value']!r}: "
+                                                + _wit)))
+                            _weps = {}
+                            _wmiss = None
+                            for _wf in sorted(_wit):
+                                _went = next(
+                                    (r.entity for r in neighborhood
+                                     if r.edge_type == EDGE_BELONGS
+                                     and r.entity.entity_type == "Field"
+                                     and isinstance(r.entity.sf_api_name, str)
+                                     and r.entity.sf_api_name
+                                     .rsplit(".", 1)[-1] == _wf), None)
+                                if _went is None:
+                                    _wmiss = _wf
+                                    break
+                                _weps[_wf] = _Endpoint(
+                                    entity_id=_went.id,
+                                    entity_type=_went.entity_type,
+                                    external_id=_went.sf_api_name
+                                    or str(_went.id))
+                            if _wmiss is not None:
+                                return IntentResolution(
+                                    grounded_candidates=[],
+                                    next_action=NextAction.REFUSE,
+                                    interpretation_delta=delta,
+                                    refusal=self._router.emission_deferred(
+                                        archetype, claim_kind,
+                                        detail=(f"the arm's guard field "
+                                                f"{_wmiss!r} does not BELONG "
+                                                f"to the subject at the "
+                                                f"pinned version")))
+                            _pairs = tuple((_weps[f], _wit[f])
+                                           for f in sorted(_wit))
+                            _conf = _staged_vr_conflict_detail(
+                                neighborhood,
+                                {ep.external_id: v for ep, v in _pairs})
+                            if _conf is not None:
+                                return IntentResolution(
+                                    grounded_candidates=[],
+                                    next_action=NextAction.REFUSE,
+                                    interpretation_delta=delta,
+                                    refusal=self._router.emission_deferred(
+                                        archetype, claim_kind, detail=_conf))
+                            _l_stashes.append(GroundedAutomationEffect(
+                                archetype=archetype, claim_kind=claim_kind,
+                                version_seq=at, subject=subj_ep,
+                                automation=_l_ep,
+                                requirement_excerpt=excerpt,
+                                effect_field=_l_field_ep,
+                                effect_value=_b["value"],
+                                trigger_fields=_pairs,
+                                automation_primitive="flow"))
+                        for _g in _l_stashes:
+                            _stash_grounding(state, _g)
+                        presented = [
+                            PresentedCandidate(
+                                path_id=c.path_id,
+                                admissibility_layer=AdmissibilityLayer(
+                                    c.admissibility_layer),
+                                summary={"archetype": c.archetype,
+                                         "claim_kind": c.claim_kind})
+                            for c in grounded]
+                        return IntentResolution(
+                            grounded_candidates=presented,
+                            next_action=NextAction.PROCEED_TO_EMIT,
+                            interpretation_delta=delta)
                 if field_ent is None or effect_value is None:
                     # B0.2: a field-name miss gets a RANKED near-miss offer
                     # (the inventory line alphabetized standard fields first
                     # and hid every custom name in '+N more' — the tier-AC
-                    # live failure); inventory stays the fallback.
-                    _voc, _offer = "", None
+                    # live failure); inventory stays the fallback. The
+                    # wording must NOT demand expected_value unconditionally:
+                    # where the org defines the value (canonical forms,
+                    # relative dates, classification arms) the honest
+                    # re-proposal is VALUE-LESS and the substrate derives it.
                     if field_ent is None and hint.get("field_name"):
                         _voc, _offer = _field_recovery_tail(
                             [hint.get("field_name")], neighborhood)
                         if not _voc:
                             _voc = "; " + _subject_field_inventory_line(
                                 neighborhood)
+                        return IntentResolution(
+                            grounded_candidates=[],
+                            next_action=NextAction.REFUSE,
+                            interpretation_delta=delta,
+                            refusal=self._router.emission_deferred(
+                                archetype, claim_kind,
+                                detail=("the observed field_name did not "
+                                        "resolve on the subject." + _voc
+                                        + " Re-propose with a grounded "
+                                        "field; OMIT expected_value when "
+                                        "the requirement does not state "
+                                        "the concrete value — the "
+                                        "substrate derives verifiable "
+                                        "values (canonical forms, relative "
+                                        "dates, classification arms) where "
+                                        "the org defines them"),
+                                candidates=_offer))
                     return IntentResolution(
                         grounded_candidates=[], next_action=NextAction.REFUSE,
                         interpretation_delta=delta,
@@ -3490,9 +3670,13 @@ class GovernanceCore:
                             archetype, claim_kind,
                             detail=("automation-effect needs a verifiable "
                                     "effect: field_name + expected_value on "
-                                    "the subject, or effect_object + "
-                                    "effect_lookup_field" + _voc),
-                            candidates=_offer))
+                                    "the subject (or effect_object + "
+                                    "effect_lookup_field) — no transform, "
+                                    "relative-date, or classification "
+                                    "producer verifiably writes "
+                                    + (field_ent.sf_api_name
+                                       if field_ent is not None
+                                       else "the field"))))
                 # R2 (req-302 robustness): a numeric effect field refuses a
                 # non-numeric expected value HERE — the "<computed>"
                 # placeholder class never reaches a claim body again.
@@ -3674,13 +3858,33 @@ class GovernanceCore:
                             entity_type=tr_ent.entity_type,
                             external_id=tr_ent.sf_api_name or str(tr_ent.id))
                 if no_producer_floor and primitive != "formula":
+                    # C3b disclosure: when the field HAS a verifiable ladder
+                    # writer but the proposed value matches no arm, name the
+                    # real arm values (substrate discloses grounded
+                    # alternatives — the B0 posture; the model chooses).
+                    _lhint = ""
+                    _bare_nf = field_ent.sf_api_name.rsplit(".", 1)[-1]
+                    for _lent in flows:
+                        _lvals = sorted(
+                            {str(b["value"]) for b in
+                             flow_grounded_guarded_effects(
+                                 getattr(_lent, "attributes", None))
+                             if b["field"] == _bare_nf})
+                        if _lvals:
+                            _lhint = (f" — the verifiable writer "
+                                      f"{_lent.sf_api_name} writes one of: "
+                                      f"{_lvals}; use one of those values, "
+                                      f"or omit expected_value to enumerate "
+                                      f"every arm")
+                            break
                     return IntentResolution(
                         grounded_candidates=[], next_action=NextAction.REFUSE,
                         interpretation_delta=delta,
                         refusal=self._router.emission_deferred(
                             archetype, claim_kind,
-                            detail=("no Flow on the subject produces the claimed "
-                                    "effect — name the specific automation")))
+                            detail=("no Flow on the subject produces the "
+                                    "claimed effect — name the specific "
+                                    "automation" + _lhint)))
                 # D-299: the OPTIONAL entry-condition trigger — the (field,
                 # value) pairs the create must SET so the Flow's entry gate
                 # fires. Same-record only (the gate is on the subject create);
