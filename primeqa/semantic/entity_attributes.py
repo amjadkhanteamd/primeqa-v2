@@ -1173,6 +1173,7 @@ def flow_behaviour(attributes: Optional[dict]) -> dict:
         "premises": [],
         "collections": [],
         "effect_ops": [],
+        "fault_paths": [],
         "trigger": {
             "object": None, "save_phase": None, "record_trigger_type": None,
             "entry_filter_count": 0, "requires_change_to_meet": False,
@@ -1800,9 +1801,56 @@ def flow_behaviour(attributes: Optional[dict]) -> dict:
             # the previously-grounded ones.
             b["reasons"] = sorted(set(b["reasons"]) | set(demote_reasons))
 
+    # ── Wave 3 (CP5): fault-path reasoning — every captured effect op's
+    # fault connector is walked ONE bounded hop. A fault handler that is
+    # itself a capturable effect (a fault-log create, a compensation
+    # update) is an OBSERVABLE fault path — captured as an effect op with
+    # ``on_fault_of`` provenance; anything else is an explicitly
+    # UNOBSERVABLE fault path (represented, never fabricated). Before-save
+    # faults roll the save back (``rollback_scope``: the platform's own
+    # semantics — recorded as a fact, not observed); flows do not retry.
+    fault_entries: list = []
+    for _op in list(effect_ops):
+        ft = _op.get("fault")
+        if not ft:
+            continue
+        entry = index.get(ft)
+        handled = None
+        if entry is not None:
+            f_list, f_el = entry
+            if f_list == "recordCreates":
+                handled = _fb_parse_create_effect(f_el, formulas_by_name)
+            elif f_list == "recordUpdates" \
+                    and isinstance(f_el.get("object"), str) \
+                    and f_el.get("object") != trig["object"]:
+                handled = _fb_parse_update_effect(f_el, formulas_by_name)
+        if handled is not None:
+            handled["guard"] = list(_op.get("guard") or [])
+            handled["premise_guard"] = list(_op.get("premise_guard") or [])
+            handled["branch"] = _op.get("branch")
+            handled["element"] = ft
+            handled["on_fault_of"] = _op.get("element")
+            handled["fault"] = None
+            effect_ops.append(handled)
+            fault_entries.append({
+                "of": _op.get("element"), "handler": ft,
+                "observable": True,
+                "rollback_scope": ("save_transaction"
+                                   if trig["save_phase"] == "before_save"
+                                   else "flow_transaction")})
+        else:
+            fault_entries.append({
+                "of": _op.get("element"), "handler": ft,
+                "observable": False,
+                "reason": (f"fault_handler_outside_grammar:"
+                           f"{entry[0] if entry else 'unknown_element'}"),
+                "rollback_scope": ("save_transaction"
+                                   if trig["save_phase"] == "before_save"
+                                   else "flow_transaction")})
     out["premises"] = premises
     out["collections"] = collections
     out["effect_ops"] = effect_ops
+    out["fault_paths"] = fault_entries
     if not behaviours:
         out["behaviours"] = []
         out["parse_status"] = "empty"
@@ -2027,8 +2075,21 @@ def flow_cross_record_effect_ops(attributes: Optional[dict]) -> tuple:
              "premise_guard": tuple(tuple(g) for g in
                                     e.get("premise_guard") or ()),
              "branch": e.get("branch"), "element": e.get("element"),
-             "fault": e.get("fault")}
+             "fault": e.get("fault"),
+             "on_fault_of": e.get("on_fault_of")}
         if "filters" in e:
             d["filters"] = tuple(e["filters"])
         out.append(d)
     return tuple(out)
+
+
+def flow_fault_paths(attributes: Optional[dict]) -> tuple:
+    """Wave 3 (CP5): the fault paths of a flow's captured effect ops —
+    ``{"of", "handler", "observable", "rollback_scope"[, "reason"]}``.
+    Observable = the handler is itself a captured effect op (carrying
+    ``on_fault_of`` provenance in ``flow_cross_record_effect_ops``);
+    unobservable fault paths are represented with a NAMED reason, never
+    fabricated. Flows do not retry; rollback scope is the platform's own
+    transaction semantics, recorded as a fact."""
+    ir = flow_behaviour(attributes)
+    return tuple(dict(f) for f in ir.get("fault_paths") or ())

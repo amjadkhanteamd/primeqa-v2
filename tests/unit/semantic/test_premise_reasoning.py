@@ -150,8 +150,8 @@ def test_fl05_set_update_effect_typed_with_premise_filters():
 
 
 def test_fl13_create_carries_the_fault_hook():
-    (o,) = _ops("PLS_FB_FL13_Fault_Logged_Ledger")
-    assert o["object"] == "PLS_FB_Ledger_Entry__c"
+    ops = _ops("PLS_FB_FL13_Fault_Logged_Ledger")
+    o = next(x for x in ops if x["object"] == "PLS_FB_Ledger_Entry__c")
     assert o["fault"] == "Create_Fault_Log"       # the CP5 hook
     assert o["assignments"]["PLS_FB_Order__c"] == ("subject_ref", "Id")
 
@@ -178,3 +178,41 @@ def test_effect_ops_never_ground_behaviours():
             d = json.load(f)
         ir = flow_behaviour({"Metadata": d["Metadata"]})
         assert all(b["state"] != "grounded" for b in ir["behaviours"]), name
+
+
+# ── Wave 3 (CP5): fault-path reasoning ───────────────────────────────
+
+def test_fl13_fault_path_is_observable_with_provenance():
+    from primeqa.semantic.entity_attributes import flow_fault_paths
+    with open(os.path.join(FIXTURE_DIR,
+                           "PLS_FB_FL13_Fault_Logged_Ledger.json")) as f:
+        d = json.load(f)
+    attrs = {"Metadata": d["Metadata"]}
+    (fp,) = flow_fault_paths(attrs)
+    assert fp == {"of": "Create_Ledger_Entry", "handler": "Create_Fault_Log",
+                  "observable": True, "rollback_scope": "flow_transaction"}
+    ops = _ops("PLS_FB_FL13_Fault_Logged_Ledger")
+    handler = next(o for o in ops if o["element"] == "Create_Fault_Log")
+    assert handler["on_fault_of"] == "Create_Ledger_Entry"
+    assert handler["assignments"]["PLS_FB_Detail__c"] == ("fault_message",)
+    assert handler["fault"] is None      # one bounded hop, no chains
+
+
+def test_unobservable_fault_path_is_explicit():
+    from primeqa.semantic.entity_attributes import flow_fault_paths
+    attrs = {"Metadata": {
+        "start": {"object": "X__c", "triggerType": "RecordAfterSave",
+                  "recordTriggerType": "Create",
+                  "connector": {"targetReference": "Make"}},
+        "recordCreates": [{"name": "Make", "object": "Y__c",
+                           "inputAssignments": [
+                               {"field": "A__c",
+                                "value": {"stringValue": "v"}}],
+                           "faultConnector":
+                               {"targetReference": "Notify"}}],
+        "actionCalls": [{"name": "Notify", "actionType": "emailSimple"}],
+    }}
+    (fp,) = flow_fault_paths(attrs)
+    assert fp["observable"] is False
+    assert "fault_handler_outside_grammar" in fp["reason"]
+    assert fp["rollback_scope"] == "flow_transaction"
