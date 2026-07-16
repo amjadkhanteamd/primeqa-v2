@@ -81,3 +81,48 @@ def test_route_model_does_not_mutate_request():
     assert req.operational_context.llm_model_identifier is None
     route_model(req)
     assert req.operational_context.llm_model_identifier is None
+
+
+# ---------------------------------------------------------------------------
+# Tenant model override (migration 060 — precedence 3, between the explicit
+# pin and always_use_opus). Deterministic: pin the selectable set to the code
+# frozenset so a catalog row in the test DB can't shift these outcomes.
+# ---------------------------------------------------------------------------
+
+@pytest.fixture()
+def _code_selectable(monkeypatch):
+    from primeqa.intelligence.llm import router as R
+    monkeypatch.setattr(R, "selectable_model_ids",
+                        lambda *a, **k: R.SELECTABLE_MODELS)
+
+
+def test_model_override_wins_over_default(_code_selectable):
+    assert route_model(_req(), TenantPolicy(model_override=OPUS)) == OPUS
+
+
+def test_model_override_wins_over_always_use_opus(_code_selectable):
+    from primeqa.intelligence.llm.router import HAIKU
+    # An exact model id beats the Opus boolean (more specific wins).
+    assert route_model(
+        _req(), TenantPolicy(model_override=HAIKU, always_use_opus=True),
+    ) == HAIKU
+
+
+def test_explicit_pin_still_beats_model_override(_code_selectable):
+    # A caller that pinned a model meant it (D-106.5) — even over the tenant.
+    assert route_model(
+        _req(model="claude-pinned-x"), TenantPolicy(model_override=OPUS),
+    ) == "claude-pinned-x"
+
+
+def test_unknown_override_fails_loud(_code_selectable):
+    from primeqa.intelligence.llm.router import ModelConfigError
+    with pytest.raises(ModelConfigError) as ei:
+        route_model(_req(), TenantPolicy(model_override="claude-nope-x",
+                                         tenant_id=7))
+    assert "tenant 7" in str(ei.value)
+    assert "claude-nope-x" in str(ei.value)
+
+
+def test_null_override_falls_through_to_sonnet_5(_code_selectable):
+    assert route_model(_req(), TenantPolicy(model_override=None)) == SONNET_5

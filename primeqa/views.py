@@ -342,11 +342,16 @@ def knowledge():
 
 
 def _resolve_env_llm(db, tenant_id, environment_id):
-    """Best-effort resolve an env's LLM api_key + model — (None, None) on any miss.
-    When unresolved, the S7 bridge phrases nothing and degrades to a
-    refused-with-citations (S7 still answers refusals without an LLM)."""
+    """Best-effort resolve an env's LLM api_key — None on any miss. When
+    unresolved, the S7 bridge phrases nothing and degrades to a
+    refused-with-citations (S7 still answers refusals without an LLM).
+
+    Credentials ONLY: the model is tenant-governed via
+    ``tenant_agent_settings.llm_model_override`` (migration 060, superadmin
+    picker) — connections no longer carry a ``model``. A stale ``model`` key
+    in old config JSON is inert and drops off on the connection's next edit."""
     if not environment_id:
-        return None, None
+        return None
     try:
         env = EnvironmentRepository(db).get_environment(environment_id, tenant_id)
         if env and getattr(env, "llm_connection_id", None):
@@ -354,10 +359,10 @@ def _resolve_env_llm(db, tenant_id, environment_id):
                 env.llm_connection_id, tenant_id)
             if conn:
                 cfg = conn.get("config") or {}
-                return cfg.get("api_key"), cfg.get("model")
+                return cfg.get("api_key")
     except Exception:
         pass
-    return None, None
+    return None
 
 
 def _resolve_any_llm_key(db, tenant_id, environment_ids):
@@ -367,7 +372,7 @@ def _resolve_any_llm_key(db, tenant_id, environment_ids):
     phrasing stays off and the deterministic Stage-1 baseline renders."""
     for env_id in environment_ids or ():
         try:
-            api_key, _model = _resolve_env_llm(db, tenant_id, env_id)
+            api_key = _resolve_env_llm(db, tenant_id, env_id)
         except Exception:
             api_key = None
         if api_key:
@@ -409,12 +414,31 @@ def ask():
                 env_id = None
                 form["environment_id"] = ""
             if form["question"]:
-                api_key, model = _resolve_env_llm(db, tid, env_id)
-                answer = answer_question(
-                    tid, form["question"], environment_id=env_id,
-                    requirement_key=form["requirement_key"] or None,
-                    object_api_name=form["object_api_name"] or None,
-                    api_key=api_key, model=model)
+                from flask import flash
+                from primeqa.intelligence.llm import limits as _limits
+                from primeqa.intelligence.llm.router import (
+                    ModelConfigError, resolve_tenant_model)
+                api_key = _resolve_env_llm(db, tid, env_id)
+                # Precedence 3 (migration 060): the tenant override is the
+                # only user-set model; None falls through to the router's
+                # grounded_answer_generation default (Haiku). The connection's
+                # config['model'] is no longer consulted.
+                tp = _limits.load_tenant_config(tid, db=db)[1]
+                try:
+                    model = (resolve_tenant_model(tp.model_override, tenant_id=tid)
+                             if tp.model_override else None)
+                except ModelConfigError as e:
+                    # Fail loud as a NAMED config error on the page — never
+                    # disguised as the "phrasing unavailable" refusal, never a
+                    # bare 500. No LLM call is made.
+                    flash(str(e), "error")
+                    model = None
+                else:
+                    answer = answer_question(
+                        tid, form["question"], environment_id=env_id,
+                        requirement_key=form["requirement_key"] or None,
+                        object_api_name=form["object_api_name"] or None,
+                        api_key=api_key, model=model)
         else:
             # GET prefill for contextual deep-links ("Ask about this requirement").
             # Prefill ONLY — a deep-link must never auto-run an LLM call (a GET stays
@@ -1560,10 +1584,13 @@ def connections_create():
                 "api_token": request.form.get("jira_api_token", ""),
             }
         elif ctype == "llm":
+            # Credentials ONLY — no model. The model is tenant-governed via
+            # tenant_agent_settings.llm_model_override (migration 060,
+            # superadmin picker); a per-connection model was the second,
+            # unvalidated place to set one and was removed by design.
             config = {
                 "provider": request.form.get("llm_provider", "anthropic"),
                 "api_key": request.form.get("llm_api_key", ""),
-                "model": request.form.get("llm_model", "claude-sonnet-4-20250514"),
                 # D-179: optional Voyage embedding key for S1 enrichment.
                 "voyage_api_key": request.form.get("llm_voyage_api_key", ""),
             }
@@ -1700,9 +1727,11 @@ def connections_update(conn_id):
                 new_config["api_token"] = old_config["api_token"]
             updates["config"] = new_config
         elif conn.connection_type == "llm":
+            # Credentials ONLY — no model (tenant-governed via
+            # llm_model_override, migration 060). new_config is rebuilt on
+            # save, so any stale 'model' key drops off here.
             new_config = {
                 "provider": old_config.get("provider", "anthropic"),
-                "model": request.form.get("llm_model") or old_config.get("model", "claude-sonnet-4-20250514"),
             }
             if request.form.get("llm_api_key"):
                 new_config["api_key"] = request.form["llm_api_key"]
@@ -1971,10 +2000,12 @@ def settings_llm_usage():
                 TenantAgentSettings.llm_tier,
                 TenantAgentSettings.llm_enable_story_enrichment,
                 TenantAgentSettings.llm_enable_domain_packs,
+                TenantAgentSettings.llm_model_override,
             ).filter(TenantAgentSettings.tenant_id.in_(tids)).all()
             tier_by_id = {r[0]: r[1] for r in tier_rows}
             story_by_id = {r[0]: bool(r[2]) for r in tier_rows}
             packs_by_id = {r[0]: bool(r[3]) for r in tier_rows}
+            model_by_id = {r[0]: r[4] for r in tier_rows}
             # D-236: repair_auto_apply is NOT ORM-mapped (deploy-safety) — read it
             # best-effort via raw SQL; a missing column (pre-054) → all False.
             repair_by_id = {}
@@ -1999,14 +2030,69 @@ def settings_llm_usage():
                 row["llm_enable_story_enrichment"] = story_by_id.get(row["key"], False)
                 row["llm_enable_domain_packs"] = packs_by_id.get(row["key"], False)
                 row["repair_auto_apply"] = repair_by_id.get(row["key"], False)
+                row["llm_model_override"] = model_by_id.get(row["key"])
                 corrected, total = rate_by_id.get(row["key"], (0, 0))
                 row["correction_total"] = int(total)
                 row["correction_rate"] = (float(corrected) / float(total)) if total else 0.0
+
+        # Model catalog panel (migrations 060/061): the selectable set, the
+        # catalog rows, tenants pinned to retired ids (banner), and any
+        # new-upstream models from the last Refresh (stashed in the Flask
+        # session by the refresh POST — only NEW ids ride the session; the
+        # durable state lives in llm_models). Best-effort: a catalog-read
+        # failure renders the page without the panel data.
+        from flask import session as _session
+        selectable_models, catalog_models, retired_pinned = [], [], {}
+        try:
+            from sqlalchemy import text as _sql
+            from primeqa.intelligence.llm import router as _router
+            selectable_models = sorted(_router.selectable_model_ids(refresh=True))
+            from primeqa.core.models import LlmModel
+            rows = db.query(LlmModel).order_by(LlmModel.model_id).all()
+            row_by_id = {r.model_id: r for r in rows}
+            upstream_new = _session.get("llm_catalog_new_models") or []
+            reappeared_ids = {m["id"] for m in upstream_new if m.get("reappeared")}
+            for mid in sorted(_router.SELECTABLE_MODELS | set(row_by_id)):
+                r = row_by_id.get(mid)
+                catalog_models.append({
+                    "model_id": mid,
+                    "display_name": getattr(r, "display_name", None),
+                    "source": "built-in" if mid in _router.SELECTABLE_MODELS else "enabled",
+                    "status": (r.status if r else "active"),
+                    "reappeared": mid in reappeared_ids,
+                    "input_rate": (float(r.input_usd_per_mtok)
+                                   if r and r.input_usd_per_mtok is not None else None),
+                    "output_rate": (float(r.output_usd_per_mtok)
+                                    if r and r.output_usd_per_mtok is not None else None),
+                    "last_seen": (r.last_seen_upstream_at.strftime("%Y-%m-%d %H:%M")
+                                  if r and r.last_seen_upstream_at else None),
+                })
+            retired = {mid for mid, r in row_by_id.items() if r.status == "retired"}
+            if retired:
+                pins = db.execute(_sql(
+                    "SELECT tenant_id, llm_model_override FROM tenant_agent_settings "
+                    "WHERE llm_model_override = ANY(:ids)"),
+                    {"ids": sorted(retired)}).fetchall()
+                for tid, mid in pins:
+                    retired_pinned.setdefault(mid, []).append(tid)
+        except Exception as exc:
+            db.rollback()
+            import logging
+            logging.getLogger(__name__).warning(
+                "llm-usage models panel read failed: %s", exc)
+        new_upstream_models = [
+            m for m in (_session.pop("llm_catalog_new_models", None) or [])
+            if not m.get("reappeared")]
+
         return render_template("settings/llm_usage.html", **ctx(
             active_page="settings_llm_usage", settings_page="llm_usage",
             cost=cost, efficiency=eff, quality=quality,
             top_spenders=spenders, days=days,
             all_tiers=_tiers.all_presets(),
+            selectable_models=selectable_models,
+            catalog_models=catalog_models,
+            retired_pinned=retired_pinned,
+            new_upstream_models=new_upstream_models,
         ))
     finally:
         db.close()
@@ -2097,6 +2183,18 @@ def settings_change_tenant_tier(tenant_id):
         flash(f"Unknown tier: {new_tier!r}", "error")
         return redirect("/settings/llm-usage")
 
+    # Migration 060: the ONE user-settable model. Write-time gate mirrors the
+    # tier guard — an id outside selectable_model_ids() is UNSAVABLE, so the
+    # runtime fail-loud path is reachable only via post-save retirement.
+    # Empty ⇒ NULL (tier default). Clearing back to a retired id is also
+    # blocked (the picker offers it only as the flagged current value).
+    from primeqa.intelligence.llm.router import selectable_model_ids
+    new_model = (request.form.get("llm_model_override") or "").strip() or None
+    if new_model and new_model not in selectable_model_ids(refresh=True):
+        flash(f"Model {new_model!r} is not selectable (retired or unknown). "
+              f"Refresh the Models panel or pick another.", "error")
+        return redirect("/settings/llm-usage")
+
     # Checkbox semantics: HTML only submits the field when checked.
     new_story_flag = bool(request.form.get("llm_enable_story_enrichment"))
     new_packs_flag = bool(request.form.get("llm_enable_domain_packs"))
@@ -2113,6 +2211,7 @@ def settings_change_tenant_tier(tenant_id):
                 llm_tier=new_tier,
                 llm_enable_story_enrichment=new_story_flag,
                 llm_enable_domain_packs=new_packs_flag,
+                llm_model_override=new_model,
             )
             db.add(row)
             db.flush()
@@ -2126,16 +2225,31 @@ def settings_change_tenant_tier(tenant_id):
                     "llm_tier": new_tier,
                     "llm_enable_story_enrichment": new_story_flag,
                     "llm_enable_domain_packs": new_packs_flag,
+                    "llm_model_override": new_model,
                 },
             ))
         else:
             old_tier = row.llm_tier
             old_story = bool(row.llm_enable_story_enrichment)
             old_packs = bool(row.llm_enable_domain_packs)
+            old_model = row.llm_model_override
             row.llm_tier = new_tier
             row.llm_enable_story_enrichment = new_story_flag
             row.llm_enable_domain_packs = new_packs_flag
+            row.llm_model_override = new_model
             db.flush()
+            # Migration 060: diff-log EVERY transition — set, change, AND
+            # clear-to-NULL — so the audit trail answers "who moved this
+            # tenant's model, when, from what".
+            if old_model != new_model:
+                db.add(ActivityLog(
+                    tenant_id=tenant_id,
+                    user_id=request.user["id"],
+                    action="update",
+                    entity_type="tenant_llm_model_override",
+                    entity_id=tenant_id,
+                    details={"old": old_model, "new": new_model},
+                ))
             if old_tier != new_tier:
                 db.add(ActivityLog(
                     tenant_id=tenant_id,
@@ -2187,6 +2301,7 @@ def settings_change_tenant_tier(tenant_id):
             db.rollback()
         flash(
             f"Tenant #{tenant_id}: tier={new_tier}, "
+            f"model={new_model or 'tier default'}, "
             f"story={'on' if new_story_flag else 'off'}, "
             f"packs={'on' if new_packs_flag else 'off'}",
             "success",
@@ -2196,6 +2311,76 @@ def settings_change_tenant_tier(tenant_id):
         flash(f"Failed to change tier: {e}", "error")
     finally:
         db.close()
+    return redirect("/settings/llm-usage")
+
+
+@views_bp.route("/settings/llm-models/refresh", methods=["POST"])
+@role_required("superadmin")
+def settings_llm_models_refresh():
+    """Superadmin-only: refresh the model catalog against Anthropic's live
+    model list (migrations 060/061). Durable effects (retired upserts,
+    last-seen stamps, activity_log, notification) land in refresh_model_catalog;
+    the NEW-upstream list rides the Flask session to the redirected GET so the
+    Enable forms render. Best-effort: any failure flashes and returns."""
+    from flask import flash, session
+    from primeqa.intelligence.llm.catalog import (
+        CatalogRefreshError, refresh_model_catalog, resolve_platform_api_key)
+
+    api_key = resolve_platform_api_key()
+    if not api_key:
+        flash("No active LLM connection to borrow an API key from — "
+              "add one under Connections first.", "error")
+        return redirect("/settings/llm-usage")
+    try:
+        result = refresh_model_catalog(
+            api_key, actor_user_id=request.user["id"],
+            actor_tenant_id=request.user["tenant_id"])
+    except CatalogRefreshError as e:
+        flash(f"Model refresh failed: {e}", "error")
+        return redirect("/settings/llm-usage")
+    session["llm_catalog_new_models"] = (
+        [dict(m) for m in result.new]
+        + [{"id": mid, "display_name": None, "reappeared": True}
+           for mid in result.reappeared])
+    bits = [f"{result.seen} models upstream"]
+    if result.expired:
+        bits.append(f"{len(result.expired)} retired: {', '.join(result.expired)}")
+    if result.new:
+        bits.append(f"{len(result.new)} new (enable below)")
+    if result.reappeared:
+        bits.append(f"{len(result.reappeared)} reappeared (re-enable deliberately)")
+    flash("Model refresh: " + "; ".join(bits),
+          "error" if result.expired else "success")
+    return redirect("/settings/llm-usage")
+
+
+@views_bp.route("/settings/llm-models/enable", methods=["POST"])
+@role_required("superadmin")
+def settings_llm_models_enable():
+    """Superadmin-only: enable an upstream model with entered pricing
+    (Anthropic's Models API publishes no prices — the two rates are the one
+    manual step). Instantly selectable in every tenant picker afterwards."""
+    from flask import flash
+    from primeqa.intelligence.llm.catalog import enable_model
+
+    model_id = (request.form.get("model_id") or "").strip()
+    display_name = (request.form.get("display_name") or "").strip() or None
+    try:
+        input_rate = float(request.form.get("input_usd_per_mtok") or 0)
+        output_rate = float(request.form.get("output_usd_per_mtok") or 0)
+        enable_model(model_id, display_name=display_name,
+                     input_usd_per_mtok=input_rate,
+                     output_usd_per_mtok=output_rate,
+                     actor_user_id=request.user["id"],
+                     actor_tenant_id=request.user["tenant_id"])
+    except (ValueError, TypeError) as e:
+        flash(f"Could not enable {model_id!r}: {e}", "error")
+        return redirect("/settings/llm-usage")
+    except Exception as e:
+        flash(f"Could not enable {model_id!r}: {e}", "error")
+        return redirect("/settings/llm-usage")
+    flash(f"Enabled {model_id} at ${input_rate:.2f}/${output_rate:.2f} per MTok "
+          f"— selectable for every tenant now.", "success")
     return redirect("/settings/llm-usage")
 
 

@@ -4,6 +4,27 @@ Policy lives in one place so swapping Sonnet \u2192 Opus for complex
 generations (or Haiku \u2192 Sonnet for a tenant that wants quality) is
 a config change, not a scavenger hunt across five call sites.
 
+CANONICAL MODEL-RESOLUTION PRECEDENCE (the table of record \u2014 every resolver
+implements its slice of this order; `select_chain` below, S3's
+``generation/routing.py::route_model``, and the `/ask` route in views.py):
+
+  1. Summary task (entity_summary_flow / entity_summary_validation_rule)
+     \u2192 platform SUMMARY_MODEL env. Tenant control is architecturally
+     EXCLUDED here \u2014 see the comment inside `select_chain`.
+  2. Explicit request pin \u2014 a caller that pinned a model meant it
+     (D-106.5): `operational_context.llm_model_identifier`, or a direct
+     `model_override=` from an engineering caller.
+  3. Tenant override \u2014 `tenant_agent_settings.llm_model_override`, the ONLY
+     user-settable model (superadmin picker on /settings/llm-usage).
+     Validated against `selectable_model_ids()`; unknown/retired ids FAIL
+     LOUD via `resolve_tenant_model` (ModelConfigError, pre-spend).
+  4. Tier policy \u2014 always_use_opus / allow_haiku.
+  5. Task default \u2014 _CHAINS per task; SONNET_5 for S3 generation.
+
+Model ids are OPAQUE identifiers, not Anthropic-specific enums: validation
+is set-membership and provider routing is prefix-based (providers/registry),
+so a future non-Anthropic id needs a catalog entry + provider, nothing here.
+
 Chains:
 - For tasks with escalation: [primary, fallback]. Gateway retries with
   the fallback once when the primary returns low-confidence output or
@@ -56,6 +77,133 @@ HAIKU = "claude-haiku-4-5-20251001"
 # deployed key (scripts/probe_llm_models.py) before relying on it; a wrong id
 # 404s and fails generation loud (content_error, non-retryable).
 SONNET_5 = "claude-sonnet-5"
+
+
+# ---- Selectable models (per-tenant model control) ---------------------------
+# The CODE base set of the tenant-pickable models: the four actively-routed
+# ids. The full selectable set is this ∪ the llm_models catalog overlay
+# (migration 061) − its retired rows — computed by selectable_model_ids().
+# A unit test pins SELECTABLE_MODELS ⊆ MODEL_PRICING so every code-selectable
+# model has correct cost tracking (catalog rows carry their own pricing).
+SELECTABLE_MODELS = frozenset({OPUS, SONNET, HAIKU, SONNET_5})
+
+# In-process cache for the catalog read: selectable_model_ids() sits on
+# resolution paths (route_model per batch, select_chain per call), so the
+# overlay is re-read at most every _SELECTABLE_TTL_S seconds per process.
+_SELECTABLE_TTL_S = 60.0
+_selectable_cache: Optional[tuple[float, frozenset]] = None
+
+
+class ModelConfigError(RuntimeError):
+    """A tenant's llm_model_override names a model that is not selectable.
+
+    Fail loud (no silent fallback): a retired or typo'd id must surface as a
+    named error — at save time (picker guard), at boot
+    (validate_tenant_model_overrides), or at resolution (resolve_tenant_model,
+    raised BEFORE any API spend) — never as a silently substituted model."""
+
+
+def _combine_selectable(rows) -> frozenset:
+    """Pure set expression behind selectable_model_ids():
+    ``(SELECTABLE_MODELS ∪ active) − retired`` over (model_id, status) rows.
+    A retired row wins over active-or-code for the same id."""
+    active = {mid for mid, status in rows if status == "active"}
+    retired = {mid for mid, status in rows if status == "retired"}
+    return frozenset((SELECTABLE_MODELS | active) - retired)
+
+
+def selectable_model_ids(db=None, *, refresh: bool = False) -> frozenset:
+    """The set of model ids a tenant override may name:
+    ``(SELECTABLE_MODELS ∪ catalog-active) − catalog-retired``.
+
+    The llm_models overlay (migration 061) lets the superadmin enable a new
+    model or retire one (including a CODE model) without a deploy. The read
+    is cached ~60 s per process; ``refresh=True`` busts the cache (used by
+    the save/enable handlers so the picker updates immediately). A DB-read
+    failure falls back to the CODE set — fail-open for reads of the set;
+    resolution against the set stays fail-loud (resolve_tenant_model)."""
+    global _selectable_cache
+    import time
+    if not refresh and _selectable_cache is not None:
+        expires_at, cached = _selectable_cache
+        if time.monotonic() < expires_at:
+            return cached
+    try:
+        from sqlalchemy.orm import Session
+        from primeqa.db import engine
+        from primeqa.core.models import LlmModel
+
+        owns_session = db is None
+        sess = db if db is not None else Session(bind=engine)
+        try:
+            rows = sess.query(LlmModel.model_id, LlmModel.status).all()
+        finally:
+            if owns_session:
+                sess.close()
+        result = _combine_selectable([(r.model_id, r.status) for r in rows])
+    except Exception as e:
+        import logging
+        logging.getLogger(__name__).warning(
+            "selectable_model_ids: catalog read failed (%s) — "
+            "falling back to the code set", e)
+        return SELECTABLE_MODELS
+    _selectable_cache = (time.monotonic() + _SELECTABLE_TTL_S, result)
+    return result
+
+
+def resolve_tenant_model(model_id: str, *, tenant_id=None,
+                         selectable: Optional[frozenset] = None) -> str:
+    """Validate a tenant-override model id at the point of use.
+
+    Returns the id when it is in the selectable set; raises
+    ``ModelConfigError`` (naming the tenant, the id, and the allowed set)
+    otherwise — BEFORE any API spend. Pass ``selectable=`` for a pure,
+    deterministic check (unit tests / pre-fetched set); the default consults
+    ``selectable_model_ids()`` (cached catalog read)."""
+    allowed = selectable if selectable is not None else selectable_model_ids()
+    if model_id in allowed:
+        return model_id
+    who = f"tenant {tenant_id} " if tenant_id is not None else ""
+    raise ModelConfigError(
+        f"{who}llm_model_override {model_id!r} is not a selectable model id; "
+        f"allowed: {sorted(allowed)}")
+
+
+def validate_tenant_model_overrides() -> None:
+    """Boot gate — companion to ``validate_summary_model`` (same boot points:
+    app + worker + scheduler). One indexed query over the configured overrides
+    only (O(number of non-NULL llm_model_override rows)); raises
+    ``ModelConfigError`` naming every tenant whose override is not selectable,
+    so a deploy that retires a model fails loud until those tenants are
+    re-pointed. A DB-READ failure (transient outage, column not yet migrated)
+    logs and SKIPS — an unreachable database must never block boot; the
+    per-resolution fail-loud check still guards runtime."""
+    import logging
+    log = logging.getLogger(__name__)
+    try:
+        from sqlalchemy import text
+        from sqlalchemy.orm import Session
+        from primeqa.db import engine
+
+        sess = Session(bind=engine)
+        try:
+            rows = sess.execute(text(
+                "SELECT tenant_id, llm_model_override FROM tenant_agent_settings "
+                "WHERE llm_model_override IS NOT NULL")).fetchall()
+        finally:
+            sess.close()
+        allowed = selectable_model_ids(refresh=True)
+    except Exception as e:
+        log.warning("validate_tenant_model_overrides: read failed (%s) — "
+                    "skipping boot validation", e)
+        return
+    bad = [(tid, mid) for tid, mid in rows if mid not in allowed]
+    if bad:
+        detail = "; ".join(f"tenant {tid} -> {mid!r}" for tid, mid in bad)
+        raise ModelConfigError(
+            f"tenant llm_model_override values are not selectable: {detail}. "
+            f"Allowed: {sorted(allowed)}. Re-point these tenants on "
+            f"/settings/llm-usage before deploying.")
 
 
 # ---- Configurable summary model (Phase-1 close-out #5) ---------------------
@@ -114,6 +262,12 @@ class TenantPolicy:
     """Per-tenant overrides, loaded from tenant_agent_settings."""
     always_use_opus: bool = False       # premium tier: best model everywhere
     allow_haiku: bool = True            # some tenants disable cheapest tier
+    # Migration 060: the ONE user-settable model id (precedence 3). Loaded RAW
+    # (no validation — the loader stays fail-open); validated fail-loud at the
+    # resolution points via resolve_tenant_model. None = no override.
+    model_override: Optional[str] = None
+    # Carried so resolution errors can name the tenant without extra plumbing.
+    tenant_id: Optional[int] = None
 
 
 # ---- Routing table --------------------------------------------------------
@@ -247,6 +401,15 @@ def select_chain(
     # Haiku by default — instead of Opus; set SUMMARY_MODEL to change it.)
     if task in _SUMMARY_TASKS:
         return [summary_model()]
+
+    # Precedence 3 — the per-tenant model override (migration 060): an exact
+    # model id wins over the Opus boolean (more specific beats more general).
+    # Sits AFTER the summary short-circuit by architecture (the enrichment
+    # gate cannot see tenant policy) and validates fail-loud: an unknown or
+    # catalog-retired id raises ModelConfigError before any API spend.
+    if policy.model_override:
+        return [resolve_tenant_model(policy.model_override,
+                                     tenant_id=policy.tenant_id)]
 
     # "Always Opus" premium tier: take whatever the chain would have been
     # and replace with Opus-only, no escalation needed (already at top).

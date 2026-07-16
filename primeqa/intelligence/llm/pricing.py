@@ -53,6 +53,52 @@ MODEL_PRICING: Dict[str, ModelPrice] = {
 }
 
 
+# ---- Catalog overlay (migration 061, per-tenant model control arc) ---------
+# Models enabled at runtime from the superadmin Models panel carry their own
+# entered rates in llm_models; resolve_rates checks that overlay BEFORE the
+# code table so a runtime-enabled model can never silently bill at the
+# unknown-model fallback rate. Cached in-process because this sits on the
+# per-call usage-recording path.
+_RATES_TTL_S = 60.0
+_rates_cache: Dict[str, tuple] = {}   # model_id -> (monotonic_expiry, ModelPrice|None)
+
+
+def _catalog_rates(model: str) -> Optional[ModelPrice]:
+    """The llm_models overlay rate for ``model``, or None (no row / no rates /
+    read failure \u2014 fail-open to the code table; a missing catalog table before
+    migration 061 lands must never break cost accounting)."""
+    import time
+    hit = _rates_cache.get(model)
+    if hit is not None and time.monotonic() < hit[0]:
+        return hit[1]
+    price: Optional[ModelPrice] = None
+    try:
+        from sqlalchemy.orm import Session
+        from primeqa.db import engine
+        from primeqa.core.models import LlmModel
+
+        sess = Session(bind=engine)
+        try:
+            row = sess.query(
+                LlmModel.input_usd_per_mtok, LlmModel.output_usd_per_mtok,
+            ).filter(LlmModel.model_id == model).first()
+        finally:
+            sess.close()
+        if row and row[0] is not None and row[1] is not None:
+            price = ModelPrice(input=float(row[0]), output=float(row[1]))
+    except Exception:
+        return None   # fail-open, uncached \u2014 retry on the next call
+    _rates_cache[model] = (time.monotonic() + _RATES_TTL_S, price)
+    return price
+
+
+def resolve_rates(model: str) -> Optional[ModelPrice]:
+    """The effective rates for ``model``: catalog overlay \u2192 MODEL_PRICING \u2192
+    None. The single lookup every consumer (compute_cost_usd, dashboards)
+    should use once a model can be enabled at runtime."""
+    return _catalog_rates(model) or MODEL_PRICING.get(model)
+
+
 def compute_cost_usd(
     model: str,
     input_tokens: int,
@@ -69,7 +115,7 @@ def compute_cost_usd(
 
     Returns a float rounded to 6 decimals (micros of a dollar).
     """
-    price = MODEL_PRICING.get(model)
+    price = resolve_rates(model)
     if not price:
         # Unknown model \u2014 fall back to Sonnet-4 rates for an honest
         # upper-ish estimate rather than returning 0 which would silently
@@ -85,4 +131,4 @@ def compute_cost_usd(
 
 
 def get_price(model: str) -> Optional[ModelPrice]:
-    return MODEL_PRICING.get(model)
+    return resolve_rates(model)

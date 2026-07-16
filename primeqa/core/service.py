@@ -640,6 +640,12 @@ class ConnectionService:
                 resp = http_requests.get(url, headers=headers, timeout=15)
                 ok = resp.status_code == 200
             elif ctype == "llm":
+                # A key test needs ANY valid model, not a choice — ping with
+                # the cheap canonical Haiku id. (The per-connection model was
+                # removed: models are tenant-governed via llm_model_override,
+                # migration 060; the old config value could name a retired id
+                # and 404 the test even with a perfectly good key.)
+                from primeqa.intelligence.llm.router import HAIKU
                 resp = http_requests.post(
                     "https://api.anthropic.com/v1/messages",
                     headers={
@@ -647,7 +653,7 @@ class ConnectionService:
                         "anthropic-version": "2023-06-01",
                         "content-type": "application/json",
                     },
-                    json={"model": cfg.get("model", "claude-sonnet-4-20250514"), "max_tokens": 10,
+                    json={"model": HAIKU, "max_tokens": 10,
                           "messages": [{"role": "user", "content": "ping"}]},
                     timeout=15,
                 )

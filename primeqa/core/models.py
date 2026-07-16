@@ -201,6 +201,14 @@ class TenantAgentSettings(Base):
         Boolean, nullable=False, server_default="false",
     )
 
+    # Migration 060: per-tenant model override — the ONE user-settable model id
+    # (superadmin picker on /settings/llm-usage). NULL = no override (existing
+    # routing). Applies to all LLM tasks except entity_summary_* (see the
+    # router.py precedence docstring). Mapped — unlike 054/059 — because
+    # load_tenant_config builds TenantPolicy from this row per llm_call and an
+    # unmapped column would cost a second query; deploy is migrate-first.
+    llm_model_override = Column(String(64))
+
     # Migration 054 (D-236): the auto-fix agent's AUTONOMOUS-apply switch is on
     # this table (`repair_auto_apply BOOLEAN DEFAULT false`) but is DELIBERATELY
     # NOT mapped here — adding an unmigrated column to the ORM would break every
@@ -213,6 +221,34 @@ class TenantAgentSettings(Base):
     # (cutover_read_s1 — the per-tenant metadata read-path switch, migration 051 /
     # D-158 — was unmapped in D-195.3 when Step 5a retired the flag. S1 is the sole
     # metadata read source. The DB column is left inert; its DROP is deferred.)
+
+
+class LlmModel(Base):
+    """Migration 061: platform-wide LLM model catalog overlay.
+
+    The selectable-model set is (router.SELECTABLE_MODELS ∪ active rows here)
+    − (retired rows here) — see ``router.selectable_model_ids()``. Rows are
+    written only by the superadmin Models panel (enable, with pricing entered
+    at enable time) and the catalog refresh (retire / last-seen stamps). Not
+    tenant-scoped by design: the model catalog is a platform fact, like
+    ``MODEL_PRICING``. A retired row may name a CODE model, subtracting it
+    from the picker without a deploy; retirement rows are never deleted
+    (audit state)."""
+    __tablename__ = "llm_models"
+
+    model_id = Column(String(64), primary_key=True)
+    display_name = Column(String(128))
+    status = Column(String(16), nullable=False, server_default="active")
+    input_usd_per_mtok = Column(Float)
+    output_usd_per_mtok = Column(Float)
+    last_seen_upstream_at = Column(DateTime(timezone=True))
+    enabled_by = Column(Integer, ForeignKey("users.id"))
+    created_at = Column(DateTime(timezone=True), nullable=False, server_default=func.now())
+    updated_at = Column(DateTime(timezone=True), nullable=False, server_default=func.now())
+
+    __table_args__ = (
+        CheckConstraint("status IN ('active', 'retired')"),
+    )
 
 
 class ActivityLog(Base):

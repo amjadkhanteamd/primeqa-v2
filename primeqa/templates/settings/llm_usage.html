@@ -149,6 +149,19 @@
                 <option value="{{ tname }}" {% if t.tier == tname %}selected{% endif %}>{{ p.label }}</option>
                 {% endfor %}
               </select>
+              {# Migration 060: the ONE place a model is set. Empty = tier
+                 default (existing routing); a model id applies to ALL the
+                 tenant's LLM tasks except entity summaries. #}
+              <select name="llm_model_override" class="rounded border-gray-300 text-xs py-0.5 pl-2 pr-7 {% if t.llm_model_override and t.llm_model_override not in selectable_models %}border-red-400 text-red-700{% endif %}"
+                      title="The exact model ALL this tenant's AI tasks run on (except entity summaries). Empty = tier default.">
+                <option value="">&mdash; tier default &mdash;</option>
+                {% for mid in selectable_models %}
+                <option value="{{ mid }}" {% if t.llm_model_override == mid %}selected{% endif %}>{{ mid }}</option>
+                {% endfor %}
+                {% if t.llm_model_override and t.llm_model_override not in selectable_models %}
+                <option value="{{ t.llm_model_override }}" selected>{{ t.llm_model_override }} (retired!)</option>
+                {% endif %}
+              </select>
               <label class="inline-flex items-center gap-1 text-[10px] text-gray-600" title="Generate a human-readable 'story view' for each AI test case (Claude Haiku 4.5; adds ~800 tokens per TC)">
                 <input type="checkbox" name="llm_enable_story_enrichment" value="1"
                        class="rounded border-gray-300 text-indigo-600 focus:ring-indigo-500 h-3 w-3"
@@ -187,6 +200,76 @@
       </tbody>
     </table>
     {% else %}<p class="text-xs text-gray-400 italic">No calls yet.</p>{% endif %}
+  </div>
+
+  {# ---- Model catalog (migrations 060/061) ----------------------------- #}
+  <div class="bg-white shadow rounded-lg p-4">
+    <div class="flex items-center justify-between mb-3">
+      <div>
+        <h3 class="text-sm font-medium text-gray-700">Models</h3>
+        <p class="text-xs text-gray-400">Selectable = built-in set + enabled here, minus retired. Refresh checks Anthropic's live model list; retirement is detected same-day (the API has no advance notice).</p>
+      </div>
+      <form method="POST" action="/settings/llm-models/refresh">
+        {{ csrf_input | safe }}
+        <button type="submit" class="text-[10px] uppercase tracking-wider text-indigo-600 hover:text-indigo-800 px-2 py-0.5 rounded border border-indigo-200">Refresh models</button>
+      </form>
+    </div>
+
+    {% if retired_pinned %}
+    <div class="mb-3 rounded border border-red-300 bg-red-50 p-2 text-xs text-red-800">
+      <strong>Action needed:</strong> tenants are pinned to retired models &mdash; their AI work fails until re-pointed above.
+      <ul class="mt-1 list-disc pl-4">
+        {% for mid, tenants in retired_pinned.items() %}
+        <li><span class="font-mono">{{ mid }}</span> &rarr; {% for tid in tenants %}tenant #{{ tid }}{% if not loop.last %}, {% endif %}{% endfor %}</li>
+        {% endfor %}
+      </ul>
+    </div>
+    {% endif %}
+
+    <table class="min-w-full text-xs">
+      <thead><tr class="text-left text-gray-500 border-b">
+        <th class="py-1">Model</th>
+        <th class="py-1">Source</th>
+        <th class="py-1">Status</th>
+        <th class="py-1 text-right">In $/MTok</th>
+        <th class="py-1 text-right">Out $/MTok</th>
+        <th class="py-1 text-right">Last seen upstream</th>
+      </tr></thead>
+      <tbody class="divide-y divide-gray-100">
+        {% for m in catalog_models %}
+        <tr>
+          <td class="py-1.5 font-mono">{{ m.model_id }}{% if m.display_name %} <span class="text-gray-400 font-sans">{{ m.display_name }}</span>{% endif %}</td>
+          <td class="py-1.5 text-gray-500">{{ m.source }}</td>
+          <td class="py-1.5">
+            {% if m.status == 'retired' %}<span class="text-red-600 font-medium">retired</span>
+            {% elif m.reappeared %}<span class="text-amber-600 font-medium" title="This retired model is available upstream again. Re-enable it deliberately via the Enable form (models are never silently resurrected).">retired (reappeared)</span>
+            {% else %}<span class="text-green-700">active</span>{% endif %}
+          </td>
+          <td class="py-1.5 text-right">{% if m.input_rate is not none %}{{ '%.2f' | format(m.input_rate) }}{% else %}<span class="text-gray-400">&mdash;</span>{% endif %}</td>
+          <td class="py-1.5 text-right">{% if m.output_rate is not none %}{{ '%.2f' | format(m.output_rate) }}{% else %}<span class="text-gray-400">&mdash;</span>{% endif %}</td>
+          <td class="py-1.5 text-right text-gray-500">{{ m.last_seen or '&mdash;' | safe }}</td>
+        </tr>
+        {% endfor %}
+      </tbody>
+    </table>
+
+    {% if new_upstream_models %}
+    <div class="mt-3 border-t pt-3">
+      <h4 class="text-xs font-medium text-gray-700 mb-1">Available upstream &mdash; not enabled</h4>
+      <p class="text-[10px] text-gray-400 mb-2">Anthropic's API publishes no prices &mdash; enter the two rates from anthropic.com/pricing to enable. Enabled models are instantly selectable for every tenant and billed at these rates.</p>
+      {% for m in new_upstream_models %}
+      <form method="POST" action="/settings/llm-models/enable" class="flex items-center gap-2 py-1">
+        {{ csrf_input | safe }}
+        <input type="hidden" name="model_id" value="{{ m.id }}">
+        <input type="hidden" name="display_name" value="{{ m.display_name or '' }}">
+        <span class="font-mono text-xs w-64 truncate" title="{{ m.id }}">{{ m.id }}</span>
+        <input name="input_usd_per_mtok" type="number" step="0.01" min="0.01" required placeholder="In $/MTok" class="rounded border-gray-300 text-xs py-0.5 w-24">
+        <input name="output_usd_per_mtok" type="number" step="0.01" min="0.01" required placeholder="Out $/MTok" class="rounded border-gray-300 text-xs py-0.5 w-24">
+        <button type="submit" class="text-[10px] uppercase tracking-wider text-green-700 hover:text-green-900 px-2 py-0.5 rounded border border-green-300">Enable</button>
+      </form>
+      {% endfor %}
+    </div>
+    {% endif %}
   </div>
 
   {# ---- Quality signals ----------------------------------------------- #}

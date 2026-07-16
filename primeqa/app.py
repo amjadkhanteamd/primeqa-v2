@@ -44,7 +44,8 @@ def create_app():
     validate_boot_secrets()
     # #5: validate SUMMARY_MODEL against the router's known model ids — ALWAYS-ON
     # (a bad value breaks enrichment in any environment; unset is valid → Haiku).
-    from primeqa.intelligence.llm.router import validate_summary_model
+    from primeqa.intelligence.llm.router import (
+        validate_summary_model, validate_tenant_model_overrides)
     validate_summary_model()
 
     application = Flask(__name__)
@@ -56,6 +57,12 @@ def create_app():
         if database_url.startswith("postgres://"):
             database_url = database_url.replace("postgres://", "postgresql://", 1)
         init_db(database_url)
+
+    # Migration 060: every tenant llm_model_override must be selectable — a
+    # deploy that retires a model fails loud here until tenants are re-pointed.
+    # AFTER init_db (the gate reads tenant_agent_settings + llm_models); a
+    # DB-read failure logs + skips — it never blocks boot.
+    validate_tenant_model_overrides()
 
     application.register_blueprint(core_bp)
     application.register_blueprint(test_management_bp)

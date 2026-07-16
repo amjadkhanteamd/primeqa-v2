@@ -30,9 +30,25 @@ ApiKeyResolver = Callable[[int, Optional[int]], str]
 def _classify_error(exc: Exception) -> str:
     """Thin error_code for the failed job (D-106.3 abort-on-error)."""
     from primeqa.intelligence.llm.gateway import LLMError
+    from primeqa.intelligence.llm.router import ModelConfigError
+    if isinstance(exc, ModelConfigError):
+        # The tenant's llm_model_override names a non-selectable (retired?)
+        # model — distinguishable from generation_error so the superadmin
+        # re-points the tenant instead of debugging the pipeline.
+        return "model_config_error"
     if isinstance(exc, LLMError):
         return "llm_error"
     return "generation_error"
+
+
+def _load_tenant_policy(tenant_id: int):
+    """Best-effort TenantPolicy for routing (migration 060 model override +
+    always_use_opus). ``load_tenant_config`` is already fail-open — any read
+    problem returns the starter defaults (no override) — so a transient DB
+    error degrades to today's routing, never a crash. Kept as a seam-shaped
+    helper (the ``_bva_boundaries_enabled`` precedent) so tests stub it."""
+    from primeqa.intelligence.llm import limits as _limits
+    return _limits.load_tenant_config(tenant_id)[1]
 
 
 def _bva_boundaries_enabled(tenant_id: int) -> bool:
@@ -96,6 +112,10 @@ def process_job_for_tenant(
         result = run_generation(
             request, tenant_id=tenant_id, api_key=api_key,
             environment_id=job.environment_id,        # D-286: scope S1 to the run's org
+            # Migration 060: thread the tenant policy so route_model honors
+            # llm_model_override (and, incidentally, revives always_use_opus
+            # on this path — it was dead code while nothing passed a policy).
+            tenant_policy=_load_tenant_policy(tenant_id),
             tool_turn_fn=tool_turn_fn)
         kind = (result.results[0].outcome.outcome_kind.value
                 if result.results else "unknown")

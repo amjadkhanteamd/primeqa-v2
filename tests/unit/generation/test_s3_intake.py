@@ -184,6 +184,56 @@ def test_process_job_threads_the_bva_flag_into_the_request(monkeypatch):
     monkeypatch.setattr(C, "GenerationJobStore", _FakeStore)
     monkeypatch.setattr(C, "run_generation", fake_run_generation)
     monkeypatch.setattr(C, "_bva_boundaries_enabled", lambda tid: True)
+    monkeypatch.setattr(C, "_load_tenant_policy", lambda tid: None)
 
     C.process_job_for_tenant(1, api_key_resolver=lambda t, e: "k")
     assert captured["request"].operational_context.enable_bva_boundaries is True
+
+
+def test_process_job_threads_the_tenant_policy_into_run_generation(monkeypatch):
+    # Migration 060 (consumer seam): the loaded TenantPolicy reaches
+    # run_generation as the tenant_policy kwarg — the one-kwarg gap that made
+    # every production batch route to SONNET_5 unconditionally. A
+    # deleted-kwarg mutant dies here.
+    from types import SimpleNamespace
+    from uuid import uuid4 as _u
+    from primeqa.generation import consumer as C
+    from primeqa.intelligence.llm.router import TenantPolicy
+
+    job = SimpleNamespace(id=8, requirement_key="R1", requirement_text="x",
+                          s1_version_seq=1, s1_version_name=None,
+                          environment_id=59)
+
+    class _FakeStore:
+        def __init__(self, tenant_id):
+            pass
+
+        def claim_next_queued_job(self):
+            return job
+
+        def heartbeat(self, jid):
+            pass
+
+        def start_attempt(self, jid):
+            return SimpleNamespace(request_id=str(_u()))
+
+        def complete(self, jid):
+            pass
+
+        def fail(self, jid, **k):
+            pass
+
+    captured = {}
+
+    def fake_run_generation(request, **kwargs):
+        captured["tenant_policy"] = kwargs.get("tenant_policy")
+        return SimpleNamespace(results=[])
+
+    policy = TenantPolicy(model_override="claude-opus-4-7", tenant_id=1)
+    monkeypatch.setattr(C, "GenerationJobStore", _FakeStore)
+    monkeypatch.setattr(C, "run_generation", fake_run_generation)
+    monkeypatch.setattr(C, "_bva_boundaries_enabled", lambda tid: False)
+    monkeypatch.setattr(C, "_load_tenant_policy", lambda tid: policy)
+
+    C.process_job_for_tenant(1, api_key_resolver=lambda t, e: "k")
+    assert captured["tenant_policy"] is policy

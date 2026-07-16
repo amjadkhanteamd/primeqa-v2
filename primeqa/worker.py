@@ -42,7 +42,8 @@ def create_worker_context():
     validate_boot_secrets()
     # #5: validate SUMMARY_MODEL — ALWAYS-ON. The worker is what SUMMARIZES, so a
     # bad SUMMARY_MODEL must fail it loud at boot rather than mid-enrichment.
-    from primeqa.intelligence.llm.router import validate_summary_model
+    from primeqa.intelligence.llm.router import (
+        validate_summary_model, validate_tenant_model_overrides)
     validate_summary_model()
     from primeqa import db as dbmod
     database_url = os.getenv("DATABASE_URL")
@@ -51,6 +52,11 @@ def create_worker_context():
     if database_url.startswith("postgres://"):
         database_url = database_url.replace("postgres://", "postgresql://", 1)
     dbmod.init_db(database_url)
+    # Migration 060: every tenant llm_model_override must be selectable — a
+    # deploy that retires a model fails loud here until tenants are re-pointed.
+    # AFTER init_db (the gate reads tenant_agent_settings + llm_models); a
+    # DB-read failure logs + skips — it never blocks boot.
+    validate_tenant_model_overrides()
     db = dbmod.SessionLocal()
     # D-221 R3: the v1 pipeline repos/service retired with the engine —
     # the worker context is db + liveness heartbeat only.

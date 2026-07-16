@@ -273,6 +273,51 @@ def notify_substrate_batch_failed(tenant_id: int, *, batch_id, test_id,
                     tenant_id, batch_id, e)
 
 
+def notify_model_retired(model_ids: List[str], affected: dict) -> None:
+    """Per-tenant model-control arc: the catalog refresh found selectable
+    model(s) gone from Anthropic's live model list. Alerts every superadmin
+    (platform-scoped — the model catalog is a platform fact) naming the
+    retired ids and the tenants still pinned to them via
+    ``llm_model_override``; those tenants' LLM work fails loud
+    (``model_config_error``) until re-pointed on /settings/llm-usage.
+
+    ``affected`` maps model_id -> [tenant_id, ...] (may be empty lists).
+    Same best-effort discipline as the other notifiers: NEVER raises."""
+    try:
+        if not model_ids:
+            return
+        from primeqa.db import get_db
+        db = next(get_db())
+        try:
+            recipients = _superadmin_emails(db)
+        finally:
+            db.close()
+        if not recipients:
+            return
+        lines = []
+        for mid in model_ids:
+            tenants = affected.get(mid) or []
+            pinned = (", ".join(f"tenant {t}" for t in tenants)
+                      if tenants else "no tenants pinned")
+            lines.append(f"  - {mid} ({pinned})")
+        body = (
+            "The model catalog refresh found model(s) no longer available "
+            "upstream (GET /v1/models):\n\n" + "\n".join(lines) +
+            "\n\nPinned tenants' LLM work will fail with model_config_error "
+            "until re-pointed. Re-point them on /settings/llm-usage.")
+        send_email(Notification(
+            kind="llm_model_retired",
+            subject=(f"[Plimsol] {len(model_ids)} LLM model(s) retired "
+                     f"upstream — action needed"),
+            body=body,
+            recipients=recipients,
+            extras={"model_ids": list(model_ids),
+                    "affected": {k: list(v) for k, v in affected.items()}},
+        ))
+    except Exception as e:                           # pragma: no cover
+        log.warning("notify_model_retired failed for %s: %s", model_ids, e)
+
+
 def _admin_emails(db, tenant_id: int) -> List[str]:
     from primeqa.core.models import User
     rows = db.query(User.email).filter(

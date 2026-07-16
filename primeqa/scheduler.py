@@ -26,7 +26,8 @@ def create_scheduler_context():
     from primeqa.core.secrets import validate_boot_secrets
     validate_boot_secrets()
     # #5: validate SUMMARY_MODEL — ALWAYS-ON (consistent across all 3 services).
-    from primeqa.intelligence.llm.router import validate_summary_model
+    from primeqa.intelligence.llm.router import (
+        validate_summary_model, validate_tenant_model_overrides)
     validate_summary_model()
     from primeqa import db as dbmod
     database_url = os.getenv("DATABASE_URL")
@@ -35,6 +36,11 @@ def create_scheduler_context():
     if database_url.startswith("postgres://"):
         database_url = database_url.replace("postgres://", "postgresql://", 1)
     dbmod.init_db(database_url)
+    # Migration 060: every tenant llm_model_override must be selectable — a
+    # deploy that retires a model fails loud here until tenants are re-pointed.
+    # AFTER init_db (the gate reads tenant_agent_settings + llm_models); a
+    # DB-read failure logs + skips — it never blocks boot.
+    validate_tenant_model_overrides()
     db = dbmod.SessionLocal()
     # D-221 R3 / D-240: v1 pipeline repos + the ExecutionSlot repo retired with
     # their tables; the scheduler context is db + the heartbeat liveness repo only.
@@ -79,6 +85,7 @@ def scheduler_tick(ctx):
         s8_grounding_tick,            # D-143 (substrate-8 grounding recompute)
         s1_sync_enqueuer_tick,        # D-153 (substrate-1 sync cadence)
         s1_sync_reaper_tick,          # D-153 (substrate-1 sync queue)
+        llm_catalog_refresh_tick,     # migrations 060/061 (daily; self-gated)
     )
     for tick in ticks:
         try:
@@ -110,6 +117,40 @@ def s3_reaper_tick(ctx):
             log.warning("reaped %d stale s3 generation job(s)", total)
     except Exception as e:
         log.warning("s3_reaper_tick failed: %s", e)
+
+
+# Migration 060/061: the daily catalog check runs at most once per UTC date
+# per process (the tick loop fires every REAPER_INTERVAL seconds). A restart
+# re-runs it once — desirable: a fresh check right after each deploy.
+_catalog_refresh_last_date = None
+
+
+def llm_catalog_refresh_tick(ctx):
+    """Daily model-catalog check (migrations 060/061): diff Anthropic's live
+    model list against the selectable set. Its job here is the RETIREMENT
+    ALARM — retired upserts + superadmin notification + activity_log; the
+    new-model Enable flow is the /settings/llm-usage panel's (a scheduler run
+    has no session to carry the new-model list). Best-effort: no key or an
+    upstream failure logs and skips — never crashes the tick loop."""
+    global _catalog_refresh_last_date
+    from datetime import datetime, timezone
+    today = datetime.now(timezone.utc).date()
+    if _catalog_refresh_last_date == today:
+        return
+    _catalog_refresh_last_date = today
+    try:
+        from primeqa.intelligence.llm.catalog import (
+            refresh_model_catalog, resolve_platform_api_key)
+        api_key = resolve_platform_api_key()
+        if not api_key:
+            log.warning("llm_catalog_refresh_tick: no LLM connection key — skipped")
+            return
+        result = refresh_model_catalog(api_key)
+        log.info("llm catalog refresh: %d upstream, retired=%s, new=%d, reappeared=%s",
+                 result.seen, result.expired or "none", len(result.new),
+                 result.reappeared or "none")
+    except Exception as e:
+        log.warning("llm_catalog_refresh_tick failed: %s", e)
 
 
 def s4_schedule_tick(ctx):

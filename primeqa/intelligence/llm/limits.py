@@ -172,6 +172,11 @@ def load_tenant_config(tenant_id: int, *, db=None, return_row: bool = False):
             TenantPolicy(
                 always_use_opus=bool(row.llm_always_use_opus),
                 allow_haiku=bool(row.llm_allow_haiku),
+                # Migration 060: loaded RAW — the loader stays fail-open;
+                # validation is the resolution points' job
+                # (router.resolve_tenant_model, fail-loud pre-spend).
+                model_override=getattr(row, "llm_model_override", None),
+                tenant_id=tenant_id,
             ),
         )
         return (*result, row) if return_row else result
