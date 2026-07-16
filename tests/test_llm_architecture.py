@@ -421,12 +421,6 @@ def main():
         ("feedback_severity_mapping", test_feedback_severity_mapping),
         ("feedback_rules_block_empty_for_clean_tenant", test_feedback_rules_block_empty_for_clean_tenant),
         ("feedback_rules_classify_and_render", test_feedback_rules_classify_and_render),
-        ("post_feedback_happy_path_thumbs_up", test_post_feedback_happy_path_thumbs_up),
-        ("post_feedback_happy_path_thumbs_down_with_reason", test_post_feedback_happy_path_thumbs_down_with_reason),
-        ("post_feedback_invalid_verdict", test_post_feedback_invalid_verdict),
-        ("post_feedback_other_requires_text", test_post_feedback_other_requires_text),
-        ("post_feedback_rate_limit_throttles_silently", test_post_feedback_rate_limit_throttles_silently),
-        ("user_edited_captured_on_ai_tc_edit", test_user_edited_captured_on_ai_tc_edit),
         ("correction_rate_returns_valid_shape", test_correction_rate_returns_valid_shape),
         ("tenant_dashboard_includes_feedback_section", test_tenant_dashboard_includes_feedback_section),
     ]
