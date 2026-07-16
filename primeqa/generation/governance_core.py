@@ -1638,6 +1638,199 @@ def _flows_producing_rollup(flow_entities, subject_api, field_hint):
     return out
 
 
+def _drop_unobservable_producers(producers, effect_object_api):
+    """Completion review (live env-59): the D-318 producer glance
+    (``flow_effects``) reads RAW recordCreates/Updates and so counts writers
+    whose only path to the object is a FAULT handler or a SCHEDULED path
+    (env-59: FL13 logs to PLS_FB_Audit_Log__c only on fault; FL10 touches
+    PLS_FB_Fulfilment_Task__c only on a +2-day schedule). Neither is
+    observable in one run, so neither is a real candidate — they inflate the
+    ambiguity and (FL13's case) erase the discriminator.
+
+    A flow is dropped ONLY when its typed IR proves the exclusion: it HAS
+    ops for the object and every one of them is fault/scheduled. A flow with
+    NO typed ops (unparseable Metadata) is KEPT — an unknown producer must
+    keep the ambiguity honest, never be silently dropped."""
+    if not effect_object_api:
+        return list(producers)
+    out = []
+    for ent in producers:
+        attrs = getattr(ent, "attributes", None)
+        typed = [o for o in flow_cross_record_effect_ops(attrs)
+                 if o["object"] == effect_object_api]
+        if not typed:
+            out.append(ent)          # unparseable → keep (honest ambiguity)
+            continue
+        observable = (_xo_create_producers([ent], effect_object_api)
+                      + _xo_eventual_create_producers([ent],
+                                                      effect_object_api)
+                      + _xo_update_producers([ent], effect_object_api))
+        if observable:
+            out.append(ent)
+    return out
+
+
+def _best_discriminator(disc):
+    """Pick the field a model can realistically re-propose: the one whose
+    literals are SHORTEST — an enum-like Kind/Type/Status ('AsyncEnrichment')
+    over a prose Detail field ('Asynchronous enrichment completed for the
+    confirmed order.'). Deterministic total order (max-literal-length, then
+    field name), so the disclosure never varies run to run."""
+    if not disc:
+        return None, None
+    field = min(disc, key=lambda f: (max(len(str(v)) for v in disc[f]), f))
+    return field, disc[field]
+
+
+def _cross_ambiguity_detail(producers, hint, default_detail):
+    """The ambiguity refusal's wording. For a CROSS-OBJECT effect the legacy
+    text ("name the specific automation", listing flow api names) asks the
+    model for something D-318 says it cannot know — and on a real org the
+    ambiguity is the NORM (env-59: three flows create PLS_FB_Audit_Log__c).
+    Disclose the substrate-derived DISCRIMINATOR instead: the effect fields
+    whose literals tell the candidates apart, so the model re-proposes with
+    effect_field + effect_value (the B0 posture — grounded FIELD alternatives,
+    never automation names). Falls back to ``default_detail`` for same-record
+    ambiguity (untouched) or when nothing distinguishes the candidates."""
+    obj = hint.get("effect_object")
+    if not obj:
+        return default_detail
+    disc = _cross_effect_discriminators(list(producers), obj)
+    if not disc:
+        return default_detail
+    field, values = _best_discriminator(disc)
+    return (f"{len(producers)} automations produce a {obj} record — they are "
+            f"told apart by {field} (one of {values}); name effect_field + "
+            f"effect_value to select the one this requirement means")
+
+
+def xo_hint_field(hint):
+    """The claimed cross-object effect FIELD, if the intent named one."""
+    return hint.get("effect_field")
+
+
+def _tie_break_cross_producers(producers, hint):
+    """Completion review (live env-59): the D-318 ambiguity gate refuses
+    when several flows produce the claimed effect OBJECT — but on a real
+    org that is the NORM (env-59: three flows create PLS_FB_Audit_Log__c),
+    and the refusal asks for an automation name the model provably cannot
+    supply (D-318/B0). When the intent names the effect FIELD (and
+    optionally its value), the typed ops break the tie deterministically.
+    STRICTLY a tie-break: a single producer passes through untouched, and
+    a narrowing that does not land on exactly ONE leaves the ambiguity
+    intact so the refusal stands — never a silent pick."""
+    if len(producers) <= 1 or not hint.get("effect_object"):
+        return producers
+    # first drop the provably-unobservable writers (fault/scheduled paths):
+    # they are not candidates, and one of them would erase the discriminator
+    obj = hint.get("effect_object")
+    producers = _drop_unobservable_producers(producers, obj) or producers
+    if not hint.get("effect_field"):
+        # an EXISTENCE-shaped claim ("a correlated record appears") is a
+        # CREATE-only question: an update can never make a record appear, so
+        # a co-writing updater is not a candidate and must not inflate the
+        # ambiguity (env-59: FL04 creates the task, FL05 updates it —
+        # "a task appears" means FL04, unambiguously).
+        creators = [e for e in producers
+                    if _xo_create_producers([e], obj)
+                    or _xo_eventual_create_producers([e], obj)]
+        if creators:
+            producers = creators
+        return producers
+    if len(producers) <= 1:
+        return producers
+    narrowed = _flows_producing_cross_effect_field(
+        producers, hint.get("effect_object"), hint.get("effect_field"),
+        _identity_safe(hint.get("effect_value")))
+    return narrowed if len(narrowed) == 1 else producers
+
+
+def _op_assigns_effect(op, bare_field, expected_value) -> bool:
+    """Does this typed effect op verifiably write ``bare_field`` (= the
+    claimed value, when one is given)? Literal and relative-date
+    assignments are the decidable shapes; a var/opaque/subject_ref
+    assignment is NOT a verifiable match (never guessed)."""
+    tv = (op.get("assignments") or {}).get(bare_field)
+    if not tv:
+        return False
+    tv = tuple(tv)
+    if expected_value is None:
+        return True
+    if tv[0] == "literal":
+        return _effect_values_equal(tv[1], expected_value)
+    if tv[0] == "relative_date":
+        return _effect_values_equal(relative_date(tv[1]), expected_value)
+    return False
+
+
+def _narrow_producers_by_effect(pairs, effect_field, effect_value):
+    """Completion review (live env-59 finding): when >1 flow produces the
+    same effect OBJECT, the claimed effect FIELD/VALUE disambiguates —
+    each producer's typed op writes its own literal (env-59's three
+    PLS_FB_Audit_Log__c creators write Kind = Reopen / AsyncEnrichment /
+    LedgerFault). A PURE filter over [(entity, op)]; the caller decides
+    when to apply it and what an empty result means (an ambiguity the
+    narrowing cannot break must REFUSE, never silently pick)."""
+    bare = (effect_field.rsplit(".", 1)[-1]
+            if isinstance(effect_field, str) and effect_field else None)
+    if bare is None:
+        return list(pairs)
+    return [(e, op) for e, op in pairs
+            if _op_assigns_effect(op, bare, effect_value)]
+
+
+def _cross_effect_discriminators(flow_entities, effect_object_api) -> dict:
+    """The substrate-derived way to TELL APART several producers of one
+    effect object: {bare_field: [literal, ...]} over their typed
+    observable ops, keeping only fields every candidate assigns a
+    DISTINCT literal to. Feeds the ambiguity refusal's disclosure — the
+    B0 posture (offer grounded FIELD alternatives; never automation
+    names, the D-318 law)."""
+    per_flow: list = []
+    for ent in flow_entities:
+        vals: dict = {}
+        for _e, op in (_xo_create_producers([ent], effect_object_api)
+                       + _xo_eventual_create_producers([ent],
+                                                       effect_object_api)
+                       + _xo_update_producers([ent], effect_object_api)):
+            for f, tv in (op.get("assignments") or {}).items():
+                tv = tuple(tv)
+                if tv[0] == "literal":
+                    vals.setdefault(f, set()).add(str(tv[1]))
+        per_flow.append(vals)
+    if len(per_flow) < 2:
+        return {}
+    common = set(per_flow[0])
+    for v in per_flow[1:]:
+        common &= set(v)
+    out = {}
+    for f in sorted(common):
+        seen = [next(iter(v[f])) for v in per_flow if len(v[f]) == 1]
+        if len(seen) == len(per_flow) and len(set(seen)) == len(seen):
+            out[f] = sorted(seen)      # every candidate distinct on f
+    return out
+
+
+def _flows_producing_cross_effect_field(flow_entities, effect_object_api,
+                                        effect_field, effect_value):
+    """The tie-break for the D-318 ambiguity gate: the flows whose typed
+    OBSERVABLE ops on ``effect_object_api`` verifiably write the claimed
+    (effect_field[, effect_value]). Fault-path and scheduled ops never
+    qualify (they carry no observable main-path effect)."""
+    bare = (effect_field.rsplit(".", 1)[-1]
+            if isinstance(effect_field, str) and effect_field else None)
+    if bare is None or not effect_object_api:
+        return []
+    out = []
+    for ent in flow_entities:
+        pairs = (_xo_create_producers([ent], effect_object_api)
+                 + _xo_eventual_create_producers([ent], effect_object_api)
+                 + _xo_update_producers([ent], effect_object_api))
+        if any(_op_assigns_effect(op, bare, effect_value) for _e, op in pairs):
+            out.append(ent)
+    return out
+
+
 def _xo_eventual_create_producers(flow_entities, effect_object_api):
     """C9 (FL11 slice): flows whose typed IR creates the effect object on
     an ASYNC run-after-commit path — observability ``bounded_eventual``
@@ -3340,9 +3533,18 @@ class GovernanceCore:
                     refusal=self._router.emission_deferred(
                         archetype, claim_kind, detail=detail)))
 
+            _named_flow_ent = None
             if automation_name:
                 flow_ent = next(
                     (f for f in flows if f.sf_api_name == automation_name), None)
+                # Completion review (live env-59): a RESOLVED name is binding.
+                # The E1/E2/C9 discovery below rebinds flow_ent to the verified
+                # producer — which silently OVERRODE an explicit name when the
+                # object has several producers (named FL11_Async_Enrichment,
+                # grounded FL09_Reopen_Guard: the SUB-3 wrong-attribution class
+                # D-318 exists to prevent). Discovery is now scoped to the named
+                # flow, so it can narrow or refuse but never SWITCH automations.
+                _named_flow_ent = flow_ent
                 if flow_ent is None:
                     # D-308: the named automation may be an APPROVAL PROCESS —
                     # it rides the same TRIGGERS_ON rail. NAME-ONLY binding
@@ -3391,6 +3593,7 @@ class GovernanceCore:
                     producers = _flows_producing_effect(
                         flows, hint.get("field_name"),
                         hint.get("expected_value"), hint.get("effect_object"))
+                    producers = _tie_break_cross_producers(producers, hint)
                     if len(producers) == 1:
                         flow_ent = producers[0]
                     elif len(producers) > 1:
@@ -3399,10 +3602,12 @@ class GovernanceCore:
                             interpretation_delta=delta,
                             refusal=self._router.emission_deferred(
                                 archetype, claim_kind,
-                                detail=(f"{len(producers)} Flows on the subject "
-                                        f"produce the claimed effect "
-                                        f"({sorted(p.sf_api_name for p in producers)}) "
-                                        f"— name the specific automation")))
+                                detail=_cross_ambiguity_detail(
+                                    producers, hint,
+                                    f"{len(producers)} Flows on the subject "
+                                    f"produce the claimed effect "
+                                    f"({sorted(p.sf_api_name for p in producers)})"
+                                    f" — name the specific automation")))
                     else:
                         # B1 arc (C3b/C4/C5): the named automation is an
                         # unresolvable GUESS (D-318: the LLM cannot know the
@@ -3438,6 +3643,7 @@ class GovernanceCore:
                     producers = _flows_producing_effect(
                         flows, hint.get("field_name"),
                         hint.get("expected_value"), hint.get("effect_object"))
+                    producers = _tie_break_cross_producers(producers, hint)
                     if len(producers) == 1:
                         flow_ent = producers[0]
                     elif len(producers) > 1:
@@ -3446,10 +3652,12 @@ class GovernanceCore:
                             interpretation_delta=delta,
                             refusal=self._router.emission_deferred(
                                 archetype, claim_kind,
-                                detail=(f"{len(producers)} Flows on the subject produce "
-                                        f"the claimed effect "
-                                        f"({sorted(p.sf_api_name for p in producers)}) — "
-                                        f"name the specific automation")))
+                                detail=_cross_ambiguity_detail(
+                                    producers, hint,
+                                    f"{len(producers)} Flows on the subject "
+                                    f"produce the claimed effect "
+                                    f"({sorted(p.sf_api_name for p in producers)})"
+                                    f" — name the specific automation")))
                     else:
                         flow_ent = flows[0] if flows else None
                         no_producer_floor = True
@@ -3702,7 +3910,79 @@ class GovernanceCore:
                 # create→update TRANSITION from its EqualTo entry guard
                 # (the C4/C5 discipline) — presence only (an absence case
                 # must not stage the firing transition).
-                _xo_ops = _xo_create_producers(flows, effect_object_api)
+                # Completion review (live env-59), fix (1): discovery is
+                # scoped to a RESOLVED named automation — it may narrow or
+                # refuse, but it can never SWITCH the claim to another flow.
+                _disc_flows = ([_named_flow_ent] if _named_flow_ent is not None
+                               else flows)
+                _xo_ops_all = _xo_create_producers(_disc_flows,
+                                                   effect_object_api)
+                _xo_evt_all = _xo_eventual_create_producers(_disc_flows,
+                                                            effect_object_api)
+                # An UPDATE producer is a candidate when the claim names a
+                # FIELD (either an update or a create could set it — env-59:
+                # FL04 creates the task Status='Open', FL05 updates it to
+                # 'Cancelled'), or when nothing CREATES the object at all (the
+                # E2 fallback derives the field from the op itself). It is NOT
+                # a candidate for a bare EXISTENCE claim that a create already
+                # answers: an update can never make a record appear, so
+                # "a task appears" is a create-only question (E1 priority).
+                _upd_is_candidate = bool(
+                    xo_hint_field(hint) or not (_xo_ops_all or _xo_evt_all))
+                _callee_reg = None
+                if _upd_is_candidate and any(
+                        flow_subflow_calls(getattr(f, "attributes", None))
+                        for f in _disc_flows):
+                    _callee_reg = {
+                        e.sf_api_name: getattr(e, "attributes", None)
+                        for e in self._s1.get_entities("Flow", at_seq=at)
+                        if e.sf_api_name}
+                _xo_upd_all = (
+                    _xo_update_producers(_disc_flows, effect_object_api,
+                                         callee_registry=_callee_reg)
+                    if _upd_is_candidate else [])
+                # fix (2): >1 producer of the same object is the REAL-org norm
+                # (env-59: FL09 immediate + FL11 async + FL13 on-fault all
+                # create PLS_FB_Audit_Log__c; FL04 creates + FL05 updates the
+                # fulfilment task). The claimed effect FIELD/VALUE picks the
+                # producer deterministically; a narrowing that lands on
+                # nothing keeps the ambiguity (refused below), never a guess.
+                _cand_n = len(_xo_ops_all) + len(_xo_evt_all) + len(_xo_upd_all)
+                if _cand_n > 1 and xo_hint_field(hint):
+                    _ef = hint.get("effect_field")
+                    _ev = _identity_safe(hint.get("effect_value"))
+                    _n_ops = _narrow_producers_by_effect(_xo_ops_all, _ef, _ev)
+                    _n_evt = _narrow_producers_by_effect(_xo_evt_all, _ef, _ev)
+                    _n_upd = _narrow_producers_by_effect(_xo_upd_all, _ef, _ev)
+                    if _n_ops or _n_evt or _n_upd:
+                        _xo_ops_all, _xo_evt_all, _xo_upd_all = \
+                            _n_ops, _n_evt, _n_upd
+                        _cand_n = (len(_xo_ops_all) + len(_xo_evt_all)
+                                   + len(_xo_upd_all))
+                # a surviving ambiguity refuses, disclosing the substrate-
+                # derived DISCRIMINATOR (fields + literals — never automation
+                # names, the D-318/B0 law) so the model can re-propose.
+                if _cand_n > 1:
+                    _disc = _cross_effect_discriminators(
+                        [e for e, _ in _xo_ops_all + _xo_evt_all
+                         + _xo_upd_all],
+                        effect_object_api)
+                    _dtail = ""
+                    if _disc:
+                        _df, _dv = _best_discriminator(_disc)
+                        _dtail = (f" — they are told apart by {_df} "
+                                  f"(one of {_dv}); name effect_field + "
+                                  f"effect_value to select the one this "
+                                  f"requirement means")
+                    return IntentResolution(
+                        grounded_candidates=[],
+                        next_action=NextAction.REFUSE,
+                        interpretation_delta=delta,
+                        refusal=self._router.emission_deferred(
+                            archetype, claim_kind,
+                            detail=(f"{_cand_n} automations write "
+                                    f"{effect_object_api}{_dtail}")))
+                _xo_ops = _xo_ops_all
                 # C9 (FL11 slice): an ASYNC bounded-eventual create producer
                 # takes the same E1 rails when no immediate producer exists —
                 # the grounding is identical, the READ becomes retry-until-
@@ -3710,8 +3990,7 @@ class GovernanceCore:
                 # can never prove the record will not appear.
                 _xo_eventual = None
                 if not _xo_ops:
-                    _evt = _xo_eventual_create_producers(
-                        flows, effect_object_api)
+                    _evt = _xo_evt_all
                     if _evt and raw_absence:
                         return IntentResolution(
                             grounded_candidates=[],
@@ -3785,20 +4064,10 @@ class GovernanceCore:
                 # ASSIGNMENTS, the entry transition from its guard, and the
                 # DISTRACTOR row (template value flipped to a third state)
                 # whose exclusion the count assert enforces. Presence only.
-                # Completion (composition): a caller flow with subflow
-                # calls offers its COMPOSED effects too — the registry is
-                # built lazily (an org-wide read happens only when some
-                # neighborhood flow actually calls a subflow).
-                _callee_reg = None
-                if not _xo_ops and any(
-                        flow_subflow_calls(getattr(f, "attributes", None))
-                        for f in flows):
-                    _callee_reg = {
-                        e.sf_api_name: getattr(e, "attributes", None)
-                        for e in self._s1.get_entities("Flow", at_seq=at)
-                        if e.sf_api_name}
-                _xo_upd_ops = [] if _xo_ops else _xo_update_producers(
-                    flows, effect_object_api, callee_registry=_callee_reg)
+                # Completion (composition): the update candidates were
+                # discovered (and narrowed) above — including a caller's
+                # COMPOSED subflow effects, via the lazily-built registry.
+                _xo_upd_ops = [] if _xo_ops else _xo_upd_all
                 if len(_xo_upd_ops) == 1 and not raw_absence \
                         and not xo_hint.get("effect_via_lookup_field"):
                     _u_ent, _u_op = _xo_upd_ops[0]

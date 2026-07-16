@@ -47,6 +47,14 @@ Six commits, each suite-green and replay-gated:
 
 ## 3. Benchmark status (FB-V1 corpus, offline replay — live quota-blocked to 2026-08-01)
 
+> **⚠ CORRECTED 2026-07-16 — see the "Live env-59 verification" addendum
+> below.** The "ground end-to-end" claims in this section were established in
+> ISOLATED single-flow fixture worlds. On the real env-59 org — where several
+> flows write the same effect object — the cross-object classes did NOT ground
+> until D-374 fixed a wrong-attribution defect and the multi-producer
+> ambiguity. Read this section as "grounds when the producer is unambiguous";
+> the addendum carries the live-verified status.
+
 - **Ground end-to-end (direct):** FL01, FL02, FL03, FL06, FL08, FL09, FL14-IR.
 - **Ground end-to-end (evidence branches):** FL04 (E1), FL05 (E2), FL07
   (E3), FL12+SF01 (composition→E2). FL13's main-path ledger create grounds
@@ -122,3 +130,76 @@ bounded window can never prove non-appearance — closing a latent
 wrong-green). FL11 grounds end-to-end offline. Full tree 4346 green;
 replay byte-identical. The only non-evidenced flows are now FL10
 (human-gated execution-model decision) and FL15 (by design).
+
+---
+
+## Addendum 2 — Live env-59 verification + correction (2026-07-16, D-374)
+
+The first verification of the Completion Program against the **real synced
+org** (read-only; deterministic; no LLM — quota still blocked). It corrected
+§3 and found a defect this report's fixture-only evidence had hidden.
+
+### What held up
+
+All 16 `PLS_FB` flows parse from live metadata exactly as from the fixtures,
+with every capability marker present on real data: FL11 `[bounded_eventual]`,
+FL13 `[on_fault]`, FL06 `premise_conditioned`, FL07 `aggregate`, FL12
+`subflow_call`. FL07 (roll-up) and FL06 (premise-conditioned) grounded
+correctly on the first attempt — FL06's correlation witness came out as
+`FB-000000`, **derived from env-59's actual REGEX rule** rather than the
+fallback constant, proving the format-rule-aware path on real metadata.
+
+### What the fixtures hid
+
+Every test world had ONE flow per effect object. The real org does not:
+three flows create `PLS_FB_Audit_Log__c` (FL09 immediate, FL11 async, FL13
+on-fault) and three touch `PLS_FB_Fulfilment_Task__c` (FL04 creates, FL05
+updates, FL10 scheduled). Two defects followed:
+
+1. **Wrong attribution (a defect this program introduced at E1/ed07ed3).**
+   The E1 branch rebound `flow_ent` to the discovered producer
+   *unconditionally*, overriding an explicitly named automation. Live: an
+   intent naming `FL11_Async_Enrichment` grounded **`FL09_Reopen_Guard`**,
+   async marker dropped — the SUB-3 wrong-attribution class D-318 exists to
+   prevent. Invisible in fixtures, because there the named flow was always
+   the only producer.
+2. **Unreachability.** The D-318 ambiguity gate refused before the E1/E2/C9
+   branches ran, demanding an automation name the model provably cannot
+   supply (D-318/B0). So FL04/FL05/FL11/FL13-class claims were unreachable
+   on the real org by any honest route.
+
+**Blast radius: zero.** No generation ran against the deployed code (quota-
+blocked since 07-13; latest outcome 07-13 10:41, before the 22:53 deploy),
+so no wrong claim was ever written. The defect was latent.
+
+### Live-verified status after D-374
+
+| Class | env-59 result |
+|---|---|
+| FL04 create | GROUNDED — `FL04_Confirmation_Task`, expect `Open` |
+| FL05 set-update | GROUNDED — `FL05_Cancellation_Sync`, `count_equals=2` |
+| FL07 roll-up | GROUNDED — `FL07_Order_Rollup`, Count → 2 |
+| FL06 premise-conditioned | GROUNDED — witness `FB-000000` (org regex) |
+| FL09 immediate create | GROUNDED — expect `Reopen` |
+| FL11 async | GROUNDED — eventual read 120s/5s |
+| bare ambiguous intent | REFUSED, disclosing `PLS_FB_Kind__c ∈ [AsyncEnrichment, Reopen]` |
+
+Replay, isolated at one pin seq (so the org's re-sync cannot confound it):
+CONVERGED **221 → 225**, GROUNDING_AMBIGUITY 27 → 12, GROUNDING_OTHER 5 → 1;
+zero losses; req-315 byte-identical. Tree 4384 green.
+
+### The standing lesson
+
+A single-producer fixture world is not a model of a real org. Any capability
+whose correctness depends on *which* automation is bound must be tested in a
+multi-producer world — the Completion Program's evidence classes all did, and
+only the live sweep revealed it. `tests/unit/generation/test_xo_evidence.py`
+now carries `_world_multi()` / `_world_task_multi()` mirroring env-59's real
+shape.
+
+### Open follow-up (named, not folded in)
+
+The 15 intents freed from the ambiguity gate now hit a lexical miss on the
+effect ENDPOINT (`Order__c` for `PLS_FB_Order__c`) — classified `LEXICAL_FIELD`
+with `effect_endpoint_no_offer`. Attaching B0 recovery offers to that refusal
+would likely convert them to convergence. That is the next reachability slice.

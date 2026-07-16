@@ -851,3 +851,227 @@ def test_async_plan_bridge_carries_the_eventual_spec():
     read = next(s for s in plan.steps if s.kind == "read")
     assert read.eventual == {"timeout_s": 120, "poll_s": 5,
                              "reason": "async_after_commit"}
+
+
+# ---------------------------------------------------------------------------
+# Completion review (live env-59 finding): the MULTI-PRODUCER world — three
+# real flows create PLS_FB_Audit_Log__c (FL09 immediate / FL11 async /
+# FL13 on-fault). Isolated single-flow worlds hid two defects:
+#   (1) the E1 rebind silently OVERRODE an explicitly named automation
+#       (named FL11 -> grounded FL09, async marker dropped);
+#   (2) a bare cross-object intent refused as ambiguous with no way for the
+#       model to disambiguate (it may never name automations, D-318).
+# ---------------------------------------------------------------------------
+
+FL09_FIXTURE = os.path.join(os.path.dirname(__file__), "..", "semantic",
+                            "fixtures", "pls_fb_flows",
+                            "PLS_FB_FL09_Reopen_Guard.json")
+
+
+def _world_multi():
+    """Order + Audit_Log with FL09 (immediate create), FL11 (async create)
+    and FL13 (on-fault create) ALL producing the same effect object."""
+    order = _ent("Object", "PLS_FB_Order__c", "PLS FB Order")
+    status = _ent("Field", "PLS_FB_Order__c.PLS_FB_Status__c", "Status")
+    log = _ent("Object", "PLS_FB_Audit_Log__c", "PLS FB Audit Log")
+    l_order = _ent("Field", "PLS_FB_Audit_Log__c.PLS_FB_Order__c", "Order")
+    l_kind = _ent("Field", "PLS_FB_Audit_Log__c.PLS_FB_Kind__c", "Kind")
+    l_detail = _ent("Field", "PLS_FB_Audit_Log__c.PLS_FB_Detail__c", "Detail")
+    ledger = _ent("Object", "PLS_FB_Ledger_Entry__c", "Ledger Entry")
+    flows = []
+    for api, path in (("PLS_FB_FL09_Reopen_Guard", FL09_FIXTURE),
+                      ("PLS_FB_FL11_Async_Enrichment", FL11_FIXTURE),
+                      ("PLS_FB_FL13_Fault_Logged_Ledger", FL13_FIXTURE)):
+        with open(path) as f:
+            flows.append(_ent("Flow", api, api,
+                              attrs={"Metadata": json.load(f)["Metadata"]}))
+    pvs = uuid4()
+    s1 = _FakeS1(
+        entities=[order, status, log, l_order, l_kind, l_detail, ledger]
+                 + flows,
+        rows_by_object={
+            "PLS_FB_Order__c": [
+                SimpleNamespace(edge_type=gc.EDGE_BELONGS, entity=status)]
+                + [SimpleNamespace(edge_type=gc.EDGE_FLOW, entity=f)
+                   for f in flows],
+            "PLS_FB_Audit_Log__c": [
+                SimpleNamespace(edge_type=gc.EDGE_BELONGS, entity=e)
+                for e in (l_order, l_kind, l_detail)],
+        },
+        details={status.id: {"field_type": "picklist",
+                             "picklist_value_set_entity_id": pvs}},
+        picklists={pvs: [{"value_api_name": v, "is_active": True}
+                         for v in ("Draft", "Submitted", "Confirmed",
+                                   "Fulfilled")]})
+    return gc.GovernanceCore(s1)
+
+
+def _log_intent(**kw):
+    ex = "an audit log entry records what happened to the order"
+    d = {"ac_ref": 20, "archetype_hint": "data_behavior",
+         "polarity_hint": "positive",
+         "claim_kind_hint": "automation-effect-claim",
+         "requirement_excerpt": ex,
+         "target_subject_hint": {
+             "entity_type": "Object", "sf_api_name": "PLS_FB_Order__c",
+             "effect_object": "PLS_FB_Audit_Log__c", **kw}}
+    return {"requirement_excerpt": ex, "intent_descriptor": d}
+
+
+def test_named_automation_is_never_silently_overridden():
+    # THE LIVE BUG (env-59): naming FL11 grounded FL09 with eventual dropped.
+    core = _world_multi()
+    state = _state()
+    res = core.resolve_intent(
+        intent_input=_log_intent(
+            automation_name="PLS_FB_FL11_Async_Enrichment"),
+        ctx=_ctx(), state=state)
+    assert res.refusal is None, getattr(res.refusal, "payload", None)
+    [g] = state.groundings
+    assert g.automation.external_id == "PLS_FB_FL11_Async_Enrichment"
+    assert g.eventual_read is not None          # the async path is preserved
+
+
+def test_named_immediate_producer_binds_itself_without_eventual():
+    core = _world_multi()
+    state = _state()
+    res = core.resolve_intent(
+        intent_input=_log_intent(automation_name="PLS_FB_FL09_Reopen_Guard"),
+        ctx=_ctx(), state=state)
+    assert res.refusal is None, getattr(res.refusal, "payload", None)
+    [g] = state.groundings
+    assert g.automation.external_id == "PLS_FB_FL09_Reopen_Guard"
+    assert g.eventual_read is None
+
+
+def test_effect_field_value_disambiguates_the_async_producer():
+    # the model may NOT name automations (D-318) — but it CAN name the
+    # effect field/value, and that picks the producer deterministically
+    core = _world_multi()
+    state = _state()
+    res = core.resolve_intent(
+        intent_input=_log_intent(effect_field="PLS_FB_Kind__c",
+                                 effect_value="AsyncEnrichment"),
+        ctx=_ctx(), state=state)
+    assert res.refusal is None, getattr(res.refusal, "payload", None)
+    [g] = state.groundings
+    assert g.automation.external_id == "PLS_FB_FL11_Async_Enrichment"
+    assert g.eventual_read is not None
+    assert g.effect_value == "AsyncEnrichment"
+
+
+def test_effect_field_value_disambiguates_the_immediate_producer():
+    core = _world_multi()
+    state = _state()
+    res = core.resolve_intent(
+        intent_input=_log_intent(effect_field="PLS_FB_Kind__c",
+                                 effect_value="Reopen"),
+        ctx=_ctx(), state=state)
+    assert res.refusal is None, getattr(res.refusal, "payload", None)
+    [g] = state.groundings
+    assert g.automation.external_id == "PLS_FB_FL09_Reopen_Guard"
+    assert g.eventual_read is None
+
+
+def test_bare_ambiguous_intent_refuses_disclosing_the_discriminator():
+    core = _world_multi()
+    res = core.resolve_intent(intent_input=_log_intent(), ctx=_ctx(),
+                              state=_state())
+    assert res.refusal is not None
+    d = res.refusal.payload["detail"]
+    # the disclosure is FIELD-based (never automation names — D-318/B0)
+    assert "PLS_FB_Kind__c" in d
+    assert "AsyncEnrichment" in d and "Reopen" in d
+    assert "FL09" not in d and "FL11" not in d
+
+
+def test_fault_producer_is_not_offered_as_a_discriminator_choice():
+    # FL13's create is on a FAULT path — never a main-path producer, so it
+    # is neither a candidate nor a disclosed alternative
+    core = _world_multi()
+    res = core.resolve_intent(intent_input=_log_intent(), ctx=_ctx(),
+                              state=_state())
+    assert "LedgerFault" not in res.refusal.payload["detail"]
+
+
+def _world_task_multi():
+    """env-59's REAL shape for PLS_FB_Fulfilment_Task__c: FL04 CREATES it
+    (Status='Open') and FL05 UPDATES it (Status='Cancelled'). The isolated
+    worlds hid this — a Status='Cancelled' claim bound FL04 (whose create
+    sets 'Open'), a wrong attribution that would fail as a false red."""
+    order = _ent("Object", "PLS_FB_Order__c", "PLS FB Order")
+    status = _ent("Field", "PLS_FB_Order__c.PLS_FB_Status__c", "Status")
+    task = _ent("Object", "PLS_FB_Fulfilment_Task__c", "Task")
+    t_order = _ent("Field", "PLS_FB_Fulfilment_Task__c.PLS_FB_Order__c", "Order")
+    t_status = _ent("Field", "PLS_FB_Fulfilment_Task__c.PLS_FB_Status__c",
+                    "Status")
+    t_type = _ent("Field", "PLS_FB_Fulfilment_Task__c.PLS_FB_Type__c", "Type")
+    t_due = _ent("Field", "PLS_FB_Fulfilment_Task__c.PLS_FB_Due_Date__c", "Due")
+    flows = []
+    for api, path in (("PLS_FB_FL04_Confirmation_Task", FIXTURE),
+                      ("PLS_FB_FL05_Cancellation_Sync", FL05_FIXTURE)):
+        with open(path) as f:
+            flows.append(_ent("Flow", api, api,
+                              attrs={"Metadata": json.load(f)["Metadata"]}))
+    pvs_o, pvs_t = uuid4(), uuid4()
+    s1 = _FakeS1(
+        entities=[order, status, task, t_order, t_status, t_type, t_due] + flows,
+        rows_by_object={
+            "PLS_FB_Order__c": [
+                SimpleNamespace(edge_type=gc.EDGE_BELONGS, entity=status)]
+                + [SimpleNamespace(edge_type=gc.EDGE_FLOW, entity=f)
+                   for f in flows],
+            "PLS_FB_Fulfilment_Task__c": [
+                SimpleNamespace(edge_type=gc.EDGE_BELONGS, entity=e)
+                for e in (t_order, t_status, t_type, t_due)],
+        },
+        details={status.id: {"field_type": "picklist",
+                             "picklist_value_set_entity_id": pvs_o},
+                 t_status.id: {"field_type": "picklist",
+                               "picklist_value_set_entity_id": pvs_t}},
+        picklists={
+            pvs_o: [{"value_api_name": v, "is_active": True}
+                    for v in ("Draft", "Submitted", "Confirmed", "Cancelled")],
+            pvs_t: [{"value_api_name": v, "is_active": True}
+                    for v in ("Open", "Completed", "Cancelled")]})
+    return gc.GovernanceCore(s1)
+
+
+def test_update_producer_wins_its_own_field_value_over_the_creator():
+    # THE SECOND LIVE BUG: Status='Cancelled' is FL05's update, NOT FL04's
+    # create (which sets 'Open') — binding FL04 here is a wrong attribution
+    core = _world_task_multi()
+    state = _state()
+    res = core.resolve_intent(
+        intent_input=_intent(effect_field="PLS_FB_Status__c",
+                             effect_value="Cancelled"),
+        ctx=_ctx(), state=state)
+    assert res.refusal is None, getattr(res.refusal, "payload", None)
+    [g] = state.groundings
+    assert g.automation.external_id == "PLS_FB_FL05_Cancellation_Sync"
+    assert g.premise_children is not None       # the E2 set-update shape
+    assert g.premise_children["updated_value"] == "Cancelled"
+
+
+def test_creator_still_wins_its_own_field_value():
+    core = _world_task_multi()
+    state = _state()
+    res = core.resolve_intent(
+        intent_input=_intent(effect_field="PLS_FB_Status__c",
+                             effect_value="Open"),
+        ctx=_ctx(), state=state)
+    assert res.refusal is None, getattr(res.refusal, "payload", None)
+    [g] = state.groundings
+    assert g.automation.external_id == "PLS_FB_FL04_Confirmation_Task"
+    assert g.premise_children is None           # the E1 create shape
+
+
+def test_bare_existence_intent_still_binds_the_creator_not_the_updater():
+    # an update can never make a record APPEAR — a bare "a task appears"
+    # claim stays a create-only question (no over-refusal from the updater)
+    core = _world_task_multi()
+    state = _state()
+    res = core.resolve_intent(intent_input=_intent(), ctx=_ctx(), state=state)
+    assert res.refusal is None, getattr(res.refusal, "payload", None)
+    [g] = state.groundings
+    assert g.automation.external_id == "PLS_FB_FL04_Confirmation_Task"

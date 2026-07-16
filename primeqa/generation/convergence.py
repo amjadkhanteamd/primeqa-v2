@@ -275,7 +275,14 @@ _WITNESS_MARKERS = ("scale is not readable", "guard interval", "witness",
                     "synthesis grammar", "format pattern", "not stable "
                     "under the transform", "alternative active picklist")
 _AMBIGUITY_MARKERS = ("cannot attribute", "— name the specific automation",
-                      "produce the claimed effect (")
+                      "produce the claimed effect (",
+                      # the cross-object ambiguity now speaks FIELDS, not
+                      # automation names (the D-318/B0 law — see the
+                      # discriminator disclosure in governance_core): keep it
+                      # classified as AMBIGUITY, not GROUNDING_OTHER
+                      "they are told apart by",
+                      "roll an aggregate up onto this field",
+                      "conditionally write")
 _EMISSION_GAP_MARKERS = ("is not yet built", "emission is not built",
                          "is not built")
 
@@ -343,6 +350,17 @@ def classify(snap: IntentSnapshot, as_proposed: ReplayResult,
                 f"effect_object={snap.effect_object!r}")
     if any(m in detail for m in _WITNESS_MARKERS):
         return ("GROUNDING_WITNESS", detail[:100])
+    # Completion review: with the cross-object ambiguity now broken by the
+    # effect field/value, intents reach the NEXT real problem — a lexical
+    # miss on the effect ENDPOINT (the model guessing 'Order__c' for
+    # 'PLS_FB_Order__c'). It is a model-side field miss like any other; it
+    # simply carries no B0 offer yet (the offer-keyed branch above cannot
+    # see it), so it must be named here rather than sink into
+    # GROUNDING_OTHER. NOTE (follow-up, not folded in): attaching recovery
+    # offers to this refusal would let these converge.
+    if "cannot correlate the effect record" in detail \
+            or "cannot link the trigger record" in detail:
+        return ("LEXICAL_FIELD", f"effect_endpoint_no_offer: {detail[:70]}")
     if any(m in detail for m in _AMBIGUITY_MARKERS):
         if "no Flow on the subject produces" in detail \
                 or "nor does any Flow" in detail:
