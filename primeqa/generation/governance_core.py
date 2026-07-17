@@ -1262,6 +1262,20 @@ def _resolve_subject_field_name(neighborhood, name):
     return None
 
 
+@dataclass(frozen=True)
+class _XoDeferral:
+    """One unverifiable cross-object effect NAME: the model-facing deferral
+    ``detail`` plus the optional B0 offer payload (D-362) for the missed
+    reference. The payload is what the D-340 recovery re-prompt hands back to
+    the model, so an offer is only useful when it travels structured — the
+    prose tail inside ``detail`` alone is un-followable telemetry. Offers stay
+    FIELDS only (D-318/B0): the substrate discloses grounded alternatives, the
+    model must re-propose — never a silent substitution."""
+
+    detail: str
+    offer: Optional[dict] = None
+
+
 def _field_recovery_tail(proposed_names, neighborhood):
     """B0.2: ranked near-miss offers for failed FIELD references, from the
     subject's own BELONGS inventory (Field is inside the D-362 recovery
@@ -3831,8 +3845,8 @@ class GovernanceCore:
                                 if r.edge_type == EDGE_BELONGS
                                 and r.entity.entity_type == "Field"
                                 and r.entity.sf_api_name]
-                    via_tail = _recovery.format_candidates(
-                        _recovery.rank_candidates(via_name or "", via_pool))
+                    via_cands = _recovery.rank_candidates(
+                        via_name or "", via_pool)
                     return IntentResolution(
                         grounded_candidates=[], next_action=NextAction.REFUSE,
                         interpretation_delta=delta,
@@ -3841,15 +3855,20 @@ class GovernanceCore:
                             detail=(f"effect_via_lookup_field {via_name!r} "
                                     f"does not exist on the subject — cannot "
                                     f"link the trigger record to the effect "
-                                    f"parent." + via_tail)))
+                                    f"parent."
+                                    + _recovery.format_candidates(via_cands)),
+                            candidates=_recovery.offer_payload(
+                                "Field", via_name, via_cands)
+                            if via_cands else None))
                 grounded_eff = self._ground_cross_object_effect(
                     hint, effect_object_api, at, lookup_required=False)
-                if isinstance(grounded_eff, str):
+                if isinstance(grounded_eff, _XoDeferral):
                     return IntentResolution(
                         grounded_candidates=[], next_action=NextAction.REFUSE,
                         interpretation_delta=delta,
                         refusal=self._router.emission_deferred(
-                            archetype, claim_kind, detail=grounded_eff))
+                            archetype, claim_kind, detail=grounded_eff.detail,
+                            candidates=grounded_eff.offer))
                 eff_ep, _, eff_field_ep = grounded_eff
                 if eff_field_ep is None:
                     return IntentResolution(
@@ -4168,13 +4187,15 @@ class GovernanceCore:
                     _u2["effect_value"] = _u_updated
                     grounded_eff = self._ground_cross_object_effect(
                         _u2, effect_object_api, at)
-                    if isinstance(grounded_eff, str):
+                    if isinstance(grounded_eff, _XoDeferral):
                         return IntentResolution(
                             grounded_candidates=[],
                             next_action=NextAction.REFUSE,
                             interpretation_delta=delta,
                             refusal=self._router.emission_deferred(
-                                archetype, claim_kind, detail=grounded_eff))
+                                archetype, claim_kind,
+                                detail=grounded_eff.detail,
+                                candidates=grounded_eff.offer))
                     eff_ep, lookup_ep, eff_field_ep = grounded_eff
                     _ueps = {}
                     for _xf in sorted(set(_u_transition["create"])
@@ -4253,12 +4274,13 @@ class GovernanceCore:
                         interpretation_delta=delta)
                 grounded_eff = self._ground_cross_object_effect(
                     xo_hint, effect_object_api, at)
-                if isinstance(grounded_eff, str):       # the deferral detail
+                if isinstance(grounded_eff, _XoDeferral):
                     return IntentResolution(
                         grounded_candidates=[], next_action=NextAction.REFUSE,
                         interpretation_delta=delta,
                         refusal=self._router.emission_deferred(
-                            archetype, claim_kind, detail=grounded_eff))
+                            archetype, claim_kind, detail=grounded_eff.detail,
+                            candidates=grounded_eff.offer))
                 eff_ep, lookup_ep, eff_field_ep = grounded_eff
                 # D-307: the cross-object flow fires only when the SUBJECT
                 # create reaches its entry gate (the L7e live recon: a
@@ -5702,8 +5724,9 @@ class GovernanceCore:
         effect Object must resolve uniquely; the lookup field (and the optional
         asserted effect field) must BELONG_TO it. Returns
         ``(effect_ep, lookup_ep_or_None, effect_field_ep_or_None)`` on success,
-        or the deferral-detail STRING on any unverifiable name — the caller
-        routes it to emission-deferred (never guesses). ``lookup_required=False``
+        or an ``_XoDeferral`` on any unverifiable name — the caller routes its
+        detail + offer to emission-deferred (never guesses).
+        ``lookup_required=False``
         is the D-227 parent-stamp path (the correlate is the SUBJECT's own
         ``effect_via_lookup_field``, verified by the caller)."""
         matches = self._admit.resolve_subject("Object", effect_object_api, at)
@@ -5713,9 +5736,9 @@ class GovernanceCore:
             tail = ""
             if not matches:
                 tail, _ = self._ref_miss("Object", effect_object_api, at)
-            return (f"effect object {effect_object_api!r} did not resolve "
-                    f"uniquely in the org model ({len(matches)} matches)."
-                    + tail)
+            return _XoDeferral(
+                f"effect object {effect_object_api!r} did not resolve "
+                f"uniquely in the org model ({len(matches)} matches)." + tail)
         eff = matches[0]
         eff_neigh = self._admit.scoped_neighborhood(eff, at)
         # Key by the BARE field tail so a bare hint ("Subject") resolves the same
@@ -5732,13 +5755,18 @@ class GovernanceCore:
         lookup_name = hint.get("effect_lookup_field")
         lookup_ent = (eff_fields.get(lookup_name.rsplit(".", 1)[-1])
                       if isinstance(lookup_name, str) and lookup_name else None)
+        # B0 pool for BOTH effect-endpoint misses: the EFFECT object's own
+        # BELONGS_TO fields at the pinned seq — never the subject's (the
+        # missed name is asserted to live on the effect record).
+        eff_pool = [(e.sf_api_name, e.display_name) for e in eff_fields.values()]
         if lookup_ent is None and lookup_required:
-            lk_tail = _recovery.format_candidates(_recovery.rank_candidates(
-                lookup_name or "",
-                [(e.sf_api_name, e.display_name) for e in eff_fields.values()]))
-            return (f"effect lookup field {lookup_name!r} does not exist on "
-                    f"{effect_object_api} — cannot correlate the effect record "
-                    f"to the trigger record." + lk_tail)
+            lk_cands = _recovery.rank_candidates(lookup_name or "", eff_pool)
+            return _XoDeferral(
+                f"effect lookup field {lookup_name!r} does not exist on "
+                f"{effect_object_api} — cannot correlate the effect record "
+                f"to the trigger record." + _recovery.format_candidates(lk_cands),
+                _recovery.offer_payload("Field", lookup_name, lk_cands)
+                if lk_cands else None)
         eff_field_name = hint.get("effect_field")
         eff_field_ep = None
         if eff_field_name is not None:
@@ -5746,11 +5774,15 @@ class GovernanceCore:
                              if isinstance(eff_field_name, str) and eff_field_name
                              else None)
             if eff_field_ent is None:
-                ef_tail = _recovery.format_candidates(_recovery.rank_candidates(
-                    eff_field_name if isinstance(eff_field_name, str) else "",
-                    [(e.sf_api_name, e.display_name) for e in eff_fields.values()]))
-                return (f"effect field {eff_field_name!r} does not exist on "
-                        f"{effect_object_api}." + ef_tail)
+                _proposed = (eff_field_name
+                             if isinstance(eff_field_name, str) else "")
+                ef_cands = _recovery.rank_candidates(_proposed, eff_pool)
+                return _XoDeferral(
+                    f"effect field {eff_field_name!r} does not exist on "
+                    f"{effect_object_api}."
+                    + _recovery.format_candidates(ef_cands),
+                    _recovery.offer_payload("Field", _proposed, ef_cands)
+                    if ef_cands else None)
             eff_field_ep = _Endpoint(
                 entity_id=eff_field_ent.id, entity_type=eff_field_ent.entity_type,
                 external_id=eff_field_ent.sf_api_name or str(eff_field_ent.id))

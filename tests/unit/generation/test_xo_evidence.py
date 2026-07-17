@@ -211,6 +211,99 @@ def test_unassigned_effect_field_still_refuses_unvalued():
 
 
 # ---------------------------------------------------------------------------
+# B0 recovery on the effect ENDPOINT — the live req-320 miss ('Order__c' for
+# 'PLS_FB_Order__c'). The offer must travel STRUCTURED (payload), not only as
+# prose, or the D-340 re-prompt has nothing to follow.
+# ---------------------------------------------------------------------------
+
+def _offer(res) -> dict:
+    return res.refusal.payload.get("candidates")
+
+
+def test_effect_lookup_field_miss_offers_the_effect_objects_own_fields():
+    core = _world()
+    res = core.resolve_intent(
+        intent_input=_intent(effect_lookup_field="Order__c"),
+        ctx=_ctx(), state=_state())
+    assert res.refusal is not None
+    assert "cannot correlate the effect record" in res.refusal.payload["detail"]
+    offer = _offer(res)
+    assert offer["entity_type"] == "Field"      # never an automation name
+    assert offer["proposed"] == "Order__c"      # re-proposable by the model
+    assert offer["source"] == "substrate"
+    # the pool is the EFFECT object's BELONGS_TO fields, not the subject's
+    assert offer["candidates"][0]["sf_api_name"] == \
+        "PLS_FB_Fulfilment_Task__c.PLS_FB_Order__c"
+    assert all(c["sf_api_name"].startswith("PLS_FB_Fulfilment_Task__c.")
+               for c in offer["candidates"])
+
+
+def test_effect_field_miss_offers_candidates_and_still_refuses():
+    core = _world()
+    res = core.resolve_intent(
+        intent_input=_intent(effect_field="Statuz__c"),
+        ctx=_ctx(), state=_state())
+    assert res.refusal is not None
+    assert "does not exist on PLS_FB_Fulfilment_Task__c" in \
+        res.refusal.payload["detail"]
+    offer = _offer(res)
+    assert offer["entity_type"] == "Field"
+    assert offer["candidates"][0]["sf_api_name"] == \
+        "PLS_FB_Fulfilment_Task__c.PLS_FB_Status__c"
+
+
+def test_effect_endpoint_offer_never_substitutes_silently():
+    # B0 law: alternatives, never conclusions — a miss stays a REFUSAL with
+    # zero groundings even though the substrate knows the near-miss.
+    core = _world()
+    state = _state()
+    res = core.resolve_intent(
+        intent_input=_intent(effect_lookup_field="Order__c"),
+        ctx=_ctx(), state=state)
+    assert res.next_action == gc.NextAction.REFUSE
+    assert state.groundings == []
+
+
+def test_unrecognizable_effect_endpoint_yields_no_offer():
+    # below the similarity bar → NOT a directory listing of the effect object
+    core = _world()
+    res = core.resolve_intent(
+        intent_input=_intent(effect_lookup_field="Zzqqxx__c"),
+        ctx=_ctx(), state=_state())
+    assert res.refusal is not None
+    assert _offer(res) is None
+
+
+def test_effect_via_lookup_field_miss_offers_the_subjects_own_fields():
+    # the D-227 parent-stamp sibling: the via-lookup lives on the SUBJECT,
+    # so its offer pool is the subject's fields — not the effect object's
+    core = _world()
+    res = core.resolve_intent(
+        intent_input=_intent(effect_via_lookup_field="Statuz__c",
+                             effect_field="PLS_FB_Status__c"),
+        ctx=_ctx(), state=_state())
+    assert res.refusal is not None
+    assert "cannot link the trigger record" in res.refusal.payload["detail"]
+    offer = _offer(res)
+    assert offer["entity_type"] == "Field"
+    assert offer["proposed"] == "Statuz__c"
+    assert offer["candidates"][0]["sf_api_name"] == \
+        "PLS_FB_Order__c.PLS_FB_Status__c"
+    assert all(c["sf_api_name"].startswith("PLS_FB_Order__c.")
+               for c in offer["candidates"])
+
+
+def test_effect_endpoint_offer_is_deterministic():
+    tops = set()
+    for _ in range(3):
+        res = _world().resolve_intent(
+            intent_input=_intent(effect_lookup_field="Order__c"),
+            ctx=_ctx(), state=_state())
+        tops.add(_offer(res)["candidates"][0]["sf_api_name"])
+    assert len(tops) == 1
+
+
+# ---------------------------------------------------------------------------
 # E2 — set-update evidence (FL05: cancelling cancels the open tasks)
 # ---------------------------------------------------------------------------
 
