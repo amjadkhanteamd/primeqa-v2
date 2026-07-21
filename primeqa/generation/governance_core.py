@@ -75,6 +75,7 @@ from primeqa.generation.transition import (
 )
 from primeqa.generation.verified_negative import _RECORD_TYPES_KEY
 from primeqa.generation import control_coverage, control_relevance
+from primeqa.generation import shadow_resolution
 from primeqa.generation.formula_expectation import (
     as_decimal, verify_formula_expectation)
 from primeqa.generation.vr_conflict import (
@@ -2468,6 +2469,9 @@ class GovernanceCore:
         self._layer_b = LayerBFilter()
         self._decomp = DecompositionController()
         self._router = RefusalRouter()
+        # D-376 shadow resolution: per-seq symbol-table cache (empty until the
+        # first observation; init performs NO reads — test-pinned).
+        self._shadow_tables: dict = {}
 
     # -- Layer A operational ref-existence (D-095.1) --------------------
     def check_refs_exist(self, *, intent_input: dict, ctx: ConversationContext) -> RefCheck:
@@ -2715,6 +2719,18 @@ class GovernanceCore:
         at = ctx.semantic_context.s1_version_seq
 
         matches = self._admit.resolve_subject(et, api, at) if (et and api and at is not None) else []
+
+        # D-376 shadow semantic-resolution: read-only observation of the
+        # subject the model named vs. what the intent's own structural
+        # evidence supports. PROMOTION BOUNDARY: nothing may read the
+        # verdicts to change behavior (see shadow_resolution's docstring).
+        try:
+            shadow_resolution.observe_subject_resolution(
+                self._s1, self._shadow_tables, desc, excerpt, ctx, matches,
+                state)
+        except Exception:
+            log.debug("D-376 shadow observation failed (ignored)",
+                      exc_info=True)
 
         # ambiguity (interpretation phase: ambiguous_target_resolution)
         if len(matches) > 1:
@@ -6206,7 +6222,14 @@ class GovernanceCore:
 
     # -- refusal materialization ----------------------------------------
     def route_refusal(self, *, directive: RefusalDirective, ctx: ConversationContext, state: Any) -> GenerationOutcome:
-        ai = state.attempted_interpretation
+        # D-376: refusal outcomes carry the shadow verdicts too (a copied ai —
+        # the state's dict is not mutated). Hash-safe: explanation_hash
+        # canonicalizes only its four fixed keys.
+        ai = dict(state.attempted_interpretation)
+        shadow_verdicts = list(getattr(state, "shadow_verdicts", None) or [])
+        if shadow_verdicts:
+            ai["shadow_resolution"] = shadow_resolution.attach_payload(
+                shadow_verdicts)
         return GenerationOutcome(
             outcome_id=uuid4(), request_id=ctx.request_id, requirement_ref=ctx.requirement_ref,
             outcome_kind=OutcomeKind.REFUSAL,
@@ -6349,6 +6372,14 @@ class GovernanceCore:
         if control_facts:
             ai["control_coverage"] = control_coverage.coverage_from_bundles(
                 control_facts, bundles)
+
+        # D-376 shadow resolution: same read-only telemetry idiom — a NEW ai
+        # key, hash-safe by the four-fixed-keys property (test-asserted).
+        # Absent verdicts attach nothing (byte-identical outcomes).
+        shadow_verdicts = list(getattr(state, "shadow_verdicts", None) or [])
+        if shadow_verdicts:
+            ai["shadow_resolution"] = shadow_resolution.attach_payload(
+                shadow_verdicts)
 
         # The outcome-level marker aggregates CONSERVATIVELY across bundles
         # (D-207 decision 5): LAYER_2 only when every bundle verified; a caveat

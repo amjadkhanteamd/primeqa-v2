@@ -110,6 +110,7 @@ primeqa/                       # Main package
 ├── runs/                      # Run surfaces, Jira search client + cache, scheduling helpers
 ├── integrations/              # sf_client (Salesforce REST/Metadata), sf_constants
 ├── metadata_bridge/           # S1 read-bridge + parity harness (from the v1 cutover)
+├── resolution/                # Semantic resolution — deterministic business-term→org binding (verifier/gate, D-376)
 ├── shared/                    # query_builder, api envelope, observability, notifications
 ├── system_validation/         # JSON-driven self-validation suite runner + grammar
 │   └── suites/primeqa_core.json   # the canonical 8-category E2E suite
@@ -131,7 +132,7 @@ tests/                         # Integration tests (run against the Railway data
 
 ## Architecture rules
 
-- **The live engine is the 8-substrate decomposition** (S1–S8), each a self-contained package with strict boundaries — never cross a substrate boundary to get something working (HOLD + flag instead). Cross-cutting modules: `core`, `intelligence` (decision + llm gateway), `release`, `runs`, `integrations`, `metadata_bridge`, `shared`, `system_validation`, `vector`.
+- **The live engine is the 8-substrate decomposition** (S1–S8), each a self-contained package with strict boundaries — never cross a substrate boundary to get something working (HOLD + flag instead). Cross-cutting modules: `core`, `intelligence` (decision + llm gateway), `release`, `runs`, `integrations`, `metadata_bridge`, `resolution`, `shared`, `system_validation`, `vector`.
 - Each module has: models.py, repository.py, service.py, routes.py (substrate packages vary — e.g. `run.py`, `intake.py`, `result_store.py`).
 - Cross-domain calls go through service layers, never direct SQL across domains
 - All resources are tenant-scoped via `tenant_id`
