@@ -38,7 +38,7 @@ from primeqa.resolution.symbols import SymbolTable
 
 log = logging.getLogger(__name__)
 
-SHADOW_VERSION = 1
+SHADOW_VERSION = 2   # v2 (F0): per-field records with slot provenance
 
 # Cache sentinel: a failed hydration must not retry per intent.
 _HYDRATION_FAILED = "hydration_failed"
@@ -59,11 +59,20 @@ def _term(value: Any) -> Optional[str]:
 def business_graph_from_intent(descriptor: dict,
                                requirement_excerpt: str = ""
                                ) -> Optional[BusinessGraph]:
-    """Reconstruct the intent's business structure from its v29 hints. Returns
-    ``None`` for shapes the shadow does not observe (config/permission/ui
-    archetypes, non-Object subjects, no subject term). The subject entity node
-    is always ``node_id="subject"`` (the primary); a cross-object effect
-    endpoint becomes ``node_id="effect"``."""
+    """Back-compat wrapper over :func:`intent_graph` (graph only)."""
+    got = intent_graph(descriptor, requirement_excerpt)
+    return got[0] if got else None
+
+
+def intent_graph(descriptor: dict, requirement_excerpt: str = ""
+                 ) -> Optional[tuple[BusinessGraph, dict]]:
+    """Reconstruct the intent's business structure from its v29 hints, plus a
+    ``{node_id: {"slot": <hint slot>, "owner": <entity node>}}`` provenance
+    map for attribute nodes (F0: per-slot field telemetry). Returns ``None``
+    for shapes the shadow does not observe (config/permission/ui archetypes,
+    non-Object subjects, no subject term). The subject entity node is always
+    ``node_id="subject"`` (the primary); a cross-object effect endpoint
+    becomes ``node_id="effect"``."""
     desc = descriptor or {}
     if desc.get("archetype_hint") in ("configuration", "permission", "ui"):
         return None
@@ -86,8 +95,9 @@ def business_graph_from_intent(descriptor: dict,
         edges.append(GraphEdge("effect_on", "subject", "effect"))
 
     seen: dict[tuple[str, str], str] = {}   # (owner, term.lower()) -> node_id
+    slots: dict[str, dict] = {}             # node_id -> {slot, owner}
 
-    def add_attr(owner: str, term: Any) -> Optional[str]:
+    def add_attr(owner: str, term: Any, slot: str) -> Optional[str]:
         t = _term(term)
         if t is None:
             return None
@@ -98,6 +108,7 @@ def business_graph_from_intent(descriptor: dict,
         seen[key] = node_id
         nodes.append(GraphNode(node_id, "attribute", t))
         edges.append(GraphEdge("attribute_of", node_id, owner))
+        slots[node_id] = {"slot": slot, "owner": owner}
         return node_id
 
     n_states = 0
@@ -114,26 +125,33 @@ def business_graph_from_intent(descriptor: dict,
 
     effect_owner = "effect" if effect_term is not None else "subject"
 
-    fid = add_attr("subject", hint.get("field_name"))
+    fid = add_attr("subject", hint.get("field_name"), "field_name")
     add_state(fid, hint.get("expected_value"))
-    eid = add_attr(effect_owner, hint.get("effect_field"))
+    eid = add_attr(effect_owner, hint.get("effect_field"), "effect_field")
     add_state(eid, hint.get("effect_value"))
-    add_attr(effect_owner, hint.get("effect_lookup_field"))
-    add_attr("subject", hint.get("effect_via_lookup_field"))
-    tid = add_attr("subject", hint.get("trigger_field"))
+    add_attr(effect_owner, hint.get("effect_lookup_field"),
+             "effect_lookup_field")
+    add_attr("subject", hint.get("effect_via_lookup_field"),
+             "effect_via_lookup_field")
+    tid = add_attr("subject", hint.get("trigger_field"), "trigger_field")
     add_state(tid, hint.get("trigger_value"))
     for row_key in ("trigger_fields", "update_trigger_fields"):
         for row in hint.get(row_key) or []:
             if not isinstance(row, dict):
                 continue
-            rid = add_attr("subject", row.get("field_name") or row.get("field"))
+            rid = add_attr("subject",
+                           row.get("field_name") or row.get("field"), row_key)
             add_state(rid, row.get("value"))
     for row_key in ("rejection_conditions", "acceptance_conditions",
                     "update_conditions"):
         for row in hint.get(row_key) or []:
             if isinstance(row, dict):
-                add_attr("subject", row.get("field") or row.get("field_name"))
-    return BusinessGraph(nodes=tuple(nodes), edges=tuple(edges))
+                add_attr("subject",
+                         row.get("field") or row.get("field_name"), row_key)
+                if isinstance(row.get("compared_to"), str):
+                    add_attr("subject", row.get("compared_to"),
+                             row_key + ".compared_to")
+    return (BusinessGraph(nodes=tuple(nodes), edges=tuple(edges)), slots)
 
 
 # ---------------------------------------------------------------------------
@@ -178,10 +196,25 @@ def _binds(table: SymbolTable, api_name: Optional[str],
     return sum(1 for t in field_terms if resolve_field(obj, t) is not None)
 
 
+def _field_fate(table: SymbolTable, api_name: Optional[str],
+                term: str) -> Optional[str]:
+    """How the ladder lands ``term`` on ``api_name``'s object: ``"exact"``
+    (rule-1 verbatim qualified), ``"ladder"`` (canonicalized to a different
+    name), or ``None`` (unresolved — the offer/hop territory)."""
+    obj = table.by_api(api_name)
+    if obj is None:
+        return None
+    f = resolve_field(obj, term)
+    if f is None:
+        return None
+    return "exact" if f.qualified_api_name == term else "ladder"
+
+
 def shadow_verdict(graph: BusinessGraph, resolved: ResolvedGraph,
                    table: SymbolTable, *, actual_outcome: str,
                    actual_api: Optional[str], claim_kind: Optional[str] = None,
-                   ac_ref: Optional[str] = None) -> dict:
+                   ac_ref: Optional[str] = None,
+                   slots: Optional[dict] = None) -> dict:
     """One persisted verdict entry. ``actual_outcome`` is what the pipeline's
     own resolution did (``resolved`` / ``miss`` / ``ambiguous``); the shadow
     side is the joint verifier's dominant winner for the subject node."""
@@ -238,6 +271,16 @@ def shadow_verdict(graph: BusinessGraph, resolved: ResolvedGraph,
             "veto_mentions": veto_terms,
             "model_binds": model_binds,
             "winner_binds": winner_binds,
+            # v2 (F0): per-field records with slot provenance — the field-
+            # resolution telemetry (which slot proposed it, how the ladder
+            # lands it on the actual subject and on the shadow winner).
+            "fields": [
+                {"term": n.term,
+                 "slot": (slots or {}).get(n.node_id, {}).get("slot"),
+                 "actual": (_field_fate(table, actual_api, n.term)
+                            if actual_outcome == "resolved" else None),
+                 "winner": _field_fate(table, winner_api, n.term)}
+                for n in graph.attributes_of("subject")],
         },
         "agreement": agreement,
         "would_veto": veto,
@@ -309,9 +352,10 @@ def observe_subject_resolution(s1_model, tables: dict, desc: dict,
     """The single governance hook (called right after ``resolve_subject`` in
     ``_resolve_one``). Read-only: derives the actual outcome from ``matches``,
     never touches them."""
-    graph = business_graph_from_intent(desc, excerpt)
-    if graph is None:
+    got = intent_graph(desc, excerpt)
+    if got is None:
         return
+    graph, slots = got
     at = getattr(getattr(ctx, "semantic_context", None), "s1_version_seq", None)
     if at is None or s1_model is None:
         return
@@ -330,7 +374,7 @@ def observe_subject_resolution(s1_model, tables: dict, desc: dict,
     entry = shadow_verdict(
         graph, resolved, table, actual_outcome=actual_outcome,
         actual_api=actual_api, claim_kind=desc.get("claim_kind_hint"),
-        ac_ref=desc.get("ac_ref"))
+        ac_ref=desc.get("ac_ref"), slots=slots)
     _stash_shadow_verdict(state, entry)
 
 

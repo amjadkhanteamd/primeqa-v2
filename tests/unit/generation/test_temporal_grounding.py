@@ -205,14 +205,17 @@ def test_state_transition_to_state_refusal_offers_and_names_the_framing():
     # the live SLA shape: state-transition-claim with a near-miss field on
     # an org-STAMPED field — previously a dead end ("needs a verifiable
     # to-state" with no offers, no guidance); now: ranked field offer + the
-    # capability line naming the automation-effect framing
+    # capability line naming the automation-effect framing.
+    # F1 (D-377) note: the near-miss must be LADDER-UNRESOLVABLE to reach
+    # this path at all — a suffix-class miss (``SLA_Deadline__c``) is now
+    # silently canonicalized before it can dead-end (pinned below).
     core = _order_world()
     state = _state()
     it = _intent()
     d = it["intent_descriptor"]
     d["claim_kind_hint"] = "state-transition-claim"
     d["target_subject_hint"]["field_name"] = \
-        "PLS_FB_Order__c.SLA_Deadline__c"          # near-miss
+        "PLS_FB_Order__c.SLA_Date__c"              # unresolvable near-miss
     d["target_subject_hint"]["expected_value"] = "2026-07-18"
     res = core.resolve_intent(intent_input=it, ctx=_ctx(), state=state)
     assert res.refusal is not None
@@ -225,3 +228,24 @@ def test_state_transition_to_state_refusal_offers_and_names_the_framing():
         for c in offer["candidates"])
     assert "relative-date stamp" in detail
     assert "automation-effect" in detail
+
+
+def test_state_transition_suffix_near_miss_now_canonicalizes(monkeypatch=None):
+    # F1 (D-377): the suffix-class near-miss (``SLA_Deadline__c`` for
+    # ``PLS_FB_SLA_Deadline__c``) no longer dead-ends at the lexical layer —
+    # the ladder canonicalizes it for state-transition claims too, and the
+    # refusal (if any) speaks about the REAL field's semantics, never the
+    # name. This was an F0-probe-listed refusal-hop cost (208 mentions).
+    core = _order_world()
+    state = _state()
+    it = _intent()
+    d = it["intent_descriptor"]
+    d["claim_kind_hint"] = "state-transition-claim"
+    d["target_subject_hint"]["field_name"] = \
+        "PLS_FB_Order__c.SLA_Deadline__c"          # ladder-resolvable
+    d["target_subject_hint"]["expected_value"] = "2026-07-18"
+    res = core.resolve_intent(intent_input=it, ctx=_ctx(), state=state)
+    assert res.refusal is not None
+    detail = str(res.refusal.payload.get("detail"))
+    assert "PLS_FB_SLA_Deadline__c" in detail      # canonical name reached
+    assert "verifiable to-state" not in detail     # no lexical dead-end

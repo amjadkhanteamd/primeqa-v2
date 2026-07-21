@@ -96,6 +96,26 @@ def main() -> int:
         print(f"  agreement {cls}: {n}")
     for g, n in grades.most_common():
         print(f"  grade {g}: {n}")
+
+    # v2 (F0): per-field fate x slot — absent on v1 verdicts (tolerated)
+    field_rows = [f for r in rows for v in ((r["m"] or {}).get("verdicts") or [])
+                  for f in (v["shadow"].get("fields") or [])]
+    if field_rows:
+        per_slot = defaultdict(Counter)
+        for f in field_rows:
+            per_slot[f.get("slot")][f.get("actual") or "unbound"] += 1
+        print(f"\n  field mentions ({len(field_rows)}) — fate x slot on the "
+              "actual subject:")
+        for slot, c in sorted(per_slot.items(),
+                              key=lambda kv: -sum(kv[1].values())):
+            print(f"    {str(slot):<34} exact={c.get('exact', 0):<4} "
+                  f"ladder={c.get('ladder', 0):<4} "
+                  f"unbound={c.get('unbound', 0)}")
+        worst = Counter(f["term"] for f in field_rows
+                        if (f.get("actual") or "unbound") == "unbound")
+        if worst:
+            print("    top unbound terms: "
+                  + ", ".join(f"{t}({n})" for t, n in worst.most_common(6)))
     print(f"  would-veto: {len(vetoes)}")
     for k, oid, v in vetoes:
         print(f"    VETO [{k} {oid}] {v['term']!r} -> actual "
