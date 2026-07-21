@@ -211,6 +211,40 @@ honestly at the kind layer — deterministically kind-swap-rescuable), and
 recovery precision 63% → 53% is a survivor-population effect (~200 offers no
 longer needed at all; total reachable convergence 521 → 574).
 
+## Field vocabulary surface — v30 (D-378)
+
+The F-arc's live residue — semantic-distance names no ladder can reach
+(`Commercial_Tier__c` for `PLS_FB_Tier__c`) — gets the **proactive** half of
+offer → select → verify: the org's real field vocabulary in front of the
+model BEFORE it proposes.
+
+- **The block is data, never prose** (`generation/vocabulary.py`): a
+  deterministic, retrieval-narrowed ORG FIELD VOCABULARY section in the
+  initial user message — the top-3 requirement-relevant objects' real field
+  api names, labels, and picklist values, read from the pinned S1 snapshot
+  via the resolution SymbolTable. Ranking is completeness-first (verbatim
+  multi-word label presence → own-token coverage ratio → hit count — the
+  D-364 lesson: raw token counts let a long incidental name outrank the
+  requirement's own entity, live-observed with a CHANNEL_ORDERS package
+  object). Custom fields first (the FB-V1 inventory lesson), universal audit
+  fields dropped, caps with disclosed truncation (anti-dump, D-362).
+  Fail-soft everywhere: no admissible object / hydration failure → no block,
+  the message keeps its pre-v30 shape.
+- **The contract is v30** (frozen via the working-source composition; hash
+  recorded): listed names are copied VERBATIM; unlisted meanings keep the
+  v29 field contract (best label + grounded recovery). Firewalled against
+  the v28 regression class: the section "is vocabulary, not instruction"
+  and "changes nothing about the subject-object contract" (which stays
+  29/29 live and untouched).
+- **Version-gated end to end**: `registry.supports_org_vocabulary` (v30+)
+  gates message assembly, so every pre-v30 conversation — including replay
+  pins — stays byte-identical (test-pinned).
+- **Measurement**: offline replay CANNOT measure a prompt change (it never
+  calls the LLM). The gate is the live A/B on the F0 field telemetry —
+  before v30: 5/21 field mentions unbound live; the block lists the real
+  counterpart of every one of them. Rollback = pin `CURRENT` to v29 (one
+  line).
+
 ## Out of scope (this arc)
 
 Free-graph prompt contract (rejected in the 2026-07-21 architecture review);
