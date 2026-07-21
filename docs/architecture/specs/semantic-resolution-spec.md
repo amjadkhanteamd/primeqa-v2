@@ -165,6 +165,52 @@ gates (the v28 precedent): replay baselines must not regress; FB-V1 object
 convergence ≥ the v29 baseline; one reviewed live cycle before v30 becomes
 CURRENT. Rollback = registry pin to v29.
 
+## Field resolution — the F-arc (D-377)
+
+The 2026-07-21 live cycle + AK's post-cycle ranking redirected the program:
+subjects were named correctly 14/14 live (the veto is a regression net, not an
+active fixer), while the FIELD-invention class stayed alive on a correctly-
+named subject. The F-arc generalizes the resolver to fields:
+
+- **F0 — telemetry + probe.** Shadow verdicts v2 carry per-field records with
+  hint-slot provenance (`shadow.fields[]`: term / slot / actual / winner
+  fate ∈ exact | ladder | unbound). `scripts/field_resolution_probe.py`
+  classified every corpus field mention: **566 ladder-resolvable mentions
+  were NOT silently fixed** (208 in refuse-slots = condition clauses,
+  invent-nothing; **358 in drop-slots = trigger fields silently DROPPED,
+  i.e. weakened staged tests**) vs only 184 fixed by the old narrow rewrite;
+  596 unbound (top residue: `Commercial_Tier__c` ×127, `Order_Value__c` ×85);
+  71 cross-turn hop recoveries.
+- **F1 — one engine, full scope.** The ladder's rules live ONCE in
+  `resolution/field_ladder.resolve_field_name` (byte-parity port of the
+  production B1 ladder — case-sensitive rule 1, rsplit-last-segment bare,
+  `__c`-only label strip — pinned by an adversarial parity matrix); both the
+  governance wrapper and the solver delegate. `_canonicalize_subject_fields`
+  extends the silent rewrite from `field_name`-on-two-kinds to EVERY
+  subject-owned slot (trigger fields/pairs, rejection/acceptance/update
+  condition fields + `compared_to`, `effect_via_lookup_field`); effect-
+  object-owned slots stay untouched (they resolve against the effect
+  object's inventory, D-375). Names rewrite ONLY on a unique ladder
+  resolution; misses keep every refusal/drop/offer path seeing the model's
+  own words. Shadow observation runs BEFORE canonicalization (raw-name
+  telemetry honesty).
+- **F2 — structural value evidence on offers (offer-only, the ratified
+  law).** `_value_support_rerank`: an admitted offer candidate whose ACTIVE
+  picklist carries the intent's own staged value floats to top-1 (bounded
+  2-hop per admitted candidate, ≤3 S1 reads; stable partition; byte-identical
+  when inapplicable or on any S1 error). Wired where a staged value exists:
+  the value/automation-effect Layer-1 miss offer and the state-transition
+  to-state offer. Admission stays lexical; nothing is ever silently
+  substituted beyond the deterministic ladder.
+
+**F1 replay attribution** (same pin seq=146, corpus 1971): as-proposed
+CONVERGED 235 → 384 (+149); LEXICAL_FIELD 591 → 389 (−202 ≈ the probe's 208);
+req-315 byte-identical 54/89; LEXICAL_SUBJECT unchanged. Two explained
+shifts: KIND_MISFRAME 17 → 68 (previously name-masked intents now fail
+honestly at the kind layer — deterministically kind-swap-rescuable), and
+recovery precision 63% → 53% is a survivor-population effect (~200 offers no
+longer needed at all; total reachable convergence 521 → 574).
+
 ## Out of scope (this arc)
 
 Free-graph prompt contract (rejected in the 2026-07-21 architecture review);
