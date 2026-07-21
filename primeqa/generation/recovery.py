@@ -220,14 +220,21 @@ def format_candidates(candidates: tuple[RecoveryCandidate, ...]) -> str:
 
 
 def offer_payload(entity_type: Optional[str], proposed: Optional[str],
-                  candidates: tuple[RecoveryCandidate, ...]) -> dict:
+                  candidates: tuple[RecoveryCandidate, ...],
+                  value_supported: frozenset = frozenset()) -> dict:
     """Structured telemetry record of one candidate offer (what the substrate
-    disclosed, for the outcome's audit trail — provenance: substrate)."""
+    disclosed, for the outcome's audit trail — provenance: substrate).
+    ``value_supported`` (F2/D-377) marks candidates whose active picklist
+    carries the intent's own staged value — the structural-evidence re-rank's
+    audit trail (the entry additionally carries ``value_support: true``)."""
     return {
         "entity_type": entity_type,
         "proposed": proposed,
         "candidates": [
             {"sf_api_name": c.sf_api_name, "display_name": c.display_name,
-             "score": c.score} for c in candidates],
+             "score": c.score,
+             **({"value_support": True}
+                if c.sf_api_name in value_supported else {})}
+            for c in candidates],
         "source": "substrate",
     }

@@ -59,29 +59,21 @@ def object_candidates(term: str, table: SymbolTable,
 
 def resolve_field(obj: ObjectSymbol, name: Optional[str]
                   ) -> Optional[FieldSymbol]:
-    """The 4-rule unique-match ladder onto ``obj``'s own field inventory:
-    exact qualified api-name → unique bare (ci) → unique ``_``-suffix (ci) →
-    unique normalized label. 0-or->1 at any rule that fires → ``None``."""
-    if not obj or not (name or "").strip():
+    """The 4-rule unique-match ladder onto ``obj``'s own field inventory —
+    delegated to the SINGLE rule implementation
+    (``resolution.field_ladder.resolve_field_name``, production-parity with
+    the governance B1 ladder). 0-or->1 at any firing rule → ``None``."""
+    if not obj or not isinstance(name, str) or not name.strip():
         return None
-    n = name.strip()
-    nl = n.lower()
+    from primeqa.resolution.field_ladder import resolve_field_name
+    q = resolve_field_name(
+        ((f.qualified_api_name, f.label) for f in obj.fields), name.strip())
+    if q is None:
+        return None
     for f in obj.fields:
-        if f.qualified_api_name and f.qualified_api_name.lower() == nl:
+        if f.qualified_api_name == q:
             return f
-    bare = nl.split(".", 1)[1] if "." in nl else nl
-    hits = [f for f in obj.fields if (f.api_name or "").lower() == bare]
-    if hits:
-        return hits[0] if len(hits) == 1 else None
-    hits = [f for f in obj.fields
-            if (f.api_name or "").lower().endswith("_" + bare)]
-    if hits:
-        return hits[0] if len(hits) == 1 else None
-    norm = sim.norm_label(bare)
-    if not norm:
-        return None
-    hits = [f for f in obj.fields if f.label and sim.norm_label(f.label) == norm]
-    return hits[0] if len(hits) == 1 else None
+    return None
 
 
 def resolve_state(fld: Optional[FieldSymbol], value_term: Optional[str]

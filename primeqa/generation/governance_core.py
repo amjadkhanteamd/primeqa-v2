@@ -76,6 +76,7 @@ from primeqa.generation.transition import (
 from primeqa.generation.verified_negative import _RECORD_TYPES_KEY
 from primeqa.generation import control_coverage, control_relevance
 from primeqa.generation import shadow_resolution
+from primeqa.resolution import field_ladder as _field_ladder
 from primeqa.generation.formula_expectation import (
     as_decimal, verify_formula_expectation)
 from primeqa.generation.vr_conflict import (
@@ -1230,37 +1231,78 @@ def _resolve_subject_field_name(neighborhood, name):
          (``Priority__c`` → ``PLS_FB_Priority__c`` via ``…_priority__c``);
       4. unique label match (``Priority`` ≙ display_name, case-insensitive;
          a trailing ``__c``/underscores on the proposal are normalized away).
+
+    F1 (D-377): the rules themselves live in the SINGLE shared engine
+    (``primeqa.resolution.field_ladder.resolve_field_name`` — byte-parity
+    pinned by ``tests/unit/resolution/test_field_ladder.py``); this wrapper
+    only projects the neighborhood into the engine's inventory shape.
     """
-    if not isinstance(name, str) or not name:
-        return None
-    fields = [r.entity for r in neighborhood
-              if r.edge_type == EDGE_BELONGS
-              and r.entity.entity_type == "Field"
-              and isinstance(r.entity.sf_api_name, str)]
-    if any(f.sf_api_name == name for f in fields):
-        return name
-    bare = name.rsplit(".", 1)[-1].lower()
-    label_norm = bare[:-3].replace("_", " ").strip() if bare.endswith("__c") \
-        else bare.replace("_", " ").strip()
+    inventory = [(r.entity.sf_api_name, r.entity.display_name)
+                 for r in neighborhood
+                 if r.edge_type == EDGE_BELONGS
+                 and r.entity.entity_type == "Field"
+                 and isinstance(r.entity.sf_api_name, str)]
+    return _field_ladder.resolve_field_name(inventory, name)
 
-    def _bare(api):
-        return api.rsplit(".", 1)[-1].lower()
 
-    for rule in ("bare", "suffix", "label"):
-        if rule == "bare":
-            cands = [f for f in fields if _bare(f.sf_api_name) == bare]
-        elif rule == "suffix":
-            cands = [f for f in fields
-                     if _bare(f.sf_api_name).endswith("_" + bare)]
-        else:
-            cands = [f for f in fields
-                     if isinstance(f.display_name, str)
-                     and f.display_name.strip().lower() == label_norm]
-        if len(cands) == 1:
-            return cands[0].sf_api_name
-        if len(cands) > 1:
-            return None
-    return None
+def _canonicalize_subject_fields(hint: dict, neighborhood: list) -> dict:
+    """F1 (D-377): canonicalize EVERY subject-owned field slot through the
+    ladder — the generalization of the B1 ``field_name``-only rewrite. A name
+    is rewritten ONLY when the ladder resolves it UNIQUELY to a different
+    real name; unresolvable/ambiguous names pass through untouched, so every
+    existing refusal, drop-never-refuse, and B0-offer path still sees exactly
+    what the model proposed. Effect-object-owned slots (``effect_field`` /
+    ``effect_lookup_field``) are deliberately NOT touched — they resolve
+    against the EFFECT object's inventory downstream (D-375). Returns the
+    original dict unchanged (same identity) when nothing rewrites."""
+    changed = False
+    new_hint = dict(hint)
+
+    def _res(name):
+        r = _resolve_subject_field_name(neighborhood, name)
+        return r if (r is not None and r != name) else None
+
+    for slot in ("field_name", "trigger_field", "effect_via_lookup_field"):
+        fixed = _res(new_hint.get(slot))
+        if fixed:
+            new_hint[slot] = fixed
+            changed = True
+    for slot in ("trigger_fields", "update_trigger_fields"):
+        rows = new_hint.get(slot)
+        if not isinstance(rows, list):
+            continue
+        new_rows, row_changed = [], False
+        for row in rows:
+            if isinstance(row, dict):
+                key = ("field_name" if "field_name" in row
+                       else "field" if "field" in row else None)
+                fixed = _res(row.get(key)) if key else None
+                if fixed:
+                    row = {**row, key: fixed}
+                    row_changed = True
+            new_rows.append(row)
+        if row_changed:
+            new_hint[slot] = new_rows
+            changed = True
+    for slot in ("rejection_conditions", "acceptance_conditions",
+                 "update_conditions"):
+        rows = new_hint.get(slot)
+        if not isinstance(rows, list):
+            continue
+        new_rows, row_changed = [], False
+        for row in rows:
+            if isinstance(row, dict):
+                updates = {key: fixed for key in ("field", "field_name",
+                                                  "compared_to")
+                           if (fixed := _res(row.get(key)))}
+                if updates:
+                    row = {**row, **updates}
+                    row_changed = True
+            new_rows.append(row)
+        if row_changed:
+            new_hint[slot] = new_rows
+            changed = True
+    return new_hint if changed else hint
 
 
 @dataclass(frozen=True)
@@ -1277,7 +1319,54 @@ class _XoDeferral:
     offer: Optional[dict] = None
 
 
-def _field_recovery_tail(proposed_names, neighborhood):
+def _value_support_rerank(s1, neighborhood, cands, staged_value, at_seq):
+    """F2 (D-377): STRUCTURAL value evidence over an admitted field offer —
+    a candidate whose ACTIVE picklist carries the intent's own staged value
+    outranks a lexical stranger (the ``Commercial_Tier__c`` residue: the
+    staged 'Gold' lives in exactly one candidate's value set, so
+    ``PLS_FB_Tier__c`` floats to top-1 and the D-340 offer-follow lands).
+    Re-RANKS only, stable within groups: admission stays lexical (B0), no
+    silent substitution anywhere — the model still re-proposes. Byte-
+    identical ordering when no value is staged, no candidate's picklist
+    carries it, or any S1 read fails. Returns ``(cands, supported_apis)``."""
+    if (s1 is None or at_seq is None or not cands
+            or not isinstance(staged_value, str) or not staged_value.strip()):
+        return cands, frozenset()
+    try:
+        ids_by_api = {r.entity.sf_api_name: r.entity.id
+                      for r in neighborhood
+                      if r.edge_type == EDGE_BELONGS
+                      and r.entity.entity_type == "Field"
+                      and r.entity.sf_api_name}
+        want = staged_value.strip().lower()
+        supported = set()
+        for c in cands:
+            ent_id = ids_by_api.get(c.sf_api_name)
+            if ent_id is None:
+                continue
+            details = s1.get_entity_details(ent_id, at_seq=at_seq) or {}
+            pvs_id = details.get("picklist_value_set_entity_id")
+            if not pvs_id:
+                continue
+            for v in s1.get_picklist_values(pvs_id, at_seq=at_seq) or []:
+                if not v.get("is_active"):
+                    continue
+                if (str(v.get("value_api_name") or "").strip().lower() == want
+                        or str(v.get("value_label") or "").strip().lower()
+                        == want):
+                    supported.add(c.sf_api_name)
+                    break
+        if not supported:
+            return cands, frozenset()
+        ordered = tuple(sorted(
+            cands, key=lambda c: (c.sf_api_name not in supported,)))
+        return ordered, frozenset(supported)
+    except Exception:   # noqa: BLE001 — offers must never break grounding
+        return cands, frozenset()
+
+
+def _field_recovery_tail(proposed_names, neighborhood, *, s1=None,
+                         staged_value=None, at_seq=None):
     """B0.2: ranked near-miss offers for failed FIELD references, from the
     subject's own BELONGS inventory (Field is inside the D-362 recovery
     boundary — lexical entities recover; behavioural ones never do). Returns
@@ -1288,7 +1377,11 @@ def _field_recovery_tail(proposed_names, neighborhood):
     raw field inventory). Live-observed need (the FB-V1 tier ACs): the
     alphabetized inventory line's first 8 names were all standard fields,
     hiding every custom name the model actually needed inside '+16 more' —
-    ranked recovery surfaces the near-miss directly."""
+    ranked recovery surfaces the near-miss directly.
+
+    F2 (D-377): callers holding the intent's staged value pass
+    ``s1``/``staged_value``/``at_seq`` and the admitted set is re-ranked by
+    :func:`_value_support_rerank`; omitted → byte-identical to pre-F2."""
     pool = [(r.entity.sf_api_name, r.entity.display_name)
             for r in neighborhood
             if r.edge_type == EDGE_BELONGS
@@ -1298,8 +1391,11 @@ def _field_recovery_tail(proposed_names, neighborhood):
         if fld and fld not in known:
             cands = _recovery.rank_candidates(fld, pool)
             if cands:
+                cands, supported = _value_support_rerank(
+                    s1, neighborhood, cands, staged_value, at_seq)
                 return (_recovery.format_candidates(cands),
-                        _recovery.offer_payload("Field", fld, cands))
+                        _recovery.offer_payload("Field", fld, cands,
+                                                value_supported=supported))
     return ("", None)
 
 
@@ -2243,7 +2339,8 @@ class AdmissibilityEngine:
             if not (claim_kind == "automation-effect-claim"
                     and _ae_field_resolved):
                 cand.recovery = self._named_ref_recovery(
-                    claim_kind, fields, field_hint)
+                    claim_kind, fields, field_hint,
+                    staged_value=effect_value_hint, at_seq=at_seq)
             if claim_kind == "automation-effect-claim" and field_hint:
                 resolved = _ae_field_resolved
                 if not resolved:
@@ -2269,12 +2366,17 @@ class AdmissibilityEngine:
         return cand
 
     def _named_ref_recovery(self, claim_kind: str, fields: list,
-                            field_hint: Optional[str]) -> Optional[dict]:
+                            field_hint: Optional[str],
+                            staged_value=None,
+                            at_seq: Optional[int] = None) -> Optional[dict]:
         """B0: near-miss offer for a value-claim's Layer-1 FIELD miss — the
-        hint ranks against the subject's own BELONGS_TO fields.
-        In-neighborhood pool only (no extra S1 reads); never raises; None when
-        nothing clears the threshold. Automation hints are deliberately NOT
-        recovered (see caller)."""
+        hint ranks against the subject's own BELONGS_TO fields. Never raises;
+        None when nothing clears the threshold. Automation hints are
+        deliberately NOT recovered (see caller).
+
+        F2 (D-377): when the intent staged a value, the admitted set is
+        re-ranked by structural value evidence (:func:`_value_support_rerank`
+        — a bounded picklist 2-hop per admitted candidate, <=3 reads)."""
         try:
             if claim_kind in ("value-claim",
                               "automation-effect-claim") and field_hint:
@@ -2282,7 +2384,10 @@ class AdmissibilityEngine:
                         for r in fields if r.entity.sf_api_name]
                 cands = _recovery.rank_candidates(field_hint, pool)
                 if cands:
-                    return _recovery.offer_payload("Field", field_hint, cands)
+                    cands, supported = _value_support_rerank(
+                        self._s1, fields, cands, staged_value, at_seq)
+                    return _recovery.offer_payload(
+                        "Field", field_hint, cands, value_supported=supported)
         except Exception:   # noqa: BLE001 — recovery must never break grounding
             return None
         return None
@@ -2788,20 +2893,20 @@ class GovernanceCore:
 
         # admissibility (real S1 grounding, Layer 1)
         neighborhood = self._admit.scoped_neighborhood(subject, at)
-        # B1 arc: deterministic field-name resolution for the field-bearing
-        # positive kinds — the proposed name is canonicalized to the subject's
-        # real qualified api-name when it resolves UNIQUELY (bare / suffix /
-        # label rules); 0-or-ambiguous keeps the proposed name and the
-        # downstream refusal stands. Division of responsibility: the model
-        # names the behaviour's field, the substrate supplies the org's
-        # naming mechanics.
-        if claim_kind in ("value-claim", "automation-effect-claim"):
-            _proposed_field = hint.get("field_name")
-            _resolved_field = _resolve_subject_field_name(
-                neighborhood, _proposed_field)
-            if _resolved_field is not None and _resolved_field != _proposed_field:
-                hint = dict(hint)
-                hint["field_name"] = _resolved_field
+        # B1 arc: deterministic field-name canonicalization — a proposed name
+        # is rewritten to the subject's real qualified api-name when it
+        # resolves UNIQUELY (bare / suffix / label rules); 0-or-ambiguous
+        # keeps the proposed name and the downstream refusal/drop stands.
+        # Division of responsibility: the model names the behaviour's field,
+        # the substrate supplies the org's naming mechanics.
+        # F1 (D-377): canonicalize EVERY subject-owned field slot (was:
+        # field_name on value/automation-effect only). The F0 probe over the
+        # req-320/req-315 corpus measured the gap: 566 ladder-resolvable
+        # mentions the narrow rewrite left to refusal-hops (208, condition
+        # slots) or silent trigger DROPS (358 — weakened staged tests).
+        # Shadow observation above sees the RAW names (telemetry honesty);
+        # everything downstream of here sees canonical ones.
+        hint = _canonicalize_subject_fields(hint, neighborhood)
         # Control-telemetry Phase 0: OBSERVE the subject's control facts for the
         # finalize-time coverage map. Read-only — stashing changes no resolution
         # outcome; refused intents stash too (Expected must not depend on
@@ -3410,8 +3515,12 @@ class GovernanceCore:
                 # framing.
                 _voc, _offer = "", None
                 if field_ent is None and hint.get("field_name"):
+                    # F2 (D-377): the to-state IS a staged picklist value —
+                    # structural value evidence ranks the real field first.
                     _voc, _offer = _field_recovery_tail(
-                        [hint.get("field_name")], neighborhood)
+                        [hint.get("field_name")], neighborhood,
+                        s1=self._s1, staged_value=hint.get("expected_value"),
+                        at_seq=at)
                 _cap = ""
                 _cap_field = None
                 if field_ent is not None:

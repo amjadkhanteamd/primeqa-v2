@@ -126,9 +126,10 @@ def main() -> None:
                         continue
                     excerpt = (d.get("requirement_excerpt")
                                or rp.get("requirement_excerpt") or "")
-                    graph = sr.business_graph_from_intent(d, excerpt)
-                    if graph is None:
+                    got = sr.intent_graph(d, excerpt)
+                    if got is None:
                         continue
+                    graph, slots = got
                     hint = d.get("target_subject_hint") or {}
                     actual_outcome, actual_api = _actual_subject(
                         model, memo, hint, seq)
@@ -138,7 +139,7 @@ def main() -> None:
                         graph, resolved, table,
                         actual_outcome=actual_outcome, actual_api=actual_api,
                         claim_kind=d.get("claim_kind_hint"),
-                        ac_ref=d.get("ac_ref"))
+                        ac_ref=d.get("ac_ref"), slots=slots)
                     traces.append({
                         "key": k, "outcome_id": str(row["outcome_id"]),
                         "created_at": str(row["created_at"]),
