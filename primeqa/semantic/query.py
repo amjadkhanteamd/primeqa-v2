@@ -210,6 +210,13 @@ class SemanticOrgModel:
         self._org = connected_org_id
         self._validated_seqs: set[int] = set()
 
+    @property
+    def connected_org_id(self) -> Optional[str]:
+        """The org this model is bound to, or ``None`` when org-blind.
+        Read-only; added for the resolution KnowledgeSource (D-376) so
+        consumers never reach into ``_org``."""
+        return self._org
+
     def _org_clause(self, alias: str, params: dict[str, Any]) -> Optional[str]:
         """The per-org scope predicate on ``<alias>.connected_org_id``, or
         ``None`` when org-blind (``self._org is None``).
