@@ -139,10 +139,16 @@ def _user_tool_result_msg(tu: ToolUseBlock, content: str, is_error: bool = False
 # ---------------------------------------------------------------------------
 
 
-def _initial_user_message(ctx: ConversationContext) -> dict:
+def _initial_user_message(ctx: ConversationContext,
+                          include_vocabulary: bool = False) -> dict:
+    # D-378: the vocabulary block rides between the requirement and the call
+    # instruction — data the frozen v30 contract knows how to read. Gated on
+    # the resolved prompt version so pre-v30 messages stay byte-identical.
+    vocab = getattr(ctx, "org_vocabulary", "") if include_vocabulary else ""
     text = (
         f"Requirement: {ctx.requirement_text}\n"
-        f"Shared interpretation context: {ctx.shared_context}\n"
+        + (f"{vocab}\n" if vocab else "")
+        + f"Shared interpretation context: {ctx.shared_context}\n"
         "Call propose_semantic_intent for this requirement."
     )
     return {"role": "user", "content": text}
@@ -381,6 +387,7 @@ class GenerationRuntime:
         tool_turn_fn: ToolTurnFn, requirements: Optional[list[RequirementInput]] = None,
         policy: Optional[PhasePolicy] = None,
         persister: Optional[LedgerPersisterProtocol] = None,
+        vocabulary_fn: Optional[Callable[[str], str]] = None,
     ) -> BatchResult:
         policy = policy or PhasePolicy()
         reqs = requirements if requirements is not None else self._derive_requirements(request)
@@ -401,6 +408,10 @@ class GenerationRuntime:
                 governance_context=request.governance_context,
                 operational_context=request.operational_context,
                 shared_context=shared,
+                # D-378: per-requirement vocabulary block (data; "" = none);
+                # version-gated at message assembly, fail-soft at build.
+                org_vocabulary=(vocabulary_fn(req.text)
+                                if vocabulary_fn else ""),
             )
             progress = BatchProgress(resolved=i, total=len(reqs))
             result = self._run_requirement(ctx, seam, tool_turn_fn, policy, budget, progress)
@@ -428,7 +439,9 @@ class GenerationRuntime:
         _pv = ctx.operational_context.prompt_template_version or prompts_registry.CURRENT
         state.system = prompts_registry.get(_pv)
         state.prompt_version = _pv
-        state.messages = [_initial_user_message(ctx)]
+        state.messages = [_initial_user_message(
+            ctx,
+            include_vocabulary=prompts_registry.supports_org_vocabulary(_pv))]
         phase = Phase.PROPOSE
         phase_attempt = 1   # == llm_calls.attempt_index within this logical emission (D-087)
         turns = 0

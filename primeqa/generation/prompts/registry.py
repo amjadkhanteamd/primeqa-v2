@@ -28,7 +28,7 @@ _VERSIONS_DIR = _DIR / "versions"
 
 # The default version new generations use (replay pins its own version on the
 # request's operational_context.prompt_template_version, per D-071).
-CURRENT = "generation@v29"
+CURRENT = "generation@v30"
 
 # version id -> frozen composed artifact (filesystem-safe slug).
 _FILES = {
@@ -61,6 +61,7 @@ _FILES = {
     "generation@v27": _VERSIONS_DIR / "generation_v27.md",
     "generation@v28": _VERSIONS_DIR / "generation_v28.md",
     "generation@v29": _VERSIONS_DIR / "generation_v29.md",
+    "generation@v30": _VERSIONS_DIR / "generation_v30.md",
 }
 
 # Recorded SHA-256 of each frozen version's composed content (D-103.1 drift
@@ -221,7 +222,28 @@ RECORDED_HASHES = {
     # fields keep label/bare-name freedom with grounded recovery where
     # supported. Shows-value routing (v28) unchanged.
     "generation@v29": "c5c876c74327a8a1c2df3a9fabbf40efacf653d5338df9609629dee180e0a702",
+    # v30 (D-378, field vocabulary surface): the F-arc's live residue —
+    # semantic-distance field names (Commercial_Tier__c for PLS_FB_Tier__c)
+    # no ladder can reach — gets the proactive half of offer→select→verify:
+    # a retrieval-narrowed ORG FIELD VOCABULARY section in the user message
+    # (substrate-built data, never prose) + a verbatim-copy contract for
+    # listed names. Firewalled against the v28 regression class: the list
+    # "changes nothing about the subject-object contract", and it is
+    # vocabulary, never instruction. Rollback = pin CURRENT to v29.
+    "generation@v30": "add22daa544885aa888b3bbaf50edc1665f7474aa914401c5531d8c9aa7d7282",
 }
+
+
+def supports_org_vocabulary(version: str | None = None) -> bool:
+    """Whether ``version``'s contract knows the ORG FIELD VOCABULARY section
+    (v30+, D-378). Pre-v30 conversations must stay byte-identical, so the
+    runtime attaches the block only when this is True. Unknown/unparsable
+    versions read False (fail-closed to the pre-v30 message shape)."""
+    version = version or CURRENT
+    try:
+        return int(version.rsplit("@v", 1)[-1]) >= 30
+    except (ValueError, TypeError):
+        return False
 
 # Working composition order — authors the NEXT frozen version (NOT runtime).
 _FRAGMENTS = ["data_behavior", "configuration", "permission", "ui"]

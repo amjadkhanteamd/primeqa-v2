@@ -16,6 +16,7 @@ flagged for scale (D-106.4).
 """
 from __future__ import annotations
 
+import logging
 from typing import Optional
 
 from primeqa.generation.gateway_binding import build_tool_turn_fn
@@ -28,6 +29,8 @@ from primeqa.intelligence.llm.router import TenantPolicy
 from primeqa.semantic.connection import get_tenant_connection
 from primeqa.semantic.query import SemanticOrgModel
 from primeqa.sync.credentials import resolve_connected_org_or_raise
+
+log = logging.getLogger(__name__)
 
 # The substrate-3 production generation task — the usage-accounting tag the
 # gateway logs under (distinct from the eval's ``generation_live_eval``). Model
@@ -73,8 +76,24 @@ def run_generation(
     with get_tenant_connection(tenant_id) as conn:
         # D-286: scope the batch's S1 reads to the run's org (fail-loud).
         org_id = resolve_connected_org_or_raise(conn, environment_id)
-        seam = GovernanceCore(SemanticOrgModel(conn, connected_org_id=org_id))
+        s1_model = SemanticOrgModel(conn, connected_org_id=org_id)
+        seam = GovernanceCore(s1_model)
+        # D-378: hydrate the symbol table once per batch for the ORG FIELD
+        # VOCABULARY block. Fail-soft — a failed hydration omits the block
+        # (the message keeps its pre-v30 shape); it never fails the run.
+        vocabulary_fn = None
+        try:
+            from primeqa.generation.vocabulary import build_field_vocabulary
+            from primeqa.resolution.knowledge import S1KnowledgeSource
+            _table = S1KnowledgeSource(s1_model).symbol_table(
+                request.semantic_context.s1_version_seq)
+            vocabulary_fn = (lambda req_text:
+                             build_field_vocabulary(_table, req_text))
+        except Exception:   # noqa: BLE001 — vocabulary must never break a run
+            log.debug("D-378 vocabulary hydration failed (block omitted)",
+                      exc_info=True)
         return GenerationRuntime().run(
             request=request, seam=seam, tool_turn_fn=fn,
             persister=LedgerPersister(tenant_id),
+            vocabulary_fn=vocabulary_fn,
         )

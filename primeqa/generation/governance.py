@@ -64,6 +64,11 @@ class ConversationContext:
     governance_context: GovernanceContext
     operational_context: OperationalContext
     shared_context: dict[str, Any] = field(default_factory=dict)
+    # D-378: the per-requirement ORG FIELD VOCABULARY block (substrate-built
+    # data; "" = none). Attached to the initial user message ONLY when the
+    # resolved prompt version supports it (v30+) — pre-v30 conversations
+    # stay byte-identical.
+    org_vocabulary: str = ""
 
 
 # ---------------------------------------------------------------------------

@@ -42,18 +42,23 @@ def test_working_source_composes_to_current():
     assert hashlib.sha256(composed.encode("utf-8")).hexdigest() == registry.recorded_hash()
 
 
-def test_current_resolves_to_v29():
-    # v29 (B0/B1 seam): the naming contract made CAPABILITY-ACCURATE after
-    # the v28 object-anchoring regression — the subject object is VALIDATED
-    # only (a wrong-but-real name resolves silently, no correction), while
-    # fields keep label/bare-name freedom with grounded recovery where
-    # supported. v28's shows-value routing is retained verbatim; v1..v28
-    # stay frozen + pinned-resolvable.
-    assert registry.CURRENT == "generation@v29"
-    assert registry.get() == registry.get("generation@v29")
-    # v29's split naming contract
+def test_current_resolves_to_v30():
+    # v30 (D-378, field vocabulary surface): the ORG FIELD VOCABULARY
+    # contract rides the user message as substrate-built DATA; v29's split
+    # naming contract (subject validated-only / field freedom + recovery) is
+    # retained verbatim, and the new section explicitly changes nothing
+    # about the subject-object contract (the v28-regression firewall).
+    # v1..v29 stay frozen + pinned-resolvable.
+    assert registry.CURRENT == "generation@v30"
+    assert registry.get() == registry.get("generation@v30")
+    # v29's split naming contract survives verbatim
     assert "VALIDATES the subject you name" in registry.get()
     assert "resolves successfully" in registry.get()
+    # the v30 delta + its firewall (whitespace-normalized: the frozen prose
+    # hard-wraps, phrases may span lines)
+    flat = " ".join(registry.get().split())
+    assert "ORG FIELD VOCABULARY" in flat
+    assert "changes nothing about the subject-object contract" in flat
     assert "no correction is ever offered" in registry.get()
     assert "Field naming:" in registry.get()
     # the v28 wording that caused the regression is GONE
