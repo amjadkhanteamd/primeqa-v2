@@ -2226,6 +2226,40 @@ def _author_state_transition(g: GroundedStateTransition) -> EmissionBundle:
     )
 
 
+def _trigger_conditions(g: GroundedAutomationEffect) -> SemanticConditionsBody:
+    """D-383 (SUB-1): the entry-gate staging IS claim truth. An automation
+    effect holds UNDER the staged field states — the create's
+    ``trigger_fields`` and the transition's ``update_trigger_fields`` — yet
+    they rode only recipe bodies + prose, invisible to S2 readers, S6/S8, and
+    the decision layer. Author them as ``semantic_conditions`` (equals
+    clauses, subject-sorted for deterministic identity).
+
+    IDENTITY CONSEQUENCE (deliberate, the D-339/D-353 lesson):
+    ``semantic_conditions`` feed ``compute_identity_hash``, so every
+    regenerated automation-effect claim with staged triggers RE-KEYS.
+    Migration = deprecate-then-regen per requirement (D-353); the D-383
+    ledger entry states it."""
+    # the transition's INTO-state (update pairs) is the truth the effect
+    # fires under — on a shared field it WINS over the create's staging
+    pairs = (tuple(getattr(g, "update_trigger_fields", None) or ())
+             + tuple(getattr(g, "trigger_fields", None) or ()))
+    seen: set = set()
+    picked = []
+    for ep, v in pairs:
+        if v is None or not ep.external_id or ep.external_id in seen:
+            continue
+        seen.add(ep.external_id)
+        picked.append((ep, v))
+    picked.sort(key=lambda p: p[0].external_id)      # deterministic identity
+    return SemanticConditionsBody(conditions=[
+        Condition(
+            subject=IdentityBearingRef(
+                entity_type=ep.entity_type, entity_id=ep.entity_id,
+                version_seq=g.version_seq, external_id=ep.external_id),
+            predicate="equals", value=v)
+        for ep, v in picked])
+
+
 def _author_automation_effect(g: GroundedAutomationEffect) -> EmissionBundle:
     """Author the automation-effect bundle (D-210.1). Same-record: the Flow
     stamps a field on the trigger record — observe-the-org shape on the
@@ -2308,7 +2342,7 @@ def _author_automation_effect(g: GroundedAutomationEffect) -> EmissionBundle:
                    f"{object_api} (the correlation distractor), read the "
                    f"first {object_api} back, assert the {rs['fn']} rollup "
                    f"set {field_bare}={rs['expected']!r}")
-        conditions = SemanticConditionsBody(conditions=[])
+        conditions = _trigger_conditions(g)   # D-383 (SUB-1)
         trigger = DataMutationTriggerBody(
             operation="create", target=child_target,
             identity_context="system", volume="single")
@@ -2405,7 +2439,7 @@ def _author_automation_effect(g: GroundedAutomationEffect) -> EmissionBundle:
                        f"back, assert the premise-conditioned arm set "
                        f"{field_bare}={g.effect_value!r} (without the "
                        f"sibling the arm provably cannot fire)")
-            conditions = SemanticConditionsBody(conditions=[])
+            conditions = _trigger_conditions(g)   # D-383 (SUB-1)
             trigger = DataMutationTriggerBody(
                 operation="create", target=target,
                 identity_context="system", volume="single")
@@ -2679,7 +2713,7 @@ def _author_automation_effect(g: GroundedAutomationEffect) -> EmissionBundle:
                            f"update the {object_api} into the entry state, "
                            f"assert the protected child STILL carries "
                            f"{p_bare}={p_value!r} (count_equals 1)")
-                conditions = SemanticConditionsBody(conditions=[])
+                conditions = _trigger_conditions(g)   # D-383 (SUB-1)
                 trigger = DataMutationTriggerBody(
                     operation="update", target=target,
                     identity_context="system", volume="single")
@@ -2764,7 +2798,7 @@ def _author_automation_effect(g: GroundedAutomationEffect) -> EmissionBundle:
                        f"{n} children carry "
                        f"{field_bare}={pc['updated_value']!r} (the "
                        f"distractor must stay untouched)")
-            conditions = SemanticConditionsBody(conditions=[])
+            conditions = _trigger_conditions(g)   # D-383 (SUB-1)
             trigger = DataMutationTriggerBody(
                 operation="update", target=target,
                 identity_context="system", volume="single")
@@ -2877,7 +2911,7 @@ def _author_automation_effect(g: GroundedAutomationEffect) -> EmissionBundle:
             DataAssertStep(step_id="assert-effect", predicate=assert_pred),
         ]
 
-    conditions = SemanticConditionsBody(conditions=[])
+    conditions = _trigger_conditions(g)   # D-383 (SUB-1)
     trigger = DataMutationTriggerBody(
         operation=trigger_op, target=target,
         identity_context="system", volume="single")
