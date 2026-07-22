@@ -100,3 +100,76 @@ def test_conditions_authored_into_semantic_conditions():
     assert len(conds) == 1
     assert conds[0].subject.external_id == "Opportunity.Loan_Amount__c"
     assert conds[0].predicate == "is_null" and conds[0].value is None
+
+
+# ---------------------------------------------------------------------------
+# D-384: matches_pattern grounds VALUE-FREE — invented spellings cannot mint
+# distinct identities (the req-320 duplicate class: 13 spellings of ONE
+# PLS_FB_Order behaviour). End-to-end pin through the live chokepoint:
+# _ground_rejection_conditions (drop) -> author_emission -> identity_hash.
+# ---------------------------------------------------------------------------
+
+from types import SimpleNamespace                            # noqa: E402
+
+from primeqa.generation import governance_core as gc         # noqa: E402
+
+EXT_REF = uuid4()
+ORDER_NO = uuid4()
+
+
+def _fb_neighborhood():
+    """A stable BELONGS_TO neighborhood — entity ids held constant so hash
+    comparisons discriminate on the CONDITIONS, never on ref identity."""
+    return [
+        SimpleNamespace(edge_type="BELONGS_TO", entity=SimpleNamespace(
+            entity_type="Field", id=EXT_REF, attributes={},
+            sf_api_name="PLS_FB_Order__c.External_Reference__c")),
+        SimpleNamespace(edge_type="BELONGS_TO", entity=SimpleNamespace(
+            entity_type="Field", id=ORDER_NO, attributes={},
+            sf_api_name="PLS_FB_Order__c.Order_Number__c")),
+    ]
+
+
+def _ground_mp(field, value=...):
+    clause = {"field": field, "predicate": "matches_pattern"}
+    if value is not ...:
+        clause["value"] = value
+    grounded, invalid = gc._ground_rejection_conditions(
+        [clause], _fb_neighborhood(), 7)
+    assert invalid == [] and len(grounded) == 1
+    return tuple(grounded)
+
+
+def test_matches_pattern_spellings_collapse_to_one_identity():
+    """Every invented spelling grounds to the SAME value-free condition, so
+    emission mints ONE identity_hash and the D-339 persister dedup collapses
+    regenerations — the live corpus's 13-spelling group becomes 1 claim."""
+    spellings = ["INVALID", "INVALID_FORMAT", "invalid-format",
+                 "<invalid-format>", "<invalid format>",
+                 "<not matching required format>"]
+    hashes = {
+        _hash(author_emission(_grounded(conditions=_ground_mp(
+            "PLS_FB_Order__c.External_Reference__c", s))))
+        for s in spellings}
+    assert len(hashes) == 1
+
+
+def test_matches_pattern_value_less_proposal_grounds_same_identity():
+    """A model that already honours the division of responsibility (no value
+    at all) grounds to the SAME identity — pre-D-384 this refused
+    'requires a value', punishing the honest proposal."""
+    valued = _hash(author_emission(_grounded(conditions=_ground_mp(
+        "PLS_FB_Order__c.External_Reference__c", "INVALID"))))
+    value_less = _hash(author_emission(_grounded(conditions=_ground_mp(
+        "PLS_FB_Order__c.External_Reference__c"))))
+    assert valued == value_less
+
+
+def test_matches_pattern_field_still_discriminates_identity():
+    """The drop removes NOISE, not signal — the same predicate on a DIFFERENT
+    field is still a distinct business state and a distinct claim."""
+    a = _hash(author_emission(_grounded(conditions=_ground_mp(
+        "PLS_FB_Order__c.External_Reference__c"))))
+    b = _hash(author_emission(_grounded(conditions=_ground_mp(
+        "PLS_FB_Order__c.Order_Number__c"))))
+    assert a != b

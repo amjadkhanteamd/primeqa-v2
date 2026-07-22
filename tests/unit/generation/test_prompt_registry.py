@@ -42,15 +42,17 @@ def test_working_source_composes_to_current():
     assert hashlib.sha256(composed.encode("utf-8")).hexdigest() == registry.recorded_hash()
 
 
-def test_current_resolves_to_v30():
-    # v30 (D-378, field vocabulary surface): the ORG FIELD VOCABULARY
-    # contract rides the user message as substrate-built DATA; v29's split
-    # naming contract (subject validated-only / field freedom + recovery) is
-    # retained verbatim, and the new section explicitly changes nothing
-    # about the subject-object contract (the v28-regression firewall).
-    # v1..v29 stay frozen + pinned-resolvable.
-    assert registry.CURRENT == "generation@v31"
-    assert registry.get() == registry.get("generation@v31")
+def test_current_resolves_to_v32():
+    # v32 (D-384): matches_pattern is value-free in the rejection-condition
+    # taxonomy — the org defines the required format; the model never invents
+    # a sample/placeholder value. Prior contracts carried verbatim.
+    # v1..v31 stay frozen + pinned-resolvable.
+    assert registry.CURRENT == "generation@v32"
+    assert registry.get() == registry.get("generation@v32")
+    # v32 delta: the org-owned-format contract (D-384)
+    flat32 = " ".join(registry.get().split())
+    assert "never invent a sample, placeholder" in flat32
+    assert '`"is_null"` / `"is_not_null"` / `"matches_pattern"`, which take NO `value`' in flat32
     # v31 delta: the conditional-absence contract (D-381)
     assert "CONDITIONAL absence" in " ".join(registry.get().split())
     # v29's split naming contract survives verbatim

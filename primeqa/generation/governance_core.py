@@ -234,7 +234,15 @@ def phase_for_reason(reason: str) -> Optional[str]:
 # construction; re-checked HERE so an invalid LLM-proposed clause REFUSES at
 # grounding rather than crashing emission.
 _CONDITION_VALUE_FREE = {"is_null", "is_not_null"}
-_CONDITION_VALUE_BEARING = {"equals", "not_equals", "in_set", "matches_pattern"}
+_CONDITION_VALUE_BEARING = {"equals", "not_equals", "in_set"}
+# D-384: predicates whose value is ORG-OWNED — ``matches_pattern``'s format
+# lives in the grounding VR's REGEX, so the model has nothing true to supply
+# and any proposed value is an invented spelling that would mint a new claim
+# identity per regeneration (the req-320 duplicate class: 13 spellings of one
+# behaviour). The proposed value is DROPPED before grounding — drop, never
+# refuse (the ``_ground_trigger_fields`` posture): the substrate enforces the
+# division of responsibility, the prompt merely teaches it.
+_CONDITION_VALUE_DROPPED = {"matches_pattern"}
 # D-330: cross-field comparison predicates — the right-hand side is ANOTHER
 # field (clause key ``compared_to``), never a literal value.
 _CONDITION_FIELD_COMPARISON = {"exceeds"}
@@ -247,7 +255,10 @@ def _ground_rejection_conditions(proposed, neighborhood: list, version_seq: int)
     subject (verified in the scoped neighborhood) and its predicate/value must
     satisfy the S2 ``Condition`` coupling. D-330: a CROSS-FIELD clause is
     ``{field, predicate: "exceeds", compared_to: "Object.OtherField"}`` — both
-    fields must BELONG_TO the subject; ``value`` is forbidden. Returns
+    fields must BELONG_TO the subject; ``value`` is forbidden. D-384: a
+    ``matches_pattern`` clause grounds VALUE-FREE — the org's VR REGEX owns the
+    format, so any proposed value is dropped (never refused) before it can
+    enter identity. Returns
     ``(grounded, invalid)`` — ``invalid`` is a list of human reasons; a non-empty
     list means the caller refuses (invent-nothing). Empty ``proposed`` ->
     ``([], [])``: the dormant default, byte-identical to the pre-D-293
@@ -292,7 +303,13 @@ def _ground_rejection_conditions(proposed, neighborhood: list, version_seq: int)
             continue
         if compared_to is not None:
             invalid.append(f"predicate {predicate!r} forbids compared_to"); continue
-        if predicate in _CONDITION_VALUE_FREE:
+        if predicate in _CONDITION_VALUE_DROPPED:
+            # D-384: the org owns this predicate's constant (the VR's REGEX
+            # defines the format) — a model-supplied value never carries
+            # semantic content, so it is dropped rather than grounded into
+            # identity. Value-less proposals ground the same way.
+            value = None
+        elif predicate in _CONDITION_VALUE_FREE:
             if value is not None:
                 invalid.append(f"predicate {predicate!r} forbids a value"); continue
         elif predicate in _CONDITION_VALUE_BEARING:

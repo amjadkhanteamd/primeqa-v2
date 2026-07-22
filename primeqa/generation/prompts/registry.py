@@ -28,7 +28,7 @@ _VERSIONS_DIR = _DIR / "versions"
 
 # The default version new generations use (replay pins its own version on the
 # request's operational_context.prompt_template_version, per D-071).
-CURRENT = "generation@v31"
+CURRENT = "generation@v32"
 
 # version id -> frozen composed artifact (filesystem-safe slug).
 _FILES = {
@@ -63,6 +63,7 @@ _FILES = {
     "generation@v29": _VERSIONS_DIR / "generation_v29.md",
     "generation@v30": _VERSIONS_DIR / "generation_v30.md",
     "generation@v31": _VERSIONS_DIR / "generation_v31.md",
+    "generation@v32": _VERSIONS_DIR / "generation_v32.md",
 }
 
 # Recorded SHA-256 of each frozen version's composed content (D-103.1 drift
@@ -239,6 +240,12 @@ RECORDED_HASHES = {
     # Everything else (incl. the v30 vocabulary contract) verbatim.
     # Rollback = pin CURRENT to v30.
     "generation@v31": "799457d0f2a4ab0c7d36e75763c3229890dcc8c0abf0716b9849445649f1848f",
+    # v32 (D-384): `matches_pattern` becomes value-free in the rejection-
+    # condition clause taxonomy — the org defines the required format (its
+    # own VR REGEX); the model names the field + predicate and never invents
+    # a sample/placeholder value (the substrate drops one if proposed).
+    # Everything else verbatim. Rollback = pin CURRENT to v31.
+    "generation@v32": "7b53a0b6a5ec20d8a1348b1e82dd7e9c465a1b90fb10a42beee9c8851be3fe97",
 }
 
 
