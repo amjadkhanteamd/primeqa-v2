@@ -2248,6 +2248,15 @@ def _trigger_conditions(g: GroundedAutomationEffect) -> SemanticConditionsBody:
     for ep, v in pairs:
         if v is None or not ep.external_id or ep.external_id in seen:
             continue
+        # D-383.1 (live-caught): staged trigger values can be FLOATS
+        # (250000.01 currency thresholds) — canonicalization v1 forbids
+        # floats in identity-bearing content (SPEC §6.3.2). Same coercion
+        # law as the hint→claim boundary (`_identity_safe`, D-304):
+        # shortest-repr string; S4's typed-tolerant equals grades
+        # identically. Mirrored here (emission cannot import governance —
+        # the dependency runs the other way).
+        if isinstance(v, float) and not isinstance(v, bool):
+            v = repr(v)
         seen.add(ep.external_id)
         picked.append((ep, v))
     picked.sort(key=lambda p: p[0].external_id)      # deterministic identity
