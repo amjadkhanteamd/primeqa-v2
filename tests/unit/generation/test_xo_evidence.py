@@ -1168,3 +1168,135 @@ def test_bare_existence_intent_still_binds_the_creator_not_the_updater():
     assert res.refusal is None, getattr(res.refusal, "payload", None)
     [g] = state.groundings
     assert g.automation.external_id == "PLS_FB_FL04_Confirmation_Task"
+
+
+# ---------------------------------------------------------------------------
+# D-380 — the rollup FALLBACK at the cross-object refusal gates: the model's
+# natural cross-object framing for a child-set aggregate reroutes onto the
+# E3 rollup resolution (stripped framing, every E3 law intact)
+# ---------------------------------------------------------------------------
+
+def _world_fl07_with_own_flow(*, rollup_flows=1):
+    """Like _world_fl07 but the SUBJECT has its OWN (decoy) flow, so the
+    no-name branch binds provisionally and no_producer_floor engages — the
+    live Order shape (14 own flows, none producing the child effect)."""
+    order = _ent("Object", "PLS_FB_Order__c", "PLS FB Order")
+    o_total = _ent("Field", "PLS_FB_Order__c.PLS_FB_Order_Total__c",
+                   "Order Total")
+    o_count = _ent("Field", "PLS_FB_Order__c.PLS_FB_Line_Count__c",
+                   "Line Count")
+    line = _ent("Object", "PLS_FB_Order_Line__c", "PLS FB Order Line")
+    l_order = _ent("Field", "PLS_FB_Order_Line__c.PLS_FB_Order__c", "Order")
+    l_total = _ent("Field", "PLS_FB_Order_Line__c.PLS_FB_Line_Total__c",
+                   "Line Total")
+    with open(FIXTURE) as f:          # FL04 — creates Tasks, NOT the effect
+        decoy_meta = json.load(f)
+    decoy = _ent("Flow", "PLS_FB_FL04_Confirmation_Task", "Confirmation Task",
+                 attrs={"Metadata": decoy_meta["Metadata"]})
+    with open(FL07_FIXTURE) as f:
+        d = json.load(f)
+    entities = [order, o_total, o_count, line, l_order, l_total, decoy]
+    for i in range(rollup_flows):
+        entities.append(_ent(
+            "Flow",
+            "PLS_FB_FL07_Order_Rollup" if i == 0 else f"PLS_FB_FL07_Clone{i}",
+            "Order Rollup", attrs={"Metadata": d["Metadata"]}))
+    s1 = _FakeS1(
+        entities=entities,
+        rows_by_object={
+            "PLS_FB_Order__c": [
+                SimpleNamespace(edge_type=gc.EDGE_BELONGS, entity=e)
+                for e in (o_total, o_count)] + [
+                SimpleNamespace(edge_type=gc.EDGE_FLOW, entity=decoy)],
+            "PLS_FB_Order_Line__c": [
+                SimpleNamespace(edge_type=gc.EDGE_BELONGS, entity=e)
+                for e in (l_order, l_total)],
+        },
+        details={l_total.id: {"field_type": "currency"}})
+    return gc.GovernanceCore(s1)
+
+
+def _xo_rollup_intent(field, **kw):
+    """The live AC12 framing: subject Order, cross-object slots pointing at
+    the child — exactly what the E3 path forbids."""
+    base = {"effect_object": "PLS_FB_Order_Line__c",
+            "effect_lookup_field": "PLS_FB_Order__c"}
+    base.update(kw)
+    return _rollup_intent(field, **base)
+
+
+def test_rollup_fallback_grounds_the_cross_object_framing():
+    core = _world_fl07_with_own_flow()
+    state = _state()
+    state.attempted_interpretation = {"candidate_paths": []}   # runtime shape
+    res = core.resolve_intent(
+        intent_input=_xo_rollup_intent("PLS_FB_Order__c.PLS_FB_Order_Total__c"),
+        ctx=_ctx(), state=state)
+    assert res.refusal is None, getattr(res.refusal, "payload", None)
+    [g] = state.groundings
+    assert g.automation.external_id == "PLS_FB_FL07_Order_Rollup"
+    assert g.rollup_spec["fn"] == "Sum"
+    # the reframe is disclosed (audit; hash-safe extra ai key)
+    [reframe] = state.attempted_interpretation["rollup_reframes"]
+    assert reframe["field"] == "PLS_FB_Order__c.PLS_FB_Order_Total__c"
+    assert reframe["dropped_slots"] == ["effect_lookup_field", "effect_object"]
+
+
+def test_rollup_fallback_covers_update_trigger_framing():
+    core = _world_fl07_with_own_flow()
+    state = _state()
+    state.attempted_interpretation = {"candidate_paths": []}   # runtime shape
+    res = core.resolve_intent(
+        intent_input=_xo_rollup_intent(
+            "PLS_FB_Order__c.PLS_FB_Line_Count__c",
+            update_trigger_fields=[
+                {"field_name": "PLS_FB_Order__c.PLS_FB_Order_Total__c",
+                 "value": "10"}]),
+        ctx=_ctx(), state=state)
+    assert res.refusal is None, getattr(res.refusal, "payload", None)
+    [g] = state.groundings
+    assert g.rollup_spec["fn"] == "Count"
+    [reframe] = state.attempted_interpretation["rollup_reframes"]
+    assert "update_trigger_fields" in reframe["dropped_slots"]
+
+
+def test_rollup_fallback_never_reroutes_absence():
+    core = _world_fl07_with_own_flow()
+    res = core.resolve_intent(
+        intent_input=_xo_rollup_intent(
+            "PLS_FB_Order__c.PLS_FB_Order_Total__c", expected_absence=True),
+        ctx=_ctx(), state=_state())
+    assert res.refusal is not None
+    detail = str(res.refusal.payload.get("detail"))
+    assert "re-propose value-less" not in detail       # no reframe hint either
+
+
+def test_rollup_fallback_never_fires_with_a_staged_value():
+    core = _world_fl07_with_own_flow()
+    res = core.resolve_intent(
+        intent_input=_xo_rollup_intent(
+            "PLS_FB_Order__c.PLS_FB_Order_Total__c", expected_value="500"),
+        ctx=_ctx(), state=_state())
+    assert res.refusal is not None
+    # ...but the reframe HINT rides the refusal (the D-340 hop can recover)
+    assert "re-propose value-less" in str(res.refusal.payload.get("detail"))
+
+
+def test_rollup_fallback_absent_producer_keeps_refusal_with_hint():
+    core = _world_fl07_with_own_flow(rollup_flows=0)
+    state = _state()
+    res = core.resolve_intent(
+        intent_input=_xo_rollup_intent("PLS_FB_Order__c.PLS_FB_Order_Total__c"),
+        ctx=_ctx(), state=state)
+    assert res.refusal is not None
+    assert not getattr(state, "groundings", [])
+    assert "re-propose value-less" in str(res.refusal.payload.get("detail"))
+
+
+def test_rollup_fallback_propagates_the_ambiguity_refusal():
+    core = _world_fl07_with_own_flow(rollup_flows=2)
+    res = core.resolve_intent(
+        intent_input=_xo_rollup_intent("PLS_FB_Order__c.PLS_FB_Order_Total__c"),
+        ctx=_ctx(), state=_state())
+    assert res.refusal is not None
+    assert "roll an aggregate" in str(res.refusal.payload.get("detail"))

@@ -3860,6 +3860,21 @@ class GovernanceCore:
                 # plain xo grounding and mis-attribute, the SUB-3 bug)
                 if (len(_cmp_upd) != 1 or hint.get("expected_absence")
                         or hint.get("effect_via_lookup_field")):
+                    # D-380: before refusing, try the ROLLUP rescue — the
+                    # model's natural framing for a child-set aggregate
+                    # ("total updates as lines are added") carries exactly
+                    # the slots the E3 rollup path forbids, so the grounded
+                    # producer (a flow on the CHILD) is invisible to this
+                    # arm. The fallback retries on the stripped framing;
+                    # every E3 law holds (value-less only, exactly-one
+                    # producer, full evidence derivation).
+                    _r_out, _r_hint = self._rollup_fallback(
+                        hint=hint, subject=subject,
+                        neighborhood=neighborhood, at=at, delta=delta,
+                        archetype=archetype, claim_kind=claim_kind,
+                        excerpt=excerpt, grounded=grounded, state=state)
+                    if _r_out is not None:
+                        return _r_out
                     return IntentResolution(
                         grounded_candidates=[], next_action=NextAction.REFUSE,
                         interpretation_delta=delta,
@@ -3870,7 +3885,8 @@ class GovernanceCore:
                                     f"effect on "
                                     f"{hint.get('effect_object')!r} — the "
                                     f"automation cannot be attributed, so "
-                                    f"the effect stays unverified")))
+                                    f"the effect stays unverified"
+                                    + _r_hint)))
             automation_ent = formula_ent if formula_ent is not None else flow_ent
             subj_ep = _Endpoint(
                 entity_id=subject.id, entity_type=subject.entity_type,
@@ -3895,6 +3911,15 @@ class GovernanceCore:
             # refuses (authoring create-scoped instead would silently drop
             # the requirement's recalculate-on-change premise).
             if hint.get("update_trigger_fields") and hint.get("effect_object"):
+                # D-380: same rollup rescue as the SUB-3 gate — the
+                # recompute-on-child-change story IS the rollup story.
+                _r_out, _r_hint = self._rollup_fallback(
+                    hint=hint, subject=subject, neighborhood=neighborhood,
+                    at=at, delta=delta, archetype=archetype,
+                    claim_kind=claim_kind, excerpt=excerpt,
+                    grounded=grounded, state=state)
+                if _r_out is not None:
+                    return _r_out
                 return IntentResolution(
                     grounded_candidates=[], next_action=NextAction.REFUSE,
                     interpretation_delta=delta,
@@ -3903,7 +3928,7 @@ class GovernanceCore:
                         detail=("the update-observe phase is same-record "
                                 "only — a cross-object/parent-stamp effect "
                                 "cannot observe a recompute on the changed "
-                                "record")))
+                                "record" + _r_hint)))
             # D-307: absence ("the automation correctly produces NO
             # correlated record") is the CROSS-OBJECT shape only — refusing
             # every other combination fail-closed, because silently authoring
@@ -5707,6 +5732,72 @@ class GovernanceCore:
             "staged": tuple(staged),
             "correlation": (corr_f, corr_g, witness)}, \
             beh["value"], subject_staged
+
+    # The framing slots the D-380 rollup rescue strips: exactly what the E3
+    # gates forbid (the aggregate IS the trigger story) plus the effect
+    # endpoints that framed the intent cross-object in the first place.
+    _ROLLUP_FRAMING_SLOTS = ("effect_object", "effect_lookup_field",
+                             "effect_field", "effect_value",
+                             "effect_via_lookup_field",
+                             "update_trigger_fields")
+
+    def _rollup_fallback(self, *, hint, subject, neighborhood, at, delta,
+                         archetype, claim_kind, excerpt, grounded, state):
+        """D-380: deterministic rollup rescue at the cross-object refusal
+        gates. Returns ``(IntentResolution | None, hint_tail)``:
+
+        - a grounded PROCEED (or the E3 path's own NAMED refusal — ambiguity
+          / unstageable, which is more honest than the generic no-producer
+          text) when the stripped framing resolves;
+        - ``(None, tail)`` when no rollup applies — the caller's refusal
+          stands, with ``tail`` carrying a reframe hint iff the subject
+          field is a plausible rollup target (resolves on the subject).
+
+        Every E3 law holds via ``_try_rollup_resolution``'s own gates:
+        value-less only (a staged value keeps the refusal), exactly ONE
+        producer (the unique-resolution law), full evidence derivation.
+        Absence framings never reroute (a non-effect is not an aggregate).
+        The reframe is disclosed on ``attempted_interpretation``
+        (``rollup_reframes`` — hash-safe by the four-fixed-keys property)."""
+        no_hint = ""
+        if hint.get("expected_absence"):
+            return None, no_hint
+        field_name = hint.get("field_name")
+        if not isinstance(field_name, str) or not field_name:
+            return None, no_hint
+        field_ent = next(
+            (r.entity for r in neighborhood
+             if r.edge_type == EDGE_BELONGS
+             and r.entity.entity_type == "Field"
+             and r.entity.sf_api_name == field_name), None)
+        if field_ent is None:
+            return None, no_hint
+        stripped = {k: v for k, v in hint.items()
+                    if k not in self._ROLLUP_FRAMING_SLOTS}
+        out = self._try_rollup_resolution(
+            hint=stripped, subject=subject, field_ent=field_ent, at=at,
+            delta=delta, archetype=archetype, claim_kind=claim_kind,
+            excerpt=excerpt, grounded=grounded, state=state)
+        if out is None:
+            return None, (
+                " If the requirement asserts a child-set aggregate kept on "
+                "this subject's field, re-propose value-less with "
+                "field_name only (no effect_object / update_trigger_fields)"
+                " — the substrate attributes the child-triggered writer "
+                "itself.")
+        if out.next_action == NextAction.PROCEED_TO_EMIT:
+            try:    # disclosure — never load-bearing
+                ai = getattr(state, "attempted_interpretation", None)
+                if not isinstance(ai, dict):
+                    raise TypeError("no ai dict on state")
+                ai.setdefault("rollup_reframes", []).append({
+                    "field": field_name,
+                    "dropped_slots": sorted(
+                        k for k in self._ROLLUP_FRAMING_SLOTS
+                        if hint.get(k) is not None)})
+            except Exception:   # noqa: BLE001
+                pass
+        return out, no_hint
 
     def _try_rollup_resolution(self, *, hint, subject, field_ent, at, delta,
                                archetype, claim_kind, excerpt, grounded,
