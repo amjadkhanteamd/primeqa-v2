@@ -57,6 +57,15 @@ def interpret_run(evidence: RunEvidence,
         if (claim_kind == "automation-effect-claim"
                 and assertion.predicate == "not_exists"):
             vocab_kind = "automation-effect-claim@absence"
+        # D-381: the CONDITIONAL absence — same count_equals shape as the E2
+        # set-update, told apart by the evidence-borne `create-protected`
+        # step (the staged row the fan-out must leave untouched).
+        if (claim_kind == "automation-effect-claim"
+                and assertion.predicate == "count_equals"
+                and any(isinstance(s, CreateAttemptEvidence)
+                        and s.step_id == "create-protected"
+                        for s in evidence.steps)):
+            vocab_kind = "automation-effect-claim@conditional-absence"
         verdict, attribution, refs = _interpret_positive(
             evidence, create, assertion, claim_kind=vocab_kind)
     elif (mutation is not None and claim_kind == "acceptance-claim"
@@ -195,6 +204,18 @@ _POSITIVE_VOCAB = {
         "The automation correctly produced nothing.",
         "a correlated record WAS observed",
         "The automation fired when the requirement says it must not."),
+    # D-381: the CONDITIONAL absence — passed = the protected record still
+    # matches its staged value (the fan-out excluded it); failed = it was
+    # mutated (a synthetic vocab key; interpret() selects it on count_equals
+    # + the create-protected evidence step).
+    "automation-effect-claim@conditional-absence": (
+        "automation_exclusion_confirmed", "protected_record_mutated",
+        "the protected record still carries its staged value",
+        "The automation's fan-out correctly left the protected record "
+        "untouched.",
+        "the protected record no longer matches its staged value",
+        "The automation mutated a record the requirement says it must "
+        "leave untouched."),
     # D-305: the acceptance archetype — passed = the org SAVED the case. The
     # FAIL slot here is the assert-failed shape only (the org ACCEPTED the
     # mutation but the read-back did not verify — a genuinely refused

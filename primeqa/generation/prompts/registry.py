@@ -28,7 +28,7 @@ _VERSIONS_DIR = _DIR / "versions"
 
 # The default version new generations use (replay pins its own version on the
 # request's operational_context.prompt_template_version, per D-071).
-CURRENT = "generation@v30"
+CURRENT = "generation@v31"
 
 # version id -> frozen composed artifact (filesystem-safe slug).
 _FILES = {
@@ -62,6 +62,7 @@ _FILES = {
     "generation@v28": _VERSIONS_DIR / "generation_v28.md",
     "generation@v29": _VERSIONS_DIR / "generation_v29.md",
     "generation@v30": _VERSIONS_DIR / "generation_v30.md",
+    "generation@v31": _VERSIONS_DIR / "generation_v31.md",
 }
 
 # Recorded SHA-256 of each frozen version's composed content (D-103.1 drift
@@ -231,6 +232,13 @@ RECORDED_HASHES = {
     # "changes nothing about the subject-object contract", and it is
     # vocabulary, never instruction. Rollback = pin CURRENT to v29.
     "generation@v30": "add22daa544885aa888b3bbaf50edc1665f7474aa914401c5531d8c9aa7d7282",
+    # v31 (D-381, conditional absence): the D-307 "field-conditional absence
+    # is refused" paragraph becomes the conditional-absence CONTRACT —
+    # expected_absence + BOTH effect_field/effect_value as the protecting
+    # condition; grounded only on the fan-out-filter exclusion proof.
+    # Everything else (incl. the v30 vocabulary contract) verbatim.
+    # Rollback = pin CURRENT to v30.
+    "generation@v31": "799457d0f2a4ab0c7d36e75763c3229890dcc8c0abf0716b9849445649f1848f",
 }
 
 

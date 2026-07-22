@@ -87,6 +87,7 @@ from primeqa.test_representation.models.claims.data_behavior.acceptance_claim im
 )
 from primeqa.test_representation.models.claims.data_behavior.automation_effect_claim import (
     AutomationAbsenceClaimBody,
+    AutomationConditionalAbsenceClaimBody,
     AutomationEffectClaimBody,
 )
 from primeqa.test_representation.models.claims.data_behavior.state_transition_claim import (
@@ -2616,6 +2617,90 @@ def _author_automation_effect(g: GroundedAutomationEffect) -> EmissionBundle:
             pc = g.premise_children
             field_api = g.effect_field.external_id
             field_bare = field_api.split(".", 1)[-1]
+            if g.expected_absence and pc.get("protected"):
+                # D-381: the CONDITIONAL absence — stage ONE protected child
+                # (the op's own filter template with the condition field
+                # pinned to the PROTECTED value, i.e. maximally adversarial:
+                # identical to the fan-out's targets except the pin), fire
+                # the trigger, and assert the protected row still matches —
+                # "unchanged" encoded snapshot-free as "still carries its
+                # staged value" (S4 has no before-state capture, D-203).
+                prot = pc["protected"]
+                p_bare = prot["field"]
+                p_value = prot["value"]
+                tmpl = dict(pc["template"])
+                child_base = {f"{effect_api}.{f}" if "." not in f else f: v
+                              for f, v in tmpl.items()}
+                child_base[f"{effect_api}.{p_bare}"
+                           if "." not in p_bare else p_bare] = p_value
+                child_base[lookup_api] = "$create-record.id"
+                steps = [
+                    CreateStep(step_id="create-record", target_object=target,
+                               field_values=dict(create_fields)),
+                    CreateStep(step_id="create-protected",
+                               target_object=LogicalRef(
+                                   entity_type="Object",
+                                   external_id=effect_api),
+                               field_values=dict(child_base)),
+                    UpdateStep(step_id="update-record", target=target,
+                               field_changes=dict(xo_update_fields)),
+                    ReadStep(
+                        step_id="read-effect",
+                        target=LogicalRef(entity_type="Object",
+                                          external_id=effect_api),
+                        soql=(f"SELECT Id, {p_bare} FROM {effect_api} "
+                              f"WHERE {lookup_bare} = '$create-record.id' "
+                              f"AND {p_bare} = '{p_value}'"),
+                        fields_to_capture=["Id", p_bare]),
+                    DataAssertStep(
+                        step_id="assert-effect",
+                        predicate=AssertionPredicate(
+                            subject_ref="read-effect.Id",
+                            predicate="count_equals", value=1)),
+                ]
+                claim = AutomationConditionalAbsenceClaimBody(
+                    automation=automation_ref,
+                    automation_primitive=g.automation_primitive,
+                    triggering_action=EventDescriptor(
+                        trigger_kind="data-mutation-trigger",
+                        description=(
+                            f"updating the {object_api} into the entry "
+                            f"state with a {p_bare}={p_value!r} child "
+                            f"staged — the fan-out must leave it "
+                            f"untouched")),
+                    protected_field=IdentityBearingRef(
+                        entity_type=g.effect_field.entity_type,
+                        entity_id=g.effect_field.entity_id,
+                        version_seq=g.version_seq, external_id=field_api),
+                    protected_value=str(p_value),
+                )
+                details = (f"create a {object_api}{gated}, stage ONE "
+                           f"{effect_api} child at {p_bare}={p_value!r}, "
+                           f"update the {object_api} into the entry state, "
+                           f"assert the protected child STILL carries "
+                           f"{p_bare}={p_value!r} (count_equals 1)")
+                conditions = SemanticConditionsBody(conditions=[])
+                trigger = DataMutationTriggerBody(
+                    operation="update", target=target,
+                    identity_context="system", volume="single")
+                recipe = DataRecipeBody(
+                    api_choice="rest", identity_context="system",
+                    execution_mechanism="direct_api", steps=steps)
+                env = ExecutionEnvironmentBody(
+                    auth_assumptions=[AuthAssumption(
+                        auth_kind="data_api_user", details=details)])
+                return EmissionBundle(
+                    archetype=g.archetype, claim_kind=g.claim_kind,
+                    asserted_truth=claim, semantic_conditions=conditions,
+                    trigger_kind="data-mutation-trigger",
+                    recipe_kind="data-recipe",
+                    causal_initiation=trigger,
+                    observation_realization=recipe,
+                    execution_environment=env,
+                    admissibility_layer=AdmissibilityLayer.LAYER_1,
+                    caveat_required=requires_caveat(g.claim_kind),
+                    caveat_kind=caveat_kind(g.claim_kind),
+                )
             n = pc["count"]
             tmpl = dict(pc["template"])
             child_base = {f"{effect_api}.{f}" if "." not in f else f: v

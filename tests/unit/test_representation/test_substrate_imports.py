@@ -94,6 +94,7 @@ EXPECTED_REGISTRATIONS = (
     ("state-transition-claim", 1),
     ("automation-effect-claim", 1),
     ("automation-effect-claim", 2),         # D-307 — the absence case
+    ("automation-effect-claim", 3),         # D-381 — the CONDITIONAL absence
     ("prohibition-claim", 1),
     ("prohibition-claim", 2),         # D-333 — the approval-action arc
     ("acceptance-claim", 1),                # D-305

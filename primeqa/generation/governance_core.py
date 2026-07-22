@@ -3961,18 +3961,26 @@ class GovernanceCore:
                                     "effect_lookup_field (the cross-object "
                                     "shape); same-record/parent-stamp "
                                     "absence is not expressible")))
-                if (hint.get("effect_field")
-                        or hint.get("effect_value") is not None):
+                # D-381: the CONDITIONAL pair (effect_field + effect_value)
+                # is now expressible — "records matching the condition stay
+                # untouched" (AC11's shape). A half-pair stays refused: a
+                # condition field without its value (or vice versa) is
+                # unverifiable.
+                if (bool(hint.get("effect_field"))
+                        != (hint.get("effect_value") is not None)):
                     return IntentResolution(
                         grounded_candidates=[], next_action=NextAction.REFUSE,
                         interpretation_delta=delta,
                         refusal=self._router.emission_deferred(
                             archetype, claim_kind,
-                            detail=("absence asserts NO correlated record at "
-                                    "all — a field-conditional absence "
-                                    "(effect_field/effect_value) is not "
-                                    "expressible; drop them or assert "
-                                    "presence")))
+                            detail=("a conditional absence needs BOTH "
+                                    "effect_field and effect_value (the "
+                                    "protecting condition — e.g. "
+                                    "Status='Completed' records stay "
+                                    "untouched); a half-pair is "
+                                    "unverifiable. Plain absence (no "
+                                    "correlated record at all) takes "
+                                    "neither.")))
             effect_object_api = hint.get("effect_object")
             if effect_object_api and hint.get("effect_via_lookup_field"):
                 # D-227 parent-stamp: the effect lands on a record the TRIGGER
@@ -4110,6 +4118,16 @@ class GovernanceCore:
                     _xo_update_producers(_disc_flows, effect_object_api,
                                          callee_registry=_callee_reg)
                     if _upd_is_candidate else [])
+                # D-381: CONDITIONAL absence ("records matching the condition
+                # stay untouched") — only UPDATERS of the effect object bear
+                # on "unchanged"; creators/async-creators are irrelevant, and
+                # value-narrowing would kill the match (the protected value
+                # is deliberately NOT what the op writes).
+                _cond_absence = (expected_absence
+                                 and bool(hint.get("effect_field"))
+                                 and hint.get("effect_value") is not None)
+                if _cond_absence:
+                    _xo_ops_all, _xo_evt_all = [], []
                 # fix (2): >1 producer of the same object is the REAL-org norm
                 # (env-59: FL09 immediate + FL11 async + FL13 on-fault all
                 # create PLS_FB_Audit_Log__c; FL04 creates + FL05 updates the
@@ -4237,10 +4255,38 @@ class GovernanceCore:
                 # discovered (and narrowed) above — including a caller's
                 # COMPOSED subflow effects, via the lazily-built registry.
                 _xo_upd_ops = [] if _xo_ops else _xo_upd_all
-                if len(_xo_upd_ops) == 1 and not raw_absence \
+                # D-381: the CONDITIONAL absence rides the E2 rails — same
+                # producer, same op-derived staging/transition; the assert
+                # inverts onto the PROTECTED set (records matching the
+                # condition keep their staged value).
+                if len(_xo_upd_ops) == 1 \
+                        and (not raw_absence or _cond_absence) \
                         and not xo_hint.get("effect_via_lookup_field"):
                     _u_ent, _u_op = _xo_upd_ops[0]
                     _u_refusal = None
+                    _u_protected = None
+                    if _cond_absence:
+                        # exclusion law (the D-374 verify-by-what-it-writes
+                        # spirit): the op's own filter must pin the condition
+                        # field to a DIFFERENT value — the fan-out provably
+                        # never touches the protected rows.
+                        _p_field = str(hint.get("effect_field")
+                                       ).rsplit(".", 1)[-1]
+                        _p_value = _identity_safe(hint.get("effect_value"))
+                        _p_pin = next(
+                            (v for f, op_, v in _u_op.get("filters") or ()
+                             if f == _p_field and op_ == "EqualTo"
+                             and not isinstance(v, tuple)), None)
+                        if _p_pin is None or _p_pin == _p_value:
+                            _u_refusal = (
+                                f"the bound fan-out is not provably scoped "
+                                f"to exclude {_p_field}={_p_value!r} — its "
+                                f"filters do not pin {_p_field} to a "
+                                f"different value, so the protected records "
+                                f"are not verifiably untouched")
+                        else:
+                            _u_protected = {"field": _p_field,
+                                            "value": _p_value}
                     _u_corr = next(
                         (f for f, op_, v in _u_op.get("filters") or ()
                          if op_ == "EqualTo" and isinstance(v, tuple)
@@ -4269,9 +4315,11 @@ class GovernanceCore:
                     if _u_refusal is None:
                         _u_updated = _u_assigns[_u_field][1]
                         # the distractor: a third state (∉ template ∪ updated)
+                        # — presence-shape only; the conditional absence
+                        # stages its OWN protected row instead (D-381)
                         _u_flip = None
                         _u_tmpl_map = dict(_u_template)
-                        if _u_field in _u_tmpl_map:
+                        if _u_field in _u_tmpl_map and not _cond_absence:
                             _u_effmeta = _grounding_field_metadata(
                                 self._admit.scoped_neighborhood(
                                     self._admit.resolve_subject(
@@ -4405,11 +4453,17 @@ class GovernanceCore:
                         trigger_fields=_u_triggers,
                         update_trigger_fields=_u_updates,
                         automation_primitive="flow",
+                        # D-381: the conditional absence rides expected_absence
+                        # + the protected condition; the presence shape stays
+                        # byte-identical (protected absent, absence False).
+                        expected_absence=_cond_absence,
                         premise_children={
                             "count": 2,
                             "template": tuple(_u_template),
                             "distractor": _u_flip,
-                            "updated_value": _u_updated}))
+                            "updated_value": _u_updated,
+                            **({"protected": _u_protected}
+                               if _u_protected else {})}))
                     presented = [
                         PresentedCandidate(
                             path_id=c.path_id,
