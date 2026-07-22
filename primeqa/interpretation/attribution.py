@@ -66,10 +66,15 @@ _ACCEPTANCE_ENRICHED = ("creation_rejected", "change_rejected")
 
 @dataclass(frozen=True)
 class VrMeta:
-    """The slice of a validation rule's S1 metadata S6 needs for attribution."""
+    """The slice of a validation rule's S1 metadata S6 needs for attribution.
+
+    D-382 (SUB-4): ``is_active`` is ``Optional`` — ``None`` means the detail
+    row is MISSING in S1 and the state is genuinely unknown. Consumers compare
+    ``is True`` / ``is False`` explicitly; truthiness on ``None`` fabricated
+    an inactive state (the invented-metadata defect)."""
 
     name: str
-    is_active: bool
+    is_active: Optional[bool]
     formula_text: Optional[str] = None
     error_message: Optional[str] = None
 
@@ -84,7 +89,7 @@ class FlowMeta:
     posted value on insert from an after-save one that cannot."""
 
     name: str
-    is_active: bool
+    is_active: Optional[bool]          # D-382: None = unknown, never invented
     trigger_type: Optional[str] = None
 
 
@@ -95,7 +100,7 @@ class FieldMeta:
     non-createable field on insert, so the posted value cannot persist."""
 
     name: str
-    is_createable: bool
+    is_createable: Optional[bool]      # D-382: None = unknown, never invented
 
 
 class S1AttributionReader(Protocol):
@@ -251,12 +256,21 @@ def _attribute_automation_absent(trigger, s1, claim_automation=None) -> Optional
                             f"triggers on {trigger.sobject} — removed or "
                             f"retargeted since generation, so the asserted "
                             f"effect could not fire"))
-            if not match.is_active:
+            if match.is_active is False:
                 return Cause(
                     "automation_inactive",
                     detail=(f"the Flow {name} this test grounds on is inactive "
                             f"— deactivated since generation, so the asserted "
                             f"effect could not fire"))
+            if match.is_active is None:
+                # D-382 (SUB-4): the deciding metadata is missing — say so
+                # instead of fabricating an active/inactive verdict.
+                return Cause(
+                    "grounding_incomplete",
+                    detail=(f"the Flow {name}'s active state is UNKNOWN in "
+                            f"the org model (no detail row at this version) "
+                            f"— attribution cannot distinguish deactivated "
+                            f"from entry-condition-unmet"))
             return Cause(
                 "automation_effect_absent",
                 detail=(f"the Flow {name} is active on {trigger.sobject}, but "
@@ -276,7 +290,17 @@ def _attribute_automation_absent(trigger, s1, claim_automation=None) -> Optional
                     f"{trigger.sobject} — an entry condition may be unmet, or "
                     f"its logic changed since generation"))
     flows = s1.flows_for_object(trigger.sobject)
-    active = [f for f in flows if f.is_active]
+    active = [f for f in flows if f.is_active is True]
+    unknown = [f for f in flows if f.is_active is None]
+    if not active and unknown:
+        # D-382 (SUB-4): no provably-active flow, but some have UNKNOWN
+        # state — "all inactive" would be fabricated.
+        return Cause(
+            "grounding_incomplete",
+            detail=(f"no provably-active Flow triggers on {trigger.sobject} "
+                    f"and {len(unknown)} flow(s) have UNKNOWN active state "
+                    f"(missing detail rows) — attribution cannot conclude "
+                    f"the automation was deactivated"))
     if not active:
         return Cause(
             "automation_inactive",
@@ -312,7 +336,9 @@ def _attribute_value_not_persisted(evidence, s1) -> Optional[Cause]:
         return None
     for field in read.fields_captured:
         meta = s1.field_meta(read.sobject, field)
-        if meta is not None and not meta.is_createable:
+        # D-382: is_createable None (unknown) never ACCUSES — honest
+        # pass-through preserves this function's existing contract.
+        if meta is not None and meta.is_createable is False:
             return Cause(
                 "field_not_createable",
                 detail=(f"the field {field} on {read.sobject} is not createable — "
@@ -321,7 +347,8 @@ def _attribute_value_not_persisted(evidence, s1) -> Optional[Cause]:
     # D-241: every asserted field is createable — a before-save Flow on the
     # object is the canonical "overwrote the posted value" mechanism.
     before_save = [f for f in s1.flows_for_object(read.sobject)
-                   if f.is_active and (f.trigger_type or "").lower() == "beforesave"]
+                   if f.is_active is True     # D-382: only provably-active accuse
+                   and (f.trigger_type or "").lower() == "beforesave"]
     if before_save:
         return Cause(
             "before_save_automation_overwrote",
@@ -362,7 +389,14 @@ def _attribute_not_enforced(step, vrs, evidence) -> Optional[Cause]:
             continue
         result = evaluate(parse(vr.formula_text), state)
         if result is True:
-            (violated_active if vr.is_active else violated_inactive).append(vr)
+            # D-382: an UNKNOWN active-state VR whose formula violates is
+            # indeterminate — bucketing it "inactive" fabricated a state.
+            if vr.is_active is True:
+                violated_active.append(vr)
+            elif vr.is_active is False:
+                violated_inactive.append(vr)
+            else:
+                indeterminate.append(vr)
         elif isinstance(result, NonEvaluable):
             # A NonEvaluable VR is *indeterminate for THIS claim* only if it
             # could concern the payload. Drop it ONLY when PROVABLY irrelevant:

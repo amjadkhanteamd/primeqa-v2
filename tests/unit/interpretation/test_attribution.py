@@ -721,3 +721,84 @@ def test_state_transition_2create_chain_queries_the_trigger_object():
     assert interp.verdict == "state_not_transitioned"
     assert interp.cause.cause_kind == "automation_inactive"
     assert s1.flow_calls == ["Escalation__c"]   # the TRIGGER object, not Case
+
+
+# ---------------------------------------------------------------------------
+# D-382 (SUB-4) — UNKNOWN metadata attributes honestly, never fabricates
+# ---------------------------------------------------------------------------
+
+def test_unknown_vr_state_is_indeterminate_not_inactive():
+    """A violated VR with is_active=None must NOT produce vr_inactive (the
+    fabricated-state defect) — it lands indeterminate."""
+    ev = _run(outcome="failed", create=_create(
+        success=True, matched=False, http_status=201, body=[],
+        record_id="001Z"))
+    s1 = _StubS1([VrMeta(name="RequireReason", is_active=None,
+                         formula_text="ISBLANK(Reason__c)",
+                         error_message="reason required")])
+    interp = _interp(ev, s1)
+    assert interp.verdict == "prohibition_not_enforced"
+    assert interp.cause is None or interp.cause.cause_kind != "vr_inactive"
+
+
+def test_unknown_flow_state_yields_grounding_incomplete():
+    """automation_not_triggered with the only flow's state UNKNOWN: the old
+    code said automation_inactive (all-falsy) — now it says it doesn't know."""
+    from primeqa.interpretation import FlowMeta
+    from primeqa.execution_engine.evidence import UpdateAttemptEvidence
+    create = CreateAttemptEvidence(
+        step_id="create-record", ordinal=0, sobject="PLS_FB_Order__c",
+        field_values={}, http_status=201, success=True, error_code=None,
+        message=None, rejection_body=(), matched=False,
+        cleanup=CleanupRecord(attempted=True, succeeded=True,
+                              record_id="001A"),
+        started_at=_T, finished_at=_T, duration_ms=1)
+    assertion = AssertEvidence(
+        step_id="assert-effect", ordinal=2, predicate="equals",
+        subject_ref="read-effect.X__c", evaluated_row_count=1, held=False,
+        started_at=_T, finished_at=_T, duration_ms=0)
+    ev = RunEvidence(
+        run_id=uuid4(), recipe_id=uuid4(), recipe_version_seq=1,
+        claim_test_id=uuid4(), claim_version_seq=None, environment_id=7,
+        api_choice="rest", outcome="failed", started_at=_T, finished_at=_T,
+        steps=(create, assertion))
+    s1 = _StubS1([], flows=(FlowMeta(name="FL01", is_active=None),))
+    interp = attribute_run(
+        interpret_run(ev, claim_kind="automation-effect-claim"), ev, s1=s1)
+    assert interp.cause is not None
+    assert interp.cause.cause_kind == "grounding_incomplete"
+    assert "UNKNOWN" in interp.cause.detail
+
+
+def test_unknown_field_createability_never_accuses():
+    """value_not_persisted with is_createable=None: no field_not_createable
+    accusation (honest pass-through; before-save needs provably-active)."""
+    from primeqa.interpretation import FieldMeta, FlowMeta
+    create = CreateAttemptEvidence(
+        step_id="create-record", ordinal=0, sobject="PLS_FB_Order__c",
+        field_values={"X__c": "v"}, http_status=201, success=True,
+        error_code=None, message=None, rejection_body=(), matched=False,
+        cleanup=CleanupRecord(attempted=True, succeeded=True,
+                              record_id="001A"),
+        started_at=_T, finished_at=_T, duration_ms=1)
+    read = ReadEvidence(
+        step_id="read-back", ordinal=1, query="SELECT X__c ...",
+        sobject="PLS_FB_Order__c", edge="", subject_entity_type="Object",
+        subject_external_id="PLS_FB_Order__c", row_count=1,
+        rows=({"X__c": None},), started_at=_T, finished_at=_T, duration_ms=1)
+    assertion = AssertEvidence(
+        step_id="assert-persisted", ordinal=2, predicate="equals",
+        subject_ref="read-back.X__c", evaluated_row_count=1, held=False,
+        started_at=_T, finished_at=_T, duration_ms=0)
+    ev = RunEvidence(
+        run_id=uuid4(), recipe_id=uuid4(), recipe_version_seq=1,
+        claim_test_id=uuid4(), claim_version_seq=None, environment_id=7,
+        api_choice="rest", outcome="failed", started_at=_T, finished_at=_T,
+        steps=(create, read, assertion))
+    s1 = _StubS1([], flows=(FlowMeta(name="FLX", is_active=None,
+                                     trigger_type="BeforeSave"),),
+                 fields={"X__c": FieldMeta(name="X__c", is_createable=None)})
+    interp = attribute_run(interpret_run(ev, claim_kind="value-claim"),
+                           ev, s1=s1)
+    assert interp.cause is None or interp.cause.cause_kind not in (
+        "field_not_createable", "before_save_automation_overwrote")
