@@ -69,6 +69,22 @@ def test_bundle_carries_conditions_and_rekeys_intentionally():
     assert h(b_staged) != h(b_bare)
 
 
+def test_float_values_coerce_to_identity_safe_strings():
+    """D-383.1 (live-caught on env-59): a 250000.01 staged threshold crashed
+    persistence — floats are forbidden in identity-bearing content
+    (SPEC §6.3.2); the condition value coerces to its shortest-repr string
+    exactly like the hint→claim boundary (D-304)."""
+    g = _grounding(trigger_fields=(
+        (_ep("PLS_FB_Order__c.PLS_FB_Order_Value__c"), 250000.01),))
+    body = _trigger_conditions(g)
+    [c] = body.conditions
+    assert c.value == "250000.01" and isinstance(c.value, str)
+    # bools are NOT floats — they pass through
+    g2 = _grounding(trigger_fields=(
+        (_ep("PLS_FB_Order__c.PLS_FB_Escalated__c"), True),))
+    assert _trigger_conditions(g2).conditions[0].value is True
+
+
 def test_none_values_and_dupes_never_author():
     g = _grounding(trigger_fields=(
         (_ep("PLS_FB_Order__c.A__c"), None),
