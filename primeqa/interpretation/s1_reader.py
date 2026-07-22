@@ -61,9 +61,13 @@ class S1ValidationRuleReader:
             attrs = vr.attributes or {}
             # Shape-tolerant (D-203.1): rows from both sync generations coexist
             # (designed formula_text vs raw Metadata.errorConditionFormula).
+            # D-382 (SUB-4): a missing detail row propagates None — never an
+            # invented affirmative default (attribution must know it doesn't
+            # know, not fabricate an active state).
+            _act = details.get("is_active")
             out.append(VrMeta(
                 name=vr.sf_api_name or vr.display_name or str(vr.id),
-                is_active=bool(details.get("is_active", True)),
+                is_active=None if _act is None else bool(_act),
                 formula_text=vr_formula_text(attrs),
                 error_message=vr_error_message(attrs),
             ))
@@ -88,9 +92,10 @@ class S1ValidationRuleReader:
             if flow.entity_type != "Flow":
                 continue
             details = self._model.get_entity_details(flow.id, at_seq=seq) or {}
+            _act = details.get("is_active")   # D-382: None stays None
             out.append(FlowMeta(
                 name=flow.sf_api_name or flow.display_name or str(flow.id),
-                is_active=bool(details.get("is_active", True)),
+                is_active=None if _act is None else bool(_act),
                 trigger_type=details.get("trigger_type"),  # D-241: BeforeSave/AfterSave/None
             ))
         return tuple(out)
@@ -118,9 +123,10 @@ class S1ValidationRuleReader:
             api = fld.sf_api_name or ""
             if api == field_external_id or api.split(".")[-1] == bare:
                 details = self._model.get_entity_details(fld.id, at_seq=seq) or {}
+                _cr = details.get("is_createable")   # D-382: None stays None
                 return FieldMeta(
                     name=api or fld.display_name or str(fld.id),
-                    is_createable=bool(details.get("is_createable", True)),
+                    is_createable=None if _cr is None else bool(_cr),
                 )
         return None
 
