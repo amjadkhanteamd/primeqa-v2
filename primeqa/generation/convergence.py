@@ -273,7 +273,11 @@ def variants_for(snap: IntentSnapshot,
 # branch (never crosses model/substrate/honest boundaries on strings alone)
 _WITNESS_MARKERS = ("scale is not readable", "guard interval", "witness",
                     "synthesis grammar", "format pattern", "not stable "
-                    "under the transform", "alternative active picklist")
+                    "under the transform", "alternative active picklist",
+                    # live req-320 test-run fixes (wrong-red generators
+                    # closed): staging/derivation refusals, honestly named
+                    "calculated/not writable",
+                    "fires on UPDATE only")
 _AMBIGUITY_MARKERS = ("cannot attribute", "— name the specific automation",
                       "produce the claimed effect (",
                       # the cross-object ambiguity now speaks FIELDS, not

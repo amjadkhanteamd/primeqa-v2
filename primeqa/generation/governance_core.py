@@ -4243,7 +4243,7 @@ class GovernanceCore:
                     if (_xo_trig["record_trigger_type"] == "Update"
                             and not raw_absence
                             and _xo_op["guard"]
-                            and all(g[1] == "EqualTo"
+                            and all(g[1] in ("EqualTo", "NotEqualTo")
                                     for g in _xo_op["guard"])):
                         _xgmeta = _grounding_field_metadata(
                             neighborhood, self._s1, at)
@@ -4255,11 +4255,47 @@ class GovernanceCore:
                             if _alt is None:
                                 _xt_create = None
                                 break
-                            _xt_update[_gf] = _gv
-                            _xt_create[_gf] = _alt
+                            if _gop == "EqualTo":
+                                # entry state = the guard value: create in
+                                # a non-meeting state, update INTO it
+                                _xt_update[_gf] = _gv
+                                _xt_create[_gf] = _alt
+                            else:
+                                # live req-320 finding (FL09's shape): a
+                                # NotEqualTo guard on an Update trigger is
+                                # the LEAVING-a-state arm (current != v,
+                                # prior == v on the same path) — create AT
+                                # the excluded state, update AWAY from it.
+                                # The prior-state semantics fall out for
+                                # free: prior == v and current == alt != v.
+                                _xt_create[_gf] = _gv
+                                _xt_update[_gf] = _alt
                         if _xt_create:
                             _xo_transition = {"create": _xt_create,
                                               "update": _xt_update}
+                    # live req-320 finding (claim bf889825, wrong-red): an
+                    # Update-trigger producer whose transition could NOT be
+                    # derived must REFUSE — a create-only recipe can never
+                    # fire an Update-trigger flow, so authoring one bakes a
+                    # guaranteed-red claim. (Absence keeps its own rails:
+                    # the create-only shape is exactly what absence needs.)
+                    if (_xo_trig["record_trigger_type"] == "Update"
+                            and not raw_absence
+                            and _xo_transition is None):
+                        return IntentResolution(
+                            grounded_candidates=[],
+                            next_action=NextAction.REFUSE,
+                            interpretation_delta=delta,
+                            refusal=self._router.emission_deferred(
+                                archetype, claim_kind,
+                                detail=(f"{_xo_ent.sf_api_name} fires on "
+                                        f"UPDATE only, and the update that "
+                                        f"fires it cannot be derived from "
+                                        f"its guard "
+                                        f"({[list(g) for g in _xo_op['guard']] or 'no guard'}) "
+                                        f"— a create-only test can never "
+                                        f"trigger it, so the effect stays "
+                                        f"unverifiable")))
                 # Completion E2: exactly ONE flow verifiably UPDATES a
                 # correlated set on the effect object (FL05's shape). The
                 # entire staging is substrate-derived from the op itself:
@@ -5988,6 +6024,18 @@ class GovernanceCore:
                 return (f"the Sum rollup's source field {src!r} is "
                         f"{_ftype or 'of unknown type'} — a numeric "
                         f"per-row value cannot be staged")
+            # live req-320 finding (claim 87f86ec6): the source may be a
+            # FORMULA field (env-59's PLS_FB_Line_Total__c = qty x price) —
+            # S1 knows it is not writable, and staging it draws
+            # INVALID_FIELD_FOR_INSERT_UPDATE at run time. Refuse with the
+            # real reason; staging the formula's INPUT fields is a named
+            # future capability, not a guess this path may take.
+            if (_cmeta.get(src) or {}).get("is_calculated") \
+                    or not (_cmeta.get(src) or {}).get("is_createable", True):
+                return (f"the Sum rollup's source field {src!r} is "
+                        f"calculated/not writable — a per-row value cannot "
+                        f"be staged on it (its input fields would need to "
+                        f"be staged instead, which is not yet derived)")
             staged.append((src, self._ROLLUP_SUM_STAGED))
             expected = aggregate_expectation(
                 "Sum", plan, staged_value=self._ROLLUP_SUM_STAGED)

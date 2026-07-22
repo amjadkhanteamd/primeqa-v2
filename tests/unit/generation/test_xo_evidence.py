@@ -1300,3 +1300,118 @@ def test_rollup_fallback_propagates_the_ambiguity_refusal():
         ctx=_ctx(), state=_state())
     assert res.refusal is not None
     assert "roll an aggregate" in str(res.refusal.payload.get("detail"))
+
+
+# ---------------------------------------------------------------------------
+# Live req-320 test-run findings (2026-07-22): two wrong-red generators
+# ---------------------------------------------------------------------------
+
+def _world_fl09(*, status_values=("Draft", "Submitted", "Fulfilled")):
+    """FL09's real shape: Update-trigger flow whose audit-log create is
+    guarded NotEqualTo 'Fulfilled' (the LEAVING-a-state arm; prior was
+    Fulfilled). The live claim bf889825 was authored create-only — a
+    recipe that can never fire an Update-trigger flow."""
+    order = _ent("Object", "PLS_FB_Order__c", "PLS FB Order")
+    status = _ent("Field", "PLS_FB_Order__c.PLS_FB_Status__c", "Status")
+    log = _ent("Object", "PLS_FB_Audit_Log__c", "PLS FB Audit Log")
+    l_order = _ent("Field", "PLS_FB_Audit_Log__c.PLS_FB_Order__c", "Order")
+    l_kind = _ent("Field", "PLS_FB_Audit_Log__c.PLS_FB_Kind__c", "Kind")
+    with open(FL09_FIXTURE) as f:
+        d = json.load(f)
+    flow = _ent("Flow", "PLS_FB_FL09_Reopen_Guard", "Reopen Guard",
+                attrs={"Metadata": d["Metadata"]})
+    pvs = uuid4()
+    s1 = _FakeS1(
+        entities=[order, status, log, l_order, l_kind, flow],
+        rows_by_object={
+            "PLS_FB_Order__c": [
+                SimpleNamespace(edge_type=gc.EDGE_BELONGS, entity=status),
+                SimpleNamespace(edge_type=gc.EDGE_FLOW, entity=flow)],
+            "PLS_FB_Audit_Log__c": [
+                SimpleNamespace(edge_type=gc.EDGE_BELONGS, entity=e)
+                for e in (l_order, l_kind)],
+        },
+        details={status.id: {"field_type": "picklist",
+                             "picklist_value_set_entity_id": pvs}},
+        picklists={pvs: [{"value_api_name": v, "is_active": True}
+                         for v in status_values]})
+    return gc.GovernanceCore(s1)
+
+
+def _fl09_intent(**kw):
+    ex = "when an order leaves the fulfilled state a reopen audit entry is recorded"
+    d = {"ac_ref": 14, "archetype_hint": "data_behavior",
+         "polarity_hint": "positive",
+         "claim_kind_hint": "automation-effect-claim",
+         "requirement_excerpt": ex,
+         "target_subject_hint": {
+             "entity_type": "Object", "sf_api_name": "PLS_FB_Order__c",
+             "effect_object": "PLS_FB_Audit_Log__c", **kw}}
+    return {"requirement_excerpt": ex, "intent_descriptor": d}
+
+
+def test_notequalto_guard_derives_the_leave_state_transition():
+    # THE FIX for live claim bf889825: create AT the excluded state,
+    # update AWAY from it — prior==Fulfilled ∧ current!=Fulfilled for free
+    core = _world_fl09()
+    state = _state()
+    res = core.resolve_intent(
+        intent_input=_fl09_intent(effect_field="PLS_FB_Kind__c"),
+        ctx=_ctx(), state=state)
+    assert res.refusal is None, getattr(res.refusal, "payload", None)
+    [g] = state.groundings
+    assert g.automation.external_id == "PLS_FB_FL09_Reopen_Guard"
+    assert g.effect_value == "Reopen"                  # the op's literal
+    assert _pairs(g.trigger_fields) == {"PLS_FB_Status__c": "Fulfilled"}
+    assert _pairs(g.update_trigger_fields) == {"PLS_FB_Status__c": "Draft"}
+
+
+def test_update_trigger_without_derivable_transition_refuses():
+    # the wrong-red generator is closed: an Update-trigger producer whose
+    # transition cannot be derived (picklist offers no alternative state)
+    # REFUSES — it must never author a create-only recipe
+    core = _world_fl09(status_values=("Fulfilled",))
+    res = core.resolve_intent(
+        intent_input=_fl09_intent(effect_field="PLS_FB_Kind__c"),
+        ctx=_ctx(), state=_state())
+    assert res.refusal is not None
+    d = res.refusal.payload["detail"]
+    assert "fires on UPDATE only" in d
+    assert "create-only" in d
+
+
+def test_sum_rollup_refuses_a_calculated_source_field():
+    # THE FIX for live claim 87f86ec6: env-59's PLS_FB_Line_Total__c is a
+    # formula (is_calculated, not createable) — staging it draws
+    # INVALID_FIELD_FOR_INSERT_UPDATE at run time; refuse at grounding
+    core = _world_fl07()
+    l_total = next(e for e in core._admit._s1._entities
+                   if e.sf_api_name ==
+                   "PLS_FB_Order_Line__c.PLS_FB_Line_Total__c")
+    core._admit._s1._details[l_total.id] = {
+        "field_type": "currency", "is_calculated": True,
+        "is_createable": False, "is_updateable": False}
+    res = core.resolve_intent(
+        intent_input=_rollup_intent("PLS_FB_Order__c.PLS_FB_Order_Total__c"),
+        ctx=_ctx(), state=_state())
+    assert res.refusal is not None
+    assert "calculated/not writable" in res.refusal.payload["detail"]
+
+
+def test_count_rollup_unaffected_by_unwritable_sum_source():
+    # the Count twin stages nothing on the source field — it must keep
+    # grounding even when Line_Total is a formula (live: c6c4d1e1 PASSED)
+    core = _world_fl07()
+    l_total = next(e for e in core._admit._s1._entities
+                   if e.sf_api_name ==
+                   "PLS_FB_Order_Line__c.PLS_FB_Line_Total__c")
+    core._admit._s1._details[l_total.id] = {
+        "field_type": "currency", "is_calculated": True,
+        "is_createable": False, "is_updateable": False}
+    state = _state()
+    res = core.resolve_intent(
+        intent_input=_rollup_intent("PLS_FB_Order__c.PLS_FB_Line_Count__c"),
+        ctx=_ctx(), state=state)
+    assert res.refusal is None, getattr(res.refusal, "payload", None)
+    [g] = state.groundings
+    assert g.rollup_spec["fn"] == "Count"
