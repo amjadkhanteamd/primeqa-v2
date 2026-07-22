@@ -97,6 +97,71 @@ def test_fail_soft_everywhere():
     assert voc.build_field_vocabulary(_table(), "unrelated words only") == ""
 
 
+# -- adjacency (D-379) --------------------------------------------------------
+
+def _fb_world_with_neighbors():
+    fb = ObjectSymbol(
+        entity_id=uuid4(), api_name="PLS_FB_Order__c", label="PLS FB Order",
+        is_custom=True,
+        fields=(_fld("PLS_FB_Tier__c", "PLS_FB_Order__c", "Tier"),
+                FieldSymbol(
+                    entity_id=uuid4(), api_name="PLS_FB_Account__c",
+                    qualified_api_name="PLS_FB_Order__c.PLS_FB_Account__c",
+                    label="Account", references_object="Account")))
+    # a child sharing ZERO tokens with any requirement text — reachable ONLY
+    # via adjacency (the true AC15 shape)
+    audit = ObjectSymbol(
+        entity_id=uuid4(), api_name="Trail_Entry__c",
+        label="Trail Entry", is_custom=True,
+        fields=(FieldSymbol(
+            entity_id=uuid4(), api_name="Parent__c",
+            qualified_api_name="Trail_Entry__c.Parent__c",
+            label="Parent", references_object="PLS_FB_Order__c"),
+            _fld("Kind__c", "Trail_Entry__c", "Kind")))
+    account = ObjectSymbol(
+        entity_id=uuid4(), api_name="Account", label="Account",
+        fields=(_fld("Name", "Account", "Name"),))
+    stranger = ObjectSymbol(
+        entity_id=uuid4(), api_name="Zebra__c", label="Zebra",
+        fields=(_fld("Z__c", "Zebra__c", "Z"),))
+    return SymbolTable([fb, audit, account, stranger], at_seq=9)
+
+
+def test_adjacency_includes_children_only():
+    """Trail Entry shares no tokens with the requirement but points at the top
+    object via a lookup — it must be listed (the AC15 retrieval gap). Objects
+    the top merely REFERENCES (Account, User-via-OwnerId) stay OUT — the
+    live render showed that direction dragging the 170-field User object in
+    (the D-362 directory-dump class)."""
+    block = voc.build_field_vocabulary(_fb_world_with_neighbors(),
+                                       "PLS FB Order records get audited")
+    assert "Related to PLS_FB_Order__c via lookup:" in block
+    assert "Object Trail_Entry__c" in block               # child pointing in
+    assert "Object Account" not in block                   # referenced-by-top: out
+    assert "Zebra__c" not in block                         # unrelated
+
+
+def test_adjacency_excludes_already_ranked_and_caps():
+    from primeqa.generation.vocabulary import _adjacent_objects
+    t = _fb_world_with_neighbors()
+    top = t.by_api("PLS_FB_Order__c")
+    adj = _adjacent_objects(t, top, exclude={"PLS_FB_Order__c",
+                                             "Trail_Entry__c"})
+    assert adj == []                       # only child was excluded; refs-out never admit
+    # cap respected
+    many = [ObjectSymbol(
+        entity_id=uuid4(), api_name=f"Child_{i}__c", label=f"Child {i}",
+        fields=(FieldSymbol(
+            entity_id=uuid4(), api_name="PLS_FB_Order__c",
+            qualified_api_name=f"Child_{i}__c.PLS_FB_Order__c",
+            label="Order", references_object="PLS_FB_Order__c"),))
+        for i in range(voc.MAX_ADJACENT + 3)]
+    t2 = SymbolTable(list(t.objects) + many, at_seq=9)
+    adj2 = _adjacent_objects(t2, top, exclude={"PLS_FB_Order__c"})
+    assert len(adj2) == voc.MAX_ADJACENT
+    assert adj2 == sorted(adj2, key=lambda o: o.api_name)
+
+
 # -- message gating -----------------------------------------------------------
 
 def _ctx(vocab=""):

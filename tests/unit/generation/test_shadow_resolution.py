@@ -95,10 +95,10 @@ def test_adapter_skips_unobserved_shapes():
 def _verdict(hint, actual_outcome, actual_api, table=None,
              requirement_text=None):
     table = table or _table()
-    g = sr.business_graph_from_intent(_desc(hint), "x")
+    g, slots = sr.intent_graph(_desc(hint), "x")
     r = resolve(g, table, requirement_text=requirement_text)
     return sr.shadow_verdict(g, r, table, actual_outcome=actual_outcome,
-                             actual_api=actual_api)
+                             actual_api=actual_api, slots=slots)
 
 
 def test_verdict_agree():
@@ -208,6 +208,26 @@ def test_attach_payload_counts():
     assert payload["counts"]["agree"] == 1
     assert payload["counts"]["conflict"] == 1
     assert payload["counts"]["would_veto"] == 1
+
+
+def test_foreign_qualified_mentions_file_as_foreign_fate():
+    """D-379: a mention whose qualifier names ANOTHER object must not be
+    measured against the subject as 'unbound' — it files as 'foreign' (the
+    live Order_Line.PLS_FB_Order__c case from the v30 A/B)."""
+    v = _verdict({"object": "PLS_FB_Order__c",
+                  "effect_via_lookup_field": "PLS_FB_Order_Line__c.Order__c"},
+                 "resolved", "PLS_FB_Order__c")
+    rec = next(f for f in v["shadow"]["fields"]
+               if f["term"] == "PLS_FB_Order_Line__c.Order__c")
+    assert rec["actual"] == "foreign"
+    assert rec["winner"] == "foreign"
+    assert rec["slot"] == "effect_via_lookup_field"
+    # subject-qualified mentions keep their normal fates
+    v2 = _verdict({"object": "PLS_FB_Order__c",
+                   "field_name": "PLS_FB_Order__c.Priority__c"},
+                  "resolved", "PLS_FB_Order__c")
+    rec2 = next(f for f in v2["shadow"]["fields"])
+    assert rec2["actual"] == "ladder"
 
 
 def test_stash_dedups_reobserved_intents():
