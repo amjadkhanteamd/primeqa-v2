@@ -255,6 +255,18 @@ model BEFORE it proposes.
   mentions (settling the D-378.1 ownership-lens follow-up: runtime follows
   D-375; telemetry stops mis-filing real cross-object fields as unbound).
 
+## Rollup routing fallback (D-380)
+
+The model's natural cross-object framing for a child-set aggregate carries
+exactly the slots the E3 rollup path forbids. `_rollup_fallback` retries
+`_try_rollup_resolution` on the stripped framing at both cross-object refusal
+gates (SUB-3 no-producer, D-306 update-observe), with every E3 law intact:
+value-less only, exactly-one producer, full evidence derivation; absence
+never reroutes; the reframe is disclosed (`rollup_reframes` on
+`attempted_interpretation`) and no-match refusals carry a reframe hint.
+Replay-attributed: CONVERGED +4 / xo-capability −4, the movers exactly the
+rollup fields; req-315 byte-identical.
+
 ## Out of scope (this arc)
 
 Free-graph prompt contract (rejected in the 2026-07-21 architecture review);
