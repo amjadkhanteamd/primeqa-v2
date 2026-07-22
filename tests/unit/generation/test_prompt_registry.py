@@ -49,8 +49,10 @@ def test_current_resolves_to_v30():
     # retained verbatim, and the new section explicitly changes nothing
     # about the subject-object contract (the v28-regression firewall).
     # v1..v29 stay frozen + pinned-resolvable.
-    assert registry.CURRENT == "generation@v30"
-    assert registry.get() == registry.get("generation@v30")
+    assert registry.CURRENT == "generation@v31"
+    assert registry.get() == registry.get("generation@v31")
+    # v31 delta: the conditional-absence contract (D-381)
+    assert "CONDITIONAL absence" in " ".join(registry.get().split())
     # v29's split naming contract survives verbatim
     assert "VALIDATES the subject you name" in registry.get()
     assert "resolves successfully" in registry.get()

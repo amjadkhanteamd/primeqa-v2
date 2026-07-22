@@ -150,3 +150,55 @@ class AutomationAbsenceClaimBody(BodyBase):
     """The discriminating assertion: the correlated record must NOT
     exist after the trigger. Literal[True] — an absence body IS the
     assertion; a False would be a presence claim (v1's job)."""
+
+
+@register_body("automation-effect-claim", 3)
+class AutomationConditionalAbsenceClaimBody(BodyBase):
+    """The automation-effect-claim body shape (v3) — the CONDITIONAL
+    absence (D-381). "When the triggering action fires, correlated records
+    MATCHING the protecting condition keep their value — the automation's
+    fan-out provably excludes them" (AC11: cancelling an order leaves
+    already-Completed fulfilment tasks untouched).
+
+    A new version, not a v2 field (the D-306.1 B1 law): canonicalization
+    includes every model field, so extending v2 would re-key every existing
+    absence claim; v3's distinct key-set keeps conditional and plain absence
+    hashing apart by construction.
+
+    Grounding law (D-381): expressible ONLY when the bound flow's own
+    update-op filter pins the condition field to a DIFFERENT value — the
+    exclusion is proven from what the op itself declares, never assumed.
+    """
+
+    model_config = ConfigDict(extra="forbid", frozen=False)
+
+    body_schema_version: Literal[3] = 3
+    kind: Literal["automation-effect-claim"] = "automation-effect-claim"
+
+    automation: IdentityBearingRef
+    """The automation whose fan-out must exclude the protected rows."""
+
+    automation_primitive: Literal[
+        "validation_rule",
+        "flow",
+        "apex_trigger",
+        "process_builder",
+        "approval_process",
+        "formula",
+    ]
+    """Same sub-discriminator as v1/v2 (D-053's guardrail)."""
+
+    triggering_action: EventDescriptor
+    """The causal action (the staged entry transition) under which the
+    protected rows must stay untouched."""
+
+    protected_field: IdentityBearingRef
+    """The condition field on the EFFECT object (pinned per D-058 §5)."""
+
+    protected_value: str
+    """The protecting value — a correlated row staged at this value must
+    still carry it after the trigger."""
+
+    expected_absence: Literal[True] = True
+    """The discriminating assertion family: an absence-of-EFFECT on the
+    protected set (not absence of the record itself — that is v2)."""
