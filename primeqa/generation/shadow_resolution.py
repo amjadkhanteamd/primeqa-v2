@@ -197,10 +197,15 @@ def _binds(table: SymbolTable, api_name: Optional[str],
 
 
 def _field_fate(table: SymbolTable, api_name: Optional[str],
-                term: str) -> Optional[str]:
+                term: str, subject_term: str = "") -> Optional[str]:
     """How the ladder lands ``term`` on ``api_name``'s object: ``"exact"``
     (rule-1 verbatim qualified), ``"ladder"`` (canonicalized to a different
-    name), or ``None`` (unresolved — the offer/hop territory)."""
+    name), ``"foreign"`` (D-379: the mention self-declares ANOTHER owner via
+    its qualifier — cross-object framing, so measuring it against the subject
+    would misreport a real field as unbound), or ``None`` (unresolved — the
+    offer/hop territory)."""
+    if subject_term and _foreign_qualified(term, subject_term):
+        return "foreign"
     obj = table.by_api(api_name)
     if obj is None:
         return None
@@ -277,9 +282,9 @@ def shadow_verdict(graph: BusinessGraph, resolved: ResolvedGraph,
             "fields": [
                 {"term": n.term,
                  "slot": (slots or {}).get(n.node_id, {}).get("slot"),
-                 "actual": (_field_fate(table, actual_api, n.term)
+                 "actual": (_field_fate(table, actual_api, n.term, term)
                             if actual_outcome == "resolved" else None),
-                 "winner": _field_fate(table, winner_api, n.term)}
+                 "winner": _field_fate(table, winner_api, n.term, term)}
                 for n in graph.attributes_of("subject")],
         },
         "agreement": agreement,

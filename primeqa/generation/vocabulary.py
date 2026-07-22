@@ -28,6 +28,7 @@ from primeqa.resolution.symbols import ObjectSymbol, SymbolTable
 log = logging.getLogger(__name__)
 
 MAX_OBJECTS = 3
+MAX_ADJACENT = 4
 MAX_FIELDS_PER_OBJECT = 40
 MAX_PICKLIST_VALUES = 6
 
@@ -76,6 +77,31 @@ def _rank_objects(table: SymbolTable, requirement_text: str
     return [obj for _, obj in scored[:MAX_OBJECTS]]
 
 
+def _adjacent_objects(table: SymbolTable, top: ObjectSymbol,
+                      exclude: set) -> list[ObjectSymbol]:
+    """D-379: CHILDREN of the top-ranked object — objects whose fields
+    reference it via lookup/master-detail. This closes the AC15-class
+    retrieval gap structurally: a requirement about Orders exposes the
+    Order's child neighborhood (Audit Log, Ledger Entry, Order Line, …) even
+    when those names share no tokens with the requirement text.
+
+    Deliberately ONE direction: objects the top REFERENCES are excluded —
+    the live render showed OwnerId-style references dragging the 170-field
+    User object into the block (the D-362 directory-dump class). Children
+    pointing IN are where behavior claims about the top entity live.
+    Deterministic (api-name order), capped at MAX_ADJACENT."""
+    top_l = (top.api_name or "").lower()
+    adj = []
+    for obj in table.objects:
+        if not obj.api_name or not obj.fields or obj.api_name in exclude:
+            continue
+        if any(f.references_object and f.references_object.lower() == top_l
+               for f in obj.fields):
+            adj.append(obj)
+    adj.sort(key=lambda o: o.api_name)
+    return adj[:MAX_ADJACENT]
+
+
 def _field_line(f) -> str:
     label = f' ("{f.label}")' if f.label and f.label != f.api_name else ""
     tail = ""
@@ -101,22 +127,36 @@ def build_field_vocabulary(table: Optional[SymbolTable],
             f"{HEADER} (real field api names at the pinned org version; "
             "copy listed names VERBATIM):"]
         for obj in objects:
-            label = f' ("{obj.label}")' if obj.label else ""
-            lines.append(f"Object {obj.api_name}{label}:")
-            # custom-first, then alphabetical — the FB-V1 inventory lesson;
-            # universal audit fields dropped (noise, never mis-invented)
-            fields = sorted(
-                (f for f in obj.fields if f.api_name not in _AUDIT_FIELDS),
-                key=lambda f: (not f.api_name.endswith("__c"), f.api_name))
-            shown = fields[:MAX_FIELDS_PER_OBJECT]
-            lines.extend(_field_line(f) for f in shown)
-            dropped = len(fields) - len(shown)
-            if dropped > 0:
-                lines.append(f"  … +{dropped} more fields (ask via a "
-                             "best-label proposal; the substrate offers "
-                             "grounded alternatives)")
+            lines.extend(_object_section(obj))
+        # D-379: the top object's lookup neighborhood — objects a requirement
+        # about the top entity is likely to touch even when their names share
+        # no tokens with the requirement text (the AC15 retrieval gap).
+        adjacent = _adjacent_objects(
+            table, objects[0], exclude={o.api_name for o in objects})
+        if adjacent:
+            lines.append(f"Related to {objects[0].api_name} via lookup:")
+            for obj in adjacent:
+                lines.extend(_object_section(obj))
         return "\n".join(lines)
     except Exception:   # noqa: BLE001 — vocabulary must never break generation
         log.debug("D-378 vocabulary build failed (omitting block)",
                   exc_info=True)
         return ""
+
+
+def _object_section(obj: ObjectSymbol) -> list[str]:
+    """One object's block lines: header + custom-first fields (the FB-V1
+    inventory lesson), universal audit fields dropped, disclosed truncation."""
+    label = f' ("{obj.label}")' if obj.label else ""
+    lines = [f"Object {obj.api_name}{label}:"]
+    fields = sorted(
+        (f for f in obj.fields if f.api_name not in _AUDIT_FIELDS),
+        key=lambda f: (not f.api_name.endswith("__c"), f.api_name))
+    shown = fields[:MAX_FIELDS_PER_OBJECT]
+    lines.extend(_field_line(f) for f in shown)
+    dropped = len(fields) - len(shown)
+    if dropped > 0:
+        lines.append(f"  … +{dropped} more fields (ask via a "
+                     "best-label proposal; the substrate offers "
+                     "grounded alternatives)")
+    return lines

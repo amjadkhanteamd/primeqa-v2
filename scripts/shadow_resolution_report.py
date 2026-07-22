@@ -110,6 +110,7 @@ def main() -> int:
                               key=lambda kv: -sum(kv[1].values())):
             print(f"    {str(slot):<34} exact={c.get('exact', 0):<4} "
                   f"ladder={c.get('ladder', 0):<4} "
+                  f"foreign={c.get('foreign', 0):<4} "
                   f"unbound={c.get('unbound', 0)}")
         worst = Counter(f["term"] for f in field_rows
                         if (f.get("actual") or "unbound") == "unbound")

@@ -243,7 +243,17 @@ model BEFORE it proposes.
   calls the LLM). The gate is the live A/B on the F0 field telemetry —
   before v30: 5/21 field mentions unbound live; the block lists the real
   counterpart of every one of them. Rollback = pin `CURRENT` to v29 (one
-  line).
+  line). Gate CLOSED (D-378.1): unbound 5→2, all five inventions gone,
+  AC coverage 8/16→11/16.
+- **Lookup adjacency (D-379)**: the block additionally lists the top-ranked
+  object's CHILDREN (objects whose fields reference it — "Related to <top>
+  via lookup", `MAX_ADJACENT=4`), closing the AC15-class gap where a
+  child's name shares no tokens with the requirement (`PLS_FB_Audit_Log__c`).
+  One direction only: referenced-by-top is excluded (the live render showed
+  OwnerId dragging the 170-field User object in — the D-362 dump class).
+  Telemetry gains the `foreign` per-field fate for foreign-qualified
+  mentions (settling the D-378.1 ownership-lens follow-up: runtime follows
+  D-375; telemetry stops mis-filing real cross-object fields as unbound).
 
 ## Out of scope (this arc)
 
