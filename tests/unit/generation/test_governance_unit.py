@@ -383,6 +383,23 @@ def test_ground_rejection_conditions_predicate_value_coupling():
     assert inv == [] and len(g) == 1 and g[0].value == "On Hold"
 
 
+def test_ground_rejection_conditions_matches_pattern_drops_value():
+    """D-384: the org owns the format (the VR's REGEX) — ANY proposed
+    matches_pattern value drops to None before grounding (never refuses),
+    and a value-less proposal grounds identically. compared_to stays
+    forbidden (the D-330 coupling is untouched)."""
+    nb = [_field_rel("PLS_FB_Order__c.External_Reference__c")]
+    f = "PLS_FB_Order__c.External_Reference__c"
+    for v in ("INVALID", "<invalid-format>", "<invalid format>", None):
+        g, inv = gc._ground_rejection_conditions(
+            [{"field": f, "predicate": "matches_pattern", "value": v}], nb, 7)
+        assert inv == [] and len(g) == 1
+        assert g[0].predicate == "matches_pattern" and g[0].value is None
+    _, inv = gc._ground_rejection_conditions(
+        [{"field": f, "predicate": "matches_pattern", "compared_to": f}], nb, 7)
+    assert inv and "compared_to" in inv[0]
+
+
 # ---------------------------------------------------------------------------
 # D-299: automation-effect entry-condition grounding + named-flow binding.
 # ---------------------------------------------------------------------------

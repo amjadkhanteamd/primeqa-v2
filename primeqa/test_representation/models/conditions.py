@@ -35,7 +35,14 @@ from primeqa.test_representation.models.registry import register_body
 # ---------------------------------------------------------------------------
 
 # Predicates that require ``value`` to be provided.
-_VALUE_BEARING_PREDICATES = {"equals", "not_equals", "in_set", "matches_pattern"}
+_VALUE_BEARING_PREDICATES = {"equals", "not_equals", "in_set"}
+# Predicates whose ``value`` is OPTIONAL (D-384): ``matches_pattern``'s
+# format is ORG-OWNED (the grounding validation rule's REGEX defines it),
+# so the clause's semantic content is complete as (subject, predicate) and
+# S3 authors it value-free. Optional rather than forbidden: persisted
+# legacy bodies carry model-invented values and re-validate through this
+# model on every read — forbidding would make them unreadable.
+_VALUE_OPTIONAL_PREDICATES = {"matches_pattern"}
 # Predicates that require ``value`` to be absent.
 _VALUE_FREE_PREDICATES = {"is_null", "is_not_null"}
 
@@ -50,10 +57,14 @@ class Condition(BaseModel):
 
     The (predicate, value) coupling is enforced by a model
     validator:
-      - value-bearing predicates (equals / not_equals / in_set /
-        matches_pattern) REQUIRE ``value`` to be non-None.
+      - value-bearing predicates (equals / not_equals / in_set)
+        REQUIRE ``value`` to be non-None.
       - value-free predicates (is_null / is_not_null) REQUIRE
         ``value`` to be None.
+      - value-optional predicates (matches_pattern, D-384) accept
+        either: new claims author value-free (the org owns the
+        format); legacy persisted clauses carry a value and must
+        keep re-validating on read.
 
     The substrate validates structural coupling. Value-type
     correctness against the subject's Salesforce type is the
@@ -84,6 +95,8 @@ class Condition(BaseModel):
 
     @model_validator(mode="after")
     def _check_value_predicate_coupling(self) -> "Condition":
+        if self.predicate in _VALUE_OPTIONAL_PREDICATES:
+            return self  # D-384: value accepted either way (legacy parse)
         if self.predicate in _VALUE_BEARING_PREDICATES:
             if self.value is None:
                 raise ValueError(
@@ -120,6 +133,9 @@ class ConditionV2(BaseModel):
       - value-bearing predicates: ``value`` required, ``compared_to``
         forbidden (v1 semantics unchanged).
       - value-free predicates: both forbidden.
+      - value-optional predicates (``matches_pattern``, D-384):
+        ``value`` accepted either way (v1 semantics), ``compared_to``
+        forbidden.
       - field-comparison predicates (``exceeds``): ``compared_to``
         required, ``value`` forbidden.
     """
@@ -160,6 +176,8 @@ class ConditionV2(BaseModel):
                 f"predicate {self.predicate!r} forbids "
                 f"``compared_to``"
             )
+        if self.predicate in _VALUE_OPTIONAL_PREDICATES:
+            return self  # D-384: value accepted either way (legacy parse)
         if self.predicate in _VALUE_BEARING_PREDICATES:
             if self.value is None:
                 raise ValueError(

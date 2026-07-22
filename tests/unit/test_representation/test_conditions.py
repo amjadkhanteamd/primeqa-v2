@@ -26,6 +26,7 @@ from pydantic import ValidationError
 from primeqa.test_representation.errors import SchemaIncompatibilityError
 from primeqa.test_representation.models.conditions import (
     Condition,
+    ConditionV2,
     SemanticConditionsBody,
 )
 from primeqa.test_representation.models.references import (
@@ -53,7 +54,7 @@ def _ib_ref(name: str = "Account.Industry") -> IdentityBearingRef:
 
 class TestCondition:
     @pytest.mark.parametrize("predicate", [
-        "equals", "not_equals", "in_set", "matches_pattern",
+        "equals", "not_equals", "in_set",
     ])
     def test_value_bearing_predicates_accept_value(
         self, predicate: str,
@@ -78,7 +79,7 @@ class TestCondition:
         assert c.value is None
 
     @pytest.mark.parametrize("predicate", [
-        "equals", "not_equals", "in_set", "matches_pattern",
+        "equals", "not_equals", "in_set",
     ])
     def test_value_bearing_predicates_reject_missing_value(
         self, predicate: str,
@@ -89,6 +90,43 @@ class TestCondition:
                 predicate=predicate,  # type: ignore[arg-type]
             )
         assert "requires" in str(exc_info.value).lower()
+
+    # D-384: matches_pattern is value-OPTIONAL — the org owns the required
+    # format (the grounding VR's REGEX), so the clause's semantic content is
+    # complete as (subject, predicate). New claims author value-free; legacy
+    # persisted clauses carry model-invented values and MUST keep
+    # re-validating on read (forbidding would make them unreadable).
+    def test_matches_pattern_value_free_valid(self) -> None:
+        c = Condition(subject=_ib_ref(), predicate="matches_pattern")
+        assert c.predicate == "matches_pattern"
+        assert c.value is None
+
+    def test_matches_pattern_legacy_value_still_parses(self) -> None:
+        c = Condition.model_validate({
+            "subject": {
+                "ref_kind": "pinned",
+                "entity_type": "Field",
+                "entity_id": str(uuid4()),
+                "version_seq": 1,
+                "external_id": "PLS_FB_Order__c.External_Reference__c",
+            },
+            "predicate": "matches_pattern",
+            "value": "<invalid-format>",
+        })
+        assert c.value == "<invalid-format>"
+
+    def test_matches_pattern_value_free_valid_on_v2(self) -> None:
+        c = ConditionV2(subject=_ib_ref(), predicate="matches_pattern")
+        assert c.value is None and c.compared_to is None
+
+    def test_matches_pattern_still_forbids_compared_to_on_v2(self) -> None:
+        with pytest.raises(ValidationError) as exc_info:
+            ConditionV2(
+                subject=_ib_ref(),
+                predicate="matches_pattern",
+                compared_to=_ib_ref("Account.Name"),
+            )
+        assert "compared_to" in str(exc_info.value)
 
     @pytest.mark.parametrize("predicate", ["is_null", "is_not_null"])
     def test_value_free_predicates_reject_provided_value(
