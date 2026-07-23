@@ -329,6 +329,13 @@ class GroundedStateTransition:
     # object at the stash gate). Both set together or both None.
     trigger_object: Optional[_Endpoint] = None
     trigger_lookup_field: Optional[_Endpoint] = None
+    # D-386: the substrate-derived UPDATE transition (FL09's shape — the
+    # to-state is produced by an Update-trigger flow): the create stages the
+    # arm's PRIOR state, the update the state that fires it
+    # (tuple[tuple[_Endpoint, Any], ...]). Supersedes the D-222 pair at the
+    # stash gate; both empty for the create-scoped shapes.
+    transition_create_fields: tuple = ()
+    transition_update_fields: tuple = ()
 
 
 @dataclass(frozen=True)
@@ -2130,7 +2137,21 @@ def _author_state_transition(g: GroundedStateTransition) -> EmissionBundle:
     subject_fields = [field_ref]
     from_values = {}
     create_fields = {}
-    if g.trigger_field is not None:
+    update_fields = {}
+    if g.transition_create_fields or g.transition_update_fields:
+        # D-386: the substrate-derived UPDATE transition (FL09's shape) —
+        # from_state IS the arm's prior state (org-owned, the create stages
+        # it) and the update stages the state that fires the arm. The stash
+        # gate drops the D-222 pair when this shape is present.
+        for ep, val in g.transition_create_fields:
+            subject_fields.append(IdentityBearingRef(
+                entity_type=ep.entity_type, entity_id=ep.entity_id,
+                version_seq=g.version_seq, external_id=ep.external_id))
+            from_values[ep.external_id] = LiteralValue(value=val)
+            create_fields[ep.external_id] = val
+        update_fields = {ep.external_id: val
+                         for ep, val in g.transition_update_fields}
+    elif g.trigger_field is not None:
         trigger_api = g.trigger_field.external_id
         subject_fields.append(IdentityBearingRef(
             entity_type=g.trigger_field.entity_type,
@@ -2149,6 +2170,15 @@ def _author_state_transition(g: GroundedStateTransition) -> EmissionBundle:
     if g.trigger_object is not None:
         event_desc = (f"creating a {g.trigger_object.external_id} linked to "
                       f"the subject")
+    elif update_fields:
+        # D-386 identity-bearing narration (the D-327 idiom): the update IS
+        # the causal event — a transitioned claim never collides with a
+        # create-only one.
+        _gate = ", ".join(f"{k}={v!r}" for k, v in create_fields.items())
+        _upd_gate = ", ".join(f"{k}={v!r}" for k, v in update_fields.items())
+        event_desc = (f"creating a {object_api}"
+                      + (f" with {_gate}" if create_fields else "")
+                      + f" then updating {_upd_gate}")
     elif g.trigger_field is not None:
         event_desc = (f"a data change setting "
                       f"{g.trigger_field.external_id}={g.trigger_value!r}")
@@ -2200,12 +2230,26 @@ def _author_state_transition(g: GroundedStateTransition) -> EmissionBundle:
                    f"org set {field_api}={g.to_value!r}")
     else:
         steps = _observe_steps(object_api, field_api, g.to_value,
-                               create_fields=create_fields)
+                               create_fields=create_fields,
+                               update_fields=update_fields)
         trigger_op_target = target
-        details = (f"create a {object_api} record (padding only), read it "
-                   f"back, assert the org set {field_api}={g.to_value!r}")
+        if update_fields:
+            _gate = ", ".join(f"{k}={v!r}" for k, v in create_fields.items())
+            _upd_gate = ", ".join(f"{k}={v!r}"
+                                  for k, v in update_fields.items())
+            details = (f"create a {object_api} record"
+                       + (f" with {_gate} (the prior state)"
+                          if create_fields else "")
+                       + f", update {_upd_gate} (the transition), read it "
+                       f"back, assert the org set "
+                       f"{field_api}={g.to_value!r}")
+        else:
+            details = (f"create a {object_api} record (padding only), read "
+                       f"it back, assert the org set "
+                       f"{field_api}={g.to_value!r}")
     trigger = DataMutationTriggerBody(
-        operation="create", target=trigger_op_target,
+        operation="update" if update_fields else "create",
+        target=trigger_op_target,
         identity_context="system", volume="single")
     recipe = DataRecipeBody(
         api_choice="rest", identity_context="system",

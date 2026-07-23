@@ -1526,6 +1526,68 @@ def _flows_producing_transition(flow_entities, field_hint, expected_value):
         expected_value=expected_value)
 
 
+def _derive_transition_staging(tr_ent, tr_beh, observed_bare, field_meta):
+    """C5 (FL09 slice) — the Update-trigger transition derivation, shared by
+    the automation-effect resolver and (D-386) the state-transition kind:
+    the arm's prior-state guard ($Record__Prior) becomes the CREATE, the
+    current guard the UPDATE (EqualTo → the literal; NotEqualTo → a picklist
+    alternative), and every ``trigger.entry_changed_fields`` field must
+    genuinely change between the two. Returns ``({"create": .., "update":
+    ..}, None)`` or ``(None, refusal_detail)`` — underivable is a NAMED
+    refusal, never a guess (the D-385 law: a create-only recipe can never
+    fire an Update-trigger flow)."""
+    if tr_beh["negated_guards"]:
+        return None, ("the transition arm carries a negation-context — "
+                      "outside the v1 transition grammar")
+    create: dict = {}
+    update: dict = {}
+    for _gf, _gop, _gv in tr_beh["prior_guard"]:
+        if _gf == observed_bare:
+            return None, (f"the arm's prior-state guard rides the observed "
+                          f"field {_gf!r} — cannot stage")
+        if _gop != "EqualTo":
+            return None, (f"prior-state guard {_gf!r} {_gop} is outside "
+                          f"the v1 transition grammar (EqualTo only)")
+        create[_gf] = _gv
+    for _gf, _gop, _gv in tr_beh["guard"]:
+        if _gop == "IsNull":
+            continue          # omission-satisfied
+        if _gf == observed_bare:
+            return None, (f"the arm's guard rides the observed field "
+                          f"{_gf!r} — cannot stage")
+        if _gop == "EqualTo":
+            update[_gf] = _gv
+        elif _gop == "NotEqualTo":
+            _alt = _picklist_alternative(
+                (field_meta.get(_gf) or {}).get("picklist_values"),
+                {_gv, create.get(_gf)})
+            if _alt is None:
+                return None, (f"cannot derive an update state on {_gf!r} "
+                              f"that differs from {_gv!r} — no alternative "
+                              f"active picklist value")
+            update[_gf] = _alt
+        else:
+            return None, (f"guard {_gf!r} {_gop} is outside the v1 "
+                          f"transition grammar")
+    # every declared changed-field must GENUINELY change between the
+    # staged create and update
+    changed = flow_behaviour(
+        getattr(tr_ent, "attributes", None))["trigger"]["entry_changed_fields"]
+    for _cf in changed:
+        if _cf == observed_bare:
+            return None, (f"the entry filter requires a change on the "
+                          f"observed field {_cf!r} — cannot stage")
+        if _cf not in create or _cf not in update \
+                or create[_cf] == update[_cf]:
+            return None, (f"the entry filter requires a real change on "
+                          f"{_cf!r} but the derived transition does not "
+                          f"stage one")
+    if not update:
+        return None, ("the transition arm derives no update state — "
+                      "nothing fires it")
+    return {"create": create, "update": update}, None
+
+
 def _flows_producing_premise_conditioned(flow_entities, field_hint,
                                          expected_value):
     """Completion (FL06 slice): flows whose IR carries a GROUNDED literal
@@ -3580,6 +3642,143 @@ class GovernanceCore:
                         entity_type=trig_ent.entity_type,
                         external_id=trig_ent.sf_api_name or str(trig_ent.id))
                     trig_value = _identity_safe(hint.get("trigger_value"))
+            # D-386: the D-385 law applied to the state-transition kind — the
+            # to-state may be produced by an UPDATE-trigger automation (FL09's
+            # shape: live claim 78a2d330 asserted Reopened=true off a bare
+            # create(Status=…) — no update step, so the flow can never fire
+            # and the test is red by construction). When exactly one grounded
+            # transition arm matches (field, to_value), the substrate derives
+            # the create→update staging from the arm's OWN guards (the shared
+            # C5 derivation) and it SUPERSEDES any D-222 staged pair — the
+            # org's guard owns the transition, the model's staged create does
+            # not. Underivable → REFUSE, never author create-only. Scoped to
+            # the same-record shape (the D-227 cross-object trigger is a
+            # separately verified shape, unchanged — the D-385 precedent).
+            _st_flows = [r.entity for r in neighborhood
+                         if r.edge_type == EDGE_FLOW
+                         and r.entity.entity_type == "Flow"]
+            _st_trans_create, _st_trans_update = (), ()
+            if trig_obj_ep is None:
+                _bare_st = field_ent.sf_api_name.rsplit(".", 1)[-1]
+                _st_tr = _flows_producing_transition(
+                    _st_flows, field_ent.sf_api_name, to_value)
+                if len(_st_tr) > 1:
+                    return IntentResolution(
+                        grounded_candidates=[], next_action=NextAction.REFUSE,
+                        interpretation_delta=delta,
+                        refusal=self._router.emission_deferred(
+                            archetype, claim_kind,
+                            detail=(f"{len(_st_tr)} Update-trigger Flows "
+                                    f"verifiably produce the claimed "
+                                    f"to-state — cannot attribute")))
+                if len(_st_tr) == 1:
+                    _st_tr_ent, _st_tr_beh = _st_tr[0]
+                    _st_meta = _grounding_field_metadata(
+                        neighborhood, self._s1, at)
+                    _st_staging, _st_refusal = _derive_transition_staging(
+                        _st_tr_ent, _st_tr_beh, _bare_st, _st_meta)
+                    if _st_refusal is not None:
+                        return IntentResolution(
+                            grounded_candidates=[],
+                            next_action=NextAction.REFUSE,
+                            interpretation_delta=delta,
+                            refusal=self._router.emission_deferred(
+                                archetype, claim_kind,
+                                detail=(f"{_st_tr_ent.sf_api_name} produces "
+                                        f"the to-state on UPDATE only, and "
+                                        f"the update that fires it cannot "
+                                        f"be staged: " + _st_refusal)))
+                    # every staged field must BELONG to the subject at the
+                    # pinned version (the same endpoint law as C5's merge)
+                    _st_eps = {}
+                    for _sf in sorted(set(_st_staging["create"])
+                                      | set(_st_staging["update"])):
+                        _st_fent = next(
+                            (r.entity for r in neighborhood
+                             if r.edge_type == EDGE_BELONGS
+                             and r.entity.entity_type == "Field"
+                             and isinstance(r.entity.sf_api_name, str)
+                             and r.entity.sf_api_name
+                             .rsplit(".", 1)[-1] == _sf), None)
+                        if _st_fent is None:
+                            return IntentResolution(
+                                grounded_candidates=[],
+                                next_action=NextAction.REFUSE,
+                                interpretation_delta=delta,
+                                refusal=self._router.emission_deferred(
+                                    archetype, claim_kind,
+                                    detail=(f"the transition guard field "
+                                            f"{_sf!r} does not BELONG to "
+                                            f"the subject at the pinned "
+                                            f"version — cannot stage the "
+                                            f"transition")))
+                        _st_eps[_sf] = _Endpoint(
+                            entity_id=_st_fent.id,
+                            entity_type=_st_fent.entity_type,
+                            external_id=_st_fent.sf_api_name
+                            or str(_st_fent.id))
+                    # D-306.1a: the update PATCH cannot stage a calculated/
+                    # read-only field (perma-errored recipe otherwise)
+                    _st_unpatchable = sorted(
+                        _sf for _sf in _st_staging["update"]
+                        if (m := _st_meta.get(_sf)) is None
+                        or m.get("is_calculated")
+                        or not m.get("is_updateable", True))
+                    if _st_unpatchable:
+                        return IntentResolution(
+                            grounded_candidates=[],
+                            next_action=NextAction.REFUSE,
+                            interpretation_delta=delta,
+                            refusal=self._router.emission_deferred(
+                                archetype, claim_kind,
+                                detail=(f"transition update field(s) not "
+                                        f"updateable (calculated/"
+                                        f"read-only): {_st_unpatchable}")))
+                    # D-337: the staged create ⊕ update overlay must survive
+                    # the org's own active VRs (Kleene; unstaged = unknown)
+                    conflict = _staged_vr_conflict_detail(
+                        neighborhood, dict(_st_staging["create"]),
+                        staged_update=dict(_st_staging["update"]))
+                    if conflict is not None:
+                        return IntentResolution(
+                            grounded_candidates=[],
+                            next_action=NextAction.REFUSE,
+                            interpretation_delta=delta,
+                            refusal=self._router.emission_deferred(
+                                archetype, claim_kind, detail=conflict))
+                    _st_trans_create = tuple(
+                        (_st_eps[f], _st_staging["create"][f])
+                        for f in sorted(_st_staging["create"]))
+                    _st_trans_update = tuple(
+                        (_st_eps[f], _st_staging["update"][f])
+                        for f in sorted(_st_staging["update"]))
+                    # the derived transition supersedes the D-222 pair —
+                    # dropped, never merged (the drop-never-guess posture)
+                    trig_field_ep, trig_value = None, None
+                else:
+                    # no grounded transition arm — but when EVERY verifiable
+                    # producer of the effect fires on Update only, a create
+                    # (bare or D-222-staged) can never fire it (the live
+                    # class): refuse rather than author a guaranteed-red.
+                    _st_all = _flows_producing_effect(
+                        _st_flows, field_ent.sf_api_name, to_value, None)
+                    _st_upd_only = [
+                        e for e in _st_all
+                        if flow_behaviour(getattr(e, "attributes", None))
+                        ["trigger"]["record_trigger_type"] == "Update"]
+                    if _st_upd_only and len(_st_upd_only) == len(_st_all):
+                        return IntentResolution(
+                            grounded_candidates=[],
+                            next_action=NextAction.REFUSE,
+                            interpretation_delta=delta,
+                            refusal=self._router.emission_deferred(
+                                archetype, claim_kind,
+                                detail=(f"{_st_upd_only[0].sf_api_name} "
+                                        f"produces the to-state on UPDATE "
+                                        f"only, and the update that fires "
+                                        f"it cannot be derived — a "
+                                        f"create-only test can never "
+                                        f"trigger it")))
             # Claim fidelity (T4): a create-scoped state-transition asserts the
             # ORG'S AUTOMATION sets the to-state on create (the recipe creates
             # WITHOUT the field and asserts the org produced it). If no grounded
@@ -3591,11 +3790,10 @@ class GovernanceCore:
             # vocabulary; a manual "mark/set X" capability should re-propose as an
             # acceptance-claim. Scoped to the pure create-scoped shape — a
             # cross-object (D-227) or staged (D-222) trigger is a separately
-            # verified shape and is left unchanged.
-            if trig_obj_ep is None and trig_field_ep is None:
-                _st_flows = [r.entity for r in neighborhood
-                             if r.edge_type == EDGE_FLOW
-                             and r.entity.entity_type == "Flow"]
+            # verified shape, and the D-386 derived transition carries its
+            # own producer by construction.
+            if trig_obj_ep is None and trig_field_ep is None \
+                    and not _st_trans_update:
                 _st_producers = _flows_producing_effect(
                     _st_flows, field_ent.sf_api_name, to_value, None)
                 # B0 hardening: the approval arm is REMOVED from this floor —
@@ -3633,7 +3831,9 @@ class GovernanceCore:
                 to_value=to_value, requirement_excerpt=excerpt,
                 trigger_field=trig_field_ep, trigger_value=trig_value,
                 trigger_object=trig_obj_ep,
-                trigger_lookup_field=trig_lookup_ep))
+                trigger_lookup_field=trig_lookup_ep,
+                transition_create_fields=_st_trans_create,
+                transition_update_fields=_st_trans_update))
 
         # Stash grounding for the automation-effect (D-210.1): the matched
         # Flow (TRIGGERS_ON — the grounding dimension _evaluate_positive
@@ -5167,81 +5367,11 @@ class GovernanceCore:
                     if len(tr_producers) == 1:
                         tr_ent, tr_beh = tr_producers[0]
                         _bare_obs = field_ent.sf_api_name.rsplit(".", 1)[-1]
-                        _trmeta = _grounding_field_metadata(
-                            neighborhood, self._s1, at)
-                        _tr_create: dict = {}
-                        _tr_update: dict = {}
-                        _tr_refusal = None
-                        if tr_beh["negated_guards"]:
-                            _tr_refusal = ("the transition arm carries a "
-                                           "negation-context — outside the v1 "
-                                           "transition grammar")
-                        for cond in (() if _tr_refusal
-                                     else tr_beh["prior_guard"]):
-                            _gf, _gop, _gv = cond
-                            if _gf == _bare_obs:
-                                _tr_refusal = (f"the arm's prior-state guard "
-                                               f"rides the observed field "
-                                               f"{_gf!r} — cannot stage")
-                                break
-                            if _gop != "EqualTo":
-                                _tr_refusal = (f"prior-state guard {_gf!r} "
-                                               f"{_gop} is outside the v1 "
-                                               f"transition grammar "
-                                               f"(EqualTo only)")
-                                break
-                            _tr_create[_gf] = _gv
-                        for cond in (() if _tr_refusal else tr_beh["guard"]):
-                            _gf, _gop, _gv = cond
-                            if _gop == "IsNull":
-                                continue          # omission-satisfied
-                            if _gf == _bare_obs:
-                                _tr_refusal = (f"the arm's guard rides the "
-                                               f"observed field {_gf!r} — "
-                                               f"cannot stage")
-                                break
-                            if _gop == "EqualTo":
-                                _tr_update[_gf] = _gv
-                            elif _gop == "NotEqualTo":
-                                _alt = _picklist_alternative(
-                                    (_trmeta.get(_gf) or {}).get(
-                                        "picklist_values"),
-                                    {_gv, _tr_create.get(_gf)})
-                                if _alt is None:
-                                    _tr_refusal = (
-                                        f"cannot derive an update state on "
-                                        f"{_gf!r} that differs from "
-                                        f"{_gv!r} — no alternative active "
-                                        f"picklist value")
-                                    break
-                                _tr_update[_gf] = _alt
-                            else:
-                                _tr_refusal = (f"guard {_gf!r} {_gop} is "
-                                               f"outside the v1 transition "
-                                               f"grammar")
-                                break
-                        if _tr_refusal is None:
-                            # every declared changed-field must GENUINELY
-                            # change between the staged create and update
-                            _changed = flow_behaviour(
-                                getattr(tr_ent, "attributes", None)
-                            )["trigger"]["entry_changed_fields"]
-                            for _cf in _changed:
-                                if _cf == _bare_obs:
-                                    _tr_refusal = (
-                                        f"the entry filter requires a change "
-                                        f"on the observed field {_cf!r} — "
-                                        f"cannot stage")
-                                    break
-                                if _cf not in _tr_create                                         or _cf not in _tr_update                                         or _tr_create[_cf] == _tr_update[_cf]:
-                                    _tr_refusal = (
-                                        f"the entry filter requires a real "
-                                        f"change on {_cf!r} but the derived "
-                                        f"transition does not stage one")
-                                    break
-                        if _tr_refusal is None and not _tr_update:
-                            _tr_refusal = ("the transition arm derives no "
-                                           "update state — nothing fires it")
+                        transition_meta, _tr_refusal = \
+                            _derive_transition_staging(
+                                tr_ent, tr_beh, _bare_obs,
+                                _grounding_field_metadata(
+                                    neighborhood, self._s1, at))
                         if _tr_refusal is not None:
                             return IntentResolution(
                                 grounded_candidates=[],
@@ -5250,8 +5380,6 @@ class GovernanceCore:
                                 refusal=self._router.emission_deferred(
                                     archetype, claim_kind,
                                     detail=_tr_refusal))
-                        transition_meta = {"create": _tr_create,
-                                           "update": _tr_update}
                         flow_ent = tr_ent
                         primitive = "flow"
                         no_producer_floor = False

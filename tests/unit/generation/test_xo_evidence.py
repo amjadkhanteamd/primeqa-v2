@@ -1313,6 +1313,7 @@ def _world_fl09(*, status_values=("Draft", "Submitted", "Fulfilled")):
     recipe that can never fire an Update-trigger flow."""
     order = _ent("Object", "PLS_FB_Order__c", "PLS FB Order")
     status = _ent("Field", "PLS_FB_Order__c.PLS_FB_Status__c", "Status")
+    reopened = _ent("Field", "PLS_FB_Order__c.PLS_FB_Reopened__c", "Reopened")
     log = _ent("Object", "PLS_FB_Audit_Log__c", "PLS FB Audit Log")
     l_order = _ent("Field", "PLS_FB_Audit_Log__c.PLS_FB_Order__c", "Order")
     l_kind = _ent("Field", "PLS_FB_Audit_Log__c.PLS_FB_Kind__c", "Kind")
@@ -1322,17 +1323,19 @@ def _world_fl09(*, status_values=("Draft", "Submitted", "Fulfilled")):
                 attrs={"Metadata": d["Metadata"]})
     pvs = uuid4()
     s1 = _FakeS1(
-        entities=[order, status, log, l_order, l_kind, flow],
+        entities=[order, status, reopened, log, l_order, l_kind, flow],
         rows_by_object={
             "PLS_FB_Order__c": [
                 SimpleNamespace(edge_type=gc.EDGE_BELONGS, entity=status),
+                SimpleNamespace(edge_type=gc.EDGE_BELONGS, entity=reopened),
                 SimpleNamespace(edge_type=gc.EDGE_FLOW, entity=flow)],
             "PLS_FB_Audit_Log__c": [
                 SimpleNamespace(edge_type=gc.EDGE_BELONGS, entity=e)
                 for e in (l_order, l_kind)],
         },
         details={status.id: {"field_type": "picklist",
-                             "picklist_value_set_entity_id": pvs}},
+                             "picklist_value_set_entity_id": pvs},
+                 reopened.id: {"field_type": "boolean"}},
         picklists={pvs: [{"value_api_name": v, "is_active": True}
                          for v in status_values]})
     return gc.GovernanceCore(s1)
@@ -1378,6 +1381,138 @@ def test_update_trigger_without_derivable_transition_refuses():
     d = res.refusal.payload["detail"]
     assert "fires on UPDATE only" in d
     assert "create-only" in d
+
+
+# ---------------------------------------------------------------------------
+# D-386 — the D-385 law applied to the STATE-TRANSITION claim kind (the
+# residual found verifying D-385 on env-59: regen job 91 minted claim
+# 78a2d330 — from_state Status='Confirmed' → Reopened=true with a
+# create-only recipe; FL09 sets Reopened only on UPDATE leaving Fulfilled)
+# ---------------------------------------------------------------------------
+
+ST_EXCERPT = ("a fulfilled order moved back into an active state is marked "
+              "as reopened")
+
+
+def _st_intent(**kw):
+    d = {"ac_ref": 15, "archetype_hint": "data_behavior",
+         "polarity_hint": "positive",
+         "claim_kind_hint": "state-transition-claim",
+         "requirement_excerpt": ST_EXCERPT,
+         "target_subject_hint": {
+             "entity_type": "Object", "sf_api_name": "PLS_FB_Order__c", **kw}}
+    return {"requirement_excerpt": ST_EXCERPT, "intent_descriptor": d}
+
+
+def test_state_transition_derives_the_update_transition():
+    # the bare shape: previously refused with the misframing "no org
+    # automation produces … on create / assert as an acceptance-claim" —
+    # now the FL09 transition arm derives create(prior) → update(away)
+    core = _world_fl09()
+    state = _state()
+    res = core.resolve_intent(
+        intent_input=_st_intent(field_name="PLS_FB_Reopened__c",
+                                expected_value=True),
+        ctx=_ctx(), state=state)
+    assert res.refusal is None, getattr(res.refusal, "payload", None)
+    [g] = state.groundings
+    assert _pairs(g.transition_create_fields) == {
+        "PLS_FB_Status__c": "Fulfilled"}
+    assert _pairs(g.transition_update_fields) == {"PLS_FB_Status__c": "Draft"}
+    assert g.trigger_field is None and g.trigger_value is None
+
+
+def test_state_transition_derived_transition_supersedes_the_staged_pair():
+    # THE FIX for live claim 78a2d330: the model staged a create-time
+    # trigger pair that can never fire the Update-trigger producer — the
+    # org-derived transition supersedes it (dropped, never merged)
+    core = _world_fl09()
+    state = _state()
+    res = core.resolve_intent(
+        intent_input=_st_intent(field_name="PLS_FB_Reopened__c",
+                                expected_value=True,
+                                trigger_field="PLS_FB_Status__c",
+                                trigger_value="Submitted"),
+        ctx=_ctx(), state=state)
+    assert res.refusal is None, getattr(res.refusal, "payload", None)
+    [g] = state.groundings
+    assert g.trigger_field is None and g.trigger_value is None
+    assert _pairs(g.transition_create_fields) == {
+        "PLS_FB_Status__c": "Fulfilled"}
+    assert _pairs(g.transition_update_fields) == {"PLS_FB_Status__c": "Draft"}
+
+
+def test_state_transition_underivable_update_refuses():
+    # picklist offers no alternative to Fulfilled → the update cannot be
+    # staged → REFUSE with the named reason; never author create-only
+    core = _world_fl09(status_values=("Fulfilled",))
+    state = _state()
+    res = core.resolve_intent(
+        intent_input=_st_intent(field_name="PLS_FB_Reopened__c",
+                                expected_value=True,
+                                trigger_field="PLS_FB_Status__c",
+                                trigger_value="Submitted"),
+        ctx=_ctx(), state=state)
+    assert res.refusal is not None
+    assert not state.groundings
+    d = res.refusal.payload["detail"]
+    assert "UPDATE only" in d
+    assert "cannot be staged" in d
+
+
+def _world_fl09_raw_writer():
+    """An Update-trigger writer whose arm the IR does NOT ground (raw
+    recordUpdates inputAssignments idiom, behaviours=unsupported) but whose
+    raw effect projection still matches (field, value) — the update-only
+    producer with no derivable transition."""
+    order = _ent("Object", "PLS_FB_Order__c", "PLS FB Order")
+    status = _ent("Field", "PLS_FB_Order__c.PLS_FB_Status__c", "Status")
+    reopened = _ent("Field", "PLS_FB_Order__c.PLS_FB_Reopened__c", "Reopened")
+    md = {
+        "processType": "AutoLaunchedFlow", "status": "Active",
+        "start": {"object": "PLS_FB_Order__c", "recordTriggerType": "Update",
+                  "triggerType": "RecordAfterSave",
+                  "connector": {"targetReference": "Upd"},
+                  "filters": [], "filterLogic": None},
+        "recordUpdates": [{"name": "Upd", "inputReference": "$Record",
+                           "inputAssignments": [{
+                               "field": "PLS_FB_Reopened__c",
+                               "value": {"booleanValue": True}}]}],
+    }
+    flow = _ent("Flow", "PLS_FB_Raw_Reopen_Writer", "Raw Reopen Writer",
+                attrs={"Metadata": md, "_is_active": True})
+    pvs = uuid4()
+    s1 = _FakeS1(
+        entities=[order, status, reopened, flow],
+        rows_by_object={
+            "PLS_FB_Order__c": [
+                SimpleNamespace(edge_type=gc.EDGE_BELONGS, entity=status),
+                SimpleNamespace(edge_type=gc.EDGE_BELONGS, entity=reopened),
+                SimpleNamespace(edge_type=gc.EDGE_FLOW, entity=flow)]},
+        details={status.id: {"field_type": "picklist",
+                             "picklist_value_set_entity_id": pvs},
+                 reopened.id: {"field_type": "boolean"}},
+        picklists={pvs: [{"value_api_name": v, "is_active": True}
+                         for v in ("Draft", "Submitted", "Fulfilled")]})
+    return gc.GovernanceCore(s1)
+
+
+def test_state_transition_update_only_producer_without_arm_refuses():
+    # every verifiable producer fires on Update only and no grounded
+    # transition arm exists — a create (bare OR staged) can never fire it
+    core = _world_fl09_raw_writer()
+    for kw in ({}, {"trigger_field": "PLS_FB_Status__c",
+                    "trigger_value": "Submitted"}):
+        state = _state()
+        res = core.resolve_intent(
+            intent_input=_st_intent(field_name="PLS_FB_Reopened__c",
+                                    expected_value=True, **kw),
+            ctx=_ctx(), state=state)
+        assert res.refusal is not None, kw
+        assert not state.groundings
+        d = res.refusal.payload["detail"]
+        assert "UPDATE only" in d
+        assert "create-only test can never trigger it" in d
 
 
 def test_sum_rollup_refuses_a_calculated_source_field():

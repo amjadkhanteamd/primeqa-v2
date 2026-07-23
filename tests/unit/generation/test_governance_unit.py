@@ -181,6 +181,54 @@ def test_unstaged_state_transition_unchanged():
 
 
 # ---------------------------------------------------------------------------
+# D-386 — the derived UPDATE transition (FL09's shape) authors
+# create(prior) → update(away) → read → assert, never create-only
+# ---------------------------------------------------------------------------
+
+def test_transition_state_transition_authors_update_phase():
+    bundle = author_emission(_staged_state_transition(
+        trigger_field=None, trigger_value=None,
+        to_value="true",
+        field=_ep("Field", "Opportunity.Reopened__c"),
+        transition_create_fields=(
+            (_ep("Field", "Opportunity.StageName"), "Closed Won"),),
+        transition_update_fields=(
+            (_ep("Field", "Opportunity.StageName"), "Prospecting"),)))
+    steps = bundle.observation_realization.steps
+    assert [s.step_id for s in steps] == [
+        "create-record", "update-record", "read-created", "assert-value"]
+    # the create stages the PRIOR state; the asserted field stays absent
+    assert steps[0].field_values == {"Opportunity.StageName": "Closed Won"}
+    assert "Opportunity.Reopened__c" not in steps[0].field_values
+    assert steps[1].field_changes == {"Opportunity.StageName": "Prospecting"}
+    body = bundle.asserted_truth
+    # from_state IS the prior state (org-owned, identity-bearing)
+    assert body.from_state.field_values[
+        "Opportunity.StageName"].value == "Closed Won"
+    assert body.to_state.field_values[
+        "Opportunity.Reopened__c"].value == "true"
+    assert {f.external_id for f in body.subject_fields} == {
+        "Opportunity.Reopened__c", "Opportunity.StageName"}
+    # the update IS the causal event — identity-bearing narration
+    assert "then updating" in body.triggering_event.description
+    assert bundle.causal_initiation.operation == "update"
+
+
+def test_transition_supersedes_never_composes_with_the_staged_pair():
+    # the stash gate drops the D-222 pair when the transition is derived;
+    # if both ever arrive, the derived transition wins the authored shape
+    bundle = author_emission(_staged_state_transition(
+        transition_create_fields=(
+            (_ep("Field", "Opportunity.StageName"), "Closed Won"),),
+        transition_update_fields=(
+            (_ep("Field", "Opportunity.StageName"), "Prospecting"),)))
+    create = bundle.observation_realization.steps[0]
+    assert create.field_values == {"Opportunity.StageName": "Closed Won"}
+    assert bundle.asserted_truth.from_state.field_values[
+        "Opportunity.StageName"].value == "Closed Won"
+
+
+# ---------------------------------------------------------------------------
 # D-227 — cross-object trigger state-transition + parent-stamp automation
 # ---------------------------------------------------------------------------
 
