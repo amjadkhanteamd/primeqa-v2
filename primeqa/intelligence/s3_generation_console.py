@@ -249,14 +249,17 @@ def read_latest_s3_job(tenant_id: int, requirement_key: str) -> dict:
 # joined sources per attempt: the ATTEMPT (status/timing/error_code) + its JOB
 # (s1_version_seq, error_message), the OUTCOME (generation_outcomes by request_id
 # — draft = tests produced, refusal = the declined reason), and the LLM COST
-# (public.llm_usage_log). Cost is attributed by (tenant, task='generation', ts
-# within the attempt's [started_at, finished_at] window): the worker runs one
-# generation per tenant sequentially, so attempt windows never overlap and the
-# 'generation' calls in a window are that attempt's. generation's gateway calls
-# are NOT tagged with a requirement_id (build_tool_turn_fn passes only task+model),
-# so the per-attempt time window is the available attribution — precise for the
-# single-worker queue. public.llm_usage_log is reachable because the tenant conn's
-# search_path includes public.
+# (public.llm_usage_log), joined on the attempt's request_id via
+# context->>'s3_request_id' (stamped by the gateway binding since 72eed6c/D-388).
+# HISTORY: cost used to be attributed by (tenant, task, ts within the attempt's
+# [started_at, finished_at] window) because generation's gateway calls carried no
+# key — and the window's single-worker assumption was already violated by local
+# and eval runs, while 63% of generation rows fell outside every window and were
+# silently dropped (D-390). Timestamp correlation is NOT an acceptable
+# attribution mechanism anywhere in this codebase; rows without the key (the 391
+# pre-instrumentation rows) render as NOT ATTRIBUTED, never as $0.00.
+# public.llm_usage_log is reachable because the tenant conn's search_path
+# includes public.
 
 # == GENERATION_TASK in primeqa/generation/run.py (drift-guarded in tests). Kept
 # as a literal so the requirement page doesn't import the generation runtime.
@@ -358,7 +361,7 @@ def _read_generation_runs(conn, tenant_id, requirement_key, *, now, limit) -> li
         "         COALESCE(SUM(u.output_tokens), 0) AS out_tok "
         "  FROM public.llm_usage_log u "
         "  WHERE u.tenant_id = :tid AND u.task = :task "
-        "    AND u.ts >= a.started_at AND u.ts <= COALESCE(a.finished_at, NOW())"
+        "    AND u.context->>'s3_request_id' = CAST(a.request_id AS text)"
         ") llm ON true "
         "WHERE j.requirement_key = :rk "
         "ORDER BY a.started_at DESC LIMIT :limit"),
@@ -431,7 +434,7 @@ def read_generation_run_detail(tenant_id: int, requirement_key: str,
                 "         COALESCE(SUM(u.output_tokens), 0) AS out_tok "
                 "  FROM public.llm_usage_log u "
                 "  WHERE u.tenant_id = :tid AND u.task = :task "
-                "    AND u.ts >= a.started_at AND u.ts <= COALESCE(a.finished_at, NOW())"
+                "    AND u.context->>'s3_request_id' = CAST(a.request_id AS text)"
                 ") llm ON true "
                 "WHERE j.requirement_key = :rk AND a.request_id = CAST(:rid AS uuid)"),
                 {"tid": tenant_id, "task": _GENERATION_TASK,

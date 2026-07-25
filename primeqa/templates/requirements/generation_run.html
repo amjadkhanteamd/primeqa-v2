@@ -50,8 +50,8 @@
     </div>
     <div>
       <p class="text-xs text-gray-500 uppercase">AI cost</p>
-      <p class="font-medium" title="{% if run.llm %}{{ run.llm.input_tokens }} tokens in / {{ run.llm.output_tokens }} out{% endif %}">
-        {% if run.llm %}${{ '%.4f'|format(run.llm.cost_usd) }}{% else %}—{% endif %}
+      <p class="font-medium" title="{% if run.llm %}{{ run.llm.input_tokens }} tokens in / {{ run.llm.output_tokens }} out{% else %}No cost rows carry this run's request id — runs before per-run cost attribution (2026-07-25) can't be costed.{% endif %}">
+        {% if run.llm %}${{ '%.4f'|format(run.llm.cost_usd) }}{% else %}<span class="text-gray-400 italic">not attributed</span>{% endif %}
       </p>
     </div>
   </div>

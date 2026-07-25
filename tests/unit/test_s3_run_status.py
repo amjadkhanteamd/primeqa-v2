@@ -100,3 +100,18 @@ def test_naive_now_does_not_crash_duration():
 def test_generation_task_literal_matches_runtime():
     from primeqa.generation.run import GENERATION_TASK
     assert _GENERATION_TASK == GENERATION_TASK
+
+
+def test_cost_attribution_is_by_request_key_never_timestamp_window():
+    # D-390: per-attempt cost joins llm_usage_log on context->>'s3_request_id'
+    # (stamped since 72eed6c). The old timestamp-window attribution silently
+    # dropped 63% of generation rows and mis-attributed concurrent runs; a
+    # revert to it must fail here. Source-level pin, matching the
+    # _GENERATION_TASK drift-guard style.
+    import inspect
+    from primeqa.intelligence import s3_generation_console as console
+    src = inspect.getsource(console)
+    assert src.count("s3_request_id' = CAST(a.request_id AS text)") == 2, (
+        "both cost joins (history table + run detail) must key on s3_request_id")
+    assert "u.ts >= a.started_at" not in src, (
+        "timestamp-window attribution is not an acceptable mechanism (D-390)")

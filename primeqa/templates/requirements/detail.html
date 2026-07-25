@@ -471,8 +471,8 @@
             <td class="px-4 py-2 text-right text-gray-900 font-medium">{{ run.tests_written if run.tests_written is not none else '—' }}</td>
             <td class="px-4 py-2 whitespace-nowrap text-gray-700">{{ run.llm.models | join(', ') if (run.llm and run.llm.models) else '—' }}</td>
             <td class="px-4 py-2 text-right text-gray-900"
-                title="{% if run.llm %}{{ run.llm.input_tokens }} in / {{ run.llm.output_tokens }} out{% endif %}">
-              {% if run.llm %}${{ '%.4f'|format(run.llm.cost_usd) }}{% else %}—{% endif %}</td>
+                title="{% if run.llm %}{{ run.llm.input_tokens }} in / {{ run.llm.output_tokens }} out{% else %}No cost rows carry this run's request id — runs before per-run cost attribution (2026-07-25) can't be costed.{% endif %}">
+              {% if run.llm %}${{ '%.4f'|format(run.llm.cost_usd) }}{% else %}<span class="text-gray-400 italic">not attributed</span>{% endif %}</td>
             <td class="px-4 py-2 text-right text-gray-700">
               {%- if run.duration_s is not none -%}
                 {%- if run.duration_s >= 60 %}{{ '%.1f'|format(run.duration_s / 60) }} min{% else %}{{ '%.0f'|format(run.duration_s) }} s{% endif -%}
