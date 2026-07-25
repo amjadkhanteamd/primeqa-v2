@@ -204,3 +204,56 @@ def test_llm_call_terminal_error_raises(monkeypatch):
     with pytest.raises(gateway.LLMError) as ei:
         gateway.llm_call(task="fake_task", tenant_id=1, api_key="k", context={})
     assert ei.value.status == "auth_error"
+
+
+# ---- messages cache breakpoint (S3 conversation re-send) -------------------
+
+def _strip_cc(o):
+    if isinstance(o, dict):
+        return {k: _strip_cc(v) for k, v in o.items() if k != "cache_control"}
+    if isinstance(o, list):
+        return [_strip_cc(x) for x in o]
+    return o
+
+
+def test_messages_breakpoint_marks_last_block_of_last_turn():
+    # The moving breakpoint sits on the last content block of the most recent
+    # completed turn, so each call caches the longest prefix available to it.
+    msgs = [
+        {"role": "user", "content": "opening"},
+        {"role": "assistant", "content": [{"type": "tool_use", "id": "t1"}]},
+        {"role": "user", "content": [{"type": "tool_result", "tool_use_id": "t1"},
+                                     {"type": "text", "text": "tail"}]},
+    ]
+    out = gateway._messages_with_cache(msgs)
+    assert out[-1]["content"][-1]["cache_control"] == {"type": "ephemeral"}
+    # Only ONE breakpoint, and it is not pinned to turn 1.
+    assert "cache_control" not in out[-1]["content"][0]
+    assert out[0] == {"role": "user", "content": "opening"}
+    assert "cache_control" not in out[1]["content"][0]
+
+
+def test_messages_breakpoint_skips_string_content():
+    # The opening user turn carries plain-string content. Wrapping it in a text
+    # block to hold a marker would change the serialized body, so it is left
+    # verbatim — the next turn's breakpoint covers it anyway.
+    msgs = [{"role": "user", "content": "opening"}]
+    assert gateway._messages_with_cache(msgs) == msgs
+    assert gateway._messages_with_cache([]) == []
+
+
+def test_messages_breakpoint_is_non_mutating_and_content_identical():
+    # cache_control is billing metadata: stripping it must reproduce the input
+    # byte-for-byte, and the caller's own objects must never be touched.
+    import json
+    msgs = [
+        {"role": "user", "content": "opening"},
+        {"role": "assistant", "content": [{"type": "tool_use", "id": "t1",
+                                           "input": {"a": 1}}]},
+        {"role": "user", "content": [{"type": "tool_result", "tool_use_id": "t1",
+                                      "content": "ok"}]},
+    ]
+    before = json.dumps(msgs, sort_keys=True)
+    out = gateway._messages_with_cache(msgs)
+    assert json.dumps(msgs, sort_keys=True) == before          # non-mutating
+    assert json.dumps(_strip_cc(out), sort_keys=True) == before  # byte-identical

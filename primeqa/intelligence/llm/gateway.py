@@ -411,6 +411,43 @@ def _tools_with_cache(tools):
     return marked
 
 
+def _messages_with_cache(messages):
+    """Messages with ONE **moving** ephemeral breakpoint on the last content
+    block of the most recent completed turn, so each call caches the longest
+    prefix available to it.
+
+    Without this only tools+system were marked, so the S3 spine — which re-sends
+    the whole conversation every turn (the runtime appends the assistant
+    tool_use + the substrate's tool_result and re-posts the lot) — re-paid full
+    input rate for every earlier turn on every turn. A propose turn's output was
+    therefore billed three times over a 3-call run: once as output, then twice
+    more as re-sent input.
+
+    Deliberately skips a message whose ``content`` is a plain string — the
+    opening user turn. Wrapping it in a text block to hold the marker would
+    change the serialized request body, and the whole point of a cache
+    breakpoint is that it is billing metadata that leaves content untouched.
+    Nothing is lost: the next turn's breakpoint sits after that message and
+    caches it along with everything else.
+
+    Budget: this is the third breakpoint (tools, system, messages) against
+    Anthropic's limit of 4. Non-mutating — the caller's list and dicts are never
+    modified."""
+    if not messages:
+        return messages
+    last = messages[-1]
+    content = last.get("content") if isinstance(last, dict) else None
+    if not isinstance(content, list) or not content:
+        return messages
+    if not isinstance(content[-1], dict):
+        return messages
+    blocks = list(content)
+    blocks[-1] = {**blocks[-1], "cache_control": _EPHEMERAL}
+    marked = list(messages)
+    marked[-1] = {**last, "content": blocks}
+    return marked
+
+
 # ---- tool_turn — transport-thin single tool-use turn (D-095.2) ------------
 
 @dataclass
@@ -480,7 +517,8 @@ def tool_turn(
     )
 
     inv = _invoke_and_record(
-        api_key=api_key, model=model, messages=safe_messages,
+        api_key=api_key, model=model,
+        messages=_messages_with_cache(safe_messages),
         system=_system_with_cache(safe_system),
         max_tokens=max_tokens, tools=_tools_with_cache(tools), tool_choice=tool_choice,
         task=task, tenant_id=tenant_id, user_id=user_id, prompt_version=task,
