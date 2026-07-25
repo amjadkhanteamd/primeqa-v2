@@ -39,11 +39,22 @@ log = logging.getLogger(__name__)
 GENERATION_TASK = "generation"
 
 
+def _requirement_key(request: GenerationRequest) -> Optional[str]:
+    """The batch's requirement key for usage attribution (D-095.4: one
+    conversation per requirement, and the production intake builds
+    single-requirement requests). None when the refs are absent or unkeyed —
+    attribution is best-effort telemetry and must never fail a run."""
+    refs = request.semantic_context.requirement_refs or []
+    first = refs[0] if refs else None
+    return first.get("key") if isinstance(first, dict) else None
+
+
 def run_generation(
     request: GenerationRequest, *, tenant_id: int, api_key: str,
     environment_id: int,
     tenant_policy: Optional[TenantPolicy] = None,
     tool_turn_fn: Optional[ToolTurnFn] = None,
+    user_id: Optional[int] = None,
 ) -> BatchResult:
     """Run one generation batch end to end (D-106.1).
 
@@ -69,7 +80,13 @@ def run_generation(
     # the request's llm_model_identifier stays caller-intent. Model provenance is
     # llm_calls.model_identifier — the actual per-turn model (turn.model).
     fn = tool_turn_fn or build_tool_turn_fn(
-        tenant_id=tenant_id, api_key=api_key, model=model, task=GENERATION_TASK)
+        tenant_id=tenant_id, api_key=api_key, model=model, task=GENERATION_TASK,
+        # Cross-reference attribution: environment_id reached this function (for
+        # the D-286 org scoping below) but stopped here and never reached a
+        # usage row; the request id and requirement key had no path out at all.
+        user_id=user_id, environment_id=environment_id,
+        request_id=request.request_id,
+        requirement_key=_requirement_key(request))
 
     # The S1-read connection is held across the batch (D-106.4 pilot-acceptable);
     # LedgerPersister opens its own per-requirement transaction connections.

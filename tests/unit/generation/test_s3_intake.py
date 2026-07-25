@@ -154,7 +154,7 @@ def test_process_job_threads_the_bva_flag_into_the_request(monkeypatch):
 
     job = SimpleNamespace(id=7, requirement_key="R1", requirement_text="x",
                           s1_version_seq=1, s1_version_name=None,
-                          environment_id=59)
+                          environment_id=59, created_by=11)
 
     class _FakeStore:
         def __init__(self, tenant_id):
@@ -202,7 +202,7 @@ def test_process_job_threads_the_tenant_policy_into_run_generation(monkeypatch):
 
     job = SimpleNamespace(id=8, requirement_key="R1", requirement_text="x",
                           s1_version_seq=1, s1_version_name=None,
-                          environment_id=59)
+                          environment_id=59, created_by=11)
 
     class _FakeStore:
         def __init__(self, tenant_id):
@@ -227,6 +227,7 @@ def test_process_job_threads_the_tenant_policy_into_run_generation(monkeypatch):
 
     def fake_run_generation(request, **kwargs):
         captured["tenant_policy"] = kwargs.get("tenant_policy")
+        captured["user_id"] = kwargs.get("user_id")
         return SimpleNamespace(results=[])
 
     policy = TenantPolicy(model_override="claude-opus-4-7", tenant_id=1)
@@ -237,3 +238,7 @@ def test_process_job_threads_the_tenant_policy_into_run_generation(monkeypatch):
 
     C.process_job_for_tenant(1, api_key_resolver=lambda t, e: "k")
     assert captured["tenant_policy"] is policy
+    # Cross-reference attribution (consumer seam): the job's owner reaches
+    # run_generation as user_id, so llm_usage_log.user_id stops being NULL on
+    # every generation row. A deleted-kwarg mutant dies here.
+    assert captured["user_id"] == 11

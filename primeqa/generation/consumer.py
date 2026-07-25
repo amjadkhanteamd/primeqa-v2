@@ -116,6 +116,10 @@ def process_job_for_tenant(
             # llm_model_override (and, incidentally, revives always_use_opus
             # on this path — it was dead code while nothing passed a policy).
             tenant_policy=_load_tenant_policy(tenant_id),
+            # Cross-reference attribution: the job's owner is the only user
+            # identity on this path (the worker runs unattended), so it is what
+            # llm_usage_log.user_id records for the spend.
+            user_id=job.created_by,
             tool_turn_fn=tool_turn_fn)
         kind = (result.results[0].outcome.outcome_kind.value
                 if result.results else "unknown")
