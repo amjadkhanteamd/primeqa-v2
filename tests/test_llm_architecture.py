@@ -371,20 +371,20 @@ def _tc_and_uid_for_superadmin():
         db.close()
 
 
-def test_correction_rate_returns_valid_shape():
-    """correction_rate always returns a dict with {days, corrected, total, rate, prev_rate, delta}."""
+def test_correction_rate_reports_unmeasured_not_fabricated_zero():
+    """D-391: the v1 denominator (test_cases) was dropped in migration 053, so
+    correction_rate reports NOT MEASURED — never the old zero shape, which the
+    dashboard rendered as a fabricated green 0.0%."""
     from primeqa.intelligence.llm import feedback_rules
     db = SessionLocal()
     try:
         cr = feedback_rules.correction_rate(db, 1, days=30)
     finally:
         db.close()
-    assert set(cr.keys()) == {
-        "days", "corrected", "total", "rate", "prev_rate", "delta",
-    }
     assert cr["days"] == 30
-    assert 0.0 <= cr["rate"] <= 1.0
-    assert cr["corrected"] <= cr["total"]
+    assert cr["measured"] is False
+    assert cr["reason"]
+    assert "rate" not in cr, "unmeasured must not carry a fabricated rate"
 
 
 def test_tenant_dashboard_includes_feedback_section():
@@ -421,7 +421,7 @@ def main():
         ("feedback_severity_mapping", test_feedback_severity_mapping),
         ("feedback_rules_block_empty_for_clean_tenant", test_feedback_rules_block_empty_for_clean_tenant),
         ("feedback_rules_classify_and_render", test_feedback_rules_classify_and_render),
-        ("correction_rate_returns_valid_shape", test_correction_rate_returns_valid_shape),
+        ("correction_rate_reports_unmeasured", test_correction_rate_reports_unmeasured_not_fabricated_zero),
         ("tenant_dashboard_includes_feedback_section", test_tenant_dashboard_includes_feedback_section),
     ]
     print("=" * 60)

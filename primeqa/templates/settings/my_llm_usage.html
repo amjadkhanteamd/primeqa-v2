@@ -133,6 +133,12 @@
       {# --- correction rate hero --- #}
       <div class="col-span-1">
         <p class="text-xs text-gray-500 uppercase tracking-wider">Correction rate</p>
+        {% if cr.get('measured') is sameas false %}
+        {# D-391: the metric's v1 denominator was dropped in migration 053 —
+           report absence, never a fabricated green 0.0%. #}
+        <p class="mt-1 text-3xl font-semibold text-gray-400 italic">not measured</p>
+        <p class="mt-1 text-xs text-gray-500">{{ cr.reason }}</p>
+        {% else %}
         <p class="mt-1 text-3xl font-semibold
             {% if cr.rate >= 0.4 %}text-red-600
             {% elif cr.rate >= 0.2 %}text-amber-600
@@ -154,6 +160,7 @@
         <p class="mt-1 text-[11px] text-gray-400">
           Lower is better &mdash; fewer corrections means the AI is getting it right more often.
         </p>
+        {% endif %}
       </div>
       {# --- signal counts --- #}
       <div class="col-span-2">

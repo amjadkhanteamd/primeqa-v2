@@ -26,23 +26,40 @@
       <p class="mt-1 text-xs text-gray-500">{{ cost.total.calls }} calls · {{ (cost.total.input_tokens + cost.total.output_tokens) | int }} tokens</p>
     </div>
     <div class="bg-white shadow rounded-lg p-4">
-      <p class="text-xs text-gray-500 uppercase">Cache hit rate <span class="text-gray-400">(gen)</span></p>
-      <p class="mt-1 text-2xl font-semibold text-gray-900">{{ (efficiency.cache_hit_rate * 100) | round(1) }}%</p>
-      <p class="mt-1 text-xs text-gray-500">{{ efficiency.cache_hits }} / {{ efficiency.cache_total_calls }}</p>
+      <p class="text-xs text-gray-500 uppercase">Cache hit rate <span class="text-gray-400">(gen, per tenant)</span></p>
+      {% if efficiency.cache_by_tenant %}
+        {% for t in efficiency.cache_by_tenant[:3] %}
+        <p class="{% if loop.first %}mt-1 text-2xl{% else %}text-sm{% endif %} font-semibold text-gray-900">
+          {{ (t.rate * 100) | round(1) }}% <span class="text-xs font-normal text-gray-500">tenant {{ t.tenant_id }} · {{ t.hits }}/{{ t.calls }} calls</span>
+        </p>
+        {% endfor %}
+      {% else %}
+        <p class="mt-1 text-2xl font-semibold text-gray-400 italic">not measured</p>
+        <p class="mt-1 text-xs text-gray-500">no generation calls in window</p>
+      {% endif %}
     </div>
     <div class="bg-white shadow rounded-lg p-4">
       <p class="text-xs text-gray-500 uppercase">Avg cost per generation</p>
-      <p class="mt-1 text-2xl font-semibold text-gray-900">${{ '%.6f' | format(efficiency.avg_cost_per_generation_usd) }}</p>
-      <p class="mt-1 text-xs text-gray-500">{{ efficiency.generations }} generations</p>
+      {% if efficiency.avg_cost_per_generation_usd is not none %}
+        <p class="mt-1 text-2xl font-semibold text-gray-900">${{ '%.6f' | format(efficiency.avg_cost_per_generation_usd) }}</p>
+        <p class="mt-1 text-xs text-gray-500">{{ efficiency.generations }} attributed runs{% if efficiency.unattributed_calls %} · {{ efficiency.unattributed_calls }} calls predate attribution{% endif %}</p>
+      {% else %}
+        <p class="mt-1 text-2xl font-semibold text-gray-400 italic">not measured</p>
+        <p class="mt-1 text-xs text-gray-500">no attributed runs in window{% if efficiency.unattributed_calls %} · {{ efficiency.unattributed_calls }} calls predate attribution (2026-07-25){% endif %}</p>
+      {% endif %}
     </div>
     <div class="bg-white shadow rounded-lg p-4">
       <p class="text-xs text-gray-500 uppercase">Error rate</p>
+      {% if efficiency.error_rate is none %}
+      <p class="mt-1 text-2xl font-semibold text-gray-400 italic">not measured</p>
+      {% else %}
       <p class="mt-1 text-2xl font-semibold
           {% if efficiency.error_rate > 0.05 %}text-red-600
           {% elif efficiency.error_rate > 0.02 %}text-amber-600
           {% else %}text-gray-900{% endif %}">
         {{ (efficiency.error_rate * 100) | round(2) }}%
       </p>
+      {% endif %}
       <p class="mt-1 text-xs text-gray-500">
         {% if efficiency.top_errors %}
           top: {{ efficiency.top_errors[0].status }} ({{ efficiency.top_errors[0].n }})
@@ -55,11 +72,18 @@
   <div class="bg-white shadow rounded-lg p-4">
     <h3 class="text-sm font-medium text-gray-700 mb-3">Daily spend <span class="text-gray-400 font-normal">· last {{ days }} days</span></h3>
     {% if cost.by_day %}
-    <div class="flex items-end gap-1 h-32">
+    {# Bars must resolve percentage heights against a DEFINITE parent height.
+       The old `items-end` container left each column wrapper at auto height
+       (align-end suppresses flex stretch), so `height: N%` on the bar resolved
+       to auto -> every bar rendered 0px tall and the chart looked empty
+       despite data (D-391). Fix: let the wrappers stretch to the container's
+       h-32 (the flex default) and bottom-align the bar INSIDE the wrapper with
+       justify-end. #}
+    <div class="flex gap-1 h-32">
       {% set max_cost = cost.by_day | map(attribute='cost_usd') | max %}
       {% for d in cost.by_day %}
       {% set pct = ((d.cost_usd / max_cost) * 100) if max_cost else 0 %}
-      <div class="flex-1 flex flex-col items-center group relative" title="{{ d.day }}: ${{ '%.4f' | format(d.cost_usd) }} ({{ d.calls }} calls)">
+      <div class="flex-1 h-full flex flex-col items-center justify-end group relative" title="{{ d.day }}: ${{ '%.4f' | format(d.cost_usd) }} ({{ d.calls }} calls)">
         <div class="w-full bg-indigo-400 rounded-t" style="height: {{ pct }}%"></div>
         <div class="absolute -top-6 hidden group-hover:block bg-gray-900 text-white text-[10px] rounded px-1 py-0.5 whitespace-nowrap">
           {{ d.day }}: ${{ '%.4f' | format(d.cost_usd) }}
@@ -278,37 +302,12 @@
       <h3 class="text-sm font-medium text-gray-700">Quality signals <span class="text-gray-400 font-normal">· cheaper is not always better</span></h3>
       <span class="text-xs text-gray-400">last {{ quality.days }} days</span>
     </div>
-    <div class="grid grid-cols-3 gap-4 text-xs">
-      <div>
-        <p class="text-gray-500 uppercase text-[10px]">Regeneration rate</p>
-        <p class="mt-1 text-xl font-semibold
-            {% if quality.regeneration_rate > 0.4 %}text-red-600
-            {% elif quality.regeneration_rate > 0.2 %}text-amber-600
-            {% else %}text-green-700{% endif %}">
-          {{ (quality.regeneration_rate * 100) | round(1) }}%
-        </p>
-        <p class="text-gray-500 mt-1">{{ quality.regenerated_within_15m }} of {{ quality.total_generations }} generations superseded within 15 min</p>
-      </div>
-      <div>
-        <p class="text-gray-500 uppercase text-[10px]">Validation-critical rate</p>
-        <p class="mt-1 text-xl font-semibold
-            {% if quality.validation_critical_rate > 0.3 %}text-red-600
-            {% elif quality.validation_critical_rate > 0.1 %}text-amber-600
-            {% else %}text-green-700{% endif %}">
-          {{ (quality.validation_critical_rate * 100) | round(1) }}%
-        </p>
-        <p class="text-gray-500 mt-1">{{ quality.validations_critical }} of {{ quality.validations_total }} generated versions had critical issues</p>
-      </div>
-      <div>
-        <p class="text-gray-500 uppercase text-[10px]">Post-gen failure rate</p>
-        <p class="mt-1 text-xl font-semibold
-            {% if quality.post_gen_failure_rate > 0.4 %}text-red-600
-            {% elif quality.post_gen_failure_rate > 0.2 %}text-amber-600
-            {% else %}text-green-700{% endif %}">
-          {{ (quality.post_gen_failure_rate * 100) | round(1) }}%
-        </p>
-        <p class="text-gray-500 mt-1">{{ quality.failed_tcs }} of {{ quality.total_tcs }} generated TCs failed at least once</p>
-      </div>
+    {# D-391: these metrics lost their sources when migration 053 dropped the
+       v1 tables. Until the substrate re-sourcing lands they are NOT MEASURED —
+       previously this section rendered a hard-coded 0.0% as if measured. #}
+    <div class="text-sm text-gray-400 italic">
+      not measured
+      <span class="not-italic text-xs text-gray-500 block mt-1">{{ quality.reason }}</span>
     </div>
   </div>
 

@@ -123,41 +123,61 @@ def cost_summary(db, *, days: int = 30) -> Dict[str, Any]:
 def efficiency_summary(db, *, days: int = 30) -> Dict[str, Any]:
     """Cache hit rate, cost per generation, escalation rate.
 
-    Audit A.4: 5 queries → 1 via CTEs. All sub-metrics scope over the
-    same window + rows so a single SELECT with conditional aggregates
-    is strictly better.
+    D-391 (2026-07-25): this used to filter `task = 'test_plan_generation'` —
+    the v1 task name, under which ZERO rows have ever existed (verified against
+    the live log) — then render the resulting 0/0 through divide-guard
+    fallbacks as "0 generations / $0.000000 / 0% cache hit rate". The live S3
+    path logs `task = 'generation'` (run.py GENERATION_TASK); the v1 name is
+    not matched alongside it because no row ever carried it.
+
+    Truthfulness rules (the s3_generation_console llm=None precedent):
+      - A metric with an empty denominator is ``None`` ("not measured"), never
+        a fabricated 0.0. The template renders absence.
+      - "Generations" counts DISTINCT attributable runs (context->>
+        's3_request_id', stamped since 72eed6c), not gateway calls — one run is
+        2-5 calls. Untagged (pre-instrumentation) calls are surfaced as their
+        own count, not folded into either number.
+      - Cache hit rate is PER TENANT: Anthropic scopes prompt caches per API
+        key and each tenant resolves its own key, so a cross-tenant average is
+        meaningless. Escalation/error rates stay global (not cache-semantic).
     """
     from sqlalchemy import text as sql
 
     start, _end = _window(days)
 
     row = db.execute(sql("""
-        WITH ok AS (
-          SELECT cached_input_tokens, input_tokens, cost_usd, task,
-                 escalated, status
+        WITH gen AS (
+          SELECT tenant_id, cached_input_tokens, cost_usd,
+                 context->>'s3_request_id' AS run_key
           FROM llm_usage_log
-          WHERE ts >= :start AND status = 'ok'
+          WHERE ts >= :start AND status = 'ok' AND task = 'generation'
         ),
-        all_calls AS (
-          SELECT status FROM llm_usage_log WHERE ts >= :start
+        cache_by_tenant AS (
+          SELECT tenant_id,
+                 COUNT(*) AS calls,
+                 SUM(CASE WHEN cached_input_tokens > 0 THEN 1 ELSE 0 END) AS hits
+          FROM gen
+          GROUP BY tenant_id
+          ORDER BY calls DESC
         ),
-        cache_stats AS (
-          SELECT COUNT(*) AS calls,
-                 SUM(CASE WHEN cached_input_tokens > 0 THEN 1 ELSE 0 END) AS hits,
+        runs AS (
+          SELECT COUNT(DISTINCT run_key) AS n,
                  COALESCE(SUM(cost_usd), 0)::float AS cost_usd
-          FROM ok
-          WHERE task = 'test_plan_generation'
+          FROM gen WHERE run_key IS NOT NULL
+        ),
+        untagged AS (
+          SELECT COUNT(*) AS n FROM gen WHERE run_key IS NULL
         ),
         escalation_stats AS (
           SELECT COUNT(*) AS total,
                  SUM(CASE WHEN escalated THEN 1 ELSE 0 END) AS escalated
-          FROM ok
-          WHERE task IN ('test_plan_generation', 'agent_fix')
+          FROM llm_usage_log
+          WHERE ts >= :start AND status = 'ok'
         ),
         error_stats AS (
           SELECT COUNT(*) AS total,
                  SUM(CASE WHEN status <> 'ok' THEN 1 ELSE 0 END) AS errors
-          FROM all_calls
+          FROM llm_usage_log WHERE ts >= :start
         ),
         top_errors AS (
           SELECT status, COUNT(*) AS n
@@ -168,9 +188,11 @@ def efficiency_summary(db, *, days: int = 30) -> Dict[str, Any]:
           LIMIT 10
         )
         SELECT
-          (SELECT calls    FROM cache_stats)       AS gen_calls,
-          (SELECT hits     FROM cache_stats)       AS cache_hits,
-          (SELECT cost_usd FROM cache_stats)       AS gen_cost_usd,
+          COALESCE((SELECT json_agg(c) FROM cache_by_tenant c), '[]'::json)
+                                                   AS cache_by_tenant,
+          (SELECT n        FROM runs)              AS run_count,
+          (SELECT cost_usd FROM runs)              AS run_cost_usd,
+          (SELECT n        FROM untagged)          AS untagged_calls,
           (SELECT total    FROM escalation_stats)  AS esc_total,
           (SELECT escalated FROM escalation_stats) AS esc_hits,
           (SELECT total    FROM error_stats)       AS err_total,
@@ -178,29 +200,37 @@ def efficiency_summary(db, *, days: int = 30) -> Dict[str, Any]:
           COALESCE((SELECT json_agg(t) FROM top_errors t), '[]'::json) AS top_errors
     """), {"start": start}).one()._mapping
 
-    total_gen = int(row["gen_calls"] or 0)
-    hits = int(row["cache_hits"] or 0)
-    gen_cost = float(row["gen_cost_usd"] or 0.0)
-    cache_hit_rate = (hits / total_gen) if total_gen else 0.0
-    avg_cost_per_gen = (gen_cost / total_gen) if total_gen else 0.0
+    cache_by_tenant = [
+        {"tenant_id": c["tenant_id"], "calls": int(c["calls"]),
+         "hits": int(c["hits"] or 0),
+         "rate": round(int(c["hits"] or 0) / int(c["calls"]), 3)}
+        for c in (row["cache_by_tenant"] or []) if int(c["calls"])
+    ]
+
+    runs = int(row["run_count"] or 0)
+    run_cost = float(row["run_cost_usd"] or 0.0)
+    avg_cost_per_gen = round(run_cost / runs, 6) if runs else None
 
     esc_total = int(row["esc_total"] or 0)
     esc_hits = int(row["esc_hits"] or 0)
-    escalation_rate = (esc_hits / esc_total) if esc_total else 0.0
+    escalation_rate = round(esc_hits / esc_total, 3) if esc_total else None
 
     err_total = int(row["err_total"] or 0)
     err_hits = int(row["err_hits"] or 0)
-    error_rate = (err_hits / err_total) if err_total else 0.0
+    error_rate = round(err_hits / err_total, 3) if err_total else None
 
     return {
         "days": days,
-        "cache_hit_rate": round(cache_hit_rate, 3),
-        "cache_hits": hits,
-        "cache_total_calls": total_gen,
-        "avg_cost_per_generation_usd": round(avg_cost_per_gen, 6),
-        "generations": total_gen,
-        "escalation_rate": round(escalation_rate, 3),
-        "error_rate": round(error_rate, 3),
+        # Per-tenant cache stats (caches are per API key — no global average).
+        "cache_by_tenant": cache_by_tenant,
+        # Distinct attributable runs; None-avg when there are none in window.
+        "generations": runs,
+        "avg_cost_per_generation_usd": avg_cost_per_gen,
+        "unattributed_calls": int(row["untagged_calls"] or 0),
+        "escalation_rate": escalation_rate,
+        "escalations": esc_hits,
+        "escalation_total": esc_total,
+        "error_rate": error_rate,
         "top_errors": [dict(e) for e in (row["top_errors"] or [])],
     }
 
@@ -213,24 +243,22 @@ def quality_proxy_summary(db, *, days: int = 30) -> Dict[str, Any]:
     fail at runtime.
     """
     # D-238 (drop-readiness): all three quality-proxy inputs lived in v1 tables
-    # that retire with migration 053 \u2014 generation batches (regeneration rate),
+    # dropped by migration 053 \u2014 generation batches (regeneration rate),
     # ``test_case_versions`` (validation-critical rate), and ``test_cases`` \u00d7
-    # ``run_test_results`` (post-gen failure rate). They already read 0 rows, so
-    # this returns the zero shape (no behavioral change today) and stops querying
-    # soon-to-be-dropped tables. Re-sourcing from the substrate (s3 generation
-    # jobs + s6 interpretations) is a logged residual.
-    _ = days
+    # ``run_test_results`` (post-gen failure rate). Re-sourcing from the
+    # substrate (s3 generation jobs + s6 interpretations) is a logged residual.
+    #
+    # D-391 (2026-07-25): until that re-sourcing lands, this metric is NOT
+    # MEASURED \u2014 and says so, instead of the previous hard-coded zero shape,
+    # which rendered as "0.0% regeneration rate", a fabricated healthy reading
+    # indistinguishable from a genuinely-measured zero.
     return {
         "days": days,
-        "regeneration_rate": 0.0,
-        "regenerated_within_15m": 0,
-        "total_generations": 0,
-        "validation_critical_rate": 0.0,
-        "validations_critical": 0,
-        "validations_total": 0,
-        "post_gen_failure_rate": 0.0,
-        "failed_tcs": 0,
-        "total_tcs": 0,
+        "measured": False,
+        "reason": ("Quality-proxy sources (generation batches, test case "
+                   "versions, run results) were v1 tables dropped in "
+                   "migration 053; the substrate re-sourcing is a logged "
+                   "residual."),
     }
 
 

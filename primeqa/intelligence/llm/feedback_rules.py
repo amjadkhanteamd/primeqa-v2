@@ -361,15 +361,18 @@ def correction_rate(
     """
     # D-238 (drop-readiness): the denominator — AI-generated TCs — lived in the v1
     # ``test_cases`` table, which retires with migration 053. Without a denom the
-    # correction rate cannot be computed, so this returns the zero shape (the same
-    # values it already produced once ``test_cases`` reached 0 rows). Re-sourcing
-    # the metric from the substrate (approved ``test_claims`` ×
-    # ``generation_quality_signals``) is a logged residual.
+    # correction rate cannot be computed. Re-sourcing the metric from the
+    # substrate (approved ``test_claims`` × ``generation_quality_signals``) is a
+    # logged residual.
+    #
+    # D-391 (2026-07-25): until then this metric is NOT MEASURED — and says so,
+    # instead of the previous zero shape, which the dashboard rendered as a
+    # green "0.0% correction rate" hero, a fabricated healthy reading
+    # indistinguishable from a genuinely-measured zero.
     return {
         "days": days,
-        "corrected": 0,
-        "total": 0,
-        "rate": 0.0,
-        "prev_rate": None,
-        "delta": None,
+        "measured": False,
+        "reason": ("The denominator (AI-generated TCs) lived in the v1 "
+                   "test_cases table, dropped in migration 053; the substrate "
+                   "re-sourcing is a logged residual."),
     }
