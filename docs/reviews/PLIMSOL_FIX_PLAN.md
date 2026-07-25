@@ -34,3 +34,40 @@
   `_classify_error` folds provider content errors into the generic bucket;
   worth a distinct code so ops can tell a prompt/contract failure from an
   infrastructure one.
+
+## Pilot gate cluster (identity + dormancy) — 2026-07-25
+
+> One triage group, not scattered items: everything here gates pilot
+> credibility (identity that survives mutation, machinery that is honest about
+> whether it has ever run). Sources: D-393/D-394/D-395/D-396.
+
+- **Persist `requirement_key` at creation** (D-393): the key becomes immutable
+  data, not a derived expression recomputed per enqueue. Migration — combine
+  with D-388's follow-up (drop the 3 dead `llm_usage_log` columns + promote
+  `environment_id`) into ONE MIGRATE-FIRST migration. **Repro first**: set
+  jira_key on a covered requirement, re-generate, assert coverage reads
+  uncovered — the mechanism is code-read, not runtime-confirmed.
+- **Purge referential guard** (D-394): purge refuses when substrate references
+  exist (jobs / outcomes / links, both branches of the key encoding).
+  Soft-delete is the default; its infrastructure already exists.
+- **Typed task registry** (D-395): the root fix for the v1-residue class — a
+  rename must not silently orphan a dispatch site. Fixing individual strings
+  guarantees a fourth instance.
+- **gateway.py:153 dormant feedback gate** (D-395) — **NEEDS EVALUATION, not a
+  fix.** Flipping it to the live task name is a generation-semantics change
+  (the model sees new prompt content on every generation): before/after output
+  comparison + grounding-validator check required. Dormant-first.
+- **Escalation reachability** (D-395): determine whether escalation is
+  reachable at all on the live paths (tool_turn has no chain; which llm_call
+  tasks both support it and run?) — or name it dead substrate.
+- **router._CHAINS v1 entries + `llm/__init__.py` docstring example** (D-395):
+  unreachable routing config and a dead-name example; sweep residue.
+- **Dormancy liveness rule** (D-395 corollary): every dispatch-keyed mechanism
+  exposes a last-fired signal; never-fired renders as never-fired — not zero,
+  never healthy.
+- **Attempt creation inside `run_generation`** (D-390/D-396): every generation
+  is recorded regardless of caller — closes the direct-invocation residual
+  ($0.3405 today) at the resolver, not per-caller.
+- **"Generation" denominator reconciliation** (D-396): after the above, the
+  settings panel (distinct runs) and Generation history (attempts) converge on
+  one denominator; reconcile the panel wording then, not before.
