@@ -71,3 +71,36 @@
 - **"Generation" denominator reconciliation** (D-396): after the above, the
   settings panel (distinct runs) and Generation history (attempts) converge on
   one denominator; reconcile the panel wording then, not before.
+
+### Added 2026-07-27 — from the stale-cohort re-run (D-397…D-402)
+
+- **Value-membership validation at generation time** (D-399) — **HIGHEST PRIORITY in
+  this cluster.** Validate every literal asserted/staged against a picklist,
+  multipicklist or restricted field for MEMBERSHIP in S1's active value set; fail
+  loud (refuse to emit) rather than emitting. The grounding validator validates
+  FIELD grounding, not enumerated VALUE membership. A claim asserting a nonexistent
+  value **manufactures wrong-reds by construction** — it can never pass, and burns a
+  live org run plus an S6 investigation on every execution. Live instance:
+  `31eaa21e` stages `Loan_Type__c = "Home Loan"`; the org holds `Home`, `Personal`,
+  `Business`.
+- **`AssertEvidence`: persist the ASSERTED and OBSERVED values** (D-400) —
+  DEFERRED_ITEMS §3 trace enrichment, **PROMOTED to the pilot gate on production
+  evidence**. Without it, value-mismatch reds are undecidable (`9ba2d3d2`,
+  `0d81c6f9`): genuine org-behaviour finding vs wrong claim cannot be told apart, and
+  "why did this fail" — the product's core promise — is unanswerable.
+- **Teardown outcome invisible for D-210 read-registered records** (D-400): cleanup
+  rides `CreateAttemptEvidence.cleanup`; a read-registered record has no create step,
+  so its delete failure appears nowhere in the trace — only as a `cleaned=false` row.
+- **Metadata-recipe unreachable via queue run-all** (D-401): by design (D-300.1
+  wrong-green prevention), not dead code — 148 real runs via the single path.
+  **Coverage-reporting implication:** a queue-driven run executed the DATA probes;
+  never report it as "all recipes executed". 9 of 25 cohort claims own a
+  metadata-recipe whose assertion was not re-verified.
+- **`79bc47e5` — structurally undecidable `AmbiguousRejection` on an APPROVED claim.**
+  The org rejects the create with no field attribution, which is precisely the case
+  S4 refuses to ascribe — so this claim can never produce a verdict on current
+  evidence. An approved claim that is permanently unverdictable is an **S2 status
+  question**, not an S4 one.
+- **`f2b072ac`, `31eaa21e` — claim status decision PENDING** the value-membership
+  audit. Both are verified-bad (D-399); whether they are deprecated, regenerated, or
+  corrected is the owner's call, and the audit sizes the class first.
