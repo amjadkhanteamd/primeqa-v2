@@ -104,3 +104,32 @@
 - **`f2b072ac`, `31eaa21e` — claim status decision PENDING** the value-membership
   audit. Both are verified-bad (D-399); whether they are deprecated, regenerated, or
   corrected is the owner's call, and the audit sizes the class first.
+
+### Added 2026-07-27 — from the picklist-capture arc (D-407…D-411)
+
+- **Version-mismatched sync resume** (D-411) — **root cause of the 07-27 incident.**
+  A partial run must record the code identity that started it (build SHA /
+  extraction-contract version) and REFUSE resume by any other; a foreign resume
+  fails the job rather than silently completing the fragment under different
+  extraction semantics. Observed live: new code failed mid-Field, the deployed
+  old code resumed within 2 s and silently stripped 46 fields' picklist
+  grounding (102 → 56 populated).
+- **Per-org re-capture step; skip gate blind to code changes** (D-411). The
+  SetupAuditTrail gate asks "has the ORG changed?" — never "has what S1
+  EXTRACTS changed?" — so deploying a capture fix re-captures nothing on a
+  quiet org (observed: 19 s no-op, describes=0). Every extraction-semantics
+  deploy needs an explicit per-org re-capture; a `capture_generation` counter
+  on `connected_orgs` compared in the gate would make it self-healing.
+  Correctness gap, not an optimisation.
+- **`inline_truncated` disclosure audit** (D-407/D-408). 17 fields carry the
+  200-value cap (e.g. `Task.RecurrenceTimeZoneSidKey` at 424 org values).
+  Confirm every consumer that treats capture as complete — S3 vocabulary,
+  governance metadata, S4 k16 padding, the D-399 validator — reads
+  `picklist_capture` and treats `inline_truncated` (and NULL) as SUBSET /
+  not-authoritative, never as the full set. Truncation only ever REMOVES
+  values, so the failure mode is refusal/degradation, not wrong-green — but
+  the disclosure must be read to hold that property.
+- ~~8 honest `no_values` fields~~ — **CLOSED at source, no work.** All 8 were
+  verified against the live org describe (0 values each, incl. the one
+  required+createable survivor `Location.LocationType`); `no_values` is
+  genuine absence, not a fourth silent exit.
