@@ -665,6 +665,7 @@ class TestPhasePicklistValue:
 # ----------------------------------------------------------------------
 
 from primeqa.sync.phases import phase_field
+from primeqa.sync.picklist_capture import MAX_INLINE_PICKLIST_VALUES
 
 
 class TestPhaseField:
@@ -3583,3 +3584,219 @@ def test_needs_sync_and_carry_forward_use_the_final_phase_sentinel() -> None:
     src = inspect.getsource(jobs)
     assert "IS DISTINCT FROM :final_phase" in src
     assert "IS DISTINCT FROM 'Flow'" not in src
+
+
+# ----------------------------------------------------------------------
+# D-403 — inline-always capture for STANDARD picklist fields
+# ----------------------------------------------------------------------
+
+
+class TestPhaseFieldStandardPicklistCapture:
+    """The D-118 content-match is retired: a standard picklist field's values
+    come off its describe payload onto a field-local INLINE anchor, and every
+    picklist field records HOW it was captured."""
+
+    def _run(self, fields, cf_id_map=None, cf_metadata=None):
+        """Run phase_field over one Account and return
+        (field payloads by name, inline PVS anchors, inline PV payloads)."""
+        ctx = _stub_ctx_with_mock_sf()
+        conn = MagicMock()
+        conn.execute.return_value.fetchall.return_value = [
+            type('R', (), {'id': 'obj-acc', 'sf_api_name': 'Account'})()
+        ]
+        ctx.sf_client.fetch_custom_field_id_map.return_value = cf_id_map or {}
+        ctx.sf_client.fetch_custom_field_metadata.return_value = cf_metadata or {}
+        ctx.sf_client.fetch_fields_for_objects_bulk.return_value = {
+            'Account': fields,
+        }
+        with patch('primeqa.sync.phases.batched_materialize') as mock_bm, \
+             patch('primeqa.sync.phases.materialize_edges_for_entities'):
+            mock_bm.return_value = {
+                f"Account.{f['name']}": f"fld-{i}"
+                for i, f in enumerate(fields)
+            }
+            phase_field(ctx, conn)
+        calls = {
+            c.kwargs.get('entity_type'): c.kwargs
+            for c in mock_bm.call_args_list
+        }
+        payloads = {
+            p['name']: p
+            for p in calls['Field']['raw_payloads']
+        }
+        anchors = calls.get('PicklistValueSet', {}).get('raw_payloads', [])
+        values = calls.get('PicklistValue', {}).get('raw_payloads', [])
+        return payloads, anchors, values
+
+    def test_standard_picklist_captures_values_inline(self) -> None:
+        """The case D-118 lost: Case.Priority's {High,Low,Medium} matched TEN
+        StandardValueSets with identical value sets, so fail-closed dropped the
+        link AND the values. They are now captured on a field-local anchor."""
+        payloads, anchors, values = self._run([
+            {'name': 'Priority', 'type': 'picklist', 'custom': False,
+             'picklistValues': [
+                 {'value': 'High', 'label': 'High', 'active': True},
+                 {'value': 'Low', 'label': 'Low', 'active': True},
+                 {'value': 'Medium', 'label': 'Medium', 'active': True},
+             ]},
+        ])
+        assert payloads['Priority']['_value_set_external_id'] == \
+            'INLINE:Account.Priority'
+        assert payloads['Priority']['_picklist_capture'] == 'inline_standard'
+        assert [a['FullName'] for a in anchors] == ['Account.Priority']
+        assert {v['valueName'] for v in values} == {'High', 'Low', 'Medium'}
+        assert all(
+            v['_parent_external_id'] == 'INLINE:Account.Priority'
+            for v in values
+        )
+
+    def test_standard_picklist_with_no_values_marks_no_values(self) -> None:
+        """The ONE case where a NULL FK is the truth — and it is now stated
+        rather than inferred from the NULL."""
+        payloads, anchors, values = self._run([
+            {'name': 'Empty', 'type': 'picklist', 'custom': False,
+             'picklistValues': []},
+        ])
+        assert '_value_set_external_id' not in payloads['Empty']
+        assert payloads['Empty']['_picklist_capture'] == 'no_values'
+        assert anchors == [] and values == []
+
+    def test_inactive_only_field_is_still_captured(self) -> None:
+        """D-118 matched on the ACTIVE set, so a field whose values are all
+        retired looked empty. Capture takes the whole set — the audit needs
+        'INACTIVE (org drift)', not 'ABSENT (hallucination)'."""
+        payloads, _anchors, values = self._run([
+            {'name': 'Legacy', 'type': 'picklist', 'custom': False,
+             'picklistValues': [{'value': 'Old', 'active': False}]},
+        ])
+        assert payloads['Legacy']['_picklist_capture'] == 'inline_standard'
+        assert [(v['valueName'], v['isActive']) for v in values] == [
+            ('Old', False),
+        ]
+
+    def test_long_tail_is_truncated_and_says_so(self) -> None:
+        """Platform enumerations (10 862-value page-key lists, 424-value
+        timezone lists) are capped — and the cap is RECORDED, so a consumer
+        reads 'subset, not authoritative' instead of trusting a partial set."""
+        n = MAX_INLINE_PICKLIST_VALUES + 50
+        payloads, _anchors, values = self._run([
+            {'name': 'TimeZoneSidKey', 'type': 'picklist', 'custom': False,
+             'picklistValues': [
+                 {'value': f'TZ{i}', 'active': True} for i in range(n)
+             ]},
+        ])
+        assert payloads['TimeZoneSidKey']['_picklist_capture'] == \
+            'inline_truncated'
+        assert len(values) == MAX_INLINE_PICKLIST_VALUES
+
+    def test_exactly_at_the_cap_is_not_truncated(self) -> None:
+        payloads, _anchors, values = self._run([
+            {'name': 'Exact', 'type': 'picklist', 'custom': False,
+             'picklistValues': [
+                 {'value': f'V{i}', 'active': True}
+                 for i in range(MAX_INLINE_PICKLIST_VALUES)
+             ]},
+        ])
+        assert payloads['Exact']['_picklist_capture'] == 'inline_standard'
+        assert len(values) == MAX_INLINE_PICKLIST_VALUES
+
+    def test_multipicklist_takes_the_same_path(self) -> None:
+        payloads, _a, values = self._run([
+            {'name': 'Tags', 'type': 'multipicklist', 'custom': False,
+             'picklistValues': [{'value': 'A', 'active': True}]},
+        ])
+        assert payloads['Tags']['_picklist_capture'] == 'inline_standard'
+        assert len(values) == 1
+
+    def test_non_picklist_fields_get_no_capture_mark(self) -> None:
+        payloads, anchors, values = self._run([
+            {'name': 'Name', 'type': 'string', 'custom': False},
+            {'name': 'Amount', 'type': 'currency', 'custom': False},
+        ])
+        assert '_picklist_capture' not in payloads['Name']
+        assert '_picklist_capture' not in payloads['Amount']
+        assert anchors == [] and values == []
+
+    # ---- custom-field behaviour must be UNCHANGED (56/56 already complete) --
+
+    def test_custom_gvs_backed_field_is_unchanged(self) -> None:
+        """GVS-backed custom picklists keep the shared GlobalValueSet link —
+        D-403 touches STANDARD fields only. Only the capture mark is added."""
+        payloads, anchors, values = self._run(
+            [{'name': 'Tier__c', 'type': 'picklist', 'custom': True}],
+            cf_id_map={('Account', 'Tier__c'): '00N_tier'},
+            cf_metadata={'00N_tier': {'valueSet': {'valueSetName': 'TierGVS'}}},
+        )
+        assert payloads['Tier__c']['_value_set_external_id'] == 'TierGVS'
+        assert payloads['Tier__c']['_picklist_capture'] == 'gvs'
+        # No field-local anchor is minted for a GVS-backed field.
+        assert anchors == [] and values == []
+
+    def test_custom_inline_field_is_unchanged(self) -> None:
+        """D-334's custom inline capture reads Tooling valueSetDefinition, NOT
+        the describe payload — proven here by giving the two different values
+        and asserting the Tooling one wins."""
+        payloads, anchors, values = self._run(
+            [{'name': 'Stage__c', 'type': 'picklist', 'custom': True,
+              'picklistValues': [{'value': 'FROM_DESCRIBE', 'active': True}]}],
+            cf_id_map={('Account', 'Stage__c'): '00N_stage'},
+            cf_metadata={'00N_stage': {'valueSet': {
+                'valueSetName': None,
+                'valueSetDefinition': {'value': [
+                    {'valueName': 'FROM_TOOLING', 'label': 'T',
+                     'isActive': True},
+                ]},
+            }}},
+        )
+        assert payloads['Stage__c']['_value_set_external_id'] == \
+            'INLINE:Account.Stage__c'
+        assert payloads['Stage__c']['_picklist_capture'] == 'inline'
+        assert [a['FullName'] for a in anchors] == ['Account.Stage__c']
+        assert [v['valueName'] for v in values] == ['FROM_TOOLING']
+
+    def test_custom_field_with_empty_inline_definition_is_unchanged(self) -> None:
+        """A custom picklist with no usable Tooling values still gets NO marker
+        and NO anchor — and critically does NOT fall through to the standard
+        inline path, even though it carries describe values."""
+        payloads, anchors, values = self._run(
+            [{'name': 'Dead__c', 'type': 'picklist', 'custom': True,
+              'picklistValues': [{'value': 'FROM_DESCRIBE', 'active': True}]}],
+            cf_id_map={('Account', 'Dead__c'): '00N_dead'},
+            cf_metadata={'00N_dead': {'valueSet': {
+                'valueSetName': None, 'valueSetDefinition': {'value': []},
+            }}},
+        )
+        assert '_value_set_external_id' not in payloads['Dead__c']
+        assert '_picklist_capture' not in payloads['Dead__c']
+        assert anchors == [] and values == []
+
+    def test_svs_metadata_cache_is_no_longer_consulted(self) -> None:
+        """The content-match is gone: a populated SVS cache whose values
+        exactly equal the field's no longer produces an SVS: link."""
+        ctx = _stub_ctx_with_mock_sf()
+        conn = MagicMock()
+        conn.execute.return_value.fetchall.return_value = [
+            type('R', (), {'id': 'obj-acc', 'sf_api_name': 'Account'})()
+        ]
+        ctx.sf_client.fetch_custom_field_id_map.return_value = {}
+        ctx.sf_client.fetch_custom_field_metadata.return_value = {}
+        ctx.svs_metadata_cache = {'AccountRating': {'standardValue': [
+            {'valueName': 'Hot', 'isActive': True},
+        ]}}
+        ctx.sf_client.fetch_fields_for_objects_bulk.return_value = {
+            'Account': [{'name': 'Rating', 'type': 'picklist', 'custom': False,
+                         'picklistValues': [{'value': 'Hot', 'active': True}]}],
+        }
+        with patch('primeqa.sync.phases.batched_materialize') as mock_bm, \
+             patch('primeqa.sync.phases.materialize_edges_for_entities'):
+            mock_bm.return_value = {'Account.Rating': 'fld-1'}
+            phase_field(ctx, conn)
+        payloads = {
+            p['name']: p
+            for c in mock_bm.call_args_list
+            if c.kwargs.get('entity_type') == 'Field'
+            for p in c.kwargs['raw_payloads']
+        }
+        assert payloads['Rating']['_value_set_external_id'] == \
+            'INLINE:Account.Rating'
+        assert payloads['Rating']['_picklist_capture'] == 'inline_standard'

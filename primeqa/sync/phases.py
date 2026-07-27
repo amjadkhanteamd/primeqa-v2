@@ -38,10 +38,9 @@ from primeqa.sync.materialize import (
     reconcile_deletions_by_sf_id,
 )
 from primeqa.sync.result import PhaseResult
-from primeqa.sync.standard_value_set_match import (
-    build_svs_index,
-    field_active_value_names,
-    match_standard_value_set,
+from primeqa.sync.picklist_capture import (
+    MAX_INLINE_PICKLIST_VALUES,
+    describe_values_as_metadata,
 )
 
 
@@ -221,16 +220,25 @@ def phase_picklist_value_set(
     Wall-clock dominated by SVS fetch (~6 min for full 616-entry
     iteration at ~0.6s/call).
 
-    SVS iteration uses labels=None (full canonical catalog) — and
-    must stay that way (D-309 evaluated and REJECTED a referenced-
-    names filter): no API exposes a standard field's SVS name
-    (corrections-log §22), so the Field phase discovers the linkage
-    by CONTENT-matching field value sets against the fetched SVS
-    metadata (D-118). The reference direction only exists AFTER the
-    fetch; pre-filtering the catalog to "referenced" names would
-    require the very information the fetch is there to discover.
-    Labels the org's edition cannot query fail per-label as benign
-    gaps inside fetch_standard_value_sets (never degrading the run).
+    SVS iteration uses labels=None (full canonical catalog). D-309
+    evaluated and REJECTED a referenced-names filter, because the
+    Field phase discovered standard-field linkage by CONTENT-matching
+    against this fetched metadata (D-118) — the reference direction
+    only existed AFTER the fetch, so pre-filtering would have needed
+    the very information the fetch was there to discover.
+
+    ⚠ D-403 retired that content-match: standard picklist fields now
+    capture their values inline from describe, and NOTHING reads the
+    SVS entities this phase materializes (Phase 0 verified zero
+    reverse set→field consumers). The fetch is therefore now paying
+    ~6 min of wall-clock per full sync to produce ~37 PicklistValueSet
+    + ~521 PicklistValue entities that no field references. D-309's
+    rejection rationale no longer holds and the phase is a candidate
+    for narrowing or removal — deliberately NOT changed here (out of
+    scope for the capture fix, and the GVS half of this phase is still
+    load-bearing for custom fields). Labels the org's edition cannot
+    query fail per-label as benign gaps inside
+    fetch_standard_value_sets (never degrading the run).
 
     Per corrections-log §9, this phase also POPULATES
     ctx.svs_metadata_cache as a side effect of its SVS fetch. The
@@ -433,8 +441,8 @@ def phase_field(ctx: SyncContext, conn: Any) -> PhaseResult:
            (none for non-reference fields, one for standard refs,
            N for polymorphic refs)
          - HAS_PICKLIST_VALUES → PicklistValueSet (GVS-backed
-           custom picklist fields via §10; standard picklist
-           fields via §22 content-match per D-118 — see below)
+           custom picklist fields via §10; every other picklist
+           field via a field-local inline anchor — see below)
 
     HAS_PICKLIST_VALUES resolution (§10): REST describe doesn't
     expose a picklist field's value-set reference. For each custom
@@ -458,10 +466,30 @@ def phase_field(ctx: SyncContext, conn: Any) -> PhaseResult:
     S8 field-value grounding) work identically to GVS-backed fields.
     (Until this slice, inline values were fetched and DROPPED —
     field_details.picklist_value_set_entity_id stayed NULL and the
-    D-332 picklist-value bind could never fire for them.) Standard
-    picklist fields are linked to their StandardValueSet by the §22
-    content-match (D-118, step 2c-bis below) — exact set-equality,
-    fail-closed.
+    D-332 picklist-value bind could never fire for them.)
+
+    STANDARD picklist fields take the same field-local inline anchor
+    (step 2c-bis below), capped at MAX_INLINE_PICKLIST_VALUES. D-403
+    retired the §22 StandardValueSet content-match (D-118) that used
+    to link them: inferring which SHARED value set a field used was
+    exact-set-equality and fail-closed, so an ambiguous or unmatched
+    set produced no link — AND threw away the describe values it
+    already had. That left 275 of env-59's 377 picklist fields
+    valueless, and made a NULL FK mean either "no value set" or
+    "capture failed" with no way to tell which. Values now come
+    straight off the describe payload; the only thing given up is
+    cross-field set identity, which Phase 0 verified nothing reads.
+    See primeqa/sync/picklist_capture.py for the full rationale and
+    the two defect classes the shared anchor was causing.
+
+    Every picklist field this phase touches is stamped with a
+    `_picklist_capture` mark recording the capture OUTCOME (`gvs` /
+    `inline` / `inline_standard` / `inline_truncated` / `no_values`),
+    which _map_field_details writes to field_details.picklist_capture.
+    That column is what lets a consumer tell honest absence from a
+    capture failure — the distinction a NULL FK alone cannot carry,
+    and the precondition for the D-399 value-membership validator
+    refusing safely (D-399.1).
 
     Inline-anchor identity: the anchor payload is IDENTITY-ONLY
     ({FullName, _source} — the values are NOT in the anchor payload),
@@ -529,8 +557,8 @@ def phase_field(ctx: SyncContext, conn: Any) -> PhaseResult:
     # typed fields that join to a CustomField row, then per-Id
     # Metadata-fetch only those (1B filter — skips the ~90% of
     # custom fields that aren't picklists). Standard picklist fields
-    # don't appear in CustomField → no cf_id → skipped here (their
-    # SVS links are deferred per corrections-log §22).
+    # don't appear in CustomField → no cf_id → skipped here; they take
+    # the inline-capture path at 2c-bis (D-403).
     cf_id_map = ctx.sf_client.fetch_custom_field_id_map()
     field_to_cf_id: dict[tuple[str, str], str] = {}
     for object_api_name, fields in fields_by_object.items():
@@ -550,20 +578,12 @@ def phase_field(ctx: SyncContext, conn: Any) -> PhaseResult:
     # GlobalValueSet FullName == the PicklistValueSet external_id).
     # Both markers survive _strip_volatile and land in the
     # normalized payload for the detail mapper + edge extractor.
-    # 2c-bis (D-118, S1 Tier-2 slice 1): standard picklist field → SVS link.
-    # No API exposes it (§22); content-match the field's active describe values
-    # against the synced SVS value-sets (exact set-equality, fail-closed). A
-    # match sets the SAME _value_set_external_id marker the GVS path uses
-    # (SVS:-prefixed) → the existing detail mapper + edge extractor emit
-    # HAS_PICKLIST_VALUES unchanged. Index built once from the cache
-    # phase_picklist_value_set populated (PVS phase runs before Field phase).
-    svs_index = build_svs_index(ctx.svs_metadata_cache)
-    if not svs_index:
-        logger.info(
-            "phase_field: svs_metadata_cache empty; skipping standard-field "
-            "content-match (no SVS edges this run). Expected on resumed syncs "
-            "that skipped the PicklistValueSet phase."
-        )
+    # 2c-bis (D-403): standard picklist field → field-local inline anchor.
+    # No API exposes a standard field's StandardValueSet (§22), and D-118's
+    # content-match inference is retired — see picklist_capture.py. The values
+    # come off the describe payload already in hand and set the SAME
+    # _value_set_external_id marker the GVS/custom-inline paths use, so the
+    # detail mapper + edge extractor emit HAS_PICKLIST_VALUES unchanged.
 
     from primeqa.integrations.sf_client import (
         extract_picklist_value_payloads_from_metadata,
@@ -588,6 +608,7 @@ def phase_field(ctx: SyncContext, conn: Any) -> PhaseResult:
                     # GVS-backed: the value-set is a shared
                     # GlobalValueSet.
                     f["_value_set_external_id"] = value_set_name
+                    f["_picklist_capture"] = "gvs"
                 else:
                     # Inline (field-local) value set: valueSetName is
                     # None and the values live in Metadata.valueSet.
@@ -615,21 +636,53 @@ def phase_field(ctx: SyncContext, conn: Any) -> PhaseResult:
                         })
                         inline_pv_payloads.extend(pv_payloads)
                         f["_value_set_external_id"] = f"INLINE:{qualified}"
-            # Standard picklist fields (custom=False, no GVS/inline marker):
-            # try the §22 content-match. Inline CUSTOM picklists already carry
-            # an INLINE: marker from the branch above, so the marker guard
-            # excludes them; the `custom=False` guard keeps this to STANDARD
-            # fields, whose values legitimately DO belong to a shared SVS.
+                        f["_picklist_capture"] = "inline"
+            # STANDARD picklist fields (custom=False, so no GVS/inline marker
+            # from the branch above). D-403 retires the D-118 content-match
+            # here: capture the values INLINE, from the describe payload we
+            # already hold. See the phase_field docstring for why.
             if (
                 "_value_set_external_id" not in f
                 and not f.get("custom", False)
                 and f.get("type") in ("picklist", "multipicklist")
             ):
-                svs_full_name = match_standard_value_set(
-                    field_active_value_names(f), svs_index,
+                qualified = f"{object_api_name}.{f.get('name')}"
+                values = describe_values_as_metadata(f)["value"]
+                # Cap the long tail. Salesforce exposes platform ENUMERATIONS
+                # through the same picklist channel as business vocabularies —
+                # on env-59 one field (PromptVersion.TargetPageKey1Ref, 10 862
+                # page keys) is 55% of all uncaptured values, and the rest of
+                # the tail is timezone / locale / sObject-name lists. Every
+                # PicklistValue is an embedded entity, so capturing the tail
+                # verbatim would add 19 724 entities + embeddings to a 6 355-
+                # entity org, ~all of it un-assertable. At 200 the entire
+                # business surface is captured whole (the largest picklist any
+                # claim-bearing object carries, excluding timezone lists, is 12
+                # values), and truncation is RECORDED rather than silent.
+                truncated = len(values) > MAX_INLINE_PICKLIST_VALUES
+                if truncated:
+                    values = values[:MAX_INLINE_PICKLIST_VALUES]
+                pv_payloads = (
+                    extract_picklist_value_payloads_from_metadata(
+                        parent_external_id=f"INLINE:{qualified}",
+                        metadata={"value": values},
+                        value_list_key="value",
+                    )
                 )
-                if svs_full_name is not None:
-                    f["_value_set_external_id"] = f"SVS:{svs_full_name}"
+                if not pv_payloads:
+                    # The field carries no picklist values at all — honest
+                    # absence, the one case where a NULL FK is the truth.
+                    f["_picklist_capture"] = "no_values"
+                else:
+                    inline_pvs_payloads.append({
+                        "FullName": qualified,
+                        "_source": "CustomFieldInline",
+                    })
+                    inline_pv_payloads.extend(pv_payloads)
+                    f["_value_set_external_id"] = f"INLINE:{qualified}"
+                    f["_picklist_capture"] = (
+                        "inline_truncated" if truncated else "inline_standard"
+                    )
             field_payloads.append(f)
 
     if not field_payloads:

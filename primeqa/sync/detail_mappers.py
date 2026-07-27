@@ -274,11 +274,21 @@ def _map_field_details(
             external_id=value_set_external_id,
         )
 
+    # D-403: the capture OUTCOME, alongside the FK it explains. A NULL FK is
+    # produced identically by "this field has no value set" and "we failed to
+    # retrieve one" — this column is what tells them apart, so a consumer
+    # (the D-399 value-membership validator) can refuse to conclude rather
+    # than conclude wrongly. phase_field sets the marker on every picklist /
+    # multipicklist field it touches; non-picklist fields carry none and land
+    # NULL, which reads the same as pre-migration: NOT AUTHORITATIVE.
+    picklist_capture = normalized.get("_picklist_capture")
+
     return {
         "entity_id": entity_id,
         "object_entity_id": parent_object_id,
         "references_object_entity_id": references_object_id,
         "picklist_value_set_entity_id": picklist_value_set_id,
+        "picklist_capture": picklist_capture,
         "field_type": normalized.get("type"),
         "is_custom": bool(normalized.get("custom", False)),
         # D-160 (cutover Step 3.3): per-field CRUD writability — already in the
