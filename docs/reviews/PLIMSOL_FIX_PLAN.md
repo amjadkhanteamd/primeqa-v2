@@ -74,15 +74,16 @@
 
 ### Added 2026-07-27 — from the stale-cohort re-run (D-397…D-402)
 
-- **Value-membership validation at generation time** (D-399) — **HIGHEST PRIORITY in
-  this cluster.** Validate every literal asserted/staged against a picklist,
-  multipicklist or restricted field for MEMBERSHIP in S1's active value set; fail
-  loud (refuse to emit) rather than emitting. The grounding validator validates
-  FIELD grounding, not enumerated VALUE membership. A claim asserting a nonexistent
-  value **manufactures wrong-reds by construction** — it can never pass, and burns a
-  live org run plus an S6 investigation on every execution. Live instance:
-  `31eaa21e` stages `Loan_Type__c = "Home Loan"`; the org holds `Home`, `Personal`,
-  `Business`.
+- ~~**Value-membership validation at generation time** (D-399)~~ — **RESOLVED
+  2026-07-28 (D-412/D-413, main @5f3aea2).** Validator built (three verdicts,
+  capture-gated per D-399.1) and wired as a DECLINATION on the D-302
+  `partial_refusals` surface (`defer_class: "value-membership"`); the 10
+  approved offenders (incl. `31eaa21e`) deprecated and their requirements
+  regenerated post-v32 — 29 new claims, all membership-VALID, zero recurrence;
+  approved corpus at 0 INVALID. Prerequisite S1 capture completeness shipped
+  as D-407/D-408 (369/377). Remaining relatives live in their own bullets:
+  the 17 `inline_truncated` fields stay CANNOT_VALIDATE by design; NULL-capture
+  orgs (e.g. env-78 pre-re-capture) validate nothing until re-captured (D-411).
 - **`AssertEvidence`: persist the ASSERTED and OBSERVED values** (D-400) —
   DEFERRED_ITEMS §3 trace enrichment, **PROMOTED to the pilot gate on production
   evidence**. Without it, value-mismatch reds are undecidable (`9ba2d3d2`,
@@ -124,11 +125,12 @@
 - **`inline_truncated` disclosure audit** (D-407/D-408). 17 fields carry the
   200-value cap (e.g. `Task.RecurrenceTimeZoneSidKey` at 424 org values).
   Confirm every consumer that treats capture as complete — S3 vocabulary,
-  governance metadata, S4 k16 padding, the D-399 validator — reads
-  `picklist_capture` and treats `inline_truncated` (and NULL) as SUBSET /
-  not-authoritative, never as the full set. Truncation only ever REMOVES
-  values, so the failure mode is refusal/degradation, not wrong-green — but
-  the disclosure must be read to hold that property.
+  governance metadata, S4 k16 padding — reads `picklist_capture` and treats
+  `inline_truncated` (and NULL) as SUBSET / not-authoritative, never as the
+  full set. ~~the D-399 validator~~ — DONE (D-412: `inline_truncated` →
+  CANNOT_VALIDATE always, unit-pinned). Truncation only ever REMOVES values,
+  so the failure mode is refusal/degradation, not wrong-green — but the
+  disclosure must be read to hold that property.
 - ~~8 honest `no_values` fields~~ — **CLOSED at source, no work.** All 8 were
   verified against the live org describe (0 values each, incl. the one
   required+createable survivor `Location.LocationType`); `no_values` is
