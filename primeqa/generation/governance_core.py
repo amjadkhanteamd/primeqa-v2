@@ -76,6 +76,11 @@ from primeqa.generation.transition import (
 from primeqa.generation.verified_negative import _RECORD_TYPES_KEY
 from primeqa.generation import control_coverage, control_relevance
 from primeqa.generation import shadow_resolution
+from primeqa.generation.value_membership import (
+    FieldCaptureIndex,
+    Verdict,
+    extract_field_literals,
+)
 from primeqa.resolution import field_ladder as _field_ladder
 from primeqa.generation.formula_expectation import (
     as_decimal, verify_formula_expectation)
@@ -6792,6 +6797,26 @@ class GovernanceCore:
                         "y" if len(bundles) == 1 else "ies",
                         getattr(ctx, "requirement_ref", None) or {})
 
+        # D-413: value-membership gate — post-emission, pre-persistence. Every
+        # literal a bundle asserts/stages against an enumerated field is checked
+        # for membership in S1's captured value set (D-412). An INVALID bundle
+        # becomes an explicit DECLINATION on the existing D-302
+        # ``partial_refusals`` surface — never a silent drop (a vanished claim
+        # is a coverage hole with no signal; the declination is visible,
+        # countable and says exactly what was wrong). CANNOT_VALIDATE passes
+        # through untouched — capture gaps must never refuse (D-399.1). A
+        # validator ERROR propagates: generation fails rather than emitting
+        # unvalidated.
+        bundles, vm_declinations = self._value_membership_gate(
+            bundles, ctx, state)
+        if not bundles:
+            # Every authored bundle carried a provably-non-member literal: the
+            # whole draft declines. Same routing as the D-105.4 backstop —
+            # degrade this requirement, never the batch.
+            return OutcomeVerdict(override=RefusalDirective(
+                RefusalKind.UNGROUNDED_CLAIM,
+                _merge_vm_payloads([d["payload"] for d in vm_declinations])))
+
         # Mark the canonical path(s) selected in the reasoning artifact. Single
         # intent keeps the pre-D-207 shape (selected_path_id="c0"); a multi-
         # intent draft has no single canonical path — it records the grounded
@@ -6828,6 +6853,15 @@ class GovernanceCore:
             ai["shadow_resolution"] = shadow_resolution.attach_payload(
                 shadow_verdicts)
 
+        # D-413: membership declinations join the D-302 partial_refusals
+        # surface — the SAME key + per-entry shape resolve-time refusals use,
+        # so a mixed draft says why each declined claim declined. New list,
+        # never in-place (ai is a shallow copy of state's dict). Hash-safe:
+        # explanation_hash canonicalizes only its four fixed keys.
+        if vm_declinations:
+            ai["partial_refusals"] = (
+                list(ai.get("partial_refusals") or []) + vm_declinations)
+
         # The outcome-level marker aggregates CONSERVATIVELY across bundles
         # (D-207 decision 5): LAYER_2 only when every bundle verified; a caveat
         # on any bundle makes the outcome caveated. Per-bundle truth stays on
@@ -6856,6 +6890,67 @@ class GovernanceCore:
         )
         return OutcomeVerdict(outcome=outcome, emission=bundles[0], emissions=bundles,
                               interpretation_delta=delta)
+
+    # -- D-413 value-membership gate -------------------------------------
+    def _value_membership_gate(
+            self, bundles: list, ctx, state) -> tuple[list, list]:
+        """Filter authored bundles through the D-412 membership check.
+
+        Returns ``(kept_bundles, declination_entries)`` where each declination
+        is a D-302 ``partial_refusals``-shaped dict (``path_id`` / ``archetype``
+        / ``claim_kind`` / ``refusal_kind`` / ``payload``), its payload
+        sub-discriminated by ``defer_class: "value-membership"`` — the parked
+        sub-discriminator fork resolved on the EXISTING JSONB rather than a new
+        top-level RefusalKind.
+
+        Only INVALID declines. CANNOT_VALIDATE (truncated / pre-migration /
+        unknown capture) passes through untouched — a capture gap must never
+        become a silent refusal (D-399.1). ``ValueMembershipError`` propagates
+        — never emit unvalidated. ``presented_candidates`` stay index-aligned
+        with the surviving bundles (the D-339 discipline; on misalignment the
+        filter still applies but the state list is left alone, mirroring the
+        dedup guard)."""
+        at = ctx.semantic_context.s1_version_seq
+        per_bundle: list[list] = []
+        field_names: set[str] = set()
+        for b in bundles:
+            pairs = extract_field_literals(*_vm_bundle_bodies(b))
+            per_bundle.append(pairs)
+            field_names |= {f for f, _v in pairs}
+        if not field_names:
+            return bundles, []
+        vm_index = FieldCaptureIndex.from_s1(self._s1, at, sorted(field_names))
+
+        presented = list(getattr(state, "presented_candidates", None) or [])
+        aligned = len(presented) == len(bundles)
+        kept, kept_presented, declinations = [], [], []
+        for i, (b, pairs) in enumerate(zip(bundles, per_bundle)):
+            invalid = [c for f, v in pairs
+                       for c in vm_index.check_literal(f, v)
+                       if c.verdict == Verdict.INVALID]
+            if not invalid:
+                kept.append(b)
+                if aligned:
+                    kept_presented.append(presented[i])
+                continue
+            declinations.append({
+                "path_id": presented[i].path_id if aligned else None,
+                "archetype": b.archetype,
+                "claim_kind": b.claim_kind,
+                "refusal_kind": RefusalKind.UNGROUNDED_CLAIM.value,
+                "payload": _vm_declination_payload(invalid, vm_index),
+            })
+            log.info(
+                "finalize_outcome D-413: declined %s/%s bundle for "
+                "requirement=%s — %d non-member literal(s): %s",
+                b.archetype, b.claim_kind,
+                getattr(ctx, "requirement_ref", None) or {},
+                len(invalid),
+                "; ".join(f"{c.field}={c.value!r} ({c.detail})"
+                          for c in invalid))
+        if aligned and declinations:
+            state.presented_candidates = kept_presented
+        return kept, declinations
 
     # -- interpretation_delta assembly ----------------------------------
     @staticmethod
@@ -6901,6 +6996,69 @@ def _stash_grounding(state: Any, grounding: Any) -> None:
     if not hasattr(state, "groundings") or state.groundings is None:
         state.groundings = []
     state.groundings.append(grounding)
+
+
+def _vm_bundle_bodies(bundle) -> list:
+    """Every body of an EmissionBundle a membership check must see, dumped to
+    plain dicts: the claim pair (identity layer) + the primary recipe pair +
+    every secondary/boundary recipe's bodies — all of them stage values a run
+    will actually write, so all of them are in scope (D-413)."""
+    def _dump(obj):
+        return obj.model_dump() if hasattr(obj, "model_dump") else obj
+    bodies = [
+        _dump(bundle.asserted_truth), _dump(bundle.semantic_conditions),
+        _dump(bundle.causal_initiation), _dump(bundle.observation_realization),
+    ]
+    for extra in (tuple(getattr(bundle, "secondary_recipes", ()) or ())
+                  + tuple(getattr(bundle, "boundary_recipes", ()) or ())):
+        bodies.append(_dump(getattr(extra, "causal_initiation", None)))
+        bodies.append(_dump(getattr(extra, "observation_realization", None)))
+    return [b for b in bodies if b is not None]
+
+
+def _vm_declination_payload(invalid_checks: list, vm_index) -> dict:
+    """The buyer-legible declination payload (D-413). ``defer_class`` is the
+    sub-discriminator on the existing refusal-payload JSONB; ``violations``
+    carries field / asserted value / the org's actual value set / reason
+    (``absent`` = the org never had it, hallucination; ``inactive`` = the org
+    retired it, drift) — a reader should see exactly what was wrong."""
+    violations = [{
+        "field": c.field,
+        "asserted_value": c.value,
+        "reason": c.detail,                      # 'absent' | 'inactive'
+        "org_value_set": vm_index.active_values(c.field),
+        "capture": c.capture,
+    } for c in invalid_checks]
+    first = violations[0]
+    detail = (
+        f"asserted value {first['asserted_value']!r} is not a member of "
+        f"{first['field']}'s value set ({first['reason']}); org accepts: "
+        + (" | ".join(first["org_value_set"]) or "(no values)")
+        + (f" — and {len(violations) - 1} further non-member literal(s)"
+           if len(violations) > 1 else ""))
+    return {
+        "defer_class": "value-membership",
+        "detail": detail,
+        "detail_source": "substrate",
+        "detail_layer": "value-membership",
+        "violations": violations,
+    }
+
+
+def _merge_vm_payloads(payloads: list) -> dict:
+    """One override payload when EVERY bundle declined: the first payload's
+    envelope with the union of all violations (deduplicated, order-kept)."""
+    merged = dict(payloads[0])
+    seen: set = set()
+    violations = []
+    for p in payloads:
+        for v in p.get("violations", []):
+            key = (v["field"], v["asserted_value"], v["reason"])
+            if key not in seen:
+                seen.add(key)
+                violations.append(v)
+    merged["violations"] = violations
+    return merged
 
 
 def _dedup_bundles_by_identity(bundles: list, presented: list) -> tuple:

@@ -280,6 +280,62 @@ class FieldCaptureIndex:
         }
         return cls(fields)
 
+    @classmethod
+    def from_s1(cls, s1, at_seq: int,
+                field_names: Iterable[str]) -> "FieldCaptureIndex":
+        """Build the index for ONLY ``field_names``, through the S1 model
+        interface (``get_entities`` → ``get_entity_details`` →
+        ``get_picklist_values``) — the same seam every other S3 grounding read
+        uses, at the batch's pinned ``at_seq``. This is the EMISSION-path
+        builder (D-413): it resolves just the fields the authored bundles
+        actually reference, so a batch with no enumerated literals does no
+        value reads at all.
+
+        Contract differences from :meth:`load` (both deliberate):
+          * a field that does not resolve, or is not picklist-typed, is simply
+            NOT in the index — out of this validator's jurisdiction (field
+            grounding already ran);
+          * an empty result is fine here (the referenced fields may contain no
+            picklists) — the zero-fields fail-loud belongs to the whole-org
+            audit mode only;
+          * a detail row MISSING the ``picklist_capture`` key reads as NULL
+            capture → CANNOT_VALIDATE. Against the real schema the key always
+            exists (``get_entity_details`` is ``SELECT *`` over a table that
+            has the column); only synthetic S1 doubles lack it, and refusing
+            on a double's field would invert fail-loud in every fixture-based
+            test. The column-missing fail-loud stays enforced in
+            :meth:`load`, whose SQL names the column explicitly.
+        """
+        fields: dict[str, _FieldCapture] = {}
+        for name in field_names:
+            ents = s1.get_entities("Field", at_seq=at_seq,
+                                   filters={"sf_api_name": name})
+            if not ents:
+                continue
+            details = s1.get_entity_details(ents[0].id, at_seq=at_seq) or {}
+            ftype = (details.get("field_type") or "").lower()
+            if ftype not in ("picklist", "multipicklist"):
+                continue
+            values: tuple = ()
+            pvs_id = details.get("picklist_value_set_entity_id")
+            if pvs_id:
+                values = tuple(
+                    (r["value_api_name"], r["value_label"],
+                     bool(r["is_active"]))
+                    for r in s1.get_picklist_values(pvs_id, at_seq=at_seq))
+            fields[name] = _FieldCapture(
+                field_type=ftype, capture=details.get("picklist_capture"),
+                values=values)
+        return cls(fields)
+
+    def active_values(self, field: str) -> list[str]:
+        """The field's captured ACTIVE api-names, sorted — the "org accepts"
+        list a declination shows the buyer. [] for unknown fields."""
+        fc = self._fields.get(field)
+        if fc is None:
+            return []
+        return sorted(a for a, _l, act in fc.values if act)
+
     # -- the check ---------------------------------------------------------
 
     def check_literal(self, field: str, value: Any) -> list[LiteralCheck]:

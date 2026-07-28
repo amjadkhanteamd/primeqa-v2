@@ -220,3 +220,203 @@ def test_load_fails_loud_on_zero_picklist_fields():
     wrong-green of the validator's own. Refuse instead."""
     with pytest.raises(ValueMembershipError, match="ZERO picklist fields"):
         FieldCaptureIndex.load(_EmptyConn(), "00000000-0000-0000-0000-0")
+
+
+# ===========================================================================
+# D-413 — the finalize-time gate (wiring)
+# ===========================================================================
+
+from types import SimpleNamespace
+from unittest.mock import patch
+from uuid import uuid4
+
+from primeqa.generation.emission import GroundedExistence, _Endpoint
+from primeqa.generation.enums import AdmissibilityLayer, OutcomeKind, RefusalKind
+from primeqa.generation.governance import ConversationContext, PresentedCandidate
+from primeqa.generation.governance_core import (
+    GovernanceCore,
+    _merge_vm_payloads,
+    _vm_bundle_bodies,
+    _vm_declination_payload,
+)
+from primeqa.generation.protocol import (
+    BudgetSpec, GovernanceContext, OperationalContext, SemanticContext)
+
+
+class _FakeS1:
+    """The minimal S1 surface FieldCaptureIndex.from_s1 reads, with a
+    Loan_Type__c whose capture is AUTHORITATIVE (inline, 3 values)."""
+
+    def __init__(self, capture="inline", include_capture_key=True):
+        self._capture = capture
+        self._include = include_capture_key
+
+    def get_entities(self, entity_type, at_seq, filters=None):
+        if (filters or {}).get("sf_api_name") == "Opportunity.Loan_Type__c":
+            return [SimpleNamespace(id=uuid4())]
+        return []
+
+    def get_entity_details(self, entity_id, at_seq):
+        d = {"field_type": "picklist",
+             "picklist_value_set_entity_id": "pvs-1"}
+        if self._include:
+            d["picklist_capture"] = self._capture
+        return d
+
+    def get_picklist_values(self, pvs_id, at_seq):
+        return [
+            {"value_api_name": "Home", "value_label": "Home", "is_active": True},
+            {"value_api_name": "Personal", "value_label": "Personal",
+             "is_active": True},
+            {"value_api_name": "Business", "value_label": "Business",
+             "is_active": True},
+        ]
+
+
+def _wire_ctx():
+    return ConversationContext(
+        request_id=uuid4(),
+        requirement_ref={"key": "req-w", "text": "w"},
+        requirement_text="w",
+        semantic_context=SemanticContext(
+            requirement_refs=[{"key": "req-w", "text": "w"}],
+            s1_version_seq=1, s1_version_name="v1"),
+        governance_context=GovernanceContext(),
+        operational_context=OperationalContext(budgets=BudgetSpec()))
+
+
+def _wire_state():
+    return SimpleNamespace(
+        groundings=[GroundedExistence(
+            archetype="configuration", claim_kind="existence-claim",
+            version_seq=1,
+            subject=_Endpoint(entity_id=uuid4(), entity_type="Field",
+                              external_id="Opportunity.Loan_Type__c"),
+            requirement_excerpt="x")],
+        presented_candidates=[
+            PresentedCandidate("c0", AdmissibilityLayer.LAYER_1)],
+        attempted_interpretation={
+            "candidate_paths": [{"path_id": "c0"}],
+            "dismissed_alternatives_by_reason": {},
+            "selected_path_id": None,
+        },
+        control_facts=None)
+
+
+def _bundle(value, kind="state-transition-claim"):
+    """A fake authored bundle staging Loan_Type__c=<value>. Plain-dict bodies
+    (fine at len==1 — the D-339 dedup only hashes multi-bundle drafts)."""
+    return SimpleNamespace(
+        archetype="behavioural", claim_kind=kind,
+        asserted_truth={"to_state": {"field_values":
+                                     {"Opportunity.Loan_Type__c": value}}},
+        semantic_conditions={"kind": "semantic-conditions"},
+        causal_initiation={"kind": "data-mutation-trigger"},
+        observation_realization={"steps": [
+            {"kind": "create",
+             "field_values": {"Opportunity.Loan_Type__c": value}}]},
+        secondary_recipes=(), boundary_recipes=(),
+        admissibility_layer=AdmissibilityLayer.LAYER_1,
+        caveat_required=False, caveat_kind=None)
+
+
+def _finalize_with(bundle, s1):
+    gov = GovernanceCore(s1)
+    with patch("primeqa.generation.governance_core.author_emission",
+               return_value=bundle):
+        return gov.finalize_outcome(outcome_input={}, ctx=_wire_ctx(),
+                                    state=_wire_state())
+
+
+def test_gate_declines_nonmember_via_override_when_sole_bundle():
+    """The 31eaa21e shape: the only authored bundle stages 'Home Loan' → the
+    whole draft becomes an UNGROUNDED_CLAIM refusal whose payload is the
+    defer_class-discriminated declination — visible, never a silent drop."""
+    ov = _finalize_with(_bundle("Home Loan"), _FakeS1())
+    assert ov.override is not None and ov.outcome is None
+    assert ov.override.refusal_kind == RefusalKind.UNGROUNDED_CLAIM
+    p = ov.override.payload
+    assert p["defer_class"] == "value-membership"
+    [v] = p["violations"]
+    assert v["field"] == "Opportunity.Loan_Type__c"
+    assert v["asserted_value"] == "Home Loan"
+    assert v["reason"] == "absent"
+    assert v["org_value_set"] == ["Business", "Home", "Personal"]
+    assert "Home Loan" in p["detail"] and "org accepts" in p["detail"]
+
+
+def test_gate_passes_member_value_untouched():
+    ov = _finalize_with(_bundle("Home"), _FakeS1())
+    assert ov.override is None
+    assert ov.outcome is not None and ov.outcome.outcome_kind == OutcomeKind.DRAFT
+    ai = ov.outcome.attempted_interpretation.model_dump()
+    assert "partial_refusals" not in ai
+
+
+def test_gate_cannot_validate_passes_through_null_capture():
+    """A fixture/pre-migration S1 (no capture mark) must NEVER decline —
+    CANNOT_VALIDATE is a pass-through, not a refusal (D-399.1)."""
+    ov = _finalize_with(_bundle("Home Loan"),
+                        _FakeS1(include_capture_key=False))
+    assert ov.override is None and ov.outcome is not None
+
+
+def test_gate_cannot_validate_passes_through_truncated_capture():
+    ov = _finalize_with(_bundle("Home Loan"), _FakeS1(capture="inline_truncated"))
+    assert ov.override is None and ov.outcome is not None
+
+
+def test_gate_mixed_batch_keeps_valid_and_declines_invalid():
+    """Gate-level mixed case: the invalid bundle becomes a D-302-shaped
+    partial_refusals entry; the valid one survives with its aligned
+    presented_candidate."""
+    gov = GovernanceCore(_FakeS1())
+    state = _wire_state()
+    state.presented_candidates = [
+        PresentedCandidate("c0", AdmissibilityLayer.LAYER_1),
+        PresentedCandidate("c1", AdmissibilityLayer.LAYER_1)]
+    kept, decls = gov._value_membership_gate(
+        [_bundle("Home"), _bundle("Home Loan")], _wire_ctx(), state)
+    assert len(kept) == 1 and kept[0].asserted_truth["to_state"][
+        "field_values"]["Opportunity.Loan_Type__c"] == "Home"
+    [d] = decls
+    assert d["path_id"] == "c1"
+    assert d["refusal_kind"] == "ungrounded-claim"
+    assert d["payload"]["defer_class"] == "value-membership"
+    assert [c.path_id for c in state.presented_candidates] == ["c0"]
+
+
+def test_gate_fails_loud_when_validator_errors():
+    """Never emit unvalidated: an erroring S1 read propagates out of
+    finalize — generation errors rather than passing the claim through."""
+    class _ExplodingS1(_FakeS1):
+        def get_entity_details(self, entity_id, at_seq):
+            raise RuntimeError("connection lost")
+    with pytest.raises(RuntimeError, match="connection lost"):
+        _finalize_with(_bundle("Home Loan"), _ExplodingS1())
+
+
+def test_vm_bundle_bodies_covers_secondary_and_boundary_recipes():
+    b = _bundle("Home")
+    b.secondary_recipes = (SimpleNamespace(
+        causal_initiation={"kind": "sec-ci"},
+        observation_realization={"steps": [
+            {"field_values": {"Opportunity.Loan_Type__c": "SEC"}}]}),)
+    b.boundary_recipes = (SimpleNamespace(
+        causal_initiation=None,
+        observation_realization={"steps": [
+            {"field_values": {"Opportunity.Loan_Type__c": "BND"}}]}),)
+    blob = str(_vm_bundle_bodies(b))
+    assert "SEC" in blob and "BND" in blob
+
+
+def test_merge_vm_payloads_dedups_violations():
+    p1 = _vm_declination_payload(
+        [], None) if False else {
+        "defer_class": "value-membership", "detail": "d",
+        "detail_source": "substrate", "detail_layer": "value-membership",
+        "violations": [{"field": "F", "asserted_value": "X",
+                        "reason": "absent", "org_value_set": [],
+                        "capture": "inline"}]}
+    merged = _merge_vm_payloads([p1, {"violations": p1["violations"]}])
+    assert len(merged["violations"]) == 1
