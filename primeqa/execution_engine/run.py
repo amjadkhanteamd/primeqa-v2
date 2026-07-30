@@ -233,6 +233,31 @@ def run_recipe_execution(
     )
 
 
+def _run_as_username_of(recipe):
+    """The recipe's run-as identity (Salesforce username, the JWT ``sub``) or
+    ``None`` for a system-identity run (D-421). Both the trigger body and the
+    data-recipe body carry the coupling-validated ``identity_context`` /
+    ``run_as_user`` pair (D-054/D-109); they are validated independently by S2,
+    so a DISAGREEMENT between them is a plan defect — fail loud, never pick one.
+    The ref's ``external_id`` for a ``User`` entity is the username (S1's
+    ``sf_api_name``)."""
+    names = set()
+    for body in (getattr(recipe, "causal_initiation", None),
+                 getattr(recipe, "observation_realization", None)):
+        if body is None:
+            continue
+        if getattr(body, "identity_context", "system") == "run_as_user":
+            ref = getattr(body, "run_as_user", None)
+            names.add(getattr(ref, "external_id", None))
+        else:
+            names.add(None)
+    if len(names) > 1:
+        raise PlanTranslationError(
+            f"trigger and recipe bodies disagree on run-as identity: {names}",
+            recipe_id=recipe.recipe_id)
+    return next(iter(names), None)
+
+
 def _resolve_run_org(session, environment_id: int) -> str:
     """The run's ``connected_org_id`` (str), FAIL-LOUD if unresolved (per-org
     Slice 3a, D-257). A run reads S1 *scoped to the org it executes against* — an
@@ -251,7 +276,8 @@ def _resolve_run_org(session, environment_id: int) -> str:
 def _execute_for_kind(recipe, session, environment_id: int, client,
                       record_sink=None, world_plans=None, field_overrides=None,
                       *, env_gate=None, caller_tier=None,
-                      null_asserted_fields=None, coordinator=None):
+                      null_asserted_fields=None, coordinator=None,
+                      teardown_client=None):
     """Dispatch on ``recipe.recipe_kind`` → the matching bridge + executor.
 
     The inspection path (``metadata-recipe``) is unchanged from D-108.4; the
@@ -281,7 +307,21 @@ def _execute_for_kind(recipe, session, environment_id: int, client,
 
     if recipe.recipe_kind == _DATA_RECIPE_KIND:
         plan = build_data_recipe_plan(recipe)
-        data_client = client or resolve_data_mutation_client(session, environment_id)
+        # D-421: an identity-scoped recipe resolves its client AS that identity
+        # (JWT Bearer; fail-loud, no admin fallback — credentials.py). The
+        # teardown client stays the ADMIN service identity (D-418): resolved
+        # here on the sync path; the async path pre-resolves it in bracket 1.
+        run_as = _run_as_username_of(recipe)
+        data_client = client or resolve_data_mutation_client(
+            session, environment_id, run_as_username=run_as)
+        if run_as is not None and teardown_client is None:
+            if session is None:
+                raise PlanTranslationError(
+                    "identity-scoped async execute needs a pre-resolved "
+                    "teardown_client (bracket-1 must supply it)",
+                    recipe_id=recipe.recipe_id)
+            teardown_client = resolve_data_mutation_client(
+                session, environment_id)
         # D-338: resolve the claim's asserted-blank fields (SYNC — session
         # open) — only for plans that stage an ordinary create (positive +
         # 2-step negative; the 1-step create-rejected negative stages nothing,
@@ -312,7 +352,8 @@ def _execute_for_kind(recipe, session, environment_id: int, client,
             plan, client=data_client, environment_id=environment_id, s1=s1,
             world_plans=world_plans, record_sink=record_sink,
             field_overrides=field_overrides,
-            null_asserted_fields=null_asserted_fields)
+            null_asserted_fields=null_asserted_fields,
+            executing_identity=run_as, teardown_client=teardown_client)
 
     raise PlanTranslationError(
         f"run path has no executor for recipe_kind={recipe.recipe_kind!r} "
@@ -579,7 +620,7 @@ def run_recipe_execution_async(
         env_gate = _resolve_env_gate(session, environment_id)
     if recipe is None:
         return RunPathResult(ran=False, reason="no_eligible_recipe")
-    resolved_client, world_plans, null_asserted = prep
+    resolved_client, world_plans, null_asserted, td_client = prep
 
     # 2. execute — NO DB connection held across the live read (the invariant). The
     #    write-ahead durability sink (D-230) writes in its own per-call transactions,
@@ -589,7 +630,7 @@ def run_recipe_execution_async(
         recipe, None, environment_id, resolved_client,
         record_sink=sink, world_plans=world_plans,
         env_gate=env_gate, caller_tier=caller_tier,
-        null_asserted_fields=null_asserted)
+        null_asserted_fields=null_asserted, teardown_client=td_client)
 
     # 3. persist + posture + interpret — a fresh brief transaction.
     with scope(tenant_id) as session:
@@ -620,9 +661,16 @@ def _prepare_async_execute(recipe, session, environment_id: int, client,
     fails loud (same surface as the sync :func:`_execute_for_kind`)."""
     if recipe.recipe_kind == _METADATA_RECIPE_KIND:
         return (client or resolve_tooling_client(session, environment_id), None,
-                frozenset())
+                frozenset(), None)
     if recipe.recipe_kind == _DATA_RECIPE_KIND:
-        data_client = client or resolve_data_mutation_client(session, environment_id)
+        # D-421: bracket-1 resolves BOTH clients for an identity-scoped recipe
+        # (the execute bracket holds no connection): the run client AS the
+        # identity, the teardown client as the admin service identity (D-418).
+        run_as = _run_as_username_of(recipe)
+        data_client = client or resolve_data_mutation_client(
+            session, environment_id, run_as_username=run_as)
+        td_client = (resolve_data_mutation_client(session, environment_id)
+                     if run_as is not None else None)
         plan = build_data_recipe_plan(recipe)
         if plan.steps[0].expect_rejection is None:
             from primeqa.semantic.query import SemanticOrgModel
@@ -637,7 +685,7 @@ def _prepare_async_execute(recipe, session, environment_id: int, client,
             # 1-step create-rejected — no world, no staged create, and so no
             # consumer for the asserted-blank set; still async-prepared.
             world_plans, null_asserted = {}, frozenset()
-        return (data_client, world_plans, null_asserted)
+        return (data_client, world_plans, null_asserted, td_client)
     raise PlanTranslationError(
         f"run path has no executor for recipe_kind={recipe.recipe_kind!r} "
         f"(only metadata-recipe + data-recipe are wired)",
@@ -956,13 +1004,14 @@ def run_all_recipes_execution_async(
         if isinstance(prep, _PrepError):
             evidence = _synthesize_errored_evidence(recipe, environment_id, prep.exc)
         else:
-            resolved_client, world_plans, null_asserted = prep
+            resolved_client, world_plans, null_asserted, td_client = prep
             try:
                 evidence = execute(
                     recipe, None, environment_id, resolved_client,
                     record_sink=sink, world_plans=world_plans,
                     env_gate=env_gate, caller_tier=caller_tier,
-                    null_asserted_fields=null_asserted)
+                    null_asserted_fields=null_asserted,
+                    teardown_client=td_client)
             except Exception as exc:
                 evidence = _synthesize_errored_evidence(recipe, environment_id, exc)
         # 3. persist + posture + interpret — a FRESH brief TX per probe, so a

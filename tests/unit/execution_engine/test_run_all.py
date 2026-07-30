@@ -476,7 +476,7 @@ def test_async_runall_filters_metadata_from_manifest(monkeypatch):
     monkeypatch.setattr("primeqa.execution_engine.run._resolve_env_gate",
                         lambda session, environment_id: ("full", False))
     monkeypatch.setattr("primeqa.execution_engine.run._prepare_async_execute",
-                        lambda *a, **k: (object(), None, frozenset()))
+                        lambda *a, **k: (object(), None, frozenset(), None))
     data_probe = _fake_recipe(recipe_kind="data-recipe")
     inspection = _fake_recipe(recipe_kind="metadata-recipe")
     captured = _FakeSession()

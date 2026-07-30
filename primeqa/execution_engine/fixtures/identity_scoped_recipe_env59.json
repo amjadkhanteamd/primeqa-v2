@@ -1,0 +1,66 @@
+{
+  "_comment": [
+    "D-421 Phase D: the FIRST identity-scoped recipe — hand-authored, S3",
+    "bypassed by design (D-080 gates S3 emission behind an opt-in that does",
+    "not exist). Shape: 1-step create-rejected (D-110.2) under run-as; the",
+    "designated user's profile must LACK Create on PLS_BM_Deal__c but HOLD",
+    "Read on it, so the create returns HTTP 403 + INSUFFICIENT_ACCESS* and",
+    "exercises D-290's permission-grading branch for the first time ever.",
+    "(Zero object visibility would instead return 400 INVALID_TYPE, which",
+    "grades as an ordinary business rejection MISS — the checklist tells the",
+    "org admin to grant Read.) DO NOT EXECUTE until the D-416 org-side JWT",
+    "setup is complete; execution without it fails loud (run_as_no_signing_key)."
+  ],
+  "designated_user": "tarik.habibullah@primeqa.com",
+  "environment_id": 59,
+  "causal_initiation": {
+    "body_schema_version": 1,
+    "kind": "data-mutation-trigger",
+    "operation": "create",
+    "target": {
+      "ref_kind": "logical",
+      "entity_type": "Object",
+      "external_id": "PLS_BM_Deal__c"
+    },
+    "identity_context": "run_as_user",
+    "run_as_user": {
+      "ref_kind": "logical",
+      "entity_type": "User",
+      "external_id": "tarik.habibullah@primeqa.com"
+    },
+    "volume": "single",
+    "field_changes": null
+  },
+  "observation_realization": {
+    "body_schema_version": 1,
+    "kind": "data-recipe",
+    "api_choice": "rest",
+    "identity_context": "run_as_user",
+    "run_as_user": {
+      "ref_kind": "logical",
+      "entity_type": "User",
+      "external_id": "tarik.habibullah@primeqa.com"
+    },
+    "execution_mechanism": "direct_api",
+    "steps": [
+      {
+        "kind": "create",
+        "step_id": "create-denied",
+        "target_object": {
+          "ref_kind": "logical",
+          "entity_type": "Object",
+          "external_id": "PLS_BM_Deal__c"
+        },
+        "field_values": {
+          "PLS_BM_Deal__c.PLS_BM_Deal_Type__c": "SMB",
+          "PLS_BM_Deal__c.PLS_BM_Deal_Value__c": 1000
+        },
+        "expect_rejection": {
+          "error_code": "INSUFFICIENT_ACCESS_OR_READONLY",
+          "error_message_pattern": null
+        },
+        "expect_acceptance": false
+      }
+    ]
+  }
+}

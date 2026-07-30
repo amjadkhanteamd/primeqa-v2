@@ -141,7 +141,7 @@ def _is_permission_rejection(rejection_body) -> bool:
 def execute_data_recipe(
     plan: DataRecipePlan, *, client, environment_id: int, s1=None,
     world_plans=None, record_sink=None, field_overrides=None,
-    null_asserted_fields=None,
+    null_asserted_fields=None, executing_identity=None, teardown_client=None,
 ) -> RunEvidence:
     """Execute a data-recipe plan against ``client``; dispatch on the first
     step's ``expect_rejection``.
@@ -183,29 +183,44 @@ def execute_data_recipe(
     # a recipe with none is byte-identical (no extra org query).
     if client is not None and not isinstance(client, TemporalBoundaryClient):
         client = TemporalBoundaryClient(client)
+    # D-418 (k14 corollary): teardown always runs as the ADMIN service
+    # identity. ``teardown_client`` is that second client on an identity-scoped
+    # run; None (every non-run-as run, and every unit seam that injects only
+    # ``client``) falls back to the run client — byte-identical to pre-run-as.
+    # Deletes stage no temporal values, so the teardown client is not wrapped.
+    td = teardown_client if teardown_client is not None else client
     flagged = next(
         (s for s in plan.steps
          if getattr(s, "expect_rejection", None) is not None), None)
     if flagged is not None and isinstance(flagged, PlannedCreate):
         # 1-step create-rejected (D-110.2) — no world to construct.
-        return _execute_negative(
-            plan, client=client, environment_id=environment_id)
-    if s1 is None and world_plans is None:
+        ev = _execute_negative(
+            plan, client=client, environment_id=environment_id,
+            teardown_client=td)
+    elif s1 is None and world_plans is None:
         raise PlanTranslationError(
             "a data-recipe with an ordinary (setup) create needs its operational "
             "world resolved — a live S1 requiredness reader (s1=) or a pre-resolved "
             "world_plans map (D-230.2); neither was injected",
             recipe_id=plan.recipe_id)
-    if flagged is not None:
+    elif flagged is not None:
         # 2-step setup create -> rejected update/delete (D-203).
-        return _run_negative_with_setup(
+        ev = _run_negative_with_setup(
             plan, client=client, environment_id=environment_id, s1=s1,
             world_plans=world_plans, record_sink=record_sink,
-            field_overrides=field_overrides, null_asserted_fields=nulls)
-    return _run_positive(
-        plan, client=client, environment_id=environment_id, s1=s1,
-        world_plans=world_plans, record_sink=record_sink,
-        field_overrides=field_overrides, null_asserted_fields=nulls)
+            field_overrides=field_overrides, null_asserted_fields=nulls,
+            teardown_client=td)
+    else:
+        ev = _run_positive(
+            plan, client=client, environment_id=environment_id, s1=s1,
+            world_plans=world_plans, record_sink=record_sink,
+            field_overrides=field_overrides, null_asserted_fields=nulls,
+            teardown_client=td)
+    # D-419: stamp the run-as identity once, at the envelope — absence stays
+    # absence (a non-identity run's evidence is byte-identical to before).
+    if executing_identity is not None:
+        ev = replace(ev, executing_identity=executing_identity)
+    return ev
 
 
 def _nulls_for(sobject: str, null_asserted_fields) -> frozenset:
@@ -289,16 +304,18 @@ def plan_data_recipe_world(plan: DataRecipePlan, s1,
 
 
 def _execute_negative(
-    plan: DataRecipePlan, *, client, environment_id: int,
+    plan: DataRecipePlan, *, client, environment_id: int, teardown_client=None,
 ) -> RunEvidence:
     """The behavioral-negative path (D-110.2): a single create the org should
     reject; the 4-way create-reject eval grounds the outcome."""
     run_id = uuid4()
     started = _now()
+    td = teardown_client if teardown_client is not None else client
     create = plan.steps[0]
     sobject = create.target_object.external_id
 
-    step, outcome, top_error = _run_create(create, sobject, client)
+    step, outcome, top_error = _run_create(create, sobject, client,
+                                           teardown_client=td)
 
     finished = _now()
     return RunEvidence(
@@ -320,7 +337,7 @@ def _execute_negative(
 def _run_negative_with_setup(
     plan: DataRecipePlan, *, client, environment_id: int, s1=None,
     world_plans=None, record_sink=None, field_overrides=None,
-    null_asserted_fields=frozenset(),
+    null_asserted_fields=frozenset(), teardown_client=None,
 ) -> RunEvidence:
     """The 2-step behavioral negative (D-203): construct-world → setup
     create-expect-success → attempt the prohibited update/delete → grade the
@@ -358,18 +375,20 @@ def _run_negative_with_setup(
     #    D-230.2: live S1 read (sync) or a pre-resolved WorldPlan (async).
     at_seq = s1.current_version_seq() if s1 is not None else None
     tracker = CreatedRecordTracker(run_id=run_id, sink=record_sink)
+    # D-418: teardown (and only teardown) runs on the admin client.
+    td = teardown_client if teardown_client is not None else client
     try:
         scalar_filler, parent_filler, unfillable = _world_for(
             setup, s1=s1, client=client, tracker=tracker, at_seq=at_seq,
             world_plans=world_plans, recipe_id=plan.recipe_id,
             null_fields=nulls)
     except Exception as e:
-        tracker.teardown(client, _best_effort_delete)
+        tracker.teardown(td, _best_effort_delete)
         err = ErrorSurface("construct", type(e).__name__, str(e))
         return _result(plan, run_id, started, environment_id, (), "errored", err,
                        created_records=tracker.records)
     if unfillable:
-        tracker.teardown(client, _best_effort_delete)
+        tracker.teardown(td, _best_effort_delete)
         err = ErrorSurface(
             phase="construct", error_type="UnfillableWorld",
             message=("required field(s)/parent(s) S4 could not construct: "
@@ -403,7 +422,7 @@ def _run_negative_with_setup(
     try:
         env = client.create(sobject, field_values)
     except SFClientError as e:
-        tracker.teardown(client, _best_effort_delete)
+        tracker.teardown(td, _best_effort_delete)
         err = ErrorSurface("create", type(e).__name__, str(e))
         ev = _evidence(
             setup, sobject, c_start, _now(), http_status=None, success=False,
@@ -414,7 +433,7 @@ def _run_negative_with_setup(
 
     http_status = env["http_status"]
     if not env["success"]:
-        tracker.teardown(client, _best_effort_delete)
+        tracker.teardown(td, _best_effort_delete)
         rejection_body = _as_error_tuple(env["api_response"]["body"])
         err = ErrorSurface(
             phase="create", error_type="SetupRejected",
@@ -447,7 +466,7 @@ def _run_negative_with_setup(
         entry_evs, entry_err = _run_entry_updates(
             entries, sobject, record_id, client)
         if entry_err is not None:
-            tracker.teardown(client, _best_effort_delete)
+            tracker.teardown(td, _best_effort_delete)
             return _result(plan, run_id, started, environment_id,
                            (_evidence(
                                setup, sobject, c_start, c_end,
@@ -472,7 +491,7 @@ def _run_negative_with_setup(
                 recall = _recall_pending_approval(client, record_id)
                 arc_evs = arc_evs[:-1] + (
                     replace(arc_evs[-1], recall=recall),)
-            tracker.teardown(client, _best_effort_delete)
+            tracker.teardown(td, _best_effort_delete)
             return _result(plan, run_id, started, environment_id,
                            (_evidence(
                                setup, sobject, c_start, c_end,
@@ -497,7 +516,7 @@ def _run_negative_with_setup(
         recall = _recall_pending_approval(client, record_id)
         if arc_evs:
             arc_evs = arc_evs[:-1] + (replace(arc_evs[-1], recall=recall),)
-    cleanup = tracker.teardown(client, _best_effort_delete)[0]
+    cleanup = tracker.teardown(td, _best_effort_delete)[0]
     setup_ev = _evidence(
         setup, sobject, c_start, c_end, http_status=http_status, success=True,
         rejection_body=(), matched=None, cleanup=cleanup,
@@ -807,7 +826,8 @@ def _sf_soql(soql: str, sobject: str) -> str:
 def _run_positive(plan: DataRecipePlan, *, client, environment_id: int, s1=None,
                   world_plans=None, record_sink=None,
                   field_overrides=None,
-                  null_asserted_fields=frozenset()) -> RunEvidence:
+                  null_asserted_fields=frozenset(),
+                  teardown_client=None) -> RunEvidence:
     """The positive create-and-verify path (D-115; N-create chains D-205;
     the update-then-observe phase D-306): per create — construct-world →
     resolve cross-step refs → create-expect-success → thread state — then the
@@ -822,6 +842,8 @@ def _run_positive(plan: DataRecipePlan, *, client, environment_id: int, s1=None,
     surfaces honestly."""
     run_id = uuid4()
     started = _now()
+    # D-418: teardown (and only teardown) runs on the admin client.
+    td = teardown_client if teardown_client is not None else client
     *head, read, assertion = plan.steps
     # D-306: split the optional positive update (the trigger phase) off the
     # create chain — the bridge guarantees at most one, create-adjacent.
@@ -872,7 +894,7 @@ def _run_positive(plan: DataRecipePlan, *, client, environment_id: int, s1=None,
             if arc_state["evs"]:
                 arc_state["evs"] = arc_state["evs"][:-1] + (
                     replace(arc_state["evs"][-1], recall=recall),)
-        cleanups = tracker.teardown(client, _best_effort_delete)
+        cleanups = tracker.teardown(td, _best_effort_delete)
         by_id = {c.record_id: c for c in cleanups if c.record_id}
         return tuple(
             replace(ev, cleanup=by_id[rid]) if rid in by_id else ev
@@ -1425,7 +1447,7 @@ def _result(plan, run_id, started, environment_id, steps, outcome, error,
     )
 
 
-def _run_create(create, sobject, client):
+def _run_create(create, sobject, client, teardown_client=None):
     """Attempt the create + evaluate. Returns (evidence, outcome, top_error)."""
     start = _now()
     try:
@@ -1448,8 +1470,12 @@ def _run_create(create, sobject, client):
     rejection_body = _as_error_tuple(body)
 
     if success:
-        # The prohibition did NOT enforce — failed. Clean up the record it made.
-        cleanup = _best_effort_delete(client, sobject, record_id)
+        # The prohibition did NOT enforce — failed. Clean up the record it made
+        # — as the ADMIN service identity when the run was identity-scoped
+        # (D-418): the run identity may lack Delete on what it just created.
+        cleanup = _best_effort_delete(
+            teardown_client if teardown_client is not None else client,
+            sobject, record_id)
         end = _now()
         ev = _evidence(
             create, sobject, start, end, http_status=http_status, success=True,

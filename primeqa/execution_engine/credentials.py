@@ -76,10 +76,52 @@ def resolve_tooling_client(db, environment_id: int) -> ToolingReadClient:
         instance_url, env.sf_api_version, access_token)
 
 
-def resolve_data_mutation_client(db, environment_id: int) -> DataMutationClient:
+def resolve_data_mutation_client(
+    db, environment_id: int, *, run_as_username: str | None = None,
+) -> DataMutationClient:
     """Resolve an authenticated data-mutation client for ``environment_id``
     (the behavioral-negative vertical, D-110.2). Same D-106.4 credential path
-    as :func:`resolve_tooling_client`; a different thin transport."""
+    as :func:`resolve_tooling_client`; a different thin transport.
+
+    ``run_as_username`` (D-416/D-421): when set, the client authenticates AS
+    that Salesforce user via the JWT Bearer exchange — a DIFFERENT token path
+    (``run_as.mint_run_as_token``) with its own distinguishable failure modes,
+    and **no fallback**: the admin path below is structurally unreachable from
+    the identity branch (early return), so a run-as request either yields a
+    token for that identity or raises ``RunAsResolutionError``. Absent
+    identity = the pre-run-as behaviour, byte-identical (same
+    ``_resolve_org_token`` call, same client construction).
+    """
+    if run_as_username is not None:
+        from primeqa.core.models import Environment
+        from primeqa.core.repository import ConnectionRepository
+        from primeqa.execution_engine.run_as import (
+            assert_identity_known_and_active, mint_run_as_token)
+        from primeqa.semantic.connection import get_tenant_connection
+        from primeqa.sync.credentials import resolve_connected_org_or_raise
+
+        env = db.query(Environment).filter(
+            Environment.id == environment_id).first()
+        if env is None:
+            raise CredentialResolutionError(
+                f"environment {environment_id} not found")
+        if not env.connection_id:
+            raise CredentialResolutionError(
+                f"environment {environment_id} has no Salesforce connection")
+        conn = ConnectionRepository(db).get_connection_decrypted(
+            env.connection_id, env.tenant_id)
+        if not conn:
+            raise CredentialResolutionError(
+                f"connection {env.connection_id} not found or not decryptable")
+        # S1 pre-check: designated identity exists + active (D-417) — the two
+        # LOCAL failure modes, before any org round-trip.
+        with get_tenant_connection(env.tenant_id) as tconn:
+            org_id = resolve_connected_org_or_raise(tconn, environment_id)
+            assert_identity_known_and_active(tconn, org_id, run_as_username)
+        token = mint_run_as_token(conn["config"], username=run_as_username)
+        instance_url = _resolve_instance_url(conn["config"], env)
+        return DataMutationClient(instance_url, env.sf_api_version, token)
+
     env, access_token, instance_url = _resolve_org_token(db, environment_id)
     return DataMutationClient(
         instance_url, env.sf_api_version, access_token)
