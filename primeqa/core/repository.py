@@ -393,7 +393,11 @@ class ConnectionRepository:
     @staticmethod
     def _sensitive_fields(connection_type):
         return {
-            "salesforce": ["client_id", "client_secret", "password"],
+            # D-416: jwt_signing_key is the run-as JWT Bearer private key —
+            # same custody class as client_secret (Fernet at rest, decrypted
+            # only at the token-mint chokepoint).
+            "salesforce": ["client_id", "client_secret", "password",
+                           "jwt_signing_key"],
             "jira": ["credentials", "api_token"],
             # D-179: the LLM connection optionally carries a 2nd secret — the Voyage
             # embedding key, used by S1 enrichment. Encrypted at rest like api_key.
