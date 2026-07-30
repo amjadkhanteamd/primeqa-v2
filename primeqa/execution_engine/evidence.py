@@ -288,6 +288,11 @@ class RunEvidence:
     finished_at: datetime
     steps: tuple[StepEvidence, ...]
     error: Optional[ErrorSurface] = None    # top-level surface for an errored run
+    # D-419/D-421: the Salesforce username this run executed as (the JWT sub).
+    # None means NOT IDENTITY-SCOPED — the run used the environment's admin
+    # service identity and the ledger does not assert who that was (absence
+    # stays absence; never backfilled to the admin).
+    executing_identity: Optional[str] = None
     # read-only-vertical N/As, reserved:
     artifacts: tuple = ()
     # Records S4 created during this run (positive vertical) — the cleanup audit

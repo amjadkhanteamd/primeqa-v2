@@ -74,6 +74,9 @@ class S4ExecutionRun(Base):
     # in Slice 4.
     batch_id = Column(UUID(as_uuid=True), nullable=True)
     source = Column(String, nullable=True)
+    # D-419/D-421: the Salesforce username the run executed as (JWT sub).
+    # NULL = not identity-scoped (NOT "ran as admin" — absence stays absence).
+    executing_identity = Column(String, nullable=True)
 
 
 class S4CreatedRecord(Base):
@@ -144,6 +147,11 @@ def persist_run_evidence(session, evidence: RunEvidence, *,
         batch_cols["batch_id"] = batch_id
     if source is not None:
         batch_cols["source"] = source
+    # D-419: the run-as identity, same omit-when-None discipline — a NULL
+    # column means "not identity-scoped", never "ran as admin", so a
+    # non-identity run must not even reference the column.
+    if evidence.executing_identity is not None:
+        batch_cols["executing_identity"] = evidence.executing_identity
     row = S4ExecutionRun(
         run_id=evidence.run_id,
         recipe_id=evidence.recipe_id,
@@ -171,12 +179,18 @@ def _evidence_trace(evidence: RunEvidence) -> dict:
     Carries the per-step trace + the run's api_choice + top-level error surface
     — everything not promoted to a typed column. Datetimes are ISO strings
     (JSONB-safe); the typed run-level timestamps stay in their columns."""
-    return {
+    trace = {
         "api_choice": evidence.api_choice,
         "steps": [_jsonable(dataclasses.asdict(s)) for s in evidence.steps],
         "error": (dataclasses.asdict(evidence.error)
                   if evidence.error is not None else None),
     }
+    # D-419: identity rides the envelope ONLY when the run was identity-scoped
+    # — mirroring the column's absence-stays-absence contract, and keeping
+    # every non-run-as trace byte-identical to pre-run-as traces.
+    if evidence.executing_identity is not None:
+        trace["executing_identity"] = evidence.executing_identity
+    return trace
 
 
 def _jsonable(value):
