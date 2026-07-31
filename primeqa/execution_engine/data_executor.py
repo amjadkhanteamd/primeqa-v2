@@ -1383,11 +1383,20 @@ def _run_ground(assertion, read_ev, *, ordinal,
             f"assertion {assertion.step_id!r} subject_ref {pred.subject_ref!r} "
             f"must be '{read_ev.step_id}.<field>' (the read-back's captured field)")
     start = _now()
+    # D-424: the value envelope — set on EVERY path (fail-loud: no branch may
+    # leave observed_kind unset). Scope law: the asserted field's value only,
+    # never the observed row.
+    asserted_field = None
+    asserted_value = None
+    asserted_symbolic = None
+    observed_value = None
+    observed_kind = None
     if pred.predicate == "exists":
         # D-210: the cross-object automation-effect assert — did the read find
         # the side-effect record at all? No row indexing (0 rows is the honest
         # FAILED evaluation, not an error).
         held = read_ev.row_count > 0
+        observed_value, observed_kind = read_ev.row_count, "row_count"
     elif pred.predicate == "not_exists":
         # D-307: the automation-ABSENCE assert — the correlated record must
         # NOT exist. The D-210 empty-read retry works FOR this direction
@@ -1395,6 +1404,7 @@ def _run_ground(assertion, read_ev, *, ordinal,
         # absence is asserted); any observed row is the honest FAILED
         # evaluation (the automation fired when it must not).
         held = read_ev.row_count == 0
+        observed_value, observed_kind = read_ev.row_count, "row_count"
     elif pred.predicate == "count_equals":
         # Completion E2: the correlated-set cardinality assert — the read's
         # WHERE carries the correlation AND the updated value, so BOTH
@@ -1402,13 +1412,20 @@ def _run_ground(assertion, read_ev, *, ordinal,
         # distractor row wrongly swept in — the flow ignored its own
         # filter) fail the exact count. 0 rows is an honest evaluation.
         held = read_ev.row_count == pred.value
+        asserted_value = pred.value
+        observed_value, observed_kind = read_ev.row_count, "row_count"
     elif pred.predicate == "not_null":
         # D-227: the stamp assert — the automation wrote SOME value (e.g.
         # $Flow.CurrentDate has no stable literal to equals against). 0 rows
         # = couldn't observe → the honest FAILED evaluation.
         field = _sf_field(field, read_ev.sobject)
-        held = (read_ev.row_count > 0
-                and read_ev.rows[0].get(field) is not None)
+        asserted_field = field
+        if read_ev.row_count > 0:
+            observed_value = read_ev.rows[0].get(field)
+            observed_kind = "field_value"
+        else:
+            observed_kind = "no_row"
+        held = observed_kind == "field_value" and observed_value is not None
     else:
         # The captured field is keyed bare in the SF response (see
         # _run_read_back). 0 rows reaches here only on a SIDE-EFFECT read
@@ -1418,13 +1435,25 @@ def _run_ground(assertion, read_ev, *, ordinal,
         expected = pred.value
         if materialise is not None:
             expected = materialise(expected)
-        held = (read_ev.row_count > 0
-                and _values_equal(read_ev.rows[0].get(field), expected))
+            if expected != pred.value:
+                asserted_symbolic = pred.value
+        asserted_field = field
+        asserted_value = expected
+        if read_ev.row_count > 0:
+            observed_value = read_ev.rows[0].get(field)
+            observed_kind = "field_value"
+            held = _values_equal(observed_value, expected)
+        else:
+            observed_kind = "no_row"
+            held = False
     end = _now()
     return AssertEvidence(
         step_id=assertion.step_id, ordinal=ordinal, predicate=pred.predicate,
         subject_ref=pred.subject_ref, evaluated_row_count=read_ev.row_count,
-        held=held, started_at=start, finished_at=end, duration_ms=_ms(start, end))
+        held=held, started_at=start, finished_at=end, duration_ms=_ms(start, end),
+        asserted_field=asserted_field, asserted_value=asserted_value,
+        asserted_value_symbolic=asserted_symbolic,
+        observed_value=observed_value, observed_kind=observed_kind)
 
 
 def _result(plan, run_id, started, environment_id, steps, outcome, error,

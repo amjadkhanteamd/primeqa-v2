@@ -252,8 +252,15 @@ def _run_assert(
 
     start = _now()
     rows = captures[subject]
+    # D-424: the value envelope — set on EVERY path (fail-loud: no branch may
+    # leave observed_kind unset).
+    asserted_field = None
+    asserted_value = None
+    observed_value = None
+    observed_kind = None
     if predicate == "exists":
         held = len(rows) > 0
+        observed_value, observed_kind = len(rows), "row_count"
     else:
         # equals / is_null — a value comparison over the read's captured column.
         column = capture_columns.get(subject)
@@ -262,20 +269,28 @@ def _run_assert(
                 f"assertion {step.step_id!r} predicate {predicate!r} needs a "
                 f"value column, but read {subject!r} captured none (a value "
                 f"predicate over a presence-only read)")
+        asserted_field = column
+        if predicate == "equals":
+            asserted_value = step.predicate.value
         # A value predicate needs an observed row; 0 rows (the subject didn't
         # surface) can't confirm equality OR null-ness → not held (a grounded
         # `failed`, distinct from the existence read's own outcome).
         if not rows:
             held = False
+            observed_kind = "no_row"
         elif predicate == "is_null":
-            held = rows[0].get(column) is None
+            observed_value, observed_kind = rows[0].get(column), "field_value"
+            held = observed_value is None
         else:  # equals
-            held = _value_eq(rows[0].get(column), step.predicate.value)
+            observed_value, observed_kind = rows[0].get(column), "field_value"
+            held = _value_eq(observed_value, step.predicate.value)
     end = _now()
     return AssertEvidence(
         step_id=step.step_id, ordinal=ordinal, predicate=predicate,
         subject_ref=subject, evaluated_row_count=len(rows), held=held,
-        started_at=start, finished_at=end, duration_ms=_ms(start, end))
+        started_at=start, finished_at=end, duration_ms=_ms(start, end),
+        asserted_field=asserted_field, asserted_value=asserted_value,
+        observed_value=observed_value, observed_kind=observed_kind)
 
 
 def _value_eq(observed, expected) -> bool:

@@ -738,6 +738,47 @@ def _mutation_plain(kind: str, step: dict, err: Any, labels=None) -> str:
     return tmpl.format(obj=obj, code=code_sfx)
 
 
+def _assert_values_clause(step: dict) -> str:
+    """D-424: the asserted-vs-observed clause for an assert step's headline.
+
+    A step dict carrying ``observed_kind`` is a post-D-424 run — phrase the
+    comparison from the evidence itself (the authoritative record; never
+    re-derived from the read rows or the claim body). A dict WITHOUT it is a
+    pre-change run whose values were never captured: a failed assert says so
+    explicitly ("not captured"), never an empty or zero value (the D-390
+    console precedent). Pure, never raises."""
+    try:
+        okind = step.get("observed_kind")
+        if okind is None:
+            if step.get("held") is False:
+                return (" (expected vs observed values not captured — "
+                        "run pre-dates value capture)")
+            return ""
+        pred = step.get("predicate")
+        field = step.get("asserted_field")
+        asserted = step.get("asserted_value")
+        observed = step.get("observed_value")
+        if okind == "no_row":
+            return " — no record was there to observe"
+        if okind == "row_count":
+            found = (f"found {fmt_number(observed)} matching "
+                     f"record{'' if observed == 1 else 's'}")
+            if pred == "not_exists":
+                return f" — expected none, {found}"
+            if pred == "count_equals":
+                return f" — expected {fmt_number(asserted)}, {found}"
+            return f" — expected at least one, {found}"
+        shown = "blank" if observed is None else fmt_number(observed)
+        if pred == "not_null":
+            return f" — expected {field} to have a value, observed {shown}"
+        if pred == "is_null":
+            return f" — expected {field} to be blank, observed {shown}"
+        expected = "blank" if asserted is None else fmt_number(asserted)
+        return f" — expected {field} = {expected}, observed {shown}"
+    except Exception:
+        return ""
+
+
 def step_plain(step: Any, labels=None) -> str:
     """One plain-English sentence for an S4 evidence step (the run-detail trace).
     Pure + never-raises: dispatches on ``step['kind']`` and the outcome fields,
@@ -767,10 +808,11 @@ def step_plain(step: Any, labels=None) -> str:
             if err:
                 return f"Couldn't run the check — {_err_msg(err)}"
             held = step.get("held")
+            values = _assert_values_clause(step)
             if held is True:
-                return "Checked the records — the assertion held"
+                return f"Checked the records — the assertion held{values}"
             if held is False:
-                return "Checked the records — the assertion did NOT hold"
+                return f"Checked the records — the assertion did NOT hold{values}"
             return "Checked the records"
         if kind in _MUT_OK:
             return _mutation_plain(kind, step, err, labels)

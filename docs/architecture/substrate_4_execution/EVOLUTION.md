@@ -286,3 +286,33 @@ D-273) signal rather than being read as enforcement.
 **Scope — engine-capability, UNEXERCISED today.** S3 does not author permission-prohibition recipes yet, so
 no live verdict flips on the current corpus; this widens S4's grounded-grading envelope ahead of the
 emission. DECISIONS_LOG D-290 / D-290.1.
+
+## 2026-07-31 — The assert-evidence value envelope: asserted vs observed persist on the assert step (D-424, closing D-400)
+
+`AssertEvidence` recorded *that* a check failed but never *what was compared* — the observed value
+lived only in the read step's rows and the asserted value only in the recipe/claim body, so a
+value-mismatch red could not say "expected X, got Y" from its own evidence (D-400: `9ba2d3d2` /
+`0d81c6f9` undecidable between org behaviour and claim authorship). Five additive fields close it:
+`asserted_field`, `asserted_value` (post-materialise), `asserted_value_symbolic` (pre-materialise
+form, only when the C4 temporal path transformed it), `observed_value`, `observed_kind`
+(`field_value` / `row_count` / `no_row`).
+
+**Both producers** set the envelope on every path — `_run_ground` (data vertical: equals /
+exists / not_exists / count_equals / not_null) and the inspection `_run_assert` (equals / is_null /
+exists). Grading is byte-identical; the change is pure capture. The zero-row side-effect read
+records `observed_kind="no_row"` so a `None` observed value can never masquerade as a captured
+blank (the fail-loud law). Scope is the **asserted field only** — the full captured row (sibling
+fields, Id, correlation keys) stays on the read step where it already persists; the assert envelope
+never becomes a second copy of row data. Both sides persist **raw** (D-211's tolerant-match
+coercions stay transient): a green `"5000"`-vs-`5000.0` pair keeps its differing types, which ARE
+the explanation of the tolerant match.
+
+**No migration** — the envelope rides the `s4_execution_runs.evidence` JSONB through the unchanged
+trace builder; pre-change rows simply lack the keys. The run-page headline (`step_plain`) now
+phrases the comparison from the assert step itself ("expected Risk_Rating__c = High, observed
+Medium"), and a pre-change FAILED assert renders "expected vs observed values not captured — run
+pre-dates value capture" — absence stays absence, never an empty or zero value (the D-390 console
+precedent). Suites: 19 new pins (value present / pre-change absent / coerced match / multi-row /
+zero-row / per-predicate fail-loud / temporal symbolic / JSONB round-trip / render), unit 4586
+green. The D-210 read-registered teardown invisibility (D-400's second gap) is deliberately NOT
+addressed here — different dataclass, different producer moment (see D-424). DECISIONS_LOG D-424.

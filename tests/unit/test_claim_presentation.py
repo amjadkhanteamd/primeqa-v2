@@ -622,10 +622,14 @@ def test_step_plain_read():
 
 def test_step_plain_assert():
     sp = _import_step_plain()
+    # A held assert without the D-424 value keys keeps the established form.
     assert sp({"kind": "assert", "held": True}) == \
         "Checked the records — the assertion held"
+    # D-424: a FAILED assert without the value keys is a pre-change run —
+    # absence renders as "not captured", never silently.
     assert sp({"kind": "assert", "held": False}) == \
-        "Checked the records — the assertion did NOT hold"
+        ("Checked the records — the assertion did NOT hold (expected vs "
+         "observed values not captured — run pre-dates value capture)")
 
 
 def test_step_plain_create_positive_and_setup():

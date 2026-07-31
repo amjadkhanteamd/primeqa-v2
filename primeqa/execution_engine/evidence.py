@@ -61,7 +61,14 @@ class ReadEvidence:
 @dataclass(frozen=True)
 class AssertEvidence:
     """Evidence for one planned assertion — what was checked, against which
-    read's capture, and whether it held."""
+    read's capture, and whether it held.
+
+    D-424 (the D-400 closure): the value envelope. Both producers set the
+    five value fields on EVERY new run; a persisted step dict missing them
+    is a pre-change run and must render "not captured", never an empty or
+    zero value. Scope is the asserted field ONLY — never the observed row.
+    Both sides persist RAW (the D-211 coercions are transient and never
+    stored), so a tolerant match may legitimately pair differing types."""
 
     step_id: str
     ordinal: int
@@ -74,6 +81,23 @@ class AssertEvidence:
     duration_ms: int
     kind: Literal["assert"] = "assert"
     error: Optional[ErrorSurface] = None
+    # D-424: the bare field name the predicate targets (None for the
+    # existence/count predicates, which assert over the row set).
+    asserted_field: Optional[str] = None
+    # D-424: what was compared — post-materialise on the C4 temporal path;
+    # None where the predicate itself is the demand (exists/not_exists/
+    # not_null/is_null).
+    asserted_value: object = None
+    # D-424: the pre-materialise symbolic form, ONLY when materialisation
+    # transformed the asserted value (else None).
+    asserted_value_symbolic: object = None
+    # D-424: the compared observation, raw as the org returned it — a field
+    # value or a row count per observed_kind.
+    observed_value: object = None
+    # D-424: fail-loud discriminator — "no_row" records that there was
+    # nothing to observe, so a None observed_value can never masquerade as
+    # a captured blank. Producers set this unconditionally.
+    observed_kind: Optional[Literal["field_value", "row_count", "no_row"]] = None
 
 
 @dataclass(frozen=True)
