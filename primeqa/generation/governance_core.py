@@ -6817,6 +6817,20 @@ class GovernanceCore:
                 RefusalKind.UNGROUNDED_CLAIM,
                 _merge_vm_payloads([d["payload"] for d in vm_declinations])))
 
+        # D-426: representation gate — same seam, same disposition. A literal
+        # that is a template artifact (placeholder) or a human label on an
+        # Id-typed field declines the bundle; CANNOT_VALIDATE passes through
+        # untouched (D-399.1); a checker ERROR propagates.
+        bundles, rep_declinations = self._representation_gate(
+            bundles, ctx, state)
+        if not bundles:
+            return OutcomeVerdict(override=RefusalDirective(
+                RefusalKind.UNGROUNDED_CLAIM,
+                _merge_vm_payloads(
+                    [d["payload"] for d in vm_declinations]
+                    + [d["payload"] for d in rep_declinations])))
+        vm_declinations = vm_declinations + rep_declinations
+
         # Mark the canonical path(s) selected in the reasoning artifact. Single
         # intent keeps the pre-D-207 shape (selected_path_id="c0"); a multi-
         # intent draft has no single canonical path — it records the grounded
@@ -6952,6 +6966,58 @@ class GovernanceCore:
             state.presented_candidates = kept_presented
         return kept, declinations
 
+    # -- D-426 representation gate ---------------------------------------
+    def _representation_gate(
+            self, bundles: list, ctx, state) -> tuple[list, list]:
+        """Filter authored bundles through the D-426 representation checks
+        (placeholder leak + label-vs-Id), immediately after — and shaped
+        exactly like — the D-413 membership gate. Only INVALID declines;
+        CANNOT_VALIDATE passes through untouched (D-399.1);
+        ``RepresentationCheckError`` propagates — never emit unchecked."""
+        from primeqa.generation.representation_check import FieldTypeIndex
+
+        at = ctx.semantic_context.s1_version_seq
+        per_bundle: list[list] = []
+        field_names: set[str] = set()
+        for b in bundles:
+            pairs = extract_field_literals(*_vm_bundle_bodies(b))
+            per_bundle.append(pairs)
+            field_names |= {f for f, _v in pairs}
+        if not field_names:
+            return bundles, []
+        rep_index = FieldTypeIndex.from_s1(self._s1, at, sorted(field_names))
+
+        presented = list(getattr(state, "presented_candidates", None) or [])
+        aligned = len(presented) == len(bundles)
+        kept, kept_presented, declinations = [], [], []
+        for i, (b, pairs) in enumerate(zip(bundles, per_bundle)):
+            invalid = [c for f, v in pairs
+                       for c in rep_index.check_literal(f, v)
+                       if c.verdict == Verdict.INVALID]
+            if not invalid:
+                kept.append(b)
+                if aligned:
+                    kept_presented.append(presented[i])
+                continue
+            declinations.append({
+                "path_id": presented[i].path_id if aligned else None,
+                "archetype": b.archetype,
+                "claim_kind": b.claim_kind,
+                "refusal_kind": RefusalKind.UNGROUNDED_CLAIM.value,
+                "payload": _rep_declination_payload(invalid),
+            })
+            log.info(
+                "finalize_outcome D-426: declined %s/%s bundle for "
+                "requirement=%s — %d representation defect(s): %s",
+                b.archetype, b.claim_kind,
+                getattr(ctx, "requirement_ref", None) or {},
+                len(invalid),
+                "; ".join(f"{c.field}={c.value!r} ({c.detail})"
+                          for c in invalid))
+        if aligned and declinations:
+            state.presented_candidates = kept_presented
+        return kept, declinations
+
     # -- interpretation_delta assembly ----------------------------------
     @staticmethod
     def _delta(neighborhood: list, candidates: list[_Candidate]) -> dict:
@@ -7041,6 +7107,40 @@ def _vm_declination_payload(invalid_checks: list, vm_index) -> dict:
         "detail": detail,
         "detail_source": "substrate",
         "detail_layer": "value-membership",
+        "violations": violations,
+    }
+
+
+def _rep_declination_payload(invalid_checks: list) -> dict:
+    """The buyer-legible D-426 declination payload — the D-413 envelope
+    (``detail`` / ``detail_source`` / ``detail_layer`` / ``violations``)
+    sub-discriminated by ``defer_class: "representation"``. Each violation
+    names the field, the offending literal, the reason
+    (``placeholder_structural`` | ``placeholder_filler`` |
+    ``label_on_id_field``) and the S1 field type consulted."""
+    violations = [{
+        "field": c.field,
+        "asserted_value": c.value,
+        "reason": c.detail,
+        "check": c.check,
+        "field_type": c.field_type,
+    } for c in invalid_checks]
+    first = violations[0]
+    if first["check"] == "label_vs_id":
+        why = (f"asserted value {first['asserted_value']!r} is a human label "
+               f"on the Id-typed field {first['field']} — the org stores an "
+               f"identifier there, so the assertion can never hold")
+    else:
+        why = (f"asserted/staged value {first['asserted_value']!r} on "
+               f"{first['field']} is a template artifact, not a business "
+               f"value")
+    detail = why + (f" — and {len(violations) - 1} further representation "
+                    f"defect(s)" if len(violations) > 1 else "")
+    return {
+        "defer_class": "representation",
+        "detail": detail,
+        "detail_source": "substrate",
+        "detail_layer": "representation",
         "violations": violations,
     }
 
