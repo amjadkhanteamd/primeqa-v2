@@ -24,6 +24,7 @@ from dataclasses import dataclass, replace
 from typing import Optional, Protocol
 
 from primeqa.execution_engine.evidence import (
+    AssertEvidence,
     CreateAttemptEvidence,
     DataReadEvidence,
     DeleteAttemptEvidence,
@@ -212,7 +213,144 @@ def _attribute_positive(verdict, evidence, s1,
     trigger = _last_create_step(evidence)
     if trigger is None:
         return None
-    return _attribute_automation_absent(trigger, s1, claim_automation)
+    # D-425: the assert step's value envelope, when present, splits the
+    # automation_effect_absent hedge; None (pre-D-424 evidence) leaves every
+    # cause exactly as before.
+    observation = _classify_effect_observation(evidence)
+    return _attribute_automation_absent(trigger, s1, claim_automation,
+                                        observation=observation)
+
+
+# ---------------------------------------------------------------------------
+# D-425 — the value-aware effect observation (reads the D-424 assert envelope)
+# ---------------------------------------------------------------------------
+
+# A Salesforce record Id: 15 or 18 alphanumeric characters. Deliberately
+# narrow (D-425): a text field legitimately holding a pure-15/18-alphanumeric
+# value could collide, in which case the safe fallback is the divergent cause
+# — refinement, never fabrication.
+_SF_ID_RE = re.compile(r"^[a-zA-Z0-9]{15}(?:[a-zA-Z0-9]{3})?$")
+
+
+@dataclass(frozen=True)
+class _EffectObservation:
+    """What the graded assert's D-424 value envelope shows about the asserted
+    effect — the discriminator that splits ``automation_effect_absent``
+    (D-425). Produced by :func:`_classify_effect_observation`; ``None`` means
+    the evidence predates D-424 (no envelope), and attribution behaves
+    exactly as before — the absence law."""
+
+    kind: str          # record_absent | value_absent | divergent | representation_mismatch
+    asserted_field: Optional[str]
+    asserted_value: object
+    observed_value: object
+
+
+def _classify_effect_observation(evidence) -> Optional[_EffectObservation]:
+    """Classify a FAILED positive-vertical run's assert envelope (D-425).
+
+    - ``no_row`` (and its ``exists``-predicate twin: ``row_count`` observed 0)
+      → the effect RECORD was never produced. The producer guarantees 0-row
+      equality reads occur only on side-effect reads (D-227.7), so "never
+      produced" never misdescribes a vanished subject record.
+    - ``field_value`` observed None → the effect VALUE is absent. STILL
+      ambiguous between never-written and written-blank — the producer's
+      ``rows[0].get(field)`` returns None identically for JSON-null and
+      absent-key, and a true null is reachable by both. Never a firing claim.
+    - ``field_value`` observed non-null ≠ asserted → a DIVERGENT value;
+      Id-shaped observed vs non-Id-shaped asserted string → the
+      representation-mismatch claim-authoring class (the 0d81c6f9 specimen).
+    - No assert step / no envelope → ``None`` (pre-D-424 — unchanged hedge).
+    """
+    a = next((s for s in evidence.steps if isinstance(s, AssertEvidence)), None)
+    if a is None or a.observed_kind is None:
+        return None
+    if a.observed_kind == "no_row":
+        return _EffectObservation(
+            "record_absent", a.asserted_field, a.asserted_value, None)
+    if a.observed_kind == "row_count":
+        if a.predicate == "exists" and not a.observed_value:
+            return _EffectObservation(
+                "record_absent", a.asserted_field, a.asserted_value, 0)
+        if a.predicate == "count_equals":
+            return _EffectObservation(
+                "divergent", a.asserted_field, a.asserted_value,
+                a.observed_value)
+        return None
+    if a.observed_kind == "field_value":
+        if a.observed_value is None:
+            return _EffectObservation(
+                "value_absent", a.asserted_field, a.asserted_value, None)
+        if (isinstance(a.observed_value, str)
+                and _SF_ID_RE.match(a.observed_value)
+                and isinstance(a.asserted_value, str)
+                and not _SF_ID_RE.match(a.asserted_value)):
+            return _EffectObservation(
+                "representation_mismatch", a.asserted_field,
+                a.asserted_value, a.observed_value)
+        return _EffectObservation(
+            "divergent", a.asserted_field, a.asserted_value, a.observed_value)
+    return None
+
+
+def _refined_effect_cause(observation, *, automation_phrase, sobject,
+                          other_writers) -> Optional[Cause]:
+    """The D-425 value-aware refinement of ``automation_effect_absent``.
+
+    ``None`` when there is no envelope (pre-D-424 evidence) — the caller then
+    falls back to the exact pre-D-425 hedge (the absence law). Each refined
+    cause states only what the envelope proves: record-absent decides WHAT
+    (never WHY — S1 carries no entry criteria); divergent decides THAT a
+    different value was written (never WHO — candidate writers are enumerated
+    and Apex triggers are named as uncaptured); value-absent stays honest
+    about never-written vs written-blank and never claims firing either way.
+    """
+    if observation is None:
+        return None
+    field = observation.asserted_field
+    asserted = observation.asserted_value
+    observed = observation.observed_value
+    if observation.kind == "record_absent":
+        return Cause(
+            "automation_effect_record_absent",
+            detail=(f"{automation_phrase}, but the asserted effect record was "
+                    f"never produced — the read-back found no row. Why (an "
+                    f"entry condition unmet vs the logic changed) is not "
+                    f"determinable from the run: S1 does not capture entry "
+                    f"criteria"))
+    if observation.kind == "value_absent":
+        return Cause(
+            "automation_effect_value_absent",
+            detail=(f"{automation_phrase}; the record was observed but the "
+                    f"asserted field {field} holds no value — the asserted "
+                    f"effect value is absent. Whether the field was never "
+                    f"written or was written blank is not decidable from a "
+                    f"single post-state read"))
+    if observation.kind == "representation_mismatch":
+        return Cause(
+            "representation_mismatch",
+            detail=(f"the claim asserts {field} equals {asserted!r}, but the "
+                    f"org holds the identifier {observed!r} — the asserted "
+                    f"value is a human label where the field carries a "
+                    f"Salesforce Id. A claim-authoring defect (generation "
+                    f"emitted a display label where the field requires an "
+                    f"identifier), not org behaviour"))
+    # divergent — a different value (or count) was observed.
+    what = (f"the asserted count was {asserted!r} but {observed!r} row(s) "
+            f"matched" if field is None
+            else f"{field} was asserted {asserted!r} but the org holds "
+                 f"{observed!r}")
+    writers = (f"other active Flows on {sobject}: {other_writers}"
+               if other_writers else
+               f"no other active Flow is captured on {sobject}")
+    return Cause(
+        "automation_effect_divergent",
+        detail=(f"{automation_phrase}; a different value was observed — "
+                f"{what}. Something wrote a value other than the asserted "
+                f"one: the grounding automation under different logic, or "
+                f"another writer ({writers}; Apex triggers are not captured "
+                f"in the org model, so candidate writers cannot be "
+                f"exhaustively enumerated)"))
 
 
 # The primitive's display noun (D-053 sub-discriminators; D-304 formula,
@@ -228,7 +366,8 @@ _PRIMITIVE_NOUN = {
 }
 
 
-def _attribute_automation_absent(trigger, s1, claim_automation=None) -> Optional[Cause]:
+def _attribute_automation_absent(trigger, s1, claim_automation=None,
+                                 observation=None) -> Optional[Cause]:
     """`automation_not_triggered` / `state_not_transitioned`.
 
     With the claim's automation binding (name + primitive), the cause names
@@ -271,6 +410,15 @@ def _attribute_automation_absent(trigger, s1, claim_automation=None) -> Optional
                             f"the org model (no detail row at this version) "
                             f"— attribution cannot distinguish deactivated "
                             f"from entry-condition-unmet"))
+            others = ", ".join(f.name for f in flows
+                               if f.is_active is True and f.name != name)
+            refined = _refined_effect_cause(
+                observation,
+                automation_phrase=f"the Flow {name} is active on "
+                                  f"{trigger.sobject}",
+                sobject=trigger.sobject, other_writers=others)
+            if refined is not None:
+                return refined
             return Cause(
                 "automation_effect_absent",
                 detail=(f"the Flow {name} is active on {trigger.sobject}, but "
@@ -278,12 +426,25 @@ def _attribute_automation_absent(trigger, s1, claim_automation=None) -> Optional
                         f"condition may be unmet, or its logic changed since "
                         f"generation"))
         if primitive == "approval_process":
+            refined = _refined_effect_cause(
+                observation,
+                automation_phrase=f"the {noun} {name} was expected to submit "
+                                  f"this record",
+                sobject=trigger.sobject, other_writers="")
+            if refined is not None:
+                return refined
             return Cause(
                 "automation_effect_absent",
                 detail=(f"the {noun} {name} did not submit this record — no "
                         f"approval request was created; an entry condition of "
                         f"the submitting automation may be unmet, or the "
                         f"process no longer fires on this path"))
+        refined = _refined_effect_cause(
+            observation,
+            automation_phrase=f"the {noun} {name} on {trigger.sobject}",
+            sobject=trigger.sobject, other_writers="")
+        if refined is not None:
+            return refined
         return Cause(
             "automation_effect_absent",
             detail=(f"the {noun} {name} did not produce its asserted effect on "
@@ -309,11 +470,17 @@ def _attribute_automation_absent(trigger, s1, claim_automation=None) -> Optional
                     f"the asserted effect could not fire"))
     names = ", ".join(f.name for f in active[:3])
     more = "…" if len(active) > 3 else ""
+    scan_phrase = (f"active automation exists on {trigger.sobject} "
+                   f"({len(active)} active Flow"
+                   f"{'s' if len(active) != 1 else ''}: {names}{more})")
+    refined = _refined_effect_cause(
+        observation, automation_phrase=scan_phrase,
+        sobject=trigger.sobject, other_writers=f"{names}{more}")
+    if refined is not None:
+        return refined
     return Cause(
         "automation_effect_absent",
-        detail=(f"active automation exists on {trigger.sobject} "
-                f"({len(active)} active Flow{'s' if len(active) != 1 else ''}: "
-                f"{names}{more}), but the asserted effect was not observed — "
+        detail=(f"{scan_phrase}, but the asserted effect was not observed — "
                 f"an entry condition may be unmet, or the logic changed since "
                 f"generation"))
 

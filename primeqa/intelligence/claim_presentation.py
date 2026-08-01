@@ -890,6 +890,15 @@ _CAUSE_PLAIN = {
     # automation "ran" is not knowable from the outside.
     "automation_effect_absent":
         "The expected change from the automation never appeared",
+    # D-425: the value-aware splits of the line above (D-424 envelope).
+    "automation_effect_record_absent":
+        "The record the automation should have produced never appeared",
+    "automation_effect_divergent":
+        "A different value than expected was written — see which, in the run",
+    "automation_effect_value_absent":
+        "The field the automation should have set is empty",
+    "representation_mismatch":
+        "The test asserts a label where the org stores an internal Id",
     "field_not_createable":
         "The test set a field the org won't accept on create",
 }

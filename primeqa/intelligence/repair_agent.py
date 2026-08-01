@@ -46,6 +46,13 @@ _FINDING_VERDICTS = frozenset({
 # evolution/repair.py:suggest_repairs' "recipe" owner classes.
 _RECIPE_EDIT_CAUSES = frozenset({
     "field_not_createable", "automation_effect_absent", "platform_constraint",
+    # D-425: the value-aware splits of automation_effect_absent keep its
+    # triage mapping (recipe_edit) — every one of these WAS
+    # automation_effect_absent before the split, so membership here preserves
+    # pre-D-425 behaviour. A per-kind repair policy (e.g. representation
+    # mismatch → regenerate the claim) is a separate decision, not taken here.
+    "automation_effect_record_absent", "automation_effect_divergent",
+    "automation_effect_value_absent", "representation_mismatch",
 })
 
 # The sentinel the LLM returns to DROP a field (vs any other value = set it).

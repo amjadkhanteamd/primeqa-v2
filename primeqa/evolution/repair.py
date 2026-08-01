@@ -172,6 +172,48 @@ def suggest_repairs(verdict, cause_kind=None, vr_name=None,
                    "satisfy the entry conditions, or regenerate the test from "
                    "the automation's current behavior."),
             ],
+            # D-425: the value-aware splits — each carries the sharper remedy
+            # its evidence supports; none asserts more than the envelope shows.
+            "automation_effect_record_absent": [
+                _s("recipe", "The effect record was never produced",
+                   "The read-back found no row — the automation's output "
+                   "record never appeared. The test's payload may not meet "
+                   "the automation's entry conditions, or its logic changed. "
+                   "Enrich the payload to satisfy the entry conditions, or "
+                   "regenerate the test from the automation's current "
+                   "behavior."),
+            ],
+            "automation_effect_value_absent": [
+                _s("recipe", "The asserted effect value is absent",
+                   "The record exists but the asserted field holds no value. "
+                   "Whether the field was never written or was written blank "
+                   "is not decidable from one read. Check the automation's "
+                   "entry conditions against the test's payload, or "
+                   "regenerate the test from current behavior."),
+            ],
+            "automation_effect_divergent": [
+                _s("org", "A different value was written — verify which "
+                          "writer",
+                   "The org holds a value other than the asserted one (the "
+                   "cause names both). Either the grounding automation's "
+                   "logic differs from the claim, or another writer set it — "
+                   "candidate writers are listed in the cause; Apex triggers "
+                   "are not captured. If the observed value is correct "
+                   "business behavior, update the claim's expected value; "
+                   "otherwise fix the automation."),
+                _s("claim", "Or assert the observed value",
+                   "If the org's value is the intended behavior, regenerate "
+                   "or edit the claim to assert it."),
+            ],
+            "representation_mismatch": [
+                _s("claim", "The claim asserts a label where the field "
+                            "holds an Id",
+                   "The asserted value is a human label but the field "
+                   "carries a Salesforce identifier — a claim-authoring "
+                   "defect, not org behaviour. Regenerate the claim so the "
+                   "assertion resolves the label to the identifier (or "
+                   "asserts a resolvable property instead)."),
+            ],
         }
         return by_cause.get(cause_kind, [
             _s("org", "Asserted automation effect not observed — investigate",

@@ -80,6 +80,13 @@ CauseKind = Literal[
     "field_not_createable",      # value_not_persisted: the asserted field is not createable in current S1 — SF dropped the posted value on insert
     "before_save_automation_overwrote",  # D-241: value_not_persisted with a CREATEABLE field — an active before-save Flow on the object overwrote the posted value before insert
     "grounding_incomplete",      # D-382 (SUB-4): the DECIDING S1 metadata is UNKNOWN (missing detail row) — attribution says "I don't know" instead of fabricating an active/createable state
+    # D-425: value-aware splits of automation_effect_absent, decided from the
+    # D-424 assert-evidence envelope. Pre-D-424 evidence (no envelope) keeps
+    # emitting the unsplit automation_effect_absent hedge, byte-identically.
+    "automation_effect_record_absent",  # the effect RECORD was never produced (observed_kind=no_row / exists observed 0) — decidable WHAT; WHY stays open (S1 carries no entry criteria)
+    "automation_effect_divergent",      # a DIFFERENT value/count was observed — something wrote other than asserted; WHO is not provable from S4 (candidate writers enumerated; Apex triggers uncaptured in S1)
+    "automation_effect_value_absent",   # row present, asserted field holds no value — the effect VALUE is absent; never-written vs written-blank is NOT decidable from one post-state read (no firing claim)
+    "representation_mismatch",          # the asserted value is a human label where the field holds a Salesforce Id (the 0d81c6f9 specimen; D-399's invented-value species) — a claim-authoring defect (S3), not org behaviour
 ]
 
 
