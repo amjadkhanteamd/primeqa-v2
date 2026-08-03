@@ -341,6 +341,19 @@ tier-banding family is the intended representative (§8.4).
 (14), 9 AfterSave flows including FL10–FL15, and every schedule-triggered shape
 (none exists to capture).
 
+**Decidable-cause reachability (added 2026-08-02).** Of the eight AfterSave
+effect/shape families the perturbation plan enumerates
+(`FLOW_PERTURBATION_PLAN.md` §2), **six can reach a decidable cause; two
+cannot, by construction**:
+
+| Family | Why no decidable cause is reachable | Mark |
+|---|---|---|
+| value-free stamp (`not_null`) | every failure mode lands on `automation_effect_value_absent` — the D-425 ambiguous null, disqualified by §3.1 | **BLOCKED** (sibling-field-capture arc, parked D-425.1) |
+| designed absence (`not_exists`) | its failing verdict `automation_fired_unexpectedly` is not in any enriched tuple (`attribution.py:59-60` `_POSITIVE_ENRICHED`), so it can carry **no `cause_kind` at all** | **BLOCKED** (S6 enrichment or criterion decision — AK/TA) |
+
+AfterSave's exit therefore runs over **6 of 8 achievable families today**, with
+the two BLOCKED rows carried explicitly per the §3.1 amendment below.
+
 ---
 
 ## 3. Exit criteria — pre-stated, and they demand a red
@@ -378,6 +391,18 @@ A feature is **COVERED** when:
 **A feature that has only ever gone green is NOT covered.** Criterion 3 has no
 waiver.
 
+**BLOCKED shape families (amendment, 2026-08-02).** A shape family in which no
+decidable cause is *reachable* — because its failing verdict carries no
+`cause_kind`, or because every failure mode lands on a disqualified hedge — is
+marked **BLOCKED(«blocker»)** in the §2 matrix and in the exit dossier. A
+BLOCKED family is **neither counted as met nor silently dropped from the
+denominator**: the exit is recorded as *"N of M families demonstrated, K
+BLOCKED(«blockers»)"* and remains **PARTIAL** until each blocker is lifted, or
+AK explicitly waives the family with the waiver recorded in the dossier. A
+feature must never exit by counting an unmeetable family as met — that would
+reproduce, one level up, exactly the green-only fallacy this document exists to
+forbid. First application: AfterSave Flows, 2 of 8 families BLOCKED (§2.2).
+
 ### 3.2 Seeding a red where the org offers no defect
 
 Most orgs are correct most of the time, so criterion 3 usually requires a
@@ -394,6 +419,25 @@ fixture-state artifacts only.
 **Campaign addition:** each feature's exit dossier names, in advance, which
 perturbation seeds its red — and any artifact not already on the §2 may-touch
 list requires a **new AK sign-off before the arc starts**, not during it.
+
+**A recorded coherence failure (2026-08-02).** This section, as written on
+2026-08-01, demanded a divergent-value red for flows while the protocol it
+cites (signed 2026-06-12) permits exactly one flow perturbation —
+*deactivation* — which can never produce a divergent value. The citation
+existed; the **scope check did not**: this document named the instrument
+without verifying its signed scope could produce the red class criterion 3
+demands, and the protocol, written seven weeks earlier, could not have
+anticipated the demand. Nobody noticed until `FLOW_PERTURBATION_PLAN.md`
+(2026-08-01) put the two side by side. The rule this failure buys: **an exit
+criterion that names an instrument must cite the instrument's signed scope,
+and any needed scope extension is part of the criterion's cost, stated up
+front — not an afterthought discovered at execution time.** The P6 scope
+extension that would close this gap is drafted-in-principle in the plan's §7
+but is **deliberately not written into the protocol yet**: the 2026-08-02
+verifier run (`scripts/verify_flow_fixture.py`) found the plan's own restore
+baseline wrong (hand-authored fixture bytes are not byte-comparable to
+Metadata API retrievals — see the plan's correction block), and a P6 row will
+only be drafted once its verification design reflects that finding.
 
 ### 3.3 Recording an exit
 
@@ -595,3 +639,4 @@ days; re-measure before citing this document in a decision.
 | Date | Change |
 |---|---|
 | 2026-08-01 | Created. First campaign definition; supersedes `scratch/VR_ARC_RECON.md` §F as the cross-feature ranking. Establishes: the green-only rule (§0), pre-stated exit criteria demanding a decidable red (§3), campaign-level isolation/composition phases (§4), the pin-the-instance metering rule (§5), and an explicitly empty pilot section (§7). |
+| 2026-08-02 | §2.2: AfterSave decidable-cause reachability recorded — 6 of 8 families reachable, value-free stamp + designed absence BLOCKED with named blockers. §3.1: BLOCKED-family exit rule (never counted as met, never silently dropped; exits record "N of M, K BLOCKED"). §3.2: the campaign-vs-protocol coherence failure recorded, with the cite-the-signed-scope rule it buys. Restore-verifier harness landed (`scripts/verify_flow_fixture.py`); its first run found zero org drift but a wrong byte-baseline design — P6 drafting deferred (see `FLOW_PERTURBATION_PLAN.md` §4.1 correction). |

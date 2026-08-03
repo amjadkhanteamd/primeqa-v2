@@ -297,6 +297,41 @@ Two measurement caveats, stated so the numbers are not over-trusted:
 
 ### 4.1 Is restore deterministic?
 
+> **CORRECTION (2026-08-02, verifier run — supersedes the two claims below it
+> corrects; the original text is retained for the record).**
+> The read-half verifier this section demanded was built
+> (`scripts/verify_flow_fixture.py`) and run against all 8 candidates in their
+> unperturbed state. Two of this section's load-bearing claims are wrong:
+>
+> 1. **"Every candidate flow exists as committed source" is FALSE for the HL
+>    family.** `sandbox_fixtures/home_loan/` is **untracked** (`git ls-files`
+>    returns only `pls_benchmark_v1`, `pls_fb_benchmark_v1`, `sq205`).
+>    `HL_Auto_Risk_Rating`, `HL_High_Risk_Task` (and `HL_Auto_Submit_Approval`)
+>    have **no committed baseline**; `git checkout`-restore does not exist for
+>    them. F6/F8 are out of any committed-fixture scope until that directory
+>    is committed.
+> 2. **Byte-diff against the hand-authored fixture is NOT a usable
+>    verification, even unperturbed.** Verifier result: **5 of 6 tracked
+>    candidates are byte-DIVERGENT from committed source right now** (only
+>    `PLS_FB_FL05_Cancellation_Sync` is IDENTICAL — its fixture happens to be
+>    in canonical form). Semantic characterization: **all 8 flows are
+>    logic-identical to their fixtures** — every byte delta is Metadata API
+>    canonicalization (element reordering, whitespace, and elision of
+>    default-valued elements: the org omits `storeOutputAutomatically=false`
+>    on retrieve). Zero org drift; the *baseline design* was wrong, not the
+>    org.
+>
+> **Corrected restore-verification design:** the byte-stable baseline is a
+> **retrieve-at-window-open snapshot** (canonical vs canonical round-trips
+> byte-identically), so a P6 window must: retrieve → record the canonical
+> baseline → perturb → observe → restore → retrieve again → **byte-diff
+> close-retrieval against open-retrieval**. The committed fixture remains the
+> *semantic* source of truth but is not the byte baseline. Consequently the
+> P6 row was **NOT drafted into the protocol** (the plan's §7 wording is
+> superseded on the verification clause); it awaits AK's review of this
+> correction. The original §4.1–§4.3 text below describes the superseded
+> design.
+
 **Yes, for all six runnable candidates — and this is the strongest safety fact
 in the plan.** Every candidate flow exists as **committed source** in the repo:
 
