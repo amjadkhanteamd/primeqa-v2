@@ -16,9 +16,10 @@
 > **VERIFIED** (query output or `file:line`) or **UNKNOWN** with the reason.
 > There are no ASSUMED cells; interpretation lives in the footnotes (§8).
 >
-> **Scope note.** D-426 (S3 representation checks) is cited where relevant but
-> lives on the **unmerged** branch `phase-1-s3-representation-checks @ed802a5`.
-> Every D-426 row is marked *(unmerged)*. Nothing else cited is unmerged.
+> **Scope note.** Originally, D-426 (S3 representation checks) lived on an
+> unmerged branch and its rows were marked *(unmerged)*. As of **2026-08-04
+> both D-426 and D-427 are MERGED to main** (see the change log) — nothing
+> cited in this document is unmerged any longer.
 
 ---
 
@@ -349,10 +350,11 @@ cannot, by construction**:
 | Family | Why no decidable cause is reachable | Mark |
 |---|---|---|
 | value-free stamp (`not_null`) | every failure mode lands on `automation_effect_value_absent` — the D-425 ambiguous null, disqualified by §3.1 | **BLOCKED** (sibling-field-capture arc, parked D-425.1) |
-| designed absence (`not_exists`) | ~~its failing verdict `automation_fired_unexpectedly` could carry no `cause_kind`~~ **blocker LIFTED IN CODE 2026-08-04 (D-427)**: the verdict now has its own attribution arm (`_attribute_unexpected_presence`) with the decidable `other_writer_produced_record` and the honest `automation_effect_record_present` | **BLOCKED-pending-merge** (built on **`phase-1-substrate-6-absence-mirror`** — the D-427 split's code half; unblocks when that branch is merged + deployed; still needs its live red) |
+| designed absence (`not_exists`) | ~~its failing verdict `automation_fired_unexpectedly` could carry no `cause_kind`~~ **blocker LIFTED (D-427)**: the verdict has its own attribution arm (`_attribute_unexpected_presence`) with the decidable `other_writer_produced_record` and the honest `automation_effect_record_present` — **merged to main 2026-08-04** | **REACHABLE** — no cause-side blocker remains; the family still needs its first live decidable red (a P6 window, once signed) |
 
-AfterSave's exit therefore runs over **6 of 8 achievable families today**, with
-the two BLOCKED rows carried explicitly per the §3.1 amendment below.
+AfterSave's exit therefore runs over **7 of 8 reachable families** (since the
+2026-08-04 merge of the D-427 enrichment), with the value-free stamp the one
+remaining BLOCKED row, carried explicitly per the §3.1 amendment below.
 
 ---
 
@@ -644,3 +646,4 @@ days; re-measure before citing this document in a decision.
 | 2026-08-02 | §2.2: AfterSave decidable-cause reachability recorded — 6 of 8 families reachable, value-free stamp + designed absence BLOCKED with named blockers. §3.1: BLOCKED-family exit rule (never counted as met, never silently dropped; exits record "N of M, K BLOCKED"). §3.2: the campaign-vs-protocol coherence failure recorded, with the cite-the-signed-scope rule it buys. Restore-verifier harness landed (`scripts/verify_flow_fixture.py`); its first run found zero org drift but a wrong byte-baseline design — P6 drafting deferred (see `FLOW_PERTURBATION_PLAN.md` §4.1 correction). |
 | 2026-08-04 | D-427: verifier rebuilt on the open-snapshot baseline (snapshot/verify modes; determinism proven — 8/8 IDENTICAL on immediate re-verify, incl. the untracked HL flows); DRAFT P6 written into the protocol, UNSIGNED. `automation_fired_unexpectedly` enriched prospectively (own dispatch arm; `other_writer_produced_record` decidable + `automation_effect_record_present` honest; NOT recipe-edit triage — a record where none should exist is the shape of a genuine org regression). §2.2 designed-absence blocker → BLOCKED-pending-merge; §3.1 decidable set extended with the two new causes. |
 | 2026-08-04 (split) | This branch split per the merge-collision analysis: the S6 enrichment + the D-427 ledger entry moved to **`phase-1-substrate-6-absence-mirror`** (design `64f013a` + impl; merging THAT branch is the deploy). This branch is now deploy-inert: campaign docs, the perturbation plan, the protocol's unsigned P6 §6, and the read-only verifier script. §2.2 updated to name the code branch. |
+| 2026-08-04 (merge) | All three branches merged to main (repchk `ed802a5` → substrate-6 `6179449` → docs `8f5ef15`), single ledger-tail conflict resolved 426-before-427. §2.2: designed absence → **REACHABLE** (7 of 8 families); the value-free stamp is the sole remaining BLOCKED family. Deployed on push. |
