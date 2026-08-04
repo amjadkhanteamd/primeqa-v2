@@ -310,6 +310,16 @@ Two measurement caveats, stated so the numbers are not over-trusted:
 >    have **no committed baseline**; `git checkout`-restore does not exist for
 >    them. F6/F8 are out of any committed-fixture scope until that directory
 >    is committed.
+>    **RESOLVED 2026-08-04 (`chore-commit-hl-fixtures`):** the directory is
+>    now tracked (22 vetted files; nothing sensitive found). Pre-commit
+>    org-match: `HL_Auto_Risk_Rating` and `HL_High_Risk_Task` logic-identical
+>    to the org; `HL_Auto_Submit_Approval`'s working-tree copy was STALE —
+>    the ORG had since been FIXED (entry criteria now `Approval_Status__c IS
+>    NULL AND Loan_Amount__c > 5000000`, require-record-changed — the
+>    `d49719e2` dead-config repair), so that one file was committed as the
+>    org's retrieved state rather than the stale authored copy. The verifier's
+>    repo-logic signal now reports `logic matches committed fixture` for both
+>    P6-relevant HL flows.
 > 2. **Byte-diff against the hand-authored fixture is NOT a usable
 >    verification, even unperturbed.** Verifier result: **5 of 6 tracked
 >    candidates are byte-DIVERGENT from committed source right now** (only
