@@ -55,7 +55,7 @@ exist. Detail per row follows in §1.2.
 | AfterSave Flows | ✅ 16 | ✅ automation-effect | ✅ data-recipe | ✅ post-D-425 splits | ⚠️ **2** (`3f6466bd`, `ff0cefc5`, `record_absent`) |
 | Autolaunched Flows | ✅ 14 | ⚠️ no DML entry point | ❌ no trigger to fire | n/a | ❌ **0 claims, 0 runs** |
 | Scheduled Flows | ❌ **0 exist on env-59** | ⚠️ `time-trigger` enum only | ❌ FL10 gated | n/a | ❌ none possible today |
-| Approval Processes | ⚠️ 2, **no entry criteria** | ✅ automation-effect + arc | ✅ data-recipe (D-333 arc) | ✅ record_absent | ⚠️ **1** (`2b68e459`) |
+| Approval Processes | ⚠️ 2, **no entry criteria** | ✅ automation-effect + arc | ✅ data-recipe (D-333 arc) | ✅ record_absent + D-427 mirror | ⚠️ **historical only** — the `record_absent` reds were the org's dead-entry-criteria defect, since FIXED; 2026-08-04 re-probe all green (§1.2) |
 | Formula Fields | ⚠️ 52 calc / **0 dep edges** | ✅ automation-effect (`formula`) | ✅ data-recipe | ✅ divergent | ⚠️ **2** (`6156c71b`, `ae60e4aa`) — VR interference |
 | Rollup Summaries | ❌ **not modelled at all** | ❌ no enum member | ❌ | ❌ | ❌ none possible |
 | Picklists / Restricted | ✅ **377/377 decidable** | ✅ constraint layer | ✅ via D-413 gate | ✅ (generation-time) | n/a — a constraint, not a claim target |
@@ -162,6 +162,26 @@ claim, and none of those 4 reds indicts the feature's own behaviour.** See §1.3
 - **LIVE** — 10 approved + 1 draft, 8 ran; **12 passed / 9 failed / 14 errored**
   — the worst error rate of any feature. Decidable red on an approved claim:
   `2b68e459`.
+- **RE-PROBE 2026-08-04 (vs the FIXED org — the dead entry criteria were
+  repaired org-side, confirmed by live retrieve: `Approval_Status__c IS NULL
+  AND Loan_Amount__c > 5000000`, require-record-changed).** All 7 approved
+  approval-primitive claims ran sequentially through the deployed worker
+  (jobs 671–677): **6 passed / 0 failed / 1 errored** — probe error rate
+  **1/7 (14%)** vs the recorded 40%. The submission side-effect fires
+  pre-approval end-to-end (ProcessInstances actually created; teardown's
+  uncleaned rows are the documented D-402 ProcessInstance class, org-verified
+  not live); all 3 designed-absence claims correctly confirmed absence (the
+  D-427 mirror armed but not fired — no red existed to attribute). The one
+  error is `79bc47e5` `setup_rejection`: VR `Block_Approved_Without_Approval`
+  correctly rejects the claim's own staging payload — a Plimsol staging
+  defect (the D-337 vr-conflict class), **not** entry-criteria-related, same
+  mechanism as its 07-27 error. **Consequence, stated plainly: the org fix
+  resolved the `d49719e2` class (the fix evidently landed between 07-07 and
+  07-27 — `2b68e459` already passed on 07-27, unnoticed then), and the
+  approval family loses its only natural red specimen.** A future decidable
+  red for this family requires a seeded perturbation or a new org defect;
+  the corpus still contains **zero** decidable reds indicting live org
+  behaviour on an approved claim.
 
 #### Formula Fields
 - **S1** — 52 fields `calculated=true`, 37 carry `calculatedFormula` text.
@@ -647,3 +667,4 @@ days; re-measure before citing this document in a decision.
 | 2026-08-04 | D-427: verifier rebuilt on the open-snapshot baseline (snapshot/verify modes; determinism proven — 8/8 IDENTICAL on immediate re-verify, incl. the untracked HL flows); DRAFT P6 written into the protocol, UNSIGNED. `automation_fired_unexpectedly` enriched prospectively (own dispatch arm; `other_writer_produced_record` decidable + `automation_effect_record_present` honest; NOT recipe-edit triage — a record where none should exist is the shape of a genuine org regression). §2.2 designed-absence blocker → BLOCKED-pending-merge; §3.1 decidable set extended with the two new causes. |
 | 2026-08-04 (split) | This branch split per the merge-collision analysis: the S6 enrichment + the D-427 ledger entry moved to **`phase-1-substrate-6-absence-mirror`** (design `64f013a` + impl; merging THAT branch is the deploy). This branch is now deploy-inert: campaign docs, the perturbation plan, the protocol's unsigned P6 §6, and the read-only verifier script. §2.2 updated to name the code branch. |
 | 2026-08-04 (merge) | All three branches merged to main (repchk `ed802a5` → substrate-6 `6179449` → docs `8f5ef15`), single ledger-tail conflict resolved 426-before-427. §2.2: designed absence → **REACHABLE** (7 of 8 families); the value-free stamp is the sole remaining BLOCKED family. Deployed on push. |
+| 2026-08-04 (re-probe) | Approval family re-probed vs the FIXED org (jobs 671–677, deployed worker, sequential, abort gates clean): 6P/0F/1E; probe error rate 14% vs the recorded 40%; the d49719e2 dead-entry-criteria class is RESOLVED org-side and the family loses its natural red specimen. The one error is the D-337-class staging conflict on `79bc47e5` (Plimsol-side). D-427 absence-mirror armed, not fired (no red to attribute). Zero decidable org-indicting reds remain — the campaign's measured position stands. |
