@@ -13,6 +13,10 @@ ritual that returns the org to fixture state.
 pending an AK may-touch extension.** Execution requires the sf CLI
 (`primeqa-sandbox` alias, already authenticated) or AK's own Setup access.
 
+> A **DRAFT P6 row** (flow-logic perturbations) exists in §6 below. It is
+> **UNSIGNED** and is not part of the signed §2 list — nothing may run under
+> it until AK signs.
+
 ---
 
 ## 1. Ground rules (non-negotiable)
@@ -87,3 +91,64 @@ pending an AK may-touch extension.** Execution requires the sf CLI
   streak gates the D-221 R5 DROP and must not be polluted; either finish the
   restore before 06:00 UTC or disable→re-enable the schedule around the window
   (recorded in the session log).
+
+---
+
+## 6. DRAFT P6 — flow-logic perturbations  ⚠️ UNSIGNED
+
+> **STATUS: DRAFT, UNSIGNED. Not part of the signed §2 list. Nothing may run
+> under this row until AK signs it, in writing, in this file.** Drafted
+> 2026-08-04 per D-427; the design inputs are `FLOW_PERTURBATION_PLAN.md`
+> (candidates F1–F8 + the §4.1 correction) and the campaign's exit criteria
+> (`FEATURE_CAMPAIGN.md` §3).
+
+| # | Artifact | Perturbation | Restore |
+|---|---|---|---|
+| **P6 (DRAFT)** | Fixture Flow **logic**, one flow per window, fixture flows only — **never managed-package or org-native automation** | Edit ONE value in the flow's logic (an accumulator increment, a formula offset, a lookup-filter value, or an assignment literal) so the flow **still fires but writes a different value** | Redeploy the pre-window logic; **restoration is verified ONLY by `scripts/verify_flow_fixture.py verify` reporting IDENTICAL against the window-open snapshot** |
+
+**P6 rules (all mandatory, additive to §1's ground rules):**
+
+1. **Baseline = the window-open retrieve snapshot, NOT committed source.**
+   Hand-authored fixture bytes and Metadata API output are different
+   serialisations of the same logic — element order, whitespace, and the org
+   eliding default-valued elements (`storeOutputAutomatically=false`) — so a
+   byte-diff against committed source diverges on 5 of 6 tracked candidates
+   with zero logic drift (measured 2026-08-02). Same-serialiser round-trips
+   are byte-stable: determinism was proven 2026-08-04 (snapshot → immediate
+   re-verify, 8/8 IDENTICAL), so a DIVERGENT close-verify is a real
+   unrestored delta, never serialiser noise.
+2. **The verifier runs at window open AND window close, mandatory.**
+   Open: `verify_flow_fixture.py snapshot <flow> --label p6-<id>-open`
+   (a failed retrieve = the window MUST NOT open). Close:
+   `verify_flow_fixture.py verify <flow>` — **any outcome other than
+   IDENTICAL is UNVERIFIED and escalates to AK immediately**; a failed or
+   empty retrieve is never treated as restored. The committed-source
+   comparison is a secondary *logic-drift* signal only and never gates
+   restoration.
+3. **Collateral rule:** only flows whose **entire approved-claim footprint is
+   one claim** are eligible (today: F1 `PLS_FB_FL07_Order_Rollup`, F3
+   `PLS_FB_FL05_Cancellation_Sync` — re-measure before every window). A
+   failed restore on such a flow is inert: exactly one known test goes red.
+4. **Restricted-picklist rule:** any perturbation that writes a picklist
+   value MUST use a captured **active** member of that field's value set per
+   S1 (377/377 fields decidable since D-414). An out-of-set value errors the
+   triggering DML (`INVALID_OR_NULL_FOR_RESTRICTED_PICKLIST`) → run
+   `errored/not_evaluated` → the window teaches nothing.
+5. **Abandonment.** If a session dies between perturb and restore, **nothing
+   automatic notices**: S1 holds no flow logic (`parsed_logic` NULL for every
+   candidate) and the daily 06:00 UTC schedule (`s4_run_schedules` id=1) is
+   currently **disabled**, so no ambient re-run surfaces a stuck red. Until
+   that changes, the MANDATORY manual check is: **the first action of any
+   session following an aborted or unconfirmed window is
+   `verify_flow_fixture.py verify` over every P6-eligible flow**, against the
+   snapshot store (`~/.primeqa/flow_snapshots/` — snapshots are
+   repo-external precisely so they survive a crashed session). Re-enabling
+   the daily schedule would add ambient detection and is the named
+   improvement.
+6. **Baseline provenance note:** `sandbox_fixtures/home_loan/` is untracked,
+   so the HL flows have **no committed baseline**; the open-snapshot design
+   makes this non-blocking for restore verification (the baseline is
+   org-derived), but the repo-logic secondary signal reports
+   `no-committed-baseline` for them until the fixture directory is committed.
+
+**AK sign-off line (unsigned):** _______________________  date: ____________
