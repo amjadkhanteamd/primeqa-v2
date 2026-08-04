@@ -1,0 +1,73 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<Flow xmlns="http://soap.sforce.com/2006/04/metadata">
+    <apiVersion>59.0</apiVersion>
+    <description>When Risk Rating becomes High, create a Review Task assigned to the Opportunity Owner.</description>
+    <interviewLabel>HL High Risk Task {!$Flow.CurrentDateTime}</interviewLabel>
+    <label>HL High Risk Task</label>
+    <processMetadataValues>
+        <name>BuilderType</name>
+        <value><stringValue>LightningFlowBuilder</stringValue></value>
+    </processMetadataValues>
+    <processMetadataValues>
+        <name>CanvasMode</name>
+        <value><stringValue>AUTO_LAYOUT_CANVAS</stringValue></value>
+    </processMetadataValues>
+    <processType>AutoLaunchedFlow</processType>
+
+    <formulas>
+        <name>DueDate</name>
+        <dataType>Date</dataType>
+        <expression>{!$Flow.CurrentDate} + 2</expression>
+    </formulas>
+
+    <recordCreates>
+        <name>Create_Review_Task</name>
+        <label>Create Review Task</label>
+        <locationX>176</locationX>
+        <locationY>287</locationY>
+        <inputAssignments>
+            <field>Subject</field>
+            <value><stringValue>Review High Risk Loan</stringValue></value>
+        </inputAssignments>
+        <inputAssignments>
+            <field>OwnerId</field>
+            <value><elementReference>$Record.OwnerId</elementReference></value>
+        </inputAssignments>
+        <inputAssignments>
+            <field>WhatId</field>
+            <value><elementReference>$Record.Id</elementReference></value>
+        </inputAssignments>
+        <inputAssignments>
+            <field>ActivityDate</field>
+            <value><elementReference>DueDate</elementReference></value>
+        </inputAssignments>
+        <inputAssignments>
+            <field>Status</field>
+            <value><stringValue>Not Started</stringValue></value>
+        </inputAssignments>
+        <inputAssignments>
+            <field>Priority</field>
+            <value><stringValue>High</stringValue></value>
+        </inputAssignments>
+        <object>Task</object>
+        <storeOutputAutomatically>true</storeOutputAutomatically>
+    </recordCreates>
+
+    <start>
+        <locationX>50</locationX>
+        <locationY>0</locationY>
+        <connector>
+            <targetReference>Create_Review_Task</targetReference>
+        </connector>
+        <filterLogic>and</filterLogic>
+        <filters>
+            <field>Risk_Rating__c</field>
+            <operator>EqualTo</operator>
+            <value><stringValue>High</stringValue></value>
+        </filters>
+        <object>Opportunity</object>
+        <recordTriggerType>CreateAndUpdate</recordTriggerType>
+        <triggerType>RecordAfterSave</triggerType>
+    </start>
+    <status>Active</status>
+</Flow>

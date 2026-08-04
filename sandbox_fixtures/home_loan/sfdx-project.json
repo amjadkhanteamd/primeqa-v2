@@ -1,0 +1,6 @@
+{
+  "packageDirectories": [{"path": "force-app", "default": true}],
+  "name": "home-loan-qualification",
+  "namespace": "",
+  "sourceApiVersion": "59.0"
+}

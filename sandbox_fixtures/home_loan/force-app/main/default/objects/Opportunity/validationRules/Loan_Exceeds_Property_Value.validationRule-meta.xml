@@ -1,0 +1,13 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<ValidationRule xmlns="http://soap.sforce.com/2006/04/metadata">
+    <fullName>Loan_Exceeds_Property_Value</fullName>
+    <active>true</active>
+    <description>Loan Amount cannot exceed Property Value.</description>
+    <errorConditionFormula>AND(
+  NOT(ISBLANK(Loan_Amount__c)),
+  NOT(ISBLANK(Property_Value__c)),
+  Loan_Amount__c &gt; Property_Value__c
+)</errorConditionFormula>
+    <errorDisplayField>Loan_Amount__c</errorDisplayField>
+    <errorMessage>Loan Amount cannot exceed Property Value.</errorMessage>
+</ValidationRule>

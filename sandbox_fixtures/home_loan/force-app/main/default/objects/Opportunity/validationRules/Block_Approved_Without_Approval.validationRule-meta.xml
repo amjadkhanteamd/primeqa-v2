@@ -1,0 +1,12 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<ValidationRule xmlns="http://soap.sforce.com/2006/04/metadata">
+    <fullName>Block_Approved_Without_Approval</fullName>
+    <active>true</active>
+    <description>Loans over 50 lakh require Manager Approval before moving to Approved stage.</description>
+    <errorConditionFormula>AND(
+  ISPICKVAL(StageName, &quot;Approved&quot;),
+  Loan_Amount__c &gt; 5000000,
+  NOT(ISPICKVAL(Approval_Status__c, &quot;Approved&quot;))
+)</errorConditionFormula>
+    <errorMessage>Loans over &#8377;50,00,000 require Manager Approval before moving to Approved.</errorMessage>
+</ValidationRule>

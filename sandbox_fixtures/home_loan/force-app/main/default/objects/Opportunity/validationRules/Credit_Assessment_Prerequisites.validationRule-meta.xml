@@ -1,0 +1,14 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<ValidationRule xmlns="http://soap.sforce.com/2006/04/metadata">
+    <fullName>Credit_Assessment_Prerequisites</fullName>
+    <active>true</active>
+    <description>Cannot move to Credit Assessment without KYC Complete and Credit Score.</description>
+    <errorConditionFormula>AND(
+  ISPICKVAL(StageName, &quot;Credit Assessment&quot;),
+  OR(
+    NOT(KYC_Complete__c),
+    ISBLANK(Credit_Score__c)
+  )
+)</errorConditionFormula>
+    <errorMessage>KYC must be complete and Credit Score must be populated before moving to Credit Assessment.</errorMessage>
+</ValidationRule>

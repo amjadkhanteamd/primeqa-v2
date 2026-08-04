@@ -1,0 +1,11 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<CustomField xmlns="http://soap.sforce.com/2006/04/metadata">
+    <fullName>Loan_to_Value__c</fullName>
+    <label>Loan-to-Value (%)</label>
+    <formula>IF(Property_Value__c &gt; 0, Loan_Amount__c / Property_Value__c, null)</formula>
+    <formulaTreatBlanksAs>BlankAsZero</formulaTreatBlanksAs>
+    <trackTrending>false</trackTrending>
+    <type>Percent</type>
+    <precision>5</precision>
+    <scale>2</scale>
+</CustomField>
