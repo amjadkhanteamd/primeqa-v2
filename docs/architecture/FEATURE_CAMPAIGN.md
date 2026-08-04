@@ -349,7 +349,7 @@ cannot, by construction**:
 | Family | Why no decidable cause is reachable | Mark |
 |---|---|---|
 | value-free stamp (`not_null`) | every failure mode lands on `automation_effect_value_absent` — the D-425 ambiguous null, disqualified by §3.1 | **BLOCKED** (sibling-field-capture arc, parked D-425.1) |
-| designed absence (`not_exists`) | its failing verdict `automation_fired_unexpectedly` is not in any enriched tuple (`attribution.py:59-60` `_POSITIVE_ENRICHED`), so it can carry **no `cause_kind` at all** | **BLOCKED** (S6 enrichment or criterion decision — AK/TA) |
+| designed absence (`not_exists`) | ~~its failing verdict `automation_fired_unexpectedly` could carry no `cause_kind`~~ **blocker LIFTED IN CODE 2026-08-04 (D-427)**: the verdict now has its own attribution arm (`_attribute_unexpected_presence`) with the decidable `other_writer_produced_record` and the honest `automation_effect_record_present` | **BLOCKED-pending-merge** (built on `docs-campaign-definition`; unblocks when merged + deployed; still needs its live red) |
 
 AfterSave's exit therefore runs over **6 of 8 achievable families today**, with
 the two BLOCKED rows carried explicitly per the §3.1 amendment below.
@@ -379,7 +379,9 @@ A feature is **COVERED** when:
    (`enforcement_gap`, `vr_inactive`, `no_active_vr`, `other_vr_fired`,
    `automation_inactive`, `automation_effect_record_absent`,
    `automation_effect_divergent`, `before_save_automation_overwrote`,
-   `field_not_createable`, `platform_constraint`). **Excluded as non-qualifying:**
+   `field_not_createable`, `platform_constraint`; since D-427 also
+   `other_writer_produced_record` and `automation_effect_record_present` —
+   the absence mirror's WHAT-decided pair). **Excluded as non-qualifying:**
    `automation_effect_absent` (legacy hedge), `automation_effect_value_absent`
    (ambiguous null, D-425), `vr_formula_indeterminate`, `grounding_incomplete`
    — these are honest "don't knows", not detections.
@@ -640,3 +642,4 @@ days; re-measure before citing this document in a decision.
 |---|---|
 | 2026-08-01 | Created. First campaign definition; supersedes `scratch/VR_ARC_RECON.md` §F as the cross-feature ranking. Establishes: the green-only rule (§0), pre-stated exit criteria demanding a decidable red (§3), campaign-level isolation/composition phases (§4), the pin-the-instance metering rule (§5), and an explicitly empty pilot section (§7). |
 | 2026-08-02 | §2.2: AfterSave decidable-cause reachability recorded — 6 of 8 families reachable, value-free stamp + designed absence BLOCKED with named blockers. §3.1: BLOCKED-family exit rule (never counted as met, never silently dropped; exits record "N of M, K BLOCKED"). §3.2: the campaign-vs-protocol coherence failure recorded, with the cite-the-signed-scope rule it buys. Restore-verifier harness landed (`scripts/verify_flow_fixture.py`); its first run found zero org drift but a wrong byte-baseline design — P6 drafting deferred (see `FLOW_PERTURBATION_PLAN.md` §4.1 correction). |
+| 2026-08-04 | D-427: verifier rebuilt on the open-snapshot baseline (snapshot/verify modes; determinism proven — 8/8 IDENTICAL on immediate re-verify, incl. the untracked HL flows); DRAFT P6 written into the protocol, UNSIGNED. `automation_fired_unexpectedly` enriched prospectively (own dispatch arm; `other_writer_produced_record` decidable + `automation_effect_record_present` honest; NOT recipe-edit triage — a record where none should exist is the shape of a genuine org regression). §2.2 designed-absence blocker → BLOCKED-pending-merge; §3.1 decidable set extended with the two new causes. |

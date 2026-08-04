@@ -899,6 +899,11 @@ _CAUSE_PLAIN = {
         "The field the automation should have set is empty",
     "representation_mismatch":
         "The test asserts a label where the org stores an internal Id",
+    # D-427: the absence mirror — a record appeared where none should exist.
+    "automation_effect_record_present":
+        "A record appeared where this test says none should exist",
+    "other_writer_produced_record":
+        "Something other than the tested automation created a record here",
     "field_not_createable":
         "The test set a field the org won't accept on create",
 }
