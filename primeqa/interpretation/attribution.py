@@ -63,11 +63,6 @@ _POSITIVE_ENRICHED = (
 # acceptance create/update, or a rejected staging create under
 # expect_acceptance) — the same VR-message matching names WHICH rule refused.
 _ACCEPTANCE_ENRICHED = ("creation_rejected", "change_rejected")
-# D-427: the ABSENCE MIRROR — the D-307 absence claim's red (a correlated
-# record observed where the claim asserts none should exist). Its own
-# dispatch: NEVER routed into _attribute_automation_absent, whose entire
-# vocabulary asserts a MISSING effect and is factually false here.
-_ABSENCE_ENRICHED = ("automation_fired_unexpectedly",)
 
 
 @dataclass(frozen=True)
@@ -155,9 +150,6 @@ def attribute_run(
                                     claim_automation=claim_automation)
     elif interpretation.verdict in _ACCEPTANCE_ENRICHED:
         cause = _attribute_acceptance_rejected(evidence, s1)
-    elif interpretation.verdict in _ABSENCE_ENRICHED:
-        cause = _attribute_unexpected_presence(evidence, s1,
-                                               claim_automation=claim_automation)
     else:
         return interpretation
     if cause is None:
@@ -491,119 +483,6 @@ def _attribute_automation_absent(trigger, s1, claim_automation=None,
         detail=(f"{scan_phrase}, but the asserted effect was not observed — "
                 f"an entry condition may be unmet, or the logic changed since "
                 f"generation"))
-
-
-def _attribute_unexpected_presence(evidence, s1,
-                                   claim_automation=None) -> Optional[Cause]:
-    """`automation_fired_unexpectedly` (D-427) — the D-307 absence claim's
-    red: the `not_exists` assert did not hold, so a correlated record WAS
-    observed where the claim asserts none should exist. Direction-correct by
-    construction: this function never words a cause as a missing effect.
-
-    The decidable sub-cause: a bound Flow that is INACTIVE (or no longer
-    triggers on the object) cannot have produced the observed record —
-    `other_writer_produced_record`, with candidate writers enumerated from S1
-    and the standing caveat that Apex triggers are uncaptured, so the
-    enumeration cannot be exhaustive. A bound ACTIVE Flow leaves WHO open
-    (`automation_effect_record_present` — WHAT is decided, authorship is
-    not); UNKNOWN activity is `grounding_incomplete` (D-382 — never
-    fabricate).
-
-    Evidence: the verdict itself already implies an observed row; the D-424
-    envelope adds the count when present. Pre-envelope evidence still
-    enriches — there is no prior behaviour to preserve (the verdict had no
-    cause before D-427, and zero corpus occurrences exist)."""
-    trigger = _last_create_step(evidence)
-    if trigger is None:
-        return None
-    a = next((s for s in evidence.steps if isinstance(s, AssertEvidence)),
-             None)
-    n = (a.observed_value if a is not None
-         and a.observed_kind == "row_count"
-         and isinstance(a.observed_value, int) else None)
-    read = _data_read_step(evidence)
-    where = (f"on {read.sobject} " if read is not None else "")
-    seen = (f"{n} correlated record{'s were' if n != 1 else ' was'} "
-            f"observed {where}"
-            if n is not None else f"a correlated record was observed {where}")
-    apex = ("Apex triggers are not captured in the org model, so candidate "
-            "writers cannot be exhaustively enumerated")
-
-    flows = s1.flows_for_object(trigger.sobject)
-    name = (claim_automation or {}).get("name")
-    primitive = (claim_automation or {}).get("primitive")
-    others = ", ".join(f.name for f in flows
-                       if f.is_active is True and f.name != name)
-    candidates = (f"other active Flows on {trigger.sobject}: {others}"
-                  if others else
-                  f"no other active Flow is captured on {trigger.sobject}")
-
-    if name and primitive == "flow":
-        match = next((f for f in flows if f.name == name), None)
-        if match is None:
-            return Cause(
-                "other_writer_produced_record",
-                detail=(f"the Flow {name} this test grounds on no longer "
-                        f"triggers on {trigger.sobject} — removed or "
-                        f"retargeted — yet {seen}where the claim asserts "
-                        f"none should exist. Another writer produced it "
-                        f"({candidates}; {apex})"))
-        if match.is_active is False:
-            return Cause(
-                "other_writer_produced_record",
-                detail=(f"the Flow {name} is inactive, so it cannot have "
-                        f"produced the record — yet {seen}where the claim "
-                        f"asserts none should exist. Another writer produced "
-                        f"it ({candidates}; {apex})"))
-        if match.is_active is None:
-            return Cause(
-                "grounding_incomplete",
-                detail=(f"{seen}where the claim asserts none should exist, "
-                        f"but the Flow {name}'s active state is UNKNOWN in "
-                        f"the org model (no detail row at this version) — "
-                        f"whether {name} could have produced it cannot be "
-                        f"determined"))
-        return Cause(
-            "automation_effect_record_present",
-            detail=(f"{seen}where the claim asserts none should exist. The "
-                    f"Flow {name} is active — whether {name} fired against "
-                    f"the asserted suppression, or another writer produced "
-                    f"the record, is not decidable from the run "
-                    f"({candidates}; {apex})"))
-    if name:
-        noun = _PRIMITIVE_NOUN.get(primitive or "", "automation")
-        return Cause(
-            "automation_effect_record_present",
-            detail=(f"{seen}where the claim asserts none should exist. "
-                    f"Whether the {noun} {name} produced it, or another "
-                    f"writer did, is not decidable from the run ({apex})"))
-    # Unbound (legacy bodies): the honest scan, direction-correct.
-    active = [f for f in flows if f.is_active is True]
-    unknown = [f for f in flows if f.is_active is None]
-    if not active and unknown:
-        return Cause(
-            "grounding_incomplete",
-            detail=(f"{seen}where the claim asserts none should exist; no "
-                    f"provably-active Flow triggers on {trigger.sobject} and "
-                    f"{len(unknown)} flow(s) have UNKNOWN active state — the "
-                    f"writer cannot be determined"))
-    if not active:
-        return Cause(
-            "other_writer_produced_record",
-            detail=(f"{seen}where the claim asserts none should exist, and "
-                    f"no active captured Flow triggers on {trigger.sobject} "
-                    f"— the writer is outside the captured automation "
-                    f"surface ({apex})"))
-    names = ", ".join(f.name for f in active[:3])
-    more = "…" if len(active) > 3 else ""
-    return Cause(
-        "automation_effect_record_present",
-        detail=(f"{seen}where the claim asserts none should exist. "
-                f"{len(active)} active Flow{'s' if len(active) != 1 else ''} "
-                f"trigger{'' if len(active) != 1 else 's'} on "
-                f"{trigger.sobject} ({names}{more}) — which of them, or what "
-                f"other writer, produced the record is not decidable from "
-                f"the run ({apex})"))
 
 
 def _attribute_value_not_persisted(evidence, s1) -> Optional[Cause]:

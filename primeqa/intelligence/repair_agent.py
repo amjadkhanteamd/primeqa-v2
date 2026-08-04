@@ -53,14 +53,6 @@ _RECIPE_EDIT_CAUSES = frozenset({
     # mismatch → regenerate the claim) is a separate decision, not taken here.
     "automation_effect_record_absent", "automation_effect_divergent",
     "automation_effect_value_absent", "representation_mismatch",
-    # D-427, DECIDED — the absence-mirror causes
-    # (automation_effect_record_present, other_writer_produced_record) are
-    # deliberately NOT members. A record appearing where the claim says none
-    # should is the shape of a GENUINE ORG REGRESSION; auto-firing billed LLM
-    # recipe-edits at it would have the system explain away its own best
-    # signal. Unlike the D-425 splits (which inherited
-    # automation_effect_absent's class), this family has no predecessor —
-    # proposal_for falls through to None: a finding, the spine never guesses.
 })
 
 # The sentinel the LLM returns to DROP a field (vs any other value = set it).

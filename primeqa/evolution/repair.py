@@ -222,13 +222,6 @@ def suggest_repairs(verdict, cause_kind=None, vr_name=None,
                "the automations that fire on the record."),
         ])
 
-    # D-427: `automation_fired_unexpectedly` deliberately gets NO suggestion
-    # (falls through to the terminal []). The right eventual return is an
-    # ORG-owned "identify the writer of the observed record and decide
-    # intended-vs-regression" suggestion — but that encodes an ownership call
-    # (org finding vs claim defect) not yet made; guessing it here would
-    # pre-empt the decision. Named follow-up, not an omission.
-
     if verdict in ("asserted_metadata_absent", "asserted_value_differs"):
         return [
             _s("org", "Restore the drifted metadata",
