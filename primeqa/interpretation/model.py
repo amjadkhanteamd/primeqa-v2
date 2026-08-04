@@ -87,6 +87,10 @@ CauseKind = Literal[
     "automation_effect_divergent",      # a DIFFERENT value/count was observed — something wrote other than asserted; WHO is not provable from S4 (candidate writers enumerated; Apex triggers uncaptured in S1)
     "automation_effect_value_absent",   # row present, asserted field holds no value — the effect VALUE is absent; never-written vs written-blank is NOT decidable from one post-state read (no firing claim)
     "representation_mismatch",          # the asserted value is a human label where the field holds a Salesforce Id (the 0d81c6f9 specimen; D-399's invented-value species) — a claim-authoring defect (S3), not org behaviour
+    # D-427: the absence mirror (automation_fired_unexpectedly, D-307) —
+    # direction-correct causes; NEVER worded as a missing effect.
+    "automation_effect_record_present",  # a correlated record was observed where the claim asserts none should exist; the bound automation is active — whether IT fired against the asserted suppression or another writer produced the record is not decidable from the run
+    "other_writer_produced_record",      # the DECIDABLE sub-cause: the bound automation is inactive/retargeted, so it CANNOT have produced the observed record — another writer did (candidates enumerated from S1; Apex triggers are uncaptured, so never exhaustive)
 ]
 
 
