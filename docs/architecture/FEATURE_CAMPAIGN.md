@@ -372,11 +372,20 @@ hazard is claim-choice-dependent (D-229): a window claim whose payload carries
 an unrelated NonEvaluable rule's field (e.g. `25a1757c`'s `CloseDate`) hedges
 the drift red that a minimal-payload claim (`94c34988`) keeps decidable — the
 P3 amendment draft (protocol §7, UNSIGNED) therefore names the window claim
-per rule. A deactivation window (P2 redraft, protocol §8, UNSIGNED) would
-demonstrate the sibling **`vr_inactive`** red — decidable AND named
-(`violated_inactive` outranks the hedge; verified through the production code:
-deactivated `Opportunity.Amount` on `94c34988`'s payload → `vr_inactive`
-naming the rule) — pending AK's signature.
+per rule.
+
+**Window order (2026-08-05, D-432): P2′ FIRST, P3′ second.** The deactivation
+window (P2′, protocol §8, UNSIGNED — `Opportunity.Amount`, claim `94c34988`)
+opens the arc because `vr_inactive` is the only **named-rule** decidable cause
+on the not-enforced side (`vr_formula_drift` says a rule drifted;
+`vr_inactive` says WHICH), it is immune to the D-229 masking hazard by bucket
+precedence (`violated_inactive` outranks the hedge; verified through the
+production code: deactivated `Opportunity.Amount` on `94c34988`'s payload →
+`vr_inactive` naming the rule), and it directly mirrors the real unnoticed
+event — D-432's seven-week-invisible deactivation of
+`Contract_Value_Required_On_Closed_Won`. The formula-edit window (P3′,
+protocol §7, UNSIGNED — `Case.Escalation_Reason_Required`, claim `1db82105`)
+follows. Both pending AK's signature.
 
 ### 2.2 Flow shapes (35 captured flows)
 
@@ -727,3 +736,4 @@ days; re-measure before citing this document in a decision.
 | 2026-08-04 (re-probe) | Approval family re-probed vs the FIXED org (jobs 671–677, deployed worker, sequential, abort gates clean): 6P/0F/1E; probe error rate 14% vs the recorded 40%; the d49719e2 dead-entry-criteria class is RESOLVED org-side and the family loses its natural red specimen. The one error is the D-337-class staging conflict on `79bc47e5` (Plimsol-side). D-427 absence-mirror armed, not fired (no red to attribute). Zero decidable org-indicting reds remain — the campaign's measured position stands. |
 | 2026-08-05 (P6-F1) | **P6 REVOCATION MET** — the first P6 window (D-429) recorded the AfterSave divergent-value family's demonstrated decidable red: run `aa02cbc6` on `c6c4d1e1`, `automation_effect_divergent`, asserted 2 / observed 4.0, seeded via FL07 `varCount` 1.0→2.0 under the 2026-08-05 signature; restore verified IDENTICAL, confirm run green. Clause (c): the P6 authorisation is now VOID — further perturbation requires a fresh signature. |
 | 2026-08-05 (VR re-exit) | D-430/D-431: `enforcement_gap` recognized as **drift-only and not seedable** (no pre-sync windows — manufactured divergence is not detection); the accepted VR criterion-3 red is **`vr_formula_drift`**; over-enforcement reds do not qualify. §2.1 gains the family reachability table — **2 of 8 REACHABLE, 6 BLOCKED with owners** (every row verified on real evidence payloads through the production evaluator); the D-420 exit is superseded by the family-level re-exit; §6.2 gains the evaluator-blocked row. Protocol: **P3 amendment DRAFTED (§7, UNSIGNED)** — open-snapshot baseline, mandatory open/close retrieve-diff, S1 formula-text secondary signal, ground-rule-5 scope resolution with named eligible rules + named window claims, P6's five clauses with the expiry left blank for AK — and **P2 REDRAFTED (§8, UNSIGNED)**: the signed target `Contract_Value_Required_On_Closed_Won` was found ALREADY INACTIVE org-side (S1 seq 66→67, the 2026-06-15/16 sync, three days after P2 was signed) with zero claim coverage; retargeted at `Opportunity.Amount` / claim `94c34988` for the never-seen-live named `vr_inactive` red. Nothing signed; no VR window may open. |
+| 2026-08-05 (D-432) | The mid-June deactivation investigated and settled: **SetupAuditTrail names AK** (`changedValidationActive`, 2026-06-15T08:28:34Z, Setup → Validation Rules, "from 1 to 0") — an isolated org-side manual action (the whole seq-66 sync delta = 1 User + this 1 VR; nothing else went inactive in the window: 14 other inactive VRs are managed-package rules inactive since first capture, zero inactive Flows; no Plimsol code path can write metadata at all). Likely a manually-opened, never-restored P2 window — inference, AK to confirm. The §0 green-only blind spot observed in production: the rule had ZERO covering claims, and 38 of 52 active VRs share that state (73% of rules undetectable for this class). **Window order flipped: P2′ first, P3′ second** (§2.1). Verifier: the status parse is now bounded per section with a per-label snapshot gate (`p6-*`/`p3-*`/`p2-*` each check their own section — posture-proven offline 18/18 + live CLI refusals at exit 2); the §7/§8 banner-wording workaround is reverted to the standard draft banner. Nothing signed; nothing reactivated. |

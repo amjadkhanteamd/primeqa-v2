@@ -210,7 +210,7 @@ the signed P2 has no effect as written.
 
 ## 7. P3′ — VR formula-edit windows (amendment)  ⏳ DRAFT
 
-> **STATUS: UNSIGNED DRAFT — nothing may run under this section.** The
+> **STATUS: DRAFT, UNSIGNED — nothing may run under this section.** The
 > signed 2026-06-12 P3 row remains the only signed VR-edit authorisation,
 > and the §2 note of 2026-08-05 records why no window should open under it
 > either: it predates the verification discipline below. This draft becomes
@@ -316,7 +316,7 @@ the signed P2 has no effect as written.
 
 ## 8. P2′ — VR deactivation window (redraft)  ⏳ DRAFT
 
-> **STATUS: UNSIGNED DRAFT — nothing may run under this section.**
+> **STATUS: DRAFT, UNSIGNED — nothing may run under this section.**
 >
 > Drafted 2026-08-05 per D-430/D-431.
 
