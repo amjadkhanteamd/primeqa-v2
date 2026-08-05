@@ -105,6 +105,13 @@ claim, and none of those 4 reds indicts the feature's own behaviour.** See §1.3
   not a VR failing to enforce. The single `enforcement_gap` (`71583230`) is a
   **D-425.1 re-read against drifted S1**, not a contemporaneous conclusion
   (footnote §8.2). **No VR has been shown to fail to enforce when it should.**
+- **RE-EXIT (2026-08-05, D-430/D-431)** — the D-420 exit is superseded; the
+  live target is the family-level re-exit in §2.1: **2 of 8 shape families
+  reachable** for the accepted `vr_formula_drift` red, **6 BLOCKED** on the
+  D-114 evaluator's v1 subset with named owners. `enforcement_gap` is
+  drift-only and not seedable (D-430); over-enforcement reds do not qualify
+  (D-431). P3/P2 amendment drafts carrying the P6 discipline sit in the
+  protocol §7/§8, **UNSIGNED**.
 
 #### BeforeSave Flows
 - **S1** — 5 entities, all active, `flow_details.trigger_type='BeforeSave'`.
@@ -331,6 +338,45 @@ that rule's own error message" standard. One further VR
 (`Opportunity.Close_Date_Cannot_Be_Future`) was named by S6 `vr_name`
 attribution without an evidence-text match → **15 distinct VRs total**; the
 matrix counts the 14 evidence-text matches (§8.3).
+
+**Decidable-red reachability (added 2026-08-05, D-430/D-431).** The accepted
+criterion-3 red for VR shape families is **`vr_formula_drift`** ("the rule was
+edited since generation"), demonstrated by a formula-edit perturbation with a
+sync BEFORE the graded run. `enforcement_gap` is **drift-only and not
+seedable** (D-430): it fires only when the live org diverges from S1's model,
+which no metadata edit creates — Salesforce enforces its own metadata, so
+editing it makes S1 stale, not the rule non-enforcing; a deliberate pre-sync
+window is ruled out (manufactured divergence is not detection).
+Over-enforcement reds (`other_vr_fired` on a tightened rule) do **not**
+qualify (D-431): the cause cannot distinguish a wrongly-strict rule from a
+legitimately-forbidding one. Under that criterion — every row verified by
+evaluating the rule's real formula against a covering claim's real evidence
+effective-state through the production D-114 evaluator:
+
+| Family | Why / why not | Mark |
+|---|---|---|
+| single-field required | `Opportunity.Amount` evaluable; window claim `94c34988` (`{"Amount": 10001}`) evaluates True on the original formula, False on a weakened one | **REACHABLE** |
+| cross-field conditional | `Case.Escalation_Reason_Required` — the ONLY current VR on Case, so the drift determination cannot be masked; predicted through the production `_attribute_not_enforced` on `1db82105`'s real state → `vr_formula_drift` | **REACHABLE** |
+| field-vs-field numeric | field-to-field comparison NonEvaluable (`formula/eval.py:143`) → the hedge | **BLOCKED** — evaluator comparison extension, unassigned |
+| date / temporal | `TODAY()` inert until D-344 arms it; the covering claims additionally stage RelativeDate tokens (NonEvaluable regardless) | **BLOCKED** — D-344 |
+| ISCHANGED | org-state function NonEvaluable (`formula/eval.py:172`); the evidence already holds prior state (create+update overlay) — an evaluator decision, not a capture gap | **BLOCKED** — org-state evaluator decision, unassigned |
+| PRIORVALUE | same org-state class (VR05 carries both PRIORVALUE and ISCHANGED) | **BLOCKED** — same owner |
+| REGEX | recognized by the parser since D-344, not evaluable until armed | **BLOCKED** — D-344 |
+| RecordType-conditional | dotted `RecordType.DeveloperName` is a cross-object ref; the payload carries `RecordTypeId` and S1 holds RecordType entities — needs an Id→DeveloperName resolver | **BLOCKED** — resolver, unassigned |
+
+**The VR re-exit runs over 2 of 8 reachable families; 6 BLOCKED**, carried per
+the §3.1 rule (never counted as met, never silently dropped). The D-420
+declared exit ("25/25 green") is **superseded** — §3's intro already records
+it as post-hoc; the family-level re-exit above is the live target. The masking
+hazard is claim-choice-dependent (D-229): a window claim whose payload carries
+an unrelated NonEvaluable rule's field (e.g. `25a1757c`'s `CloseDate`) hedges
+the drift red that a minimal-payload claim (`94c34988`) keeps decidable — the
+P3 amendment draft (protocol §7, UNSIGNED) therefore names the window claim
+per rule. A deactivation window (P2 redraft, protocol §8, UNSIGNED) would
+demonstrate the sibling **`vr_inactive`** red — decidable AND named
+(`violated_inactive` outranks the hedge; verified through the production code:
+deactivated `Opportunity.Amount` on `94c34988`'s payload → `vr_inactive`
+naming the rule) — pending AK's signature.
 
 ### 2.2 Flow shapes (35 captured flows)
 
@@ -580,6 +626,7 @@ layer** (D-414), not a claim target, and their gate already runs at emission.
 | Metadata-only claims in run-all | D-401 (line 16841): `_probe_recipes` (`run.py:827`) filters to `data-recipe` **by design** — 24 approved existence/property claims are outside the probe path | by design | — (state, don't "fix") |
 | Ambiguous-null Flow attribution | `automation_effect_value_absent` cannot split never-written from written-blank; needs sibling-field capture in the recipe read scope | S3/S4 arc | **parked** (D-425.1 — 3 runs, 1 claim) |
 | Representation checks | Built but **unmerged** on `phase-1-s3-representation-checks @ed802a5` *(D-426)* | merge GO | **AK** |
+| VR shape families ×6 (field-vs-field, date/temporal, ISCHANGED, PRIORVALUE, REGEX, RecordType-conditional) | D-114 evaluator v1 subset — org-state functions, field-to-field comparison, unarmed `TODAY`/`REGEX`, and dotted refs are all NonEvaluable, so the drift red hedges to `vr_formula_indeterminate` (D-431; each family verified on real evidence payloads) | S6 evaluator | **D-344** (date/temporal, REGEX); org-state decision + field-vs-field extension + RecordTypeId resolver **unassigned** |
 
 ---
 
@@ -679,3 +726,4 @@ days; re-measure before citing this document in a decision.
 | 2026-08-04 (merge) | All three branches merged to main (repchk `ed802a5` → substrate-6 `6179449` → docs `8f5ef15`), single ledger-tail conflict resolved 426-before-427. §2.2: designed absence → **REACHABLE** (7 of 8 families); the value-free stamp is the sole remaining BLOCKED family. Deployed on push. |
 | 2026-08-04 (re-probe) | Approval family re-probed vs the FIXED org (jobs 671–677, deployed worker, sequential, abort gates clean): 6P/0F/1E; probe error rate 14% vs the recorded 40%; the d49719e2 dead-entry-criteria class is RESOLVED org-side and the family loses its natural red specimen. The one error is the D-337-class staging conflict on `79bc47e5` (Plimsol-side). D-427 absence-mirror armed, not fired (no red to attribute). Zero decidable org-indicting reds remain — the campaign's measured position stands. |
 | 2026-08-05 (P6-F1) | **P6 REVOCATION MET** — the first P6 window (D-429) recorded the AfterSave divergent-value family's demonstrated decidable red: run `aa02cbc6` on `c6c4d1e1`, `automation_effect_divergent`, asserted 2 / observed 4.0, seeded via FL07 `varCount` 1.0→2.0 under the 2026-08-05 signature; restore verified IDENTICAL, confirm run green. Clause (c): the P6 authorisation is now VOID — further perturbation requires a fresh signature. |
+| 2026-08-05 (VR re-exit) | D-430/D-431: `enforcement_gap` recognized as **drift-only and not seedable** (no pre-sync windows — manufactured divergence is not detection); the accepted VR criterion-3 red is **`vr_formula_drift`**; over-enforcement reds do not qualify. §2.1 gains the family reachability table — **2 of 8 REACHABLE, 6 BLOCKED with owners** (every row verified on real evidence payloads through the production evaluator); the D-420 exit is superseded by the family-level re-exit; §6.2 gains the evaluator-blocked row. Protocol: **P3 amendment DRAFTED (§7, UNSIGNED)** — open-snapshot baseline, mandatory open/close retrieve-diff, S1 formula-text secondary signal, ground-rule-5 scope resolution with named eligible rules + named window claims, P6's five clauses with the expiry left blank for AK — and **P2 REDRAFTED (§8, UNSIGNED)**: the signed target `Contract_Value_Required_On_Closed_Won` was found ALREADY INACTIVE org-side (S1 seq 66→67, the 2026-06-15/16 sync, three days after P2 was signed) with zero claim coverage; retargeted at `Opportunity.Amount` / claim `94c34988` for the never-seen-live named `vr_inactive` red. Nothing signed; no VR window may open. |

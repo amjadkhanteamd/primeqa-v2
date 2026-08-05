@@ -13,9 +13,16 @@ ritual that returns the org to fixture state.
 pending an AK may-touch extension.** Execution requires the sf CLI
 (`primeqa-sandbox` alias, already authenticated) or AK's own Setup access.
 
+**2026-08-05 (D-430/D-431): amendment drafts for P3 and P2 exist in §7/§8 —
+UNSIGNED.** Until signed, no P3/P2 window should open under the 2026-06-12
+rows either: they predate the open-snapshot verification discipline P6
+taught, and P2's named rule is **already inactive org-side** (§8 finding), so
+the signed P2 has no effect as written.
+
 > A **P6 row** (flow-logic perturbations) exists in §6 below — **SIGNED by
 > AK 2026-08-05, expires 2026-08-19**, with a revocation trigger (§6 clause
-> (c)). The session-start verifier reports its live status.
+> (c)) — **met 2026-08-05: status REVOKED**. The session-start verifier
+> reports its live status.
 
 ---
 
@@ -48,6 +55,16 @@ pending an AK may-touch extension.** Execution requires the sf CLI
 | P3 | VR `Lead.RequireReason`-class rule (any one VR with a derivable formula; exact pick at execution) | Edit the error-condition formula to a non-equivalent comparison (e.g. threshold change) | Restore the recorded original formula text byte-for-byte |
 | P4 | Field `Case_SLA__c.Response_Hours__c` (fixture custom field) | Change length/precision (e.g. precision 18→16) | Restore recorded original |
 | P5 | Permission set of the **FLS-restricted user** (Tier 0.3 — only after AK creates it) | Remove read on `Case.Last_Escalation_Date__c` | This one is the CF-1 repro target and may be left in place as a standing fixture if AK prefers |
+
+> **2026-08-05 note (D-430/D-431):** the P3 and P2 rows above are superseded
+> by the amendment drafts in §7 and §8 once those are signed. The rows as
+> signed predate the open-snapshot verification discipline (§6 rules 1–2),
+> and P2's named rule `Opportunity.Contract_Value_Required_On_Closed_Won` is
+> **already inactive** in the current org model (verified 2026-08-05:
+> `attributes.active=false` AND `validation_rule_details.is_active=false`;
+> the active row closed at the 2026-06-15/16 daily sync, S1 seq 66→67), so
+> the signed P2 toggles off a rule that is already off. The rows themselves
+> are left untouched as the signed record.
 
 ## 3. Per-perturbation expected observations (the matrix columns they close)
 
@@ -188,3 +205,159 @@ pending an AK may-touch extension.** Execution requires the sf CLI
 
 **AK sign-off:** signed by **AK** (amjad.khan@teamd.co.in)  date: **2026-08-05**
 — covering the P6 row, rules 1–6, and amendment clauses (a)–(e).
+
+---
+
+## 7. P3′ — VR formula-edit windows (amendment)  ⏳ DRAFT
+
+> **STATUS: UNSIGNED DRAFT — nothing may run under this section.** The
+> signed 2026-06-12 P3 row remains the only signed VR-edit authorisation,
+> and the §2 note of 2026-08-05 records why no window should open under it
+> either: it predates the verification discipline below. This draft becomes
+> operative only when AK signs the sign-off line at the bottom, with the
+> clause-(d) expiry date filled in.
+>
+> Drafted 2026-08-05 per D-430/D-431. Design inputs: the executed P3 window
+> (`dogfood_matrix_log.md` — the session-log baseline, the sync-first
+> correction, Finding #2's masking), P6 §6 (the discipline carried over),
+> and the VR re-exit assessment (`FEATURE_CAMPAIGN.md` §2.1).
+
+| # | Artifact | Perturbation | Restore |
+|---|---|---|---|
+| **P3′** | VR **error-condition formula**, one rule per window, **from the eligible list in rule 4 only** — never managed-package rules | Edit the formula to a non-equivalent comparison (threshold or literal change) so the rule stays active but **no longer fires on the window claim's staged payload** | Redeploy the recorded original formula; **restoration is verified ONLY by retrieve-and-diff reporting IDENTICAL against the window-open snapshot** |
+
+**P3′ rules (all mandatory, additive to §1's ground rules):**
+
+1. **Baseline = the window-open retrieve snapshot — NOT the session log and
+   NOT committed source.** The signed P3 row's "recorded original formula
+   text" was a session-log capture, not a same-serialiser artifact, and the
+   flow arc proved "deploy succeeded" is not evidence (§6 rule 1, D-427).
+   A VR retrieves as `ValidationRule:<Object>.<Rule>` →
+   `objects/<Object>/validationRules/<Rule>.validationRule-meta.xml`; the
+   same-serialiser round-trip argument applies unchanged.
+2. **Retrieve-and-diff at window open AND close, mandatory.** A failed open
+   retrieve = the window MUST NOT open. Any close outcome other than
+   IDENTICAL is **UNVERIFIED and escalates to AK immediately**; a failed or
+   empty retrieve is never treated as restored. **PRECONDITION:**
+   `scripts/verify_flow_fixture.py` covers only the Flow metadata type
+   today — it must be extended to ValidationRule (scope recorded with
+   D-431; deliberately NOT built with this draft) before any P3′ window
+   can open.
+3. **S1 formula text is a REAL secondary semantic signal.** Unlike flows
+   (S1 holds no flow logic), S1 holds the actual formula text — the
+   `vr_formula_text` extractor (`primeqa/semantic/entity_attributes.py`)
+   over `entities.attributes` (`Metadata.errorConditionFormula`,
+   shape-tolerant per D-203.1). The §4 checklist item "synced S1 state
+   matches baseline" is therefore machine-checkable for VRs:
+   post-restore-post-sync, S1's formula text must equal the snapshot's.
+   It stays secondary — rule 2's byte-diff alone gates restoration.
+4. **Scope: ground rule 5 GOVERNS.** The signed row's "any one VR with a
+   derivable formula; exact pick at execution" is struck — open-ended
+   artifact scope is what §6's clauses were written to kill, and it
+   conflicts with ground rule 5's "fixture-state artifacts only". Eligible
+   rules are NAMED, as P6 names its fixture flows:
+   **`Case.Escalation_Reason_Required`** (primary — the only current VR on
+   Case, so the drift determination cannot be masked) and
+   **`Opportunity.Amount`** (secondary — window claim MUST be `94c34988`,
+   see rule 5). Re-measure both before every window.
+5. **Collateral + the D-229 masking hazard: the window claim is named in
+   advance.** Eligible rules must carry a minimal covering approved-claim
+   footprint, and the window claim's evidence payload must be verified
+   evaluable-True against the original formula before the window opens.
+   Claim choice decides whether the drift red is decidable or hedged: an
+   Opportunity payload carrying `CloseDate` (e.g. `25a1757c`) re-triggers
+   the Finding-#2 masking (`Close_Date_Cannot_Be_Future` is NonEvaluable
+   and the indeterminate bucket outranks the drift determination), while
+   `94c34988`'s minimal `{"Amount": 10001}` payload keeps it decidable.
+   Named window claims: `1db82105` (Escalation_Reason_Required),
+   `94c34988` (Amount).
+6. **Sync BEFORE the graded run; expected cause `vr_formula_drift`.** The
+   executed P3 window's correction stands: grading against a stale formula
+   reads `enforcement_gap`, a manufactured divergence (D-430 — no pre-sync
+   windows). Record with the window that `vr_formula_drift` carries
+   `vr_name=None` — S6 says a rule drifted, not which; unambiguous on Case
+   (1 VR), weak on Opportunity (8).
+
+**Clauses (mirroring P6 (a)–(e); operative only on signature):**
+
+(a) **SCHEDULE EXCLUSION.** The regression schedule must be disabled while
+    any P3′ window is open or unverified.
+
+(b) **ABANDONMENT CHECK EXTENSION.** The first action of any session after
+    an aborted or unconfirmed window: retrieve-and-diff every eligible VR
+    against the snapshot store, AND determine whether the schedule fired
+    inside the window, quarantining any runs that did. (For VRs the daily
+    S1 sync gives ambient detection flows lack — a perturbed formula
+    surfaces as S8 grounding drift at the next sync — but ambient
+    detection is not a substitute for the check.)
+
+(c) **REVOCATION TRIGGER.** VOID once the shape family the window targets
+    has its decidable red recorded in the campaign ledger — made
+    machine-checkable by the line `P3 REVOCATION MET` in
+    `FEATURE_CAMPAIGN.md`'s change log. P3′ authorises proving the
+    reachable families' reds; it does not authorise perturbation as an
+    ongoing practice.
+
+(d) **HARD EXPIRY.** This authorisation expires on **____-__-__** (AK
+    fills at signature) regardless of whether (c) has been met. It is not
+    renewed by assumption or by continued relevance.
+
+(e) **STATUS VISIBILITY.** The session-start verifier check must report
+    this section's status (signed / expired / revoked) the way it reports
+    P6's — which requires generalizing the verifier's §6-specific status
+    parser to this section; that extension ships with the rule-2
+    precondition, before any window.
+
+**AK sign-off:** ____________________  date: ____-__-__
+— covering the P3′ row, rules 1–6, and clauses (a)–(e).
+**UNSIGNED as of 2026-08-05.**
+
+---
+
+## 8. P2′ — VR deactivation window (redraft)  ⏳ DRAFT
+
+> **STATUS: UNSIGNED DRAFT — nothing may run under this section.**
+>
+> Drafted 2026-08-05 per D-430/D-431.
+
+**The finding that forces the redraft:** the signed P2 targets
+`Opportunity.Contract_Value_Required_On_Closed_Won`, which is **already
+inactive in the current org model** — verified 2026-08-05:
+`attributes.active=false` AND `validation_rule_details.is_active=false`;
+the active row closed at the 2026-06-15/16 daily sync (S1 seq 66→67),
+three days after P2 was signed. The signed perturbation ("toggle
+`active=false`") toggles off a rule that is already off; it can teach
+nothing. Sharper: the org performed P2's exact perturbation **on us**,
+org-side, in mid-June — and nothing surfaced it, because **zero approved
+claims cover that rule** (no `errorMessage` match anywhere in run
+evidence). That silence is the campaign §0 green-only blind spot observed
+in the wild. AK should confirm whether that deactivation was intentional.
+
+**DECISION (draft): REDRAFT, not withdraw.** A deactivation window is
+worth keeping because `vr_inactive` is the **only named-rule decidable
+cause on the not-enforced side** (`vr_formula_drift` carries
+`vr_name=None`), it has never been seen live (the §3 P2 bullet's original
+purpose — still true: the corpus's VR-family failures show
+`other_vr_fired` 9, `platform_constraint` 5, `enforcement_gap` 1,
+`vr_inactive` 0), and the attribution bucket order makes it immune to the
+D-229 masking hazard (`violated_inactive` is checked before the
+indeterminate hedge), so it is decidable even on Opportunity's 8-rule
+object. Expected cause verified through the production
+`_attribute_not_enforced`: deactivated `Opportunity.Amount` against
+`94c34988`'s real payload → **`vr_inactive`, `vr_name=Opportunity.Amount`**.
+
+| # | Artifact | Perturbation | Restore |
+|---|---|---|---|
+| **P2′** | VR **`Opportunity.Amount`** (active, evaluable, minimal footprint) | Toggle `active=false` via metadata deploy — one token in the retrieved XML | Toggle back `active=true`; **restoration verified ONLY by retrieve-and-diff IDENTICAL against the window-open snapshot** |
+
+**Window claim: `94c34988`** (payload `{"Amount": 10001}` — the formula
+evaluates True, so post-sync the bucket is `violated_inactive` → expected
+cause **`vr_inactive` naming the rule**). Sync BEFORE the graded run, as
+in §7 rule 6 — pre-sync the same red would read `enforcement_gap`, which
+D-430 rules out. §7 rules 1–3 and clauses (a)–(e) apply by reference
+(same snapshot discipline, same verifier preconditions, revocation marker
+`P2 REVOCATION MET`, expiry filled at signature).
+
+**AK sign-off:** ____________________  date: ____-__-__
+— covering the P2′ row, its window claim, and the §7 clauses by reference.
+**UNSIGNED as of 2026-08-05.**
