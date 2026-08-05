@@ -376,6 +376,16 @@ AfterSave's exit therefore runs over **7 of 8 reachable families** (since the
 2026-08-04 merge of the D-427 enrichment), with the value-free stamp the one
 remaining BLOCKED row, carried explicitly per the §3.1 amendment below.
 
+**Divergent-value family: criterion 3 MET (2026-08-05, D-429).** The first P6
+window seeded `PLS_FB_FL07_Order_Rollup`'s `varCount` increment (`1.0 → 2.0`,
+proven by open-snapshot diff), and run `aa02cbc6` on `c6c4d1e1` produced the
+demonstrated decidable red: **`automation_effect_divergent`, asserted 2,
+observed 4.0** — the corpus's first decidable red indicting ORG behaviour
+(seeded under the signed P6 authorisation, stated plainly; detected and
+attributed without the attribution knowing it was seeded). Restore verified
+IDENTICAL; confirm run passed. Under P6 clause (c), recording this red VOIDS
+the P6 authorisation.
+
 ---
 
 ## 3. Exit criteria — pre-stated, and they demand a red
@@ -668,3 +678,4 @@ days; re-measure before citing this document in a decision.
 | 2026-08-04 (split) | This branch split per the merge-collision analysis: the S6 enrichment + the D-427 ledger entry moved to **`phase-1-substrate-6-absence-mirror`** (design `64f013a` + impl; merging THAT branch is the deploy). This branch is now deploy-inert: campaign docs, the perturbation plan, the protocol's unsigned P6 §6, and the read-only verifier script. §2.2 updated to name the code branch. |
 | 2026-08-04 (merge) | All three branches merged to main (repchk `ed802a5` → substrate-6 `6179449` → docs `8f5ef15`), single ledger-tail conflict resolved 426-before-427. §2.2: designed absence → **REACHABLE** (7 of 8 families); the value-free stamp is the sole remaining BLOCKED family. Deployed on push. |
 | 2026-08-04 (re-probe) | Approval family re-probed vs the FIXED org (jobs 671–677, deployed worker, sequential, abort gates clean): 6P/0F/1E; probe error rate 14% vs the recorded 40%; the d49719e2 dead-entry-criteria class is RESOLVED org-side and the family loses its natural red specimen. The one error is the D-337-class staging conflict on `79bc47e5` (Plimsol-side). D-427 absence-mirror armed, not fired (no red to attribute). Zero decidable org-indicting reds remain — the campaign's measured position stands. |
+| 2026-08-05 (P6-F1) | **P6 REVOCATION MET** — the first P6 window (D-429) recorded the AfterSave divergent-value family's demonstrated decidable red: run `aa02cbc6` on `c6c4d1e1`, `automation_effect_divergent`, asserted 2 / observed 4.0, seeded via FL07 `varCount` 1.0→2.0 under the 2026-08-05 signature; restore verified IDENTICAL, confirm run green. Clause (c): the P6 authorisation is now VOID — further perturbation requires a fresh signature. |
