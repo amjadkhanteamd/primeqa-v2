@@ -54,6 +54,7 @@ import difflib
 import glob
 import json
 import os
+import re
 import subprocess
 import sys
 import tempfile
@@ -81,62 +82,120 @@ SEVERITY = {"IDENTICAL": 0, "SNAPSHOTTED": 0, "NO_SNAPSHOT": 1,
 
 PROTOCOL = os.path.join(REPO, "docs/architecture/perturb_and_restore_protocol.md")
 CAMPAIGN = os.path.join(REPO, "docs/architecture/FEATURE_CAMPAIGN.md")
-# The machine-checkable revocation marker clause (c) names — recorded in the
-# campaign change log when the AfterSave divergent-value red lands.
-P6_REVOCATION_MARKER = "P6 REVOCATION MET"
+
+# Per-section authorisation registry (D-432). The original parser read §6 to
+# END OF FILE and substring-matched status text — correct with one section,
+# nearly disabled when the §7/§8 drafts were appended beneath it (their
+# UNSIGNED banners would have flipped P6's report). Every section now parses
+# ONLY its own slice, delimited at the next `## ` heading. Keys double as
+# snapshot-label prefixes: a `p3-*` snapshot checks §7's status and only §7's.
+_SECTIONS = {
+    "p6": {"label": "P6", "heading": r"^## 6\. ", "marker": "P6 REVOCATION MET"},
+    "p3": {"label": "P3'", "heading": r"^## 7\. ", "marker": "P3 REVOCATION MET"},
+    "p2": {"label": "P2'", "heading": r"^## 8\. ", "marker": "P2 REVOCATION MET"},
+}
+# Both the historical draft-banner wording and the 2026-08-05 interim wording
+# are recognized, so no future draft can regress the parse by picking either.
+_UNSIGNED_BANNERS = ("STATUS: DRAFT, UNSIGNED", "STATUS: UNSIGNED DRAFT")
+# Back-compat name (pre-D-432 callers).
+P6_REVOCATION_MARKER = _SECTIONS["p6"]["marker"]
 
 
-def p6_status(today=None):
-    """P6 §6 live status, parsed from the SIGNED protocol text itself so the
+def _section_slice(text: str, heading_re: str):
+    """The section's OWN text: its heading up to the next `## ` heading (any)
+    or EOF. None when the heading is absent — the caller reports UNKNOWN."""
+    m = re.search(heading_re, text, re.M)
+    if not m:
+        return None
+    rest = text[m.end():]
+    nxt = re.search(r"^## ", rest, re.M)
+    return text[m.start():m.end() + (nxt.start() if nxt else len(rest))]
+
+
+def section_status(key: str, today=None, protocol_text=None,
+                   campaign_text=None):
+    """One section's live status, parsed from the protocol text itself so the
     report can never drift from what was signed (clause (e)).
 
     Returns (status, detail) with status one of:
         SIGNED | EXPIRED | REVOKED | UNSIGNED | UNKNOWN
-    Parse discipline: the banner must match the strict SIGNED/EXPIRES shapes
-    or the status is UNKNOWN — a malformed protocol NEVER reads as SIGNED.
+    Parse discipline unchanged from the original p6_status: the banner must
+    match the strict SIGNED/EXPIRES shapes or the status is UNKNOWN — a
+    malformed or missing section NEVER reads as SIGNED.
     Precedence: UNSIGNED > UNKNOWN(parse) > REVOKED > EXPIRED > SIGNED.
+    ``protocol_text``/``campaign_text`` exist for posture tests only.
     """
-    import re
     from datetime import date
+    spec = _SECTIONS[key]
     today = today or date.today()
     try:
-        text = open(PROTOCOL, encoding="utf-8").read()
-        m6 = re.search(r"^## 6\. .*$", text, re.M)
-        if not m6:
-            return "UNKNOWN", "protocol has no §6 — cannot infer authorisation"
-        section = text[m6.start():]
-        if "STATUS: DRAFT, UNSIGNED" in section:
-            return "UNSIGNED", "P6 is a draft; nothing may run under it"
+        text = (protocol_text if protocol_text is not None
+                else open(PROTOCOL, encoding="utf-8").read())
+        section = _section_slice(text, spec["heading"])
+        if section is None:
+            return ("UNKNOWN", f"protocol has no {spec['label']} section — "
+                    f"cannot infer authorisation")
+        if any(b in section for b in _UNSIGNED_BANNERS):
+            return ("UNSIGNED",
+                    f"{spec['label']} is a draft; nothing may run under it")
         sig = re.search(
             r"STATUS: SIGNED — (\w+), (\d{4}-\d{2}-\d{2})", section)
         exp = re.search(r"EXPIRES (\d{4}-\d{2}-\d{2})", section)
         if not sig or not exp:
-            return ("UNKNOWN", "P6 banner unrecognized — refusing to infer "
-                    "SIGNED from malformed text")
+            return ("UNKNOWN", f"{spec['label']} banner unrecognized — "
+                    f"refusing to infer SIGNED from malformed text")
         expiry = date.fromisoformat(exp.group(1))
         signed_on = f"signed by {sig.group(1)} on {sig.group(2)}"
         try:
-            revoked = P6_REVOCATION_MARKER in open(
-                CAMPAIGN, encoding="utf-8").read()
+            camp = (campaign_text if campaign_text is not None
+                    else open(CAMPAIGN, encoding="utf-8").read())
         except OSError:
             return ("UNKNOWN", f"cannot read campaign ledger to evaluate the "
                     f"revocation condition ({signed_on})")
-        if revoked:
-            return ("REVOKED", f"the AfterSave divergent-value red is "
-                    f"recorded ('{P6_REVOCATION_MARKER}' in the campaign "
-                    f"ledger) — clause (c): authorisation VOID ({signed_on})")
+        if spec["marker"] in camp:
+            return ("REVOKED", f"the revocation marker '{spec['marker']}' is "
+                    f"recorded in the campaign ledger — revocation clause: "
+                    f"authorisation VOID ({signed_on})")
         if today > expiry:
-            return ("EXPIRED", f"hard expiry {expiry} passed — clause (d): "
-                    f"no P6 window may be opened; re-authorisation needs a "
-                    f"new signature ({signed_on})")
+            return ("EXPIRED", f"hard expiry {expiry} passed — no "
+                    f"{spec['label']} window may be opened; re-authorisation "
+                    f"needs a new signature ({signed_on})")
         return ("SIGNED", f"{signed_on}; expires {expiry}; revocation "
                 f"condition not met")
     except Exception as e:  # noqa: BLE001 — any surprise is UNKNOWN, loudly
         return "UNKNOWN", f"status parse failed ({e.__class__.__name__}: {e})"
 
 
+def p6_status(today=None):
+    """Back-compat wrapper (pre-D-432 name): §6's status from its own slice."""
+    return section_status("p6", today=today)
+
+
+def print_section_statuses() -> dict:
+    """Session-start report per clause (e): every authorisation section's
+    status, each parsed from its OWN slice. The loud banner is reserved for
+    the alarming states (REVOKED / EXPIRED / UNKNOWN); SIGNED and UNSIGNED
+    are expected states and print one line each — with three sections,
+    bannering every unsigned draft would bury the alarm that matters."""
+    statuses: dict = {}
+    for key, spec in _SECTIONS.items():
+        status, detail = section_status(key)
+        statuses[key] = status
+        if status in ("SIGNED", "UNSIGNED"):
+            print(f"{spec['label']} status: {status} — {detail}")
+        else:
+            bang = "!" * 66
+            print(bang)
+            print(f"!!  {spec['label']} status: {status} — {detail}")
+            print(f"!!  NO {spec['label']} WINDOW MAY BE OPENED "
+                  f"under this status.")
+            print(bang)
+    return statuses
+
+
 def print_p6_status() -> str:
-    status, detail = p6_status()
+    """Back-compat wrapper (pre-D-432 callers): P6's line only."""
+    status, detail = section_status("p6")
     if status == "SIGNED":
         print(f"P6 status: SIGNED — {detail}")
     else:
@@ -309,16 +368,21 @@ def main() -> int:
     if args.snapshot_file and len(flows) != 1:
         p.error("--snapshot-file requires exactly one flow")
 
-    # Clause (e): the session-start check reports P6's live status, parsed
-    # from the signed protocol text. Additionally, a snapshot taken to OPEN a
-    # P6 window (label 'p6-*') is refused outright unless status is SIGNED —
-    # the mechanism that stops the authorisation quietly outliving itself.
-    p6 = print_p6_status()
-    if (args.mode == "snapshot" and args.label.lower().startswith("p6")
-            and p6 != "SIGNED"):
-        print(f"REFUSED: cannot open a P6 window (label {args.label!r}) "
-              f"while P6 status is {p6}.")
-        return 2
+    # Clause (e), generalized per D-432: the session-start check reports
+    # EVERY authorisation section's live status, each parsed from its own
+    # bounded slice. A snapshot taken to OPEN a window (label 'p6-*' /
+    # 'p3-*' / 'p2-*') is refused outright unless THAT label's section is
+    # SIGNED — an unsigned section refuses that label's windows and only
+    # that label's.
+    statuses = print_section_statuses()
+    if args.mode == "snapshot":
+        lbl = args.label.lower()
+        gate_key = next((k for k in _SECTIONS if lbl.startswith(k)), None)
+        if gate_key and statuses[gate_key] != "SIGNED":
+            print(f"REFUSED: cannot open a {_SECTIONS[gate_key]['label']} "
+                  f"window (label {args.label!r}) while its status is "
+                  f"{statuses[gate_key]}.")
+            return 2
 
     s1 = s1_signal(flows)
     with tempfile.TemporaryDirectory(prefix="flow_verify_") as tmp:
