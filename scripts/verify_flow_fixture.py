@@ -79,6 +79,74 @@ ENV59_ORG = "902850e3-89c0-4d74-9141-66084045f439"
 SEVERITY = {"IDENTICAL": 0, "SNAPSHOTTED": 0, "NO_SNAPSHOT": 1,
             "DIVERGENT": 1, "RETRIEVE_EMPTY": 2, "RETRIEVE_FAILED": 2}
 
+PROTOCOL = os.path.join(REPO, "docs/architecture/perturb_and_restore_protocol.md")
+CAMPAIGN = os.path.join(REPO, "docs/architecture/FEATURE_CAMPAIGN.md")
+# The machine-checkable revocation marker clause (c) names — recorded in the
+# campaign change log when the AfterSave divergent-value red lands.
+P6_REVOCATION_MARKER = "P6 REVOCATION MET"
+
+
+def p6_status(today=None):
+    """P6 §6 live status, parsed from the SIGNED protocol text itself so the
+    report can never drift from what was signed (clause (e)).
+
+    Returns (status, detail) with status one of:
+        SIGNED | EXPIRED | REVOKED | UNSIGNED | UNKNOWN
+    Parse discipline: the banner must match the strict SIGNED/EXPIRES shapes
+    or the status is UNKNOWN — a malformed protocol NEVER reads as SIGNED.
+    Precedence: UNSIGNED > UNKNOWN(parse) > REVOKED > EXPIRED > SIGNED.
+    """
+    import re
+    from datetime import date
+    today = today or date.today()
+    try:
+        text = open(PROTOCOL, encoding="utf-8").read()
+        m6 = re.search(r"^## 6\. .*$", text, re.M)
+        if not m6:
+            return "UNKNOWN", "protocol has no §6 — cannot infer authorisation"
+        section = text[m6.start():]
+        if "STATUS: DRAFT, UNSIGNED" in section:
+            return "UNSIGNED", "P6 is a draft; nothing may run under it"
+        sig = re.search(
+            r"STATUS: SIGNED — (\w+), (\d{4}-\d{2}-\d{2})", section)
+        exp = re.search(r"EXPIRES (\d{4}-\d{2}-\d{2})", section)
+        if not sig or not exp:
+            return ("UNKNOWN", "P6 banner unrecognized — refusing to infer "
+                    "SIGNED from malformed text")
+        expiry = date.fromisoformat(exp.group(1))
+        signed_on = f"signed by {sig.group(1)} on {sig.group(2)}"
+        try:
+            revoked = P6_REVOCATION_MARKER in open(
+                CAMPAIGN, encoding="utf-8").read()
+        except OSError:
+            return ("UNKNOWN", f"cannot read campaign ledger to evaluate the "
+                    f"revocation condition ({signed_on})")
+        if revoked:
+            return ("REVOKED", f"the AfterSave divergent-value red is "
+                    f"recorded ('{P6_REVOCATION_MARKER}' in the campaign "
+                    f"ledger) — clause (c): authorisation VOID ({signed_on})")
+        if today > expiry:
+            return ("EXPIRED", f"hard expiry {expiry} passed — clause (d): "
+                    f"no P6 window may be opened; re-authorisation needs a "
+                    f"new signature ({signed_on})")
+        return ("SIGNED", f"{signed_on}; expires {expiry}; revocation "
+                f"condition not met")
+    except Exception as e:  # noqa: BLE001 — any surprise is UNKNOWN, loudly
+        return "UNKNOWN", f"status parse failed ({e.__class__.__name__}: {e})"
+
+
+def print_p6_status() -> str:
+    status, detail = p6_status()
+    if status == "SIGNED":
+        print(f"P6 status: SIGNED — {detail}")
+    else:
+        bang = "!" * 66
+        print(bang)
+        print(f"!!  P6 status: {status} — {detail}")
+        print("!!  NO P6 WINDOW MAY BE OPENED under this status.")
+        print(bang)
+    return status
+
 
 # ---------------------------------------------------------------------------
 # Retrieval (one org call for N flows; throwaway temp project = no source
@@ -240,6 +308,17 @@ def main() -> int:
     flows = args.flows or CANDIDATES
     if args.snapshot_file and len(flows) != 1:
         p.error("--snapshot-file requires exactly one flow")
+
+    # Clause (e): the session-start check reports P6's live status, parsed
+    # from the signed protocol text. Additionally, a snapshot taken to OPEN a
+    # P6 window (label 'p6-*') is refused outright unless status is SIGNED —
+    # the mechanism that stops the authorisation quietly outliving itself.
+    p6 = print_p6_status()
+    if (args.mode == "snapshot" and args.label.lower().startswith("p6")
+            and p6 != "SIGNED"):
+        print(f"REFUSED: cannot open a P6 window (label {args.label!r}) "
+              f"while P6 status is {p6}.")
+        return 2
 
     s1 = s1_signal(flows)
     with tempfile.TemporaryDirectory(prefix="flow_verify_") as tmp:

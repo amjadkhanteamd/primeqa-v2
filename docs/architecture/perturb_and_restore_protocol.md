@@ -13,9 +13,9 @@ ritual that returns the org to fixture state.
 pending an AK may-touch extension.** Execution requires the sf CLI
 (`primeqa-sandbox` alias, already authenticated) or AK's own Setup access.
 
-> A **DRAFT P6 row** (flow-logic perturbations) exists in §6 below. It is
-> **UNSIGNED** and is not part of the signed §2 list — nothing may run under
-> it until AK signs.
+> A **P6 row** (flow-logic perturbations) exists in §6 below — **SIGNED by
+> AK 2026-08-05, expires 2026-08-19**, with a revocation trigger (§6 clause
+> (c)). The session-start verifier reports its live status.
 
 ---
 
@@ -94,17 +94,25 @@ pending an AK may-touch extension.** Execution requires the sf CLI
 
 ---
 
-## 6. DRAFT P6 — flow-logic perturbations  ⚠️ UNSIGNED
+## 6. P6 — flow-logic perturbations  ✅ SIGNED
 
-> **STATUS: DRAFT, UNSIGNED. Not part of the signed §2 list. Nothing may run
-> under this row until AK signs it, in writing, in this file.** Drafted
-> 2026-08-04 per D-427; the design inputs are `FLOW_PERTURBATION_PLAN.md`
-> (candidates F1–F8 + the §4.1 correction) and the campaign's exit criteria
+> **STATUS: SIGNED — AK, 2026-08-05.**
+> **EXPIRES 2026-08-19** (hard expiry, clause (d) — after that date no P6
+> window may be opened; re-authorisation requires a new signature and date).
+> **REVOCATION (clause (c)):** VOID once the AfterSave divergent-value shape
+> family has a decidable red recorded in the campaign ledger — that record is
+> made machine-checkable by adding the line `P6 REVOCATION MET` to
+> `FEATURE_CAMPAIGN.md`'s change log; the session-start verifier reads this
+> marker and the dates above.
+>
+> Drafted 2026-08-04 per D-427; amended and signed 2026-08-05 (clauses
+> (a)–(e) below). Design inputs: `FLOW_PERTURBATION_PLAN.md` (candidates
+> F1–F8 + the §4.1 correction) and the campaign's exit criteria
 > (`FEATURE_CAMPAIGN.md` §3).
 
 | # | Artifact | Perturbation | Restore |
 |---|---|---|---|
-| **P6 (DRAFT)** | Fixture Flow **logic**, one flow per window, fixture flows only — **never managed-package or org-native automation** | Edit ONE value in the flow's logic (an accumulator increment, a formula offset, a lookup-filter value, or an assignment literal) so the flow **still fires but writes a different value** | Redeploy the pre-window logic; **restoration is verified ONLY by `scripts/verify_flow_fixture.py verify` reporting IDENTICAL against the window-open snapshot** |
+| **P6** | Fixture Flow **logic**, one flow per window, fixture flows only — **never managed-package or org-native automation** | Edit ONE value in the flow's logic (an accumulator increment, a formula offset, a lookup-filter value, or an assignment literal) so the flow **still fires but writes a different value** | Redeploy the pre-window logic; **restoration is verified ONLY by `scripts/verify_flow_fixture.py verify` reporting IDENTICAL against the window-open snapshot** |
 
 **P6 rules (all mandatory, additive to §1's ground rules):**
 
@@ -151,4 +159,32 @@ pending an AK may-touch extension.** Execution requires the sf CLI
    org-derived), but the repo-logic secondary signal reports
    `no-committed-baseline` for them until the fixture directory is committed.
 
-**AK sign-off line (unsigned):** _______________________  date: ____________
+**Amendment (AK, signed 2026-08-05):**
+
+(a) **SCHEDULE EXCLUSION.** The regression schedule must be disabled while
+    any P6 window is open or unverified. A scheduled pass against a
+    deliberately perturbed org records artifact reds indistinguishable from
+    findings.
+
+(b) **ABANDONMENT CHECK EXTENSION.** The post-abandonment procedure must
+    additionally determine whether the regression schedule fired inside the
+    window, and quarantine any runs that did.
+
+(c) **REVOCATION TRIGGER.** This authorisation is VOID once the AfterSave
+    divergent-value shape family has a decidable red recorded in the
+    campaign ledger. P6 authorises proving that case; it does not authorise
+    perturbation as an ongoing practice. Any further perturbation after that
+    point requires a fresh signature.
+
+(d) **HARD EXPIRY.** This authorisation expires on **2026-08-19** regardless
+    of whether (c) has been met. After that date no P6 window may be opened.
+    Re-authorisation requires a new signature and date; it is not renewed by
+    assumption or by continued relevance.
+
+(e) **STATUS VISIBILITY.** While P6 is live, its status must be checkable
+    without reading the protocol document. The session-start verifier check
+    must also report: whether P6 is signed, whether it has expired, and
+    whether its revocation condition has been met.
+
+**AK sign-off:** signed by **AK** (amjad.khan@teamd.co.in)  date: **2026-08-05**
+— covering the P6 row, rules 1–6, and amendment clauses (a)–(e).
