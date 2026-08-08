@@ -277,6 +277,36 @@ the signed P2 has no effect as written.
    windows). Record with the window that `vr_formula_drift` carries
    `vr_name=None` — S6 says a rule drifted, not which; unambiguous on Case
    (1 VR), weak on Opportunity (8).
+7. **AUDIT-TRAIL DETECTION at session start (D-433) — detection, not
+   discipline.** The D-432 incident sat in SetupAuditTrail for seven weeks
+   while the abandonment procedure waited on someone remembering a window
+   happened. Every session-start check must therefore query SetupAuditTrail
+   for metadata changes to in-scope artifacts since the last check, and
+   report everything it finds. Query shape (proven 2026-08-05): filter on
+   `CreatedDate` only — `Section` is NOT filterable in SetupAuditTrail SOQL
+   (`INVALID_FIELD`) — and post-filter client-side on Section/Display.
+   **What it sees for VRs:** activation flips (`changedValidationActive`),
+   formula edits WITH before/after text (`changedValidationFormula` — the
+   2026-06-12 dogfood P3 edit and its restore are both visible, as a pair),
+   create/remove (`newValidation` / `removedValidation`). **What it cannot
+   see:** flow LOGIC content — flows appear as version events only
+   (`created/activated/deactivatedinteractiondefversion`), so the
+   open-snapshot diff of rules 1–2 remains the content mechanism — and
+   anything older than the API retention: **180 days** (documented; env-59's
+   observed floor is 2026-03-19, the org's history start, so the wall is
+   not yet reached). 180 days covers any plausible abandonment gap (the
+   real incident ran 51 days); the permanent no-retention record is S1's
+   own version history. **Expected vs unexplained:** a change inside an
+   open, logged window that matches the window's perturbation IS the
+   perturbation; ANY in-scope change with no open window is an **INCIDENT**
+   — report it and do not open a window over it. Paths: the sf CLI
+   (`sf data query`, used for all the above evidence) or the product's
+   read-only `SalesforceClient.probe_setup_audit_trail`
+   (`integrations/sf_client.py:402` — existence-probe with SF-server-time
+   watermark today; row-fetch is a small extension of the same method
+   family; requires "View Setup and Configuration"). **NOT YET BUILT into
+   the verifier** — it ships with the rule-2 precondition work, before any
+   window.
 
 **Clauses (mirroring P6 (a)–(e); operative only on signature):**
 
@@ -285,11 +315,12 @@ the signed P2 has no effect as written.
 
 (b) **ABANDONMENT CHECK EXTENSION.** The first action of any session after
     an aborted or unconfirmed window: retrieve-and-diff every eligible VR
-    against the snapshot store, AND determine whether the schedule fired
-    inside the window, quarantining any runs that did. (For VRs the daily
-    S1 sync gives ambient detection flows lack — a perturbed formula
-    surfaces as S8 grounding drift at the next sync — but ambient
-    detection is not a substitute for the check.)
+    against the snapshot store, query SetupAuditTrail per rule 7 to
+    enumerate what actually changed inside the window, AND determine
+    whether the schedule fired inside the window, quarantining any runs
+    that did. (For VRs the daily S1 sync gives ambient detection flows
+    lack — a perturbed formula surfaces as S8 grounding drift at the next
+    sync — but ambient detection is not a substitute for the check.)
 
 (c) **REVOCATION TRIGGER.** VOID once the shape family the window targets
     has its decidable red recorded in the campaign ledger — made
@@ -354,9 +385,13 @@ object. Expected cause verified through the production
 evaluates True, so post-sync the bucket is `violated_inactive` → expected
 cause **`vr_inactive` naming the rule**). Sync BEFORE the graded run, as
 in §7 rule 6 — pre-sync the same red would read `enforcement_gap`, which
-D-430 rules out. §7 rules 1–3 and clauses (a)–(e) apply by reference
-(same snapshot discipline, same verifier preconditions, revocation marker
-`P2 REVOCATION MET`, expiry filled at signature).
+D-430 rules out. §7 rules 1–3 and 7, and clauses (a)–(e), apply by
+reference (same snapshot discipline, same verifier preconditions,
+revocation marker `P2 REVOCATION MET`, expiry filled at signature). Note
+that P2′'s perturbation class is EXACTLY what rule 7's detector sees —
+`changedValidationActive` is the very entry the D-432 incident left
+unread for seven weeks; an abandoned P2′ window is now the detector's
+easiest catch.
 
 **AK sign-off:** ____________________  date: ____-__-__
 — covering the P2′ row, its window claim, and the §7 clauses by reference.
