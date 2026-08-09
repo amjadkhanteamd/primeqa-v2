@@ -125,6 +125,13 @@ claim, and none of those 4 reds indicts the feature's own behaviour.** See §1.3
   rule, seq, and before/after. The drafts stay on file. **Exit: NOT MET —
   PARTIAL, "0 of 8 families demonstrated, 2 reachable-undemonstrated, 6
   BLOCKED"** (criteria 1/2 met, 4 in intent; criterion 3 unmet — see §3.1).
+- **AMENDED EXIT (2026-08-09, D-436): EXIT MET (DETECTION)** under the
+  amended criterion 3(b) — the D-434 instrument demonstrates same-day change
+  detection naming the artifact for **all 52 rules, every shape family**.
+  **The qualification, in this same row:** this is a DETECTION exit, not an
+  attribution exit — attribution reds stand at **0 of 8 families** (2
+  reachable only via the UNSIGNED P2′/P3′ drafts, 6 BLOCKED on their D-431
+  owners), and a buyer must be told these are different capabilities.
 
 #### BeforeSave Flows
 - **S1** — 5 entities, all active, `flow_details.trigger_type='BeforeSave'`.
@@ -410,6 +417,12 @@ demonstrated, 2 reachable-undemonstrated, 6 BLOCKED on their named owners.**
 Detection coverage and criterion-3 detection are different measures; this
 document does not conflate them.
 
+**Amendment follow-on (2026-08-09, D-436):** AK amended criterion 3 — see the
+§3.1 dated block — and the VR family now records **EXIT MET (DETECTION)**
+under form (b), with the attribution position unchanged and visible: 0 of 8
+families hold an attribution red; the six BLOCKED owners stay on the §6.2
+register; the P2′/P3′ drafts remain on file, UNSIGNED.
+
 ### 2.2 Flow shapes (35 captured flows)
 
 | Trigger shape | Captured | Active | Exercised | Runs | Failed |
@@ -513,7 +526,48 @@ shape-family detection red** (D-431 — within itself it cannot distinguish a
 wrongly-strict rule from a legitimately-forbidding one; §1.3 already treats
 `f2b072ac`'s instance as test-side). Detector drift events (D-434) are a
 **separate instrument** and never count toward criterion 3 — see the §2.1
-lane-close note.
+lane-close note. *(The "never count" sentence is superseded by the 2026-08-09
+amendment below, which admits detection as an explicit, separately-labelled
+exit instrument — not as a criterion-3 attribution red.)*
+
+**CRITERION 3 — AMENDED (2026-08-09, per AK's direction; D-436).** A shape
+family exits criterion 3 when it has **EITHER**:
+
+  **(a)** a **demonstrated decidable attribution red** — a run that failed
+  and whose S6 cause names the mechanism, from the decidable set above (the
+  original form), **OR**
+
+  **(b)** **demonstrated same-day change detection naming the changed
+  artifact** — the S1 version-diff instrument (D-434) reporting the artifact,
+  the capturing seq, and the facet's before/after, proven against real
+  history.
+
+*Reasoning, recorded with the amendment:* the original form was written for
+**flows**, where S1 captures no logic — a run is the only way to observe that
+a flow changed, so a run-red is the only honest demonstration. **Validation
+rules are different in kind**: S1 holds `vr_formula_text` and the active flag
+per version, so change detection needs no run (D-434's acceptance proved it
+1:1 against SetupAuditTrail; the seq-66 specimen was captured by S1 the same
+morning the org changed). Applying the run-red form uniformly treats a
+capability difference as a coverage gap. This is an **amendment — dated,
+reasoned, recorded before any family is marked exited under it**; D-420's
+post-hoc exit is what this discipline exists to prevent.
+
+*Instrument map:* **Flows — attribution only** for the §2.2 logic/effect
+families (no captured logic; activation-flag detection exists but activation
+is not a §2.2 shape family). **VRs — detection for all 8 §2.1 families**
+(formula + active flag captured for every rule), plus attribution where a
+claim covers the rule (13 of 52). **Picklists** — a constraint layer, not
+claim families; detection coverage is recorded separately.
+
+*UNMET regardless:* the six BLOCKED VR families still cannot produce
+**attribution** reds — that stays on this ledger with its owners (D-431)
+and is untouched by this amendment.
+
+*Visibility rule:* an exit under (b) is recorded as **EXIT MET (DETECTION)**
+— never presented as an attribution exit. A reader must be able to see that
+"changes to all 52 rules are detected the day S1 syncs them" and "behavioural
+breakage is proven by a failing run" are **different capabilities**.
 
 **BLOCKED shape families (amendment, 2026-08-02).** A shape family in which no
 decidable cause is *reachable* — because its failing verdict carries no
@@ -773,3 +827,4 @@ days; re-measure before citing this document in a decision.
 | 2026-08-05 (VR re-exit) | D-430/D-431: `enforcement_gap` recognized as **drift-only and not seedable** (no pre-sync windows — manufactured divergence is not detection); the accepted VR criterion-3 red is **`vr_formula_drift`**; over-enforcement reds do not qualify. §2.1 gains the family reachability table — **2 of 8 REACHABLE, 6 BLOCKED with owners** (every row verified on real evidence payloads through the production evaluator); the D-420 exit is superseded by the family-level re-exit; §6.2 gains the evaluator-blocked row. Protocol: **P3 amendment DRAFTED (§7, UNSIGNED)** — open-snapshot baseline, mandatory open/close retrieve-diff, S1 formula-text secondary signal, ground-rule-5 scope resolution with named eligible rules + named window claims, P6's five clauses with the expiry left blank for AK — and **P2 REDRAFTED (§8, UNSIGNED)**: the signed target `Contract_Value_Required_On_Closed_Won` was found ALREADY INACTIVE org-side (S1 seq 66→67, the 2026-06-15/16 sync, three days after P2 was signed) with zero claim coverage; retargeted at `Opportunity.Amount` / claim `94c34988` for the never-seen-live named `vr_inactive` red. Nothing signed; no VR window may open. |
 | 2026-08-05 (D-432) | The mid-June deactivation investigated and settled: **SetupAuditTrail names AK** (`changedValidationActive`, 2026-06-15T08:28:34Z, Setup → Validation Rules, "from 1 to 0") — an isolated org-side manual action (the whole seq-66 sync delta = 1 User + this 1 VR; nothing else went inactive in the window: 14 other inactive VRs are managed-package rules inactive since first capture, zero inactive Flows; no Plimsol code path can write metadata at all). Likely a manually-opened, never-restored P2 window — inference, AK to confirm. The §0 green-only blind spot observed in production: the rule had ZERO covering claims, and 38 of 52 active VRs share that state (73% of rules undetectable for this class). **Window order flipped: P2′ first, P3′ second** (§2.1). Verifier: the status parse is now bounded per section with a per-label snapshot gate (`p6-*`/`p3-*`/`p2-*` each check their own section — posture-proven offline 18/18 + live CLI refusals at exit 2); the §7/§8 banner-wording workaround is reverted to the standard draft banner. Nothing signed; nothing reactivated. |
 | 2026-08-05 (lane close) | **The VR lane closes on the detection/attribution split (D-434/D-435).** The S1 version-diff detector is MERGED to main @7fa39a3 (retroactive acceptance: 22 events across all history, 1:1 against the 22-entry SetupAuditTrail sweep — the seq-66 ACTIVATION and the seq-58/59 FORMULA edit+restore pair both caught, zero spurious). Detection now covers **52/52 active rules** (incl. managed + dead-by-formula arming); claims remain the attribution instrument (13 covered; 6 org-native coverable as requirements justify). **P2′/P3′ deliberately NOT run** — wider coverage with no signature; `vr_formula_drift` cannot name the changed rule, the detector can; drafts stay on file. §3.1 decidable set reconciled with D-430/D-431 (`vr_formula_drift` in; `other_vr_fired` disqualified for VR families; detector events never count toward criterion 3). **Exit stated without softening: criterion 3 NOT MET — PARTIAL, 0 of 8 families demonstrated, 2 reachable-undemonstrated (unsigned windows), 6 BLOCKED(D-344 ×2, org-state evaluator ×2, field-vs-field extension, RecordTypeId resolver).** |
+| 2026-08-09 (criterion amendment) | **Criterion 3 AMENDED per AK's direction (D-436)**: a shape family exits on EITHER a demonstrated decidable attribution red OR demonstrated same-day change detection naming the changed artifact (§3.1 dated block, with reasoning — the run-red form was flow-shaped; S1 holds VR formula+active, so detection needs no run; a capability difference is not a coverage gap). Instrument map recorded (flows attribution-only; VRs detection all-families + attribution where covered; picklists constraint layer). **VR family: EXIT MET (DETECTION)** with the qualification in the same row — attribution reds remain 0/8 (2 reachable via UNSIGNED drafts, 6 BLOCKED with owners, untouched). Supersedes the 08-05 PARTIAL verdict (criterion changed, not facts). |
