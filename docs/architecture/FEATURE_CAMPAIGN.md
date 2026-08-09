@@ -112,6 +112,19 @@ claim, and none of those 4 reds indicts the feature's own behaviour.** See §1.3
   drift-only and not seedable (D-430); over-enforcement reds do not qualify
   (D-431). P3/P2 amendment drafts carrying the P6 discipline sit in the
   protocol §7/§8, **UNSIGNED**.
+- **LANE CLOSE (2026-08-05, D-434/D-435)** — the operating posture is the
+  **detection/attribution split**: the S1 version-diff detector
+  (`semantic/metadata_drift.py`, live on main; retroactive acceptance 22
+  events, 1:1 against the SetupAuditTrail sweep) is the DETECTION instrument
+  for **all 52 active rules** — including the 33 managed and the 12
+  dead-by-formula rules no claim could ever observe — and claims are the
+  ATTRIBUTION instrument (13 covered today; the 6 org-native coverable ones
+  as requirements justify, D-433). **P2′/P3′ were deliberately NOT run**
+  (D-435): the detector delivers wider coverage with no signature, and
+  `vr_formula_drift` cannot name which rule changed while the detector names
+  rule, seq, and before/after. The drafts stay on file. **Exit: NOT MET —
+  PARTIAL, "0 of 8 families demonstrated, 2 reachable-undemonstrated, 6
+  BLOCKED"** (criteria 1/2 met, 4 in intent; criterion 3 unmet — see §3.1).
 
 #### BeforeSave Flows
 - **S1** — 5 entities, all active, `flow_details.trigger_type='BeforeSave'`.
@@ -387,6 +400,16 @@ event — D-432's seven-week-invisible deactivation of
 protocol §7, UNSIGNED — `Case.Escalation_Reason_Required`, claim `1db82105`)
 follows. Both pending AK's signature.
 
+**Lane close (2026-08-05, D-435): the windows were deliberately not run.**
+The D-434 detector covers change detection for 52/52 rules with no signature
+and no org write; a window would demonstrate the run-level red for one family
+at a time. That run-level demonstration is **deferred, not abandoned** — the
+drafts stay on file — and until it happens (or AK explicitly amends/waives per
+§3.1), **the VR family's criterion 3 stands unmet: 0 of 8 families
+demonstrated, 2 reachable-undemonstrated, 6 BLOCKED on their named owners.**
+Detection coverage and criterion-3 detection are different measures; this
+document does not conflate them.
+
 ### 2.2 Flow shapes (35 captured flows)
 
 | Trigger shape | Captured | Active | Exercised | Runs | Failed |
@@ -479,6 +502,18 @@ A feature is **COVERED** when:
 
 **A feature that has only ever gone green is NOT covered.** Criterion 3 has no
 waiver.
+
+**Decidable-set amendment (2026-08-05, D-430/D-431/D-435).** The enumeration
+above predated the VR re-exit decisions and was inconsistent with them; it is
+reconciled as follows. **`vr_formula_drift` joins the decidable set** for VR
+shape families (D-430 — "the rule was edited since generation" is a definite
+mechanism; its `vr_name=None` limitation is recorded, not disqualifying).
+**`other_vr_fired` stays decidable as a cause but does NOT qualify as a VR
+shape-family detection red** (D-431 — within itself it cannot distinguish a
+wrongly-strict rule from a legitimately-forbidding one; §1.3 already treats
+`f2b072ac`'s instance as test-side). Detector drift events (D-434) are a
+**separate instrument** and never count toward criterion 3 — see the §2.1
+lane-close note.
 
 **BLOCKED shape families (amendment, 2026-08-02).** A shape family in which no
 decidable cause is *reachable* — because its failing verdict carries no
@@ -737,3 +772,4 @@ days; re-measure before citing this document in a decision.
 | 2026-08-05 (P6-F1) | **P6 REVOCATION MET** — the first P6 window (D-429) recorded the AfterSave divergent-value family's demonstrated decidable red: run `aa02cbc6` on `c6c4d1e1`, `automation_effect_divergent`, asserted 2 / observed 4.0, seeded via FL07 `varCount` 1.0→2.0 under the 2026-08-05 signature; restore verified IDENTICAL, confirm run green. Clause (c): the P6 authorisation is now VOID — further perturbation requires a fresh signature. |
 | 2026-08-05 (VR re-exit) | D-430/D-431: `enforcement_gap` recognized as **drift-only and not seedable** (no pre-sync windows — manufactured divergence is not detection); the accepted VR criterion-3 red is **`vr_formula_drift`**; over-enforcement reds do not qualify. §2.1 gains the family reachability table — **2 of 8 REACHABLE, 6 BLOCKED with owners** (every row verified on real evidence payloads through the production evaluator); the D-420 exit is superseded by the family-level re-exit; §6.2 gains the evaluator-blocked row. Protocol: **P3 amendment DRAFTED (§7, UNSIGNED)** — open-snapshot baseline, mandatory open/close retrieve-diff, S1 formula-text secondary signal, ground-rule-5 scope resolution with named eligible rules + named window claims, P6's five clauses with the expiry left blank for AK — and **P2 REDRAFTED (§8, UNSIGNED)**: the signed target `Contract_Value_Required_On_Closed_Won` was found ALREADY INACTIVE org-side (S1 seq 66→67, the 2026-06-15/16 sync, three days after P2 was signed) with zero claim coverage; retargeted at `Opportunity.Amount` / claim `94c34988` for the never-seen-live named `vr_inactive` red. Nothing signed; no VR window may open. |
 | 2026-08-05 (D-432) | The mid-June deactivation investigated and settled: **SetupAuditTrail names AK** (`changedValidationActive`, 2026-06-15T08:28:34Z, Setup → Validation Rules, "from 1 to 0") — an isolated org-side manual action (the whole seq-66 sync delta = 1 User + this 1 VR; nothing else went inactive in the window: 14 other inactive VRs are managed-package rules inactive since first capture, zero inactive Flows; no Plimsol code path can write metadata at all). Likely a manually-opened, never-restored P2 window — inference, AK to confirm. The §0 green-only blind spot observed in production: the rule had ZERO covering claims, and 38 of 52 active VRs share that state (73% of rules undetectable for this class). **Window order flipped: P2′ first, P3′ second** (§2.1). Verifier: the status parse is now bounded per section with a per-label snapshot gate (`p6-*`/`p3-*`/`p2-*` each check their own section — posture-proven offline 18/18 + live CLI refusals at exit 2); the §7/§8 banner-wording workaround is reverted to the standard draft banner. Nothing signed; nothing reactivated. |
+| 2026-08-05 (lane close) | **The VR lane closes on the detection/attribution split (D-434/D-435).** The S1 version-diff detector is MERGED to main @7fa39a3 (retroactive acceptance: 22 events across all history, 1:1 against the 22-entry SetupAuditTrail sweep — the seq-66 ACTIVATION and the seq-58/59 FORMULA edit+restore pair both caught, zero spurious). Detection now covers **52/52 active rules** (incl. managed + dead-by-formula arming); claims remain the attribution instrument (13 covered; 6 org-native coverable as requirements justify). **P2′/P3′ deliberately NOT run** — wider coverage with no signature; `vr_formula_drift` cannot name the changed rule, the detector can; drafts stay on file. §3.1 decidable set reconciled with D-430/D-431 (`vr_formula_drift` in; `other_vr_fired` disqualified for VR families; detector events never count toward criterion 3). **Exit stated without softening: criterion 3 NOT MET — PARTIAL, 0 of 8 families demonstrated, 2 reachable-undemonstrated (unsigned windows), 6 BLOCKED(D-344 ×2, org-state evaluator ×2, field-vs-field extension, RecordTypeId resolver).** |
