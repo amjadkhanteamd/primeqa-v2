@@ -29,6 +29,9 @@ def main() -> int:
                    help="tenant schema (default: tenant_1)")
     p.add_argument("--since-seq", type=int, default=None,
                    help="only report events at or after this version seq")
+    p.add_argument("--type", dest="types", default="all",
+                   choices=["vr", "picklist", "flow", "all"],
+                   help="artifact type to diff (default: all)")
     args = p.parse_args()
 
     for line in open(os.path.join(REPO, ".env")):
@@ -38,27 +41,33 @@ def main() -> int:
             os.environ.setdefault(k, v)
 
     from sqlalchemy import create_engine, text
-    from primeqa.semantic.metadata_drift import detect_vr_drift
+    from primeqa.semantic.metadata_drift import (
+        detect_flow_drift, detect_picklist_drift, detect_vr_drift)
+
+    detectors = {"vr": detect_vr_drift, "picklist": detect_picklist_drift,
+                 "flow": detect_flow_drift}
+    wanted = list(detectors) if args.types == "all" else [args.types]
 
     engine = create_engine(os.environ["DATABASE_URL"])
+    total = 0
     with engine.connect() as conn:
         conn.execute(text(f"SET search_path TO {args.schema}, public"))
-        events = detect_vr_drift(conn, args.org, since_seq=args.since_seq)
-
-    if not events:
+        for t in wanted:
+            events = detectors[t](conn, args.org, since_seq=args.since_seq)
+            total += len(events)
+            print(f"== {t}: {len(events)} drift event(s) ==")
+            for e in events:
+                when = (e.at or "?")[:10]
+                print(f"[{e.kind}] seq {e.seq} ({when}) {e.rule}")
+                if e.kind == "FORMULA":
+                    print(f"    before: {e.before!r}")
+                    print(f"    after:  {e.after!r}")
+                elif e.before is not None or e.after is not None:
+                    print(f"    {e.before!r} -> {e.after!r}")
+                if e.note:
+                    print(f"    NOTE: {e.note}")
+    if total == 0:
         print("no drift events")
-        return 0
-    print(f"{len(events)} drift event(s):")
-    for e in events:
-        when = (e.at or "?")[:10]
-        print(f"[{e.kind}] seq {e.seq} ({when}) {e.rule}")
-        if e.kind == "FORMULA":
-            print(f"    before: {e.before!r}")
-            print(f"    after:  {e.after!r}")
-        elif e.before is not None or e.after is not None:
-            print(f"    {e.before!r} -> {e.after!r}")
-        if e.note:
-            print(f"    NOTE: {e.note}")
     return 0
 
 
