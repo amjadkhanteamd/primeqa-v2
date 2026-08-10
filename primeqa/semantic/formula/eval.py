@@ -46,6 +46,15 @@ from primeqa.semantic.formula.nodes import (
 
 _ORG_STATE_FUNCS = {"PRIORVALUE", "ISCHANGED", "ISNEW"}
 
+# D-442 (B1): ISNULL is evaluable ONLY on field types where Salesforce null
+# semantics match the blank check — the documented "text fields are never
+# null" rule is honoured by REFUSAL on non-nullable/unknown types, never by
+# emulating always-False from a secondary source.
+_NULLABLE_TYPES = frozenset({
+    "double", "currency", "percent", "int", "integer", "long",
+    "date", "datetime", "time",
+})
+
 # Comparison op re-oriented to (field, literal) when the literal is on the LEFT.
 _FLIP = {"<": ">", ">": "<", "<=": ">=", ">=": "<=", "=": "=", "<>": "<>"}
 
@@ -95,6 +104,14 @@ class EvalContext:
     is_create: Optional[bool] = None
     record_type_developer_name: Optional[
         Callable[[str], Optional[str]]] = None
+    # D-442: bare field name -> the field's S1 ``field_type`` (or None =
+    # unknown). Feeds two guards and one conversion: ISNULL refuses unless
+    # the type is known-nullable; percent-typed comparison operands convert
+    # API value -> fraction (÷100 — Salesforce VR formulas evaluate percent
+    # fields in FRACTION space, live-proven from the org's own firing
+    # boundary: create Discount=20 succeeds against `> 0.20`, update 20.01
+    # fires).
+    field_type_of: Optional[Callable[[str], Optional[str]]] = None
 
 
 def evaluate(ast, payload: dict, *, context: Optional[EvalContext] = None,
@@ -171,7 +188,7 @@ def _eval_comparison(node: Comparison, payload,
     elif isinstance(left, Literal) and isinstance(right, FieldRef):
         fref, lit, op = right, left, _FLIP[node.op]
     elif isinstance(left, FieldRef) and isinstance(right, FieldRef):
-        return _eval_field_vs_field(left, right, node.op, payload)
+        return _eval_field_vs_field(left, right, node.op, payload, ctx)
     else:
         return NonEvaluable("comparison without a single field + literal")
     if fref.is_dotted:
@@ -181,11 +198,28 @@ def _eval_comparison(node: Comparison, payload,
         return NonEvaluable(f"cross-object ref {fref.name}")
     if fref.path[0] not in payload:
         return NonEvaluable(f"field {fref.path[0]} absent from payload")
-    return _compare(payload[fref.path[0]], op, lit)
+    return _compare(_percent_adjusted(payload[fref.path[0]], fref.path[0],
+                                      ctx), op, lit)
+
+
+def _percent_adjusted(value, field: str, ctx: Optional[EvalContext]):
+    """D-442: Salesforce VR formulas evaluate PERCENT fields in fraction
+    space (API value ÷ 100) — live-proven by the org's own firing boundary
+    (create `Discount=20` succeeds against `> 0.20`; update `20.01` fires).
+    Convert only when the type is KNOWN percent; with no resolver or an
+    unknown type the raw value stands as before (residual risk documented in
+    the census)."""
+    if (ctx is not None and ctx.field_type_of is not None
+            and isinstance(value, (int, float))
+            and not isinstance(value, bool)
+            and str(ctx.field_type_of(field)).lower() == "percent"):
+        return value / 100.0
+    return value
 
 
 def _eval_field_vs_field(left: FieldRef, right: FieldRef, op: str,
-                         payload) -> EvalResult:
+                         payload,
+                         ctx: Optional[EvalContext] = None) -> EvalResult:
     """D-439 field-vs-field: both bare, both present, both NUMERIC → compare.
     Anything else — dotted, absent, None (a blank), bool, non-numeric — is
     NonEvaluable: Salesforce's blank-vs-zero handling in numeric comparison
@@ -204,6 +238,8 @@ def _eval_field_vs_field(left: FieldRef, right: FieldRef, op: str,
         if isinstance(v, bool) or not isinstance(v, (int, float)):
             return NonEvaluable("non-numeric operand in field-to-field "
                                 "comparison")
+    lv = _percent_adjusted(lv, lf, ctx)
+    rv = _percent_adjusted(rv, rf, ctx)
     return _ORDER[op](lv, rv)
 
 
@@ -259,15 +295,39 @@ def _eval_function(node: FunctionCall, payload,
     name = node.name
     if name in _ORG_STATE_FUNCS:
         return _eval_org_state(node, payload, ctx)
-    if name in ("ISBLANK", "ISNULL"):
+    if name == "ISBLANK":
         field = _single_field(node)
         if field is None:
-            return NonEvaluable(f"{name} without a single same-object field")
+            return NonEvaluable("ISBLANK without a single same-object field")
+        v = payload.get(field)
+        return v is None or v == ""
+    if name == "ISNULL":
+        # D-442 (B1): evaluable ONLY when the field's type is known-nullable.
+        # Text-like types refuse (SF: "text fields are never null" — we
+        # refuse rather than emulate); UNKNOWN type refuses too — never a
+        # guessed verdict.
+        field = _single_field(node)
+        if field is None:
+            return NonEvaluable("ISNULL without a single same-object field")
+        ftype = (ctx.field_type_of(field)
+                 if ctx is not None and ctx.field_type_of is not None
+                 else None)
+        if ftype is None or str(ftype).lower() not in _NULLABLE_TYPES:
+            return NonEvaluable(
+                f"ISNULL({field}) on a non-nullable or unknown field type "
+                f"({ftype!r}) — Salesforce text-family null semantics "
+                f"diverge; refusing rather than guessing (D-442)")
         v = payload.get(field)
         return v is None or v == ""
     if name == "ISPICKVAL":
         if len(node.args) != 2 or not isinstance(node.args[1], Literal):
             return NonEvaluable("ISPICKVAL without a literal value")
+        if node.args[1].value == "":
+            # D-442 (B2): the empty-literal blank test — Salesforce's own
+            # behaviour is disputed; refusing is the only sound answer.
+            return NonEvaluable(
+                "ISPICKVAL with an empty-string literal (the blank-test "
+                "idiom) — Salesforce semantics disputed; refusing (D-442)")
         field = _single_field(node)
         if field is not None:
             return payload.get(field) == node.args[1].value

@@ -50,7 +50,15 @@ def test_isblank_isnull():
     assert _ev("ISBLANK(Reason__c)", {"Reason__c": ""}) is True
     assert _ev("ISBLANK(Reason__c)", {"Reason__c": "x"}) is False
     assert _ev("ISBLANK(Reason__c)", {}) is True                 # absent = blank
-    assert _ev("ISNULL(Reason__c)", {"Reason__c": None}) is True
+    # D-442 (B1): ISNULL refuses without a KNOWN-nullable field type — SF's
+    # "text fields are never null" makes the type load-bearing; unknown
+    # type must never yield a guessed verdict.
+    from primeqa.semantic.formula import EvalContext
+    assert isinstance(_ev("ISNULL(Reason__c)", {"Reason__c": None}),
+                      NonEvaluable)
+    num_ctx = EvalContext(field_type_of=lambda f: "double")
+    assert evaluate(parse("ISNULL(Reason__c)"), {"Reason__c": None},
+                    context=num_ctx) is True
 
 
 def test_ispickval():

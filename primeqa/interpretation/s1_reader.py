@@ -130,6 +130,33 @@ class S1ValidationRuleReader:
                 )
         return None
 
+    def field_type(
+        self, object_external_id: str, field_external_id: str,
+    ) -> Optional[str]:
+        """D-442: one field's S1 ``field_type`` (``percent`` / ``double`` /
+        ``picklist`` / …) — the same BELONGS_TO walk as :meth:`field_meta`,
+        tolerant of bare vs object-qualified names. ``None`` when unknown —
+        the evaluator's ISNULL guard REFUSES on unknown, and the percent
+        conversion simply does not apply."""
+        seq = (self._at_seq if self._at_seq is not None
+               else self._model.current_version_seq())
+        obj = self._object(object_external_id, seq)
+        if obj is None:
+            return None
+        related = self._model.get_related(
+            obj.id, edge_types=[_BELONGS_TO], direction="inbound", at_seq=seq)
+        bare = field_external_id.split(".")[-1]
+        for r in related:
+            fld = r.entity
+            if fld.entity_type != "Field":
+                continue
+            api = fld.sf_api_name or ""
+            if api == field_external_id or api.split(".")[-1] == bare:
+                details = self._model.get_entity_details(fld.id, at_seq=seq) or {}
+                ftype = details.get("field_type")
+                return str(ftype) if ftype is not None else None
+        return None
+
     def record_type_developer_name(
         self, record_type_id: str,
     ) -> Optional[str]:

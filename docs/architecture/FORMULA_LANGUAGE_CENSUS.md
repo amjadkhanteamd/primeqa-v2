@@ -320,6 +320,36 @@ their intended prior state).
 
 ---
 
+## 5.1 CORRECTION (2026-08-10, D-442) — the percent cell was inverted; B1/B2 closed
+
+**Percent (§1.1) — OVERTURNED.** This census originally marked percent
+operands "sound, LIVE-CORROBORATED display space" via VR02's firings. That
+was a **mis-derivation** — the firings were never payload-checked. The
+actual live boundary, read from the org this same day: creates staging
+`Discount=20` **succeed** against `> 0.20`, updates staging `20.01` are
+**rejected** by VR02, `25.01` fires both VR02 and VR08 (`> 0.25`), and
+VR02's error message says "exceeds 20%" for a `0.20` literal. **Only
+fraction space (API value ÷ 100) explains every observation.** Percent was
+therefore a live-constructible category-B member (our API-space comparison
+fires where the org does not), and D-439's VR10 acceptance `True` was
+space-lucky — its Discount disjunct is org-False; the true verdict on that
+claim is NonEvaluable (its violation rides the temporal disjunct). **Fixed
+in D-442**: comparisons convert ÷100 when the field's S1 type is `percent`
+(primary-evidence semantics — the org's own boundary, not a secondary
+source); no resolver / unknown type → raw comparison as before, residual
+risk standing. VR10's window claim is corrected to **`a539908d`** (stages
+`Discount=20.01` → fraction 0.2001 > 0.20, genuinely True); its other five
+claims violate via the temporal disjunct and are honest-NE.
+
+**B1 (ISNULL-on-text) and B2 (ISPICKVAL blank-literal) — CLOSED by
+refusal** (D-442): ISNULL now evaluates only when the field's S1 type is in
+the known-nullable set (`double/currency/percent/int/long/date/datetime/
+time`) — text-like AND unknown types refuse (never a guessed verdict, and
+never an always-False emulation from a secondary source);
+`ISPICKVAL(f, "")` always refuses. Corpus re-verified per field this date:
+all four distinct ISNULL-arg fields are `double`/`percent`; zero
+blank-idiom instances; zero verdict movement.
+
 ## 6. Method appendix
 
 - **Harness:** every §1 row executed through `primeqa.semantic.formula.parse`

@@ -199,22 +199,40 @@ def _eval_context(step, evidence: RunEvidence, s1) -> EvalContext:
       RecordType family NonEvaluable).
     """
     resolver = getattr(s1, "record_type_developer_name", None)
+    # D-442: bare-field -> S1 field_type, memoized per attribution (feeds
+    # the ISNULL nullable-type guard + the percent fraction conversion).
+    type_reader = getattr(s1, "field_type", None)
+    field_type_of = None
+    if type_reader is not None and getattr(step, "sobject", None):
+        _cache: dict = {}
+        def field_type_of(field, _sobj=step.sobject):    # noqa: E306
+            if field not in _cache:
+                try:
+                    _cache[field] = type_reader(_sobj, field)
+                except Exception:                        # noqa: BLE001
+                    _cache[field] = None                 # unknown, never raise
+            return _cache[field]
     mutations = [s for s in evidence.steps
                  if isinstance(s, (UpdateAttemptEvidence,
                                    DeleteAttemptEvidence))]
     if len(mutations) > 1:
-        return EvalContext(record_type_developer_name=resolver)
+        return EvalContext(record_type_developer_name=resolver,
+                           field_type_of=field_type_of)
     if isinstance(step, CreateAttemptEvidence):
         return EvalContext(is_create=True,
-                           record_type_developer_name=resolver)
+                           record_type_developer_name=resolver,
+                           field_type_of=field_type_of)
     if isinstance(step, UpdateAttemptEvidence):
         setup = _create_step(evidence)
         if setup is None:
-            return EvalContext(record_type_developer_name=resolver)
+            return EvalContext(record_type_developer_name=resolver,
+                               field_type_of=field_type_of)
         return EvalContext(prior_state=dict(setup.field_values),
                            is_create=False,
-                           record_type_developer_name=resolver)
-    return EvalContext(record_type_developer_name=resolver)
+                           record_type_developer_name=resolver,
+                           field_type_of=field_type_of)
+    return EvalContext(record_type_developer_name=resolver,
+                       field_type_of=field_type_of)
 
 
 def _attribute_acceptance_rejected(evidence, s1) -> Optional[Cause]:
