@@ -32,7 +32,8 @@ from primeqa.execution_engine.evidence import (
     UpdateAttemptEvidence,
 )
 from primeqa.interpretation.model import Cause, Interpretation
-from primeqa.semantic.formula import NonEvaluable, evaluate, parse
+from primeqa.semantic.formula import (
+    EvalContext, NonEvaluable, evaluate, parse)
 
 import re
 
@@ -180,8 +181,40 @@ def _attribute_negative(verdict, evidence, s1) -> Optional[Cause]:
         return None
     vrs = s1.vrs_for_object(step.sobject)
     if verdict == "prohibition_not_enforced":
-        return _attribute_not_enforced(step, vrs, evidence)
+        return _attribute_not_enforced(
+            step, vrs, evidence, ctx=_eval_context(step, evidence, s1))
     return _attribute_unasserted(step, vrs)
+
+
+def _eval_context(step, evidence: RunEvidence, s1) -> EvalContext:
+    """The D-439 evaluation context for the graded step.
+
+    * ORG-STATE pair: graded create → ``is_create=True`` (no prior state);
+      graded update → ``is_create=False`` + the setup create's posted payload
+      as the prior state. **More than one mutation step → prior-state
+      ambiguity → NO pair** (org-state functions stay NonEvaluable — pinned);
+      today's 2-step negatives have exactly one, this guards the future.
+    * RecordType resolver: taken from the S1 reader when it offers one
+      (duck-typed — a narrow test stub without the method simply leaves the
+      RecordType family NonEvaluable).
+    """
+    resolver = getattr(s1, "record_type_developer_name", None)
+    mutations = [s for s in evidence.steps
+                 if isinstance(s, (UpdateAttemptEvidence,
+                                   DeleteAttemptEvidence))]
+    if len(mutations) > 1:
+        return EvalContext(record_type_developer_name=resolver)
+    if isinstance(step, CreateAttemptEvidence):
+        return EvalContext(is_create=True,
+                           record_type_developer_name=resolver)
+    if isinstance(step, UpdateAttemptEvidence):
+        setup = _create_step(evidence)
+        if setup is None:
+            return EvalContext(record_type_developer_name=resolver)
+        return EvalContext(prior_state=dict(setup.field_values),
+                           is_create=False,
+                           record_type_developer_name=resolver)
+    return EvalContext(record_type_developer_name=resolver)
 
 
 def _attribute_acceptance_rejected(evidence, s1) -> Optional[Cause]:
@@ -656,7 +689,9 @@ def _attribute_value_not_persisted(evidence, s1) -> Optional[Cause]:
 # (org-state / unset fields) so violation can't be computed.
 # ---------------------------------------------------------------------------
 
-def _attribute_not_enforced(step, vrs, evidence) -> Optional[Cause]:
+def _attribute_not_enforced(step, vrs, evidence, *,
+                            ctx: Optional[EvalContext] = None,
+                            ) -> Optional[Cause]:
     state = _effective_state(step, evidence)
     if state is None:
         # A delete leaves no field state to evaluate a formula against — and
@@ -675,7 +710,7 @@ def _attribute_not_enforced(step, vrs, evidence) -> Optional[Cause]:
     for vr in vrs:
         if not vr.formula_text:
             continue
-        result = evaluate(parse(vr.formula_text), state)
+        result = evaluate(parse(vr.formula_text), state, context=ctx)
         if result is True:
             # D-382: an UNKNOWN active-state VR whose formula violates is
             # indeterminate — bucketing it "inactive" fabricated a state.

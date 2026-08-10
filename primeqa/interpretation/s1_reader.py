@@ -130,6 +130,32 @@ class S1ValidationRuleReader:
                 )
         return None
 
+    def record_type_developer_name(
+        self, record_type_id: str,
+    ) -> Optional[str]:
+        """D-439: ``RecordTypeId`` → ``DeveloperName`` through S1's RecordType
+        entities. **First-15-char case-sensitive** id compare (the 18-char
+        form is the 15-char id plus a checksum suffix); the DeveloperName is
+        the ``sf_api_name`` suffix after the object (the ``Object.DeveloperName``
+        FullName convention). Returns ``None`` on an unresolvable or
+        AMBIGUOUS id — the evaluator maps that to NonEvaluable, never a
+        guess."""
+        rid = (record_type_id or "").strip()
+        if len(rid) < 15:
+            return None
+        key = rid[:15]
+        seq = (self._at_seq if self._at_seq is not None
+               else self._model.current_version_seq())
+        names = set()
+        for e in self._model.get_entities("RecordType", at_seq=seq):
+            sid = e.sf_id or ""
+            api = e.sf_api_name or ""
+            if sid[:15] == key and "." in api:
+                names.add(api.split(".", 1)[1])
+        if len(names) == 1:
+            return names.pop()
+        return None
+
     def _object(self, external_id: str, seq: int):
         objs = self._model.get_entities(
             "Object", at_seq=seq, filters={"sf_api_name": external_id})

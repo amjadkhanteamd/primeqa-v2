@@ -14,7 +14,7 @@ shared input for two consumers (Fork 1A): S1 REFERENCES-edge extraction
 """
 from __future__ import annotations
 
-from .eval import NonEvaluable, evaluate
+from .eval import EvalContext, NonEvaluable, evaluate
 from .nodes import (
     And,
     Arithmetic,
@@ -36,6 +36,7 @@ __all__ = [
     "is_parsed",
     "walk",
     "evaluate",
+    "EvalContext",
     "NonEvaluable",
     "NotParsed",
     "Node",
