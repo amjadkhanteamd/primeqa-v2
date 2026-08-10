@@ -6958,7 +6958,9 @@ class GovernanceCore:
                 "finalize_outcome D-413: declined %s/%s bundle for "
                 "requirement=%s — %d non-member literal(s): %s",
                 b.archetype, b.claim_kind,
-                getattr(ctx, "requirement_ref", None) or {},
+                # D-440: key ONLY — the full ref dict carries the Jira text,
+                # which must not land in retained logs.
+                (getattr(ctx, "requirement_ref", None) or {}).get("key"),
                 len(invalid),
                 "; ".join(f"{c.field}={c.value!r} ({c.detail})"
                           for c in invalid))
@@ -7010,7 +7012,9 @@ class GovernanceCore:
                 "finalize_outcome D-426: declined %s/%s bundle for "
                 "requirement=%s — %d representation defect(s): %s",
                 b.archetype, b.claim_kind,
-                getattr(ctx, "requirement_ref", None) or {},
+                # D-440: key ONLY — the full ref dict carries the Jira text,
+                # which must not land in retained logs.
+                (getattr(ctx, "requirement_ref", None) or {}).get("key"),
                 len(invalid),
                 "; ".join(f"{c.field}={c.value!r} ({c.detail})"
                           for c in invalid))

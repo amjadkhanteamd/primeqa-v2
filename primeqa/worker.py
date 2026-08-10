@@ -1007,6 +1007,17 @@ def run_worker():
     import signal
     import sys
 
+    # D-440: nothing in the codebase ever configured logging, so Python's
+    # last-resort handler discarded every worker INFO line since first deploy
+    # (sync completions, the D-438 drift emission, notify confirmations).
+    # Configure the channel — do not raise individual lines' levels around a
+    # config gap. Level via LOG_LEVEL if set; INFO default. basicConfig is a
+    # no-op if a handler already exists (embedded/test contexts unaffected).
+    logging.basicConfig(
+        level=os.environ.get("LOG_LEVEL", "INFO"),
+        format="%(asctime)s %(levelname)s %(name)s: %(message)s",
+    )
+
     worker_id = f"worker-{uuid.uuid4().hex[:8]}"
     pid = os.getpid()
     log.info("worker_lifecycle=start worker_id=%s pid=%s", worker_id, pid)
