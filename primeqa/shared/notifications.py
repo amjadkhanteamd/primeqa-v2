@@ -163,6 +163,34 @@ def notify_release_decision(db, tenant_id: int, release_name: str,
     ))
 
 
+def notify_metadata_drift(tenant_id: int, *, org_id: str, subject_line: str,
+                          body: str) -> None:
+    """D-438: notify tenant admins of UNREVIEWED S1 metadata drift, fired by
+    the post-sync hook. Best-effort — NEVER raises (the hook must not affect
+    the sync, and a notify must not affect the hook). With the default
+    ``log`` provider this is a loud log line; it upgrades to real alerting
+    automatically when NOTIFICATIONS_PROVIDER is configured. Re-notification
+    on every sync while a backlog stands unacknowledged is deliberate — the
+    review watermark (`--ack`) is the designed silencer, not time."""
+    try:
+        from primeqa.db import get_db
+        db = next(get_db())
+        try:
+            recipients = _admin_emails(db, tenant_id)
+        finally:
+            db.close()
+        send_email(Notification(
+            kind="metadata_drift",
+            subject=f"S1 metadata drift: unreviewed changes on org "
+                    f"{str(org_id)[:8]}",
+            body=subject_line + "\n\n" + body,
+            recipients=recipients,
+            tenant_id=tenant_id,
+        ))
+    except Exception as e:                   # noqa: BLE001 — best-effort
+        log.warning("notify_metadata_drift failed (non-fatal): %s", e)
+
+
 def notify_substrate_run_failed(tenant_id: int, *, run_id, test_id,
                                 environment_id, outcome: str,
                                 error_message: Optional[str] = None) -> None:

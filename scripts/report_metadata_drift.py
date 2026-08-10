@@ -32,6 +32,14 @@ def main() -> int:
     p.add_argument("--type", dest="types", default="all",
                    choices=["vr", "picklist", "flow", "all"],
                    help="artifact type to diff (default: all)")
+    p.add_argument("--since-watermark", action="store_true",
+                   help="list only events after the org's review watermark "
+                        "(the unreviewed backlog; full history when the org "
+                        "has never been reviewed)")
+    p.add_argument("--ack", action="store_true",
+                   help="after listing, advance the review watermark to the "
+                        "org's latest version seq — THE ONLY writer of the "
+                        "watermark (D-438); implies --since-watermark")
     args = p.parse_args()
 
     for line in open(os.path.join(REPO, ".env")):
@@ -48,12 +56,20 @@ def main() -> int:
                  "flow": detect_flow_drift}
     wanted = list(detectors) if args.types == "all" else [args.types]
 
+    from primeqa.sync.drift_hook import read_watermark, since_seq_for
+
     engine = create_engine(os.environ["DATABASE_URL"])
     total = 0
     with engine.connect() as conn:
         conn.execute(text(f"SET search_path TO {args.schema}, public"))
+        since = args.since_seq
+        if args.since_watermark or args.ack:
+            wm = read_watermark(conn, args.org)
+            since = since_seq_for(wm)
+            print(f"review watermark: "
+                  f"{'never-reviewed' if wm is None else f'seq {wm}'}")
         for t in wanted:
-            events = detectors[t](conn, args.org, since_seq=args.since_seq)
+            events = detectors[t](conn, args.org, since_seq=since)
             total += len(events)
             print(f"== {t}: {len(events)} drift event(s) ==")
             for e in events:
@@ -66,6 +82,31 @@ def main() -> int:
                     print(f"    {e.before!r} -> {e.after!r}")
                 if e.note:
                     print(f"    NOTE: {e.note}")
+        if args.ack:
+            # THE only watermark writer (D-438): explicit human review.
+            row = conn.execute(text(
+                "SELECT MAX(version_seq) FROM logical_versions "
+                "WHERE connected_org_id = CAST(:org AS uuid)"),
+                {"org": args.org}).fetchone()
+            latest = row[0] if row and row[0] is not None else None
+            if latest is None:
+                print("ACK refused: org has no versions to acknowledge")
+                return 1
+            reviewer = os.environ.get("USER") or "unknown"
+            conn.execute(text(
+                "INSERT INTO s1_drift_review_watermarks "
+                " (connected_org_id, last_reviewed_seq, reviewed_at, "
+                "  reviewed_by) "
+                "VALUES (CAST(:org AS uuid), :seq, now(), :by) "
+                "ON CONFLICT (connected_org_id) DO UPDATE SET "
+                " last_reviewed_seq = EXCLUDED.last_reviewed_seq, "
+                " reviewed_at = EXCLUDED.reviewed_at, "
+                " reviewed_by = EXCLUDED.reviewed_by"),
+                {"org": args.org, "seq": int(latest), "by": reviewer})
+            conn.commit()
+            print(f"ACKNOWLEDGED: watermark advanced to seq {latest} "
+                  f"(the {total} event(s) listed above are now reviewed; "
+                  f"reviewed_by={reviewer})")
     if total == 0:
         print("no drift events")
     return 0

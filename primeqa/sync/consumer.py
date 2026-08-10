@@ -227,6 +227,17 @@ def process_sync_job_for_tenant(
         store.complete(job.id)
         log.info("s1 sync job %s completed (sync_run=%s status=%s)",
                  job.id, sync_run_id, status)
+        # D-438: post-sync drift hook — AFTER the job is terminal, on its own
+        # connection; the hook never raises, and this outer wrap is defense
+        # in depth (even an import failure must not touch the sync outcome).
+        try:
+            from primeqa.sync.drift_hook import run_post_sync_drift_hook
+            run_post_sync_drift_hook(
+                tenant_id, job.connected_org_id, sync_run_id, status)
+        except Exception:                    # noqa: BLE001 — the outer wall
+            log.exception(
+                "S1-DRIFT-HOOK-FAILURE (outer): drift hook crashed; "
+                "sync job %s unaffected", job.id)
     return job.id
 
 
