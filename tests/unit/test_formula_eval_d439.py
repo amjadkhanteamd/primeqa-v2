@@ -39,13 +39,13 @@ def test_priorvalue_on_create_returns_current_CONFIRMED_salesforcefaqs():
     assert ev(f, {"Stage__c": "Draft"}, is_create=True) is False
 
 
-def test_ischanged_on_create_is_nonevaluable_NOT_VERIFIED():
-    """NOT conclusively verified against a published source — so the create
-    context REFUSES rather than guesses (D-399.1: a false confident verdict
-    is worse than an admitted gap)."""
+def test_ischanged_on_create_is_false_RESOLVED_D447():
+    """D-439 refused because the create semantics were unverified; D-447
+    resolved them on the retried official ISCHANGED article — "This
+    function returns FALSE when evaluating any field on a newly created
+    record." The pin moves with the verification, not against it."""
     r = ev("ISCHANGED(Stage__c)", {"Stage__c": "X"}, is_create=True)
-    assert isinstance(r, NonEvaluable)
-    assert "refusing to guess" in r.reason
+    assert r is False
 
 
 # ---------------------------------------------------------------------------

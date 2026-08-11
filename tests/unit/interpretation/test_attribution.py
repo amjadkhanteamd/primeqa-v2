@@ -139,18 +139,38 @@ def test_enforcement_gap_loosened_still_violating():
     assert interp.cause.vr_name == "AmountCap"
 
 
-def test_vr_formula_indeterminate():
-    # the active VR's current formula left the single-object evaluable subset
-    # (org-state ISCHANGED) → violation can't be computed → indeterminate, NOT a
-    # guessed drift (the old NotDerivable → drift collapse — D-114 fix). Carries the VR.
-    # D-229: the grounding VR references the SAME field the payload sets
-    # (ISCHANGED(Status__c) on a Status__c claim) — a coherent grounding, so the
-    # Finding-2 relevance filter keeps it.
+def test_ischanged_create_rule_now_decides_drift_d447():
+    # Pre-D-447 this scenario refused (create-context ISCHANGED unverified).
+    # D-447 resolved it on the official article — ISCHANGED is False on any
+    # newly created record — so a rule guarded ONLY by ISCHANGED provably
+    # cannot fire on a create: the current formula does not prohibit this
+    # state → vr_formula_drift, decidable, naming the rule.
     ev = _run(outcome="failed", create=_create(
         success=True, matched=False, http_status=201, body=[], record_id="001Z",
         field_values={"Status__c": "Final"}))
     s1 = _StubS1([VrMeta(name="ChangedGuard", is_active=True,
                          formula_text="ISCHANGED(Status__c)", error_message="x")])
+    interp = _interp(ev, s1)
+    assert interp.cause.cause_kind == "vr_formula_drift"
+    # the drift cause is aggregate-worded by design (it cannot know WHICH
+    # rule drifted in the general case) — no vr_name asserted.
+    assert "not violated" in interp.cause.detail
+
+
+def test_vr_formula_indeterminate():
+    # the active VR's current formula left the single-object evaluable subset
+    # (a TODAY temporal disjunct — still category C) → violation can't be
+    # computed → indeterminate, NOT a guessed drift (the old NotDerivable →
+    # drift collapse — D-114 fix). Carries the VR.
+    # D-229: the grounding VR references the SAME field the payload sets, so
+    # the Finding-2 relevance filter keeps it.
+    ev = _run(outcome="failed", create=_create(
+        success=True, matched=False, http_status=201, body=[], record_id="001Z",
+        field_values={"Status__c": "Final"}))
+    s1 = _StubS1([VrMeta(name="ChangedGuard", is_active=True,
+                         formula_text="ISCHANGED(Status__c) || "
+                                      "CloseDate < TODAY()",
+                         error_message="x")])
     interp = _interp(ev, s1)
     assert interp.cause.cause_kind == "vr_formula_indeterminate"
     assert interp.cause.vr_name == "ChangedGuard"

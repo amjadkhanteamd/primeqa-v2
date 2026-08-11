@@ -30,6 +30,7 @@ ISBLANK / ISNULL.
 from __future__ import annotations
 
 import operator
+import re
 from dataclasses import dataclass
 from typing import Callable, Mapping, Optional, Union
 
@@ -142,7 +143,13 @@ def _eval(node, payload, ctx: Optional[EvalContext] = None) -> EvalResult:
     if isinstance(node, FieldRef):
         return NonEvaluable(f"bare field predicate {node.name} (type-uncertain)")
     if isinstance(node, Literal):
-        return NonEvaluable("constant boolean predicate")
+        # D-447: a constant BOOLEAN error condition decides — literal
+        # `false` provably never fires (the census's 12 dead rules),
+        # literal `true` always does. Non-boolean bare literals stay
+        # refused (a bare number/string is not a boolean formula).
+        if isinstance(node.value, bool):
+            return node.value
+        return NonEvaluable("constant non-boolean predicate")
     return NonEvaluable("unrecognized node")
 
 
@@ -310,11 +317,57 @@ def _compare(value, op: str, literal: Literal) -> EvalResult:
     return NonEvaluable(f"unsupported literal kind {kind!r}")
 
 
+# D-447 REGEX guard (iii-b): Java character-class intersection ([a&&[b]])
+# is parsed LITERALLY by Python's re — a silent semantic divergence that
+# raises nothing, so it must be refused by inspection.
+_JAVA_CLASS_INTERSECTION = re.compile(r"\[[^\]]*&&")
+
+
+def _eval_regex(node: FunctionCall, payload) -> EvalResult:
+    """D-447: SF ``REGEX(text, pattern)`` behind the four D-344 guards.
+    SF semantics are Java ``String.matches`` — the WHOLE string must match
+    (guard i: ``re.fullmatch``, never ``search`` — the corpus's unanchored
+    ``FB-[0-9]{6}`` would otherwise wrongly match embedded occurrences).
+    The vr-dialect lexer already unescapes ``\\\\`` in string literals, so
+    the pattern compiles AS RECEIVED (guard ii: no double-unescape).
+    ``re.error`` — Java-only escapes, possessive quantifiers — refuses
+    (guard iii), as does the never-raising Java class-intersection syntax.
+    Blank/absent input refuses (guard iv: SF null-text semantics
+    unverified; the corpus's ISBLANK guards Kleene-resolve around it)."""
+    if (len(node.args) != 2 or not isinstance(node.args[1], Literal)
+            or not isinstance(node.args[1].value, str)):
+        return NonEvaluable("REGEX without a literal text pattern")
+    field = _single_field(node)
+    if field is None:
+        return NonEvaluable("REGEX without a single same-object field")
+    value = payload.get(field)
+    if value is None or value == "":
+        return NonEvaluable(
+            "REGEX on a blank input — Salesforce null-text semantics "
+            "not verified; refusing (D-447)")
+    if not isinstance(value, str):
+        return NonEvaluable("REGEX on a non-text payload value")
+    pattern = node.args[1].value
+    if _JAVA_CLASS_INTERSECTION.search(pattern):
+        return NonEvaluable(
+            "REGEX pattern uses Java character-class intersection — "
+            "Python re parses it literally (silent divergence); refusing "
+            "(D-447)")
+    try:
+        return re.fullmatch(pattern, value) is not None
+    except re.error:
+        return NonEvaluable(
+            "REGEX pattern does not compile under Python re — "
+            "Java-vs-Python syntax divergence; refusing (D-447)")
+
+
 def _eval_function(node: FunctionCall, payload,
                    ctx: Optional[EvalContext] = None) -> EvalResult:
     name = node.name
     if name in _ORG_STATE_FUNCS:
         return _eval_org_state(node, payload, ctx)
+    if name == "REGEX":
+        return _eval_regex(node, payload)
     if name == "ISBLANK":
         field = _single_field(node)
         if field is None:
@@ -379,9 +432,10 @@ def _eval_org_state(node: FunctionCall, payload,
         if field is None:
             return NonEvaluable("ISCHANGED without a single same-object field")
         if ctx.is_create:
-            return NonEvaluable(
-                "ISCHANGED on a create — published create-context semantics "
-                "not conclusively verified; refusing to guess (D-439)")
+            # D-447: resolved on the retried official source (the ISCHANGED
+            # article, rendered 2026-08-11): "This function returns FALSE
+            # when evaluating any field on a newly created record."
+            return False
         if ctx.prior_state is None:
             return NonEvaluable("ISCHANGED without a prior state")
         if field not in ctx.prior_state or field not in payload:
