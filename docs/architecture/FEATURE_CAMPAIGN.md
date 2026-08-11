@@ -132,6 +132,51 @@ claim, and none of those 4 reds indicts the feature's own behaviour.** See §1.3
   attribution exit — attribution reds stand at **0 of 8 families** (2
   reachable only via the UNSIGNED P2′/P3′ drafts, 6 BLOCKED on their D-431
   owners), and a buyer must be told these are different capabilities.
+- **CENSUS POSITION (2026-08-11, D-445)** — the two instruments, stated
+  against the census denominator (~43 construct groups; FORMULA_LANGUAGE_
+  CENSUS.md), not the 8 env-59 families:
+  - **DETECTION: construct-independent** — the instrument diffs captured
+    `is_active` + formula TEXT and never parses, so it covers all 52 rules
+    including the 5 NotParsed and the 12 dead-by-formula. **Three named
+    exceptions** (D-445): error-message-only edits are invisible (the
+    facets exclude `error_message` — and the message is §8.3's
+    exercised-instance join key, so message drift silently breaks
+    attribution matching); behaviour drift via referenced non-VR metadata
+    is covered for picklist values (D-437) but NOT for RecordType renames
+    or referenced-field type changes (no detector family — the rule's own
+    text never changes); capture-scope movement is flagged
+    CAPTURE_GENERATION, unknown shapes fail loud.
+  - **ATTRIBUTION vs the census**: category **A = 11 groups sound**
+    (D-439..D-444 arc: A was 6 at arc start; the org-state trio,
+    field-vs-field numeric and RecordType.DeveloperName armed by D-439;
+    three latent unsoundnesses inside the original 6 were surfaced by the
+    census and closed — ISNULL-on-text and the percent space inversion by
+    D-442, ISPICKVAL case by the D-444 live probe; text `=`/`<>` case
+    stays conditional, census §B.5, not settleable without a P3-class
+    action). **Env-59-unexercised A, named — working-in-principle is not
+    working**: `!=`, boolean-literal equality, `<`/`<=` shapes (mostly
+    managed), ISNEW (no active rule uses it), field-vs-field beyond the
+    single `Loan_Exceeds` instance. **B = 1 live unsoundness**: the
+    payload-model gap — the evaluator's state is the posted payload, so an
+    automation-written field evaluates blank/stale; it shadows every
+    category-A verdict on fields the payload does not set (D-425's
+    `before_save_automation_overwrote` is the live proof); honest close =
+    before-state/read-back capture (the D-203 residual), not evaluator
+    work. **C = 14 closable** — env-59 exercises three: REGEX (5 rules;
+    PLS_FB_VR01 has 2 approved claims; small — 4 guards), TODAY (3 rules;
+    VR06 has 3 approved claims but they stage RelativeDate tokens → the
+    S4 realized-value arc is the second half; small-medium), TEXT/string
+    family (2 managed rules, 0 claims; medium); plus constant-false (12
+    dead rules, trivial, value = provably-cannot-fire) and
+    ISCHANGED-on-create (verification-only). **D = 15 terminal** — each
+    re-tested against the D-439 precedent ("does the fact live anywhere
+    Plimsol can already see"): four have bounded SUB-CASE movers
+    (`$User.Id` via the parked D-415 identity arc; parent traversal into
+    a parent the recipe itself creates; ISCLONE on S4-authored saves —
+    False by construction; single-object formula-field operands — S1
+    captures `calculatedFormula` text), none moves as a family;
+    `vr_formula_indeterminate` naming the rule and reason remains the
+    correct terminal answer for the rest.
 
 #### BeforeSave Flows
 - **S1** — 5 entities, all active, `flow_details.trigger_type='BeforeSave'`.
@@ -422,6 +467,29 @@ document does not conflate them.
 under form (b), with the attribution position unchanged and visible: 0 of 8
 families hold an attribution red; the six BLOCKED owners stay on the §6.2
 register; the P2′/P3′ drafts remain on file, UNSIGNED.
+
+**Reachability refresh (2026-08-11, D-445) — supersedes the 2026-08-05
+table's MARKS, same method (production evaluator over the covering claim's
+real evidence effective-state):** the D-439/D-442/D-443/D-444 arming arc
+closed three of the six named blockers. Current marks: **REACHABLE 5 of 8**
+— single-field (`94c34988`, unchanged), cross-field (`1db82105`,
+unchanged), **ISCHANGED** (`a539908d` → True; the original window pick
+`279bd583`-class claims were percent-space-lucky, corrected by D-442),
+**field-vs-field** (`f4374c48` → True), **RecordType-conditional**
+(`e7d4c607` → True, via the D-439 resolver). **BLOCKED 3 of 8** —
+PRIORVALUE: the evaluator is armed but the family's only rule (VR05) has
+3-step covering claims and the D-441 >1-mutation guard rightly refuses
+them → owner is the D-441 ordered-fold + `_mutation_step` selection build;
+REGEX → D-344 arming (4 guards); date/temporal → D-344 TODAY arming + the
+S4 RelativeDate realized-value arc. **Demonstrated attribution reds:
+unchanged at 0 of 8** — evaluator arming is not demonstration; a red
+requires a signed window (P2′/P3′, on file, UNSIGNED) or a real org
+defect. The D-443 gate note belongs here too: the same arming now runs at
+EMISSION (sized 0-newly-refused over all 215 approved claims), so
+staged-transition self-defeats in the armed families are refused before
+they ship — and on claim `2ce190a5`'s real VR05 staging the old gate could
+only say unknown while the armed gate proves non-firing in both phases
+(D-443): the arming improves emission, not just attribution.
 
 **Detection coverage per artifact type (2026-08-09, D-437 — measured on the
 retroactive acceptance runs):**
