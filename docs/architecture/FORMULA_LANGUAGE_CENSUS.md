@@ -48,6 +48,13 @@
 
 **Category counts (construct-group granularity, tallied from §1):
 A = 11 · B = 3 confirmed + 2 conditional · C = 14 · D = 15.**
+*Superseded 2026-08-11 (D-442/D-444/D-447 — the original tally kept for the
+record): **A = 14 · B = 1 confirmed (the payload-model gap) + 1 conditional
+(text `=`/`<>` case, §B.5) · C = 11 · D = 15.** Movements: ISNULL-on-text
+and blank-ISPICKVAL closed by D-442 refusal-guards; percent inverted and
+fixed same-day (§5.1); ISPICKVAL case settled + guarded (D-444);
+constant-boolean, ISCHANGED-on-create (verified), and REGEX (guarded) armed
+C→A by D-447.*
 
 ---
 
@@ -71,7 +78,7 @@ Columns: **PARSE** (vr dialect, the one attribution and D-337 use) ·
 | Arithmetic `+ - * /` (incl. date arithmetic `CloseDate - 7`) | **NotParsed** (`trailing tokens at '+'` etc.) | — | honest | **C** (deterministic; medium — parser + numeric/date eval; the *value* dialect already parses arithmetic) |
 | Exponentiation `^` | **NotParsed** (`unexpected character '^'`) | — | honest | **C** (small) |
 | Concatenation `&` | **NotParsed** (`unexpected character '&'`) | — | honest | **C** (small, with the string family) |
-| Constant formula `TRUE` / `false` | ok | NE[`constant boolean predicate`] | honest (12 env-59 dead rules are literal `false`) | **C** (trivial) |
+| Constant formula `TRUE` / `false` | ok | **decides (D-447)**: `false` → provably never fires; `TRUE` → always | sound — deterministic, source-free; the 12 env-59 dead rules now evaluate "provably cannot fire" | **A** (D-447) |
 | Bare boolean field / `NOT(field)` | ok | NE[`bare field predicate (type-uncertain)`] | honest | **C** (small — needs S1 field-type to confirm checkbox) |
 | Percent-typed operands in comparisons | ok | compares in API/display space | **sound, LIVE-CORROBORATED**: VR02's covering claims stage `Discount=20` (API) and the org FIRES `> 0.20` — impossible in fraction space (0.20 > 0.20 = False) — so VR formulas compare percent in display space, the same space as our payloads | **A** |
 
@@ -86,7 +93,7 @@ Columns: **PARSE** (vr dialect, the one attribution and D-337 use) ·
 | `ISPICKVAL(f, "")` blank test | ok | blank → **False** | **UNSOUND — B.** SF's own behaviour for the empty-literal blank test is inconsistent/disputed in its ecosystem (the recommended idiom is `ISBLANK(TEXT(f))` precisely because of it); if SF returns True on blank, we produce a wrong verdict. Should be forced NE until org-verified | **B** |
 | `ISNEW()` | ok | ctx-create → True; ctx-update → False; no ctx → NE | sound (semantics source-verified, D-439) | **A** |
 | `ISCHANGED(f)` update-context | ok | pair compare; absence either side → NE; no ctx → NE | sound; **>1 mutation step → NE by the pinned guard** (D-441: the guard refused a real wrong verdict on VR05's 3-step claim) | **A** |
-| `ISCHANGED(f)` create-context | ok | **NE** (`refusing to guess`) | honest — SF create semantics not conclusively verified (D-439); closable by verification alone | **C** |
+| `ISCHANGED(f)` create-context | ok | **False (D-447)** | sound — RESOLVED on the retried official ISCHANGED article: "This function returns FALSE when evaluating any field on a newly created record" | **A** (D-447) |
 | `PRIORVALUE` composed (`ISPICKVAL(PRIORVALUE(f), lit)`) | ok | resolves prior (create → current, source-verified) | sound (D-439) | **A** |
 | `PRIORVALUE` standalone comparison (`PRIORVALUE(f) = 'x'`) | ok | NE[`comparison without a single field + literal`] | honest | **C** (small — same composition machinery) |
 | `IF` / `CASE` (vr dialect) | **NotParsed** (`unknown function`) | — | honest; the value dialect already parses `IF` | **C** (small port) |
@@ -99,7 +106,7 @@ Columns: **PARSE** (vr dialect, the one attribution and D-337 use) ·
 |---|---|---|---|---|
 | `TEXT` `VALUE` `LEN` `LEFT` `RIGHT` `MID` `FIND` `SUBSTITUTE` `TRIM` `LOWER` `UPPER` `BEGINS` `CONTAINS` | **NotParsed** (`unknown function`) | — | honest | **C** (medium as a family; each needs an SF-semantic pin when armed: `FIND` is 1-indexed/0-on-miss, `TEXT(picklist)` yields the API value, locale/number formatting for `TEXT(number)`) |
 | `INCLUDES` (multi-select) | **NotParsed** | — | honest | **C** (small-medium; semicolon-set semantics) |
-| `REGEX` | **ok** (D-344) | NE[`function REGEX not evaluable`]; Kleene guards still resolve (`NOT(ISBLANK(blank)) && …` → False) | honest — deliberately inert: D-344 kept "the Salesforce-vs-Python regex-semantics risk out of attribution". Arming needs 4 guards (fullmatch, `\\`-unescape, Java-syntax → NE, blank → NE) or it becomes B | **C** (small, guard-as-test) |
+| `REGEX` | **ok** (D-344) | **armed (D-447)** behind the four guards: `re.fullmatch`; pattern compiled AS RECEIVED (the lexer already unescapes `\\`→`\` — verified, so no double-unescape); `re.error` + Java class-intersection → NE; blank/non-text → NE | sound within the guards — pinned on the five real rules incl. the unanchored `FB-[0-9]{6}` fullmatch discriminator and the stored `"\\w+"` end-to-end | **A** (D-447) |
 | `HYPERLINK` `IMAGE` `BR` `CASESAFEID` | **NotParsed** | — | honest; presentation functions, near-zero VR relevance | **C** (trivial, low value) |
 
 ### 1.4 Date / time
@@ -222,6 +229,12 @@ TEXT/VALUE/LEN/…/CONTAINS (medium, per-function pins); INCLUDES
 (small-medium); NULLVALUE/BLANKVALUE/ISNUMBER (small); number family
 (small-medium, ROUND hazard); DATE/date-part family (small-medium);
 HYPERLINK/IMAGE/BR/CASESAFEID (trivial, low value).
+
+*Superseded 2026-08-11 (D-447): REGEX, constant TRUE/FALSE, and
+ISCHANGED-on-create are ARMED (category A above) — **11 groups remain**,
+headed by TODAY comparisons (the sole env-59-exercised member left; its
+second half is the S4 RelativeDate realized-value arc, not evaluator work),
+then the zero-instance remainder in the order listed.*
 
 ### D. NOT EVALUABLE IN PRINCIPLE from a staged payload — 15 groups. **The most important output.**
 

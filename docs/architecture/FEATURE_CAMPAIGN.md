@@ -177,6 +177,29 @@ claim, and none of those 4 reds indicts the feature's own behaviour.** See §1.3
     captures `calculatedFormula` text), none moves as a family;
     `vr_formula_indeterminate` naming the rule and reason remains the
     correct terminal answer for the rest.
+- **EXCEPTIONS CLOSED + C ARMED (2026-08-11, D-446/D-447 — supersedes the
+  category counts one block up):** detection exceptions (a) and (b)/(c)
+  are CLOSED — the VR family gains a **MESSAGE** facet (S1 captures the
+  error message on 71/71 version rows; message drift is the D-297
+  expected-rejection pattern and the attribution naming key, so the event
+  note says exactly what it breaks), and **RELATED_ENTITY_CHANGED** (4th
+  family, `related`) names every active rule affected by a referenced
+  field's TYPE change (per-version `field_details`) or a RecordType
+  DeveloperName rename (stable sf_id join) — no invented graph, the
+  D-229 lenient extractor over formula text. Retroactive counts
+  unchanged: vr 22 / picklist 64 / flow 24 / related 0. The matcher-miss
+  finding (S6 `other_vr_fired` degrades silently to `vr_name=None`;
+  S4 grades a drifted-message rejection as a wrong
+  `rejected_unasserted_reason` red) is RECORDED, not fixed — its own
+  verdict-impact sizing. Capture-scope stays flagged-not-classified by
+  design. **D-447 armed three C groups** (constant-boolean decides;
+  ISCHANGED-on-create resolved FALSE on the retried official article;
+  REGEX behind the four D-344 guards, pinned on the five real rules):
+  census counts now **A = 14 · B = 1+1 conditional · C = 11 · D = 15**.
+  Proofs on the armed tree: stored-verdict sweep identical; D-443 sizing
+  0-newly-refused. The D-337 gate's create-ISCHANGED branch is
+  DELIBERATELY unchanged (its flip is a generation-semantics change owing
+  its own sizing — a named follow-up).
 
 #### BeforeSave Flows
 - **S1** — 5 entities, all active, `flow_details.trigger_type='BeforeSave'`.
@@ -490,6 +513,18 @@ staged-transition self-defeats in the armed families are refused before
 they ship — and on claim `2ce190a5`'s real VR05 staging the old gate could
 only say unknown while the armed gate proves non-firing in both phases
 (D-443): the arming improves emission, not just attribution.
+
+**Reachability refresh 2 (2026-08-11, D-447 — same method):** **REGEX →
+REACHABLE, measured**: the armed evaluator over PLS_FB_VR01's covering
+claims' real evidence returns decidable verdicts — `47ee281d`
+(`!nv@l!d-format#`) → True, `c8c3210d` (`FB-000000`) → False, `1f8859e5`
+(` fb-000000 `, the padded-lowercase fullmatch specimen) → True — all
+three consistent with their live outcomes. **REACHABLE 6 of 8; BLOCKED
+2** (PRIORVALUE → the D-441 ordered-fold owner; date/temporal → the S4
+RelativeDate realized-value arc — TODAY alone no longer blocks the
+evaluator side but the covering claims stage token payloads).
+**Demonstrated attribution reds: still 0 of 8** — unchanged by arming,
+per the standing rule.
 
 **Detection coverage per artifact type (2026-08-09, D-437 — measured on the
 retroactive acceptance runs):**
