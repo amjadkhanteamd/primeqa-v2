@@ -30,7 +30,7 @@ def main() -> int:
     p.add_argument("--since-seq", type=int, default=None,
                    help="only report events at or after this version seq")
     p.add_argument("--type", dest="types", default="all",
-                   choices=["vr", "picklist", "flow", "all"],
+                   choices=["vr", "picklist", "flow", "related", "all"],
                    help="artifact type to diff (default: all)")
     p.add_argument("--since-watermark", action="store_true",
                    help="list only events after the org's review watermark "
@@ -50,10 +50,12 @@ def main() -> int:
 
     from sqlalchemy import create_engine, text
     from primeqa.semantic.metadata_drift import (
-        detect_flow_drift, detect_picklist_drift, detect_vr_drift)
+        detect_flow_drift, detect_picklist_drift,
+        detect_related_entity_drift, detect_vr_drift)
 
     detectors = {"vr": detect_vr_drift, "picklist": detect_picklist_drift,
-                 "flow": detect_flow_drift}
+                 "flow": detect_flow_drift,
+                 "related": detect_related_entity_drift}
     wanted = list(detectors) if args.types == "all" else [args.types]
 
     from primeqa.sync.drift_hook import read_watermark, since_seq_for

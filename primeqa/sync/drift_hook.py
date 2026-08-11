@@ -105,16 +105,19 @@ def format_drift_lines(events, *, watermark: Optional[int], org_id: str,
 
 def collect_drift_events(conn, connected_org_id: str,
                          since_seq: Optional[int]):
-    """All three detectors since ``since_seq``; returns (events,
+    """All four detectors since ``since_seq``; returns (events,
     counts_by_type) with events seq-ordered across types."""
     from primeqa.semantic.metadata_drift import (
-        detect_flow_drift, detect_picklist_drift, detect_vr_drift)
+        detect_flow_drift, detect_picklist_drift,
+        detect_related_entity_drift, detect_vr_drift)
     per_type = {
         "vr": detect_vr_drift(conn, connected_org_id, since_seq=since_seq),
         "picklist": detect_picklist_drift(conn, connected_org_id,
                                           since_seq=since_seq),
         "flow": detect_flow_drift(conn, connected_org_id,
                                   since_seq=since_seq),
+        "related": detect_related_entity_drift(conn, connected_org_id,
+                                               since_seq=since_seq),
     }
     events = sorted((e for evs in per_type.values() for e in evs),
                     key=lambda e: (e.seq, e.rule, e.kind))

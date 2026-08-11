@@ -54,14 +54,16 @@ from typing import Any, Callable, Iterable, Mapping, Optional
 
 from sqlalchemy import text
 
-from primeqa.semantic.entity_attributes import vr_formula_text
+from primeqa.semantic.entity_attributes import vr_error_message, vr_formula_text
 
 ACTIVATION = "ACTIVATION"
 FORMULA = "FORMULA"
+MESSAGE = "MESSAGE"
 LIFECYCLE = "LIFECYCLE"
 MEMBERSHIP = "MEMBERSHIP"
 VERSION_MOVED = "VERSION_MOVED"
 CAPTURE_GENERATION = "CAPTURE_GENERATION"
+RELATED_ENTITY_CHANGED = "RELATED_ENTITY_CHANGED"
 UNKNOWN = "UNKNOWN"
 
 # Capture marks that cannot yield reliable membership events (D-437 /
@@ -266,6 +268,21 @@ _VR_FACETS = (
            unknown_note="formula unextractable on one side — refusing to "
                         "infer a formula change",
            note=_formula_note),
+    # D-446: the error message is not behaviour, but it IS the run-time
+    # expected-rejection pattern (D-297 grading) and the other_vr_fired
+    # naming key (attribution) — message drift breaks grading/matching
+    # while the rule's firing behaviour is unchanged.
+    _Facet(kind=MESSAGE,
+           get=lambda r: vr_error_message(r.get("attributes") or {}),
+           fmt=lambda v: v,
+           unknown_note="error message unextractable on one side — refusing "
+                        "to infer a message change",
+           note=lambda p, n: (
+               "message-only drift: the rule's behaviour is unchanged, but "
+               "this text is the D-297 expected-rejection pattern and the "
+               "attribution naming key — stale-message runs grade "
+               "rejected_unasserted_reason and other_vr_fired loses the "
+               "rule name")),
 )
 
 
@@ -645,3 +662,161 @@ def _version_times(conn, connected_org_id: str) -> dict[int, str]:
             {"org": connected_org_id}).mappings()
         if r["created_at"] is not None
     }
+
+
+# ---------------------------------------------------------------------------
+# Related-entity changes (D-446): a rule's behaviour can move while its own
+# text does not — the change lives on an entity the formula references. Two
+# relatable classes, both from already-derivable data (no invented graph):
+# a referenced field's TYPE change (field_details is captured per version)
+# and a RecordType DeveloperName rename (rows carry a stable sf_id, so the
+# rename is joinable even though the api-name chain re-keys). Everything
+# else a formula can reference ($-globals, custom metadata, parent data)
+# stays out of scope — those facts are not in S1 at all.
+# ---------------------------------------------------------------------------
+
+import re as _re
+
+# The D-229 lenient extractor (attribution `_formula_fields`), copied rather
+# than imported — S1 must not depend on S6 (substrate boundary). Lenient +
+# parse-independent on purpose: the TEXT()-family rules never parse, and an
+# AST walk would go blind exactly where the census says the parser stops.
+_STRLIT_RE = _re.compile(r"'[^']*'|\"[^\"]*\"")
+_IDENT_RE = _re.compile(r"([A-Za-z_][A-Za-z0-9_.]*)\s*(\()?")
+_FORMULA_KEYWORDS = frozenset({"TRUE", "FALSE", "NULL", "AND", "OR", "NOT"})
+
+
+def _formula_bare_fields(formula_text: str) -> set:
+    text_ = _STRLIT_RE.sub(" ", formula_text or "")
+    out = set()
+    for m in _IDENT_RE.finditer(text_):
+        ident, is_call = m.group(1), m.group(2)
+        if is_call:
+            continue
+        bare = ident.split(".")[-1]
+        if not bare or bare[:1].isdigit() or bare.upper() in _FORMULA_KEYWORDS:
+            continue
+        out.add(bare.lower())
+    return out
+
+
+def _active_current_rules(conn, connected_org_id: str) -> list[tuple[str, str]]:
+    """``(sf_api_name, formula_text)`` for every currently-active rule."""
+    import json as _json
+    out = []
+    for r in conn.execute(text(
+        "SELECT sf_api_name, attributes FROM entities "
+        "WHERE entity_type = 'ValidationRule' AND valid_to_seq IS NULL "
+        "  AND connected_org_id = CAST(:org AS uuid)"),
+            {"org": connected_org_id}).mappings():
+        attrs = r["attributes"]
+        if isinstance(attrs, str):
+            attrs = _json.loads(attrs)
+        if _vr_active_or_none(attrs) is False:
+            continue                      # inactive cannot fire (D-301)
+        formula = vr_formula_text(attrs)
+        if r["sf_api_name"] and formula:
+            out.append((r["sf_api_name"], formula))
+    return out
+
+
+def _related_field_type_events(rule_fields, field_rows, times):
+    """Pure core: referenced-field TYPE changes -> per-rule events."""
+    events: list[DriftEvent] = []
+    for fname, chain in field_rows.items():
+        chain = sorted(chain, key=lambda r: r["valid_from_seq"])
+        obj, _, bare = fname.rpartition(".")
+        for prev, nxt in zip(chain, chain[1:]):
+            p, n = prev.get("field_type"), nxt.get("field_type")
+            if p is None or n is None or p == n:
+                continue
+            seq = nxt["valid_from_seq"]
+            for rname, robj, rfields, _f in rule_fields:
+                if robj != obj or bare.lower() not in rfields:
+                    continue
+                events.append(DriftEvent(
+                    seq=seq, at=times.get(seq), rule=rname,
+                    kind=RELATED_ENTITY_CHANGED,
+                    before=f"{fname}: {p}", after=f"{fname}: {n}",
+                    note=("a field this rule references changed type — the "
+                          "rule's text is unchanged but its comparison "
+                          "semantics may have moved")))
+    return events
+
+
+def _related_recordtype_events(rule_fields, rt_rows, times):
+    """Pure core: RecordType DeveloperName renames (stable sf_id join) ->
+    per-rule events for rules comparing RecordType.DeveloperName."""
+    events: list[DriftEvent] = []
+    rt_groups: dict[str, list] = {}
+    for r in rt_rows:
+        sid = (r.get("sf_id") or "")[:15]
+        if sid and r.get("sf_api_name") and r.get("valid_from_seq") is not None:
+            rt_groups.setdefault(sid, []).append(r)
+    for sid, grp in rt_groups.items():
+        grp = sorted(grp, key=lambda r: r["valid_from_seq"])
+        for prev, nxt in zip(grp, grp[1:]):
+            p_api, n_api = prev["sf_api_name"], nxt["sf_api_name"]
+            if p_api == n_api:
+                continue
+            p_dev = p_api.split(".", 1)[-1]
+            n_dev = n_api.split(".", 1)[-1]
+            obj = p_api.split(".", 1)[0]
+            seq = nxt["valid_from_seq"]
+            for rname, robj, _rf, formula in rule_fields:
+                if robj != obj or "RecordType.DeveloperName" not in formula:
+                    continue
+                if p_dev not in formula and n_dev not in formula:
+                    continue
+                events.append(DriftEvent(
+                    seq=seq, at=times.get(seq), rule=rname,
+                    kind=RELATED_ENTITY_CHANGED,
+                    before=f"RecordType {sid}: {p_dev}",
+                    after=f"RecordType {sid}: {n_dev}",
+                    note=("a RecordType this rule compares by DeveloperName "
+                          "was renamed — the rule's text is unchanged but "
+                          "its RecordType arm now selects differently")))
+    return events
+
+
+def _rule_fields_index(rules):
+    """``(name, object, bare-fields, formula)`` per active rule."""
+    return [(name, name.rsplit(".", 1)[0],
+             _formula_bare_fields(formula), formula)
+            for name, formula in rules]
+
+
+def detect_related_entity_drift(
+    conn, connected_org_id: str, *, since_seq: Optional[int] = None,
+) -> list[DriftEvent]:
+    """RELATED_ENTITY_CHANGED events: for every ACTIVE rule, a change on an
+    entity its formula references — the rule is named, the dependency and
+    its before/after shown. The rule's own text never changes in these
+    events; that is the point."""
+    times = _version_times(conn, connected_org_id)
+    rule_fields = _rule_fields_index(
+        _active_current_rules(conn, connected_org_id))
+
+    field_rows: dict[str, list] = {}
+    for r in conn.execute(text(
+        "SELECT e.sf_api_name, e.valid_from_seq, e.valid_to_seq, "
+        "       d.field_type "
+        "FROM entities e JOIN field_details d ON d.entity_id = e.id "
+        "WHERE e.entity_type = 'Field' "
+        "  AND e.connected_org_id = CAST(:org AS uuid)"),
+            {"org": connected_org_id}).mappings():
+        if r["sf_api_name"] and r["valid_from_seq"] is not None:
+            field_rows.setdefault(r["sf_api_name"], []).append(dict(r))
+
+    rt_rows = [dict(r) for r in conn.execute(text(
+        "SELECT sf_id, sf_api_name, valid_from_seq FROM entities "
+        "WHERE entity_type = 'RecordType' "
+        "  AND connected_org_id = CAST(:org AS uuid)"),
+        {"org": connected_org_id}).mappings()]
+
+    events = (_related_field_type_events(rule_fields, field_rows, times)
+              + _related_recordtype_events(rule_fields, rt_rows, times))
+    events.sort(key=lambda e: (e.seq, e.rule, e.kind))
+    if since_seq is not None:
+        events = [e for e in events if e.seq >= since_seq]
+    return events
