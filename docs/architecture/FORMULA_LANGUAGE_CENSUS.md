@@ -33,7 +33,11 @@
   payload-model gap (absent-from-payload is treated as blank, but an
   automation may have written the field org-side) — plus two
   case-sensitivity probes that are conditional-B until org-verified. §2.B
-  names every failure mode.
+  names every failure mode. *Status 2026-08-11: ISNULL-on-text and the
+  blank-literal test are CLOSED by the D-442 guards; the ISPICKVAL case
+  probe is SETTLED case-insensitive and CLOSED by the D-444 guard; the
+  text `=`/`<>` case probe remains open (§B.5). The payload-model gap
+  remains the evaluation model's declared boundary.*
 * **Where does explanation legitimately stop?** Category D: `$`-globals
   (executing identity, org config), cross-object parent *data* traversal,
   VLOOKUP/custom-metadata lookups, time-of-day/timezone clock semantics,
@@ -59,7 +63,7 @@ Columns: **PARSE** (vr dialect, the one attribution and D-337 use) ·
 | Construct | PARSE | EVALUATE | SOUND | CAT |
 |---|---|---|---|---|
 | `< > <= >= = <> !=` field-vs-literal (number) | ok (`!=` normalised to `<>`) | True/False | sound; string/bool payloads vs number literal → NE (honest); None → NE | **A** |
-| `=` / `<>` field-vs-literal (text) | ok | True/False, **case-sensitive** (`'x'` vs `'X'` → False) | SF formula text comparison believed case-sensitive but **UNKNOWN-NEEDS-ORG**; if SF is case-insensitive this is a wrong-verdict path | **A** (conditional-B on the case probe) |
+| `=` / `<>` field-vs-literal (text) | ok | True/False, **case-sensitive** (`'x'` vs `'X'` → False) | SF formula text comparison **still UNKNOWN-NEEDS-ORG** — not settleable on env-59 without a P3-class action; see §B.5 (D-444) | **A** (conditional-B on the case probe — open) |
 | `=` field-vs-TRUE/FALSE (checkbox) | ok | True/False | sound | **A** |
 | Field-vs-field numeric (`A__c > B__c`) | ok | True/False (D-439) | sound: None/absent/non-numeric/bool → NE; SF blank-vs-zero ambiguity unreachable by construction | **A** |
 | `&&` `\|\|` and `AND()` `OR()` `NOT()` | ok | Kleene three-valued | sound — Kleene only *adds* honest unknowns; a determinable side still resolves | **A** |
@@ -78,7 +82,7 @@ Columns: **PARSE** (vr dialect, the one attribution and D-337 use) ·
 | `ISBLANK` | ok | None/`""`/absent → True; `0` → False | matches SF (0 is not blank); **cross-cutting caveat §2.B-3** (absent-from-payload vs org state) | **A** |
 | `ISNULL` on number operands | ok | as ISBLANK | matches SF for numbers — all 6 env-59 uses are on `double`/`percent` fields (verified via `field_details.field_type`) | **A** |
 | `ISNULL` on TEXT operands | ok | `""`/None → **True** | **UNSOUND — B.** SF documented: *"Text fields are never null, so using ISNULL() with a text field always returns false"* — we return True on empty text → wrong-direction verdict | **B** |
-| `ISPICKVAL(f, "nonempty")` | ok | equality against the payload value; absent → False | matches SF blank≠literal; **case probe** (`"approved"` vs `"Approved"` → False) is **UNKNOWN-NEEDS-ORG** → conditional-B | **A** (conditional-B on case) |
+| `ISPICKVAL(f, "nonempty")` | ok | exact → True; **case-only difference → NonEvaluable (D-444)**; beyond-case → False; absent → False | SF matching live-probed **case-INSENSITIVE** (env-59 VR07 two-create probe, §B.4) — exact-match False on a case variant was wrong-direction; the guard refuses it | **A** (D-444 guard) |
 | `ISPICKVAL(f, "")` blank test | ok | blank → **False** | **UNSOUND — B.** SF's own behaviour for the empty-literal blank test is inconsistent/disputed in its ecosystem (the recommended idiom is `ISBLANK(TEXT(f))` precisely because of it); if SF returns True on blank, we produce a wrong verdict. Should be forced NE until org-verified | **B** |
 | `ISNEW()` | ok | ctx-create → True; ctx-update → False; no ctx → NE | sound (semantics source-verified, D-439) | **A** |
 | `ISCHANGED(f)` update-context | ok | pair compare; absence either side → NE; no ctx → NE | sound; **>1 mutation step → NE by the pinned guard** (D-441: the guard refused a real wrong verdict on VR05's 3-step claim) | **A** |
@@ -171,11 +175,41 @@ RecordType.DeveloperName (with resolver), percent operands.
    close: before-state/read-back capture (the logged D-203 residual) — until
    then this caveat applies to every category-A verdict on fields the
    payload does not set.
-4. *(conditional)* **ISPICKVAL case sensitivity** — ours is case-sensitive;
-   SF side UNKNOWN-NEEDS-ORG. If SF compares case-insensitively,
-   mismatched-case literals produce wrong verdicts.
-5. *(conditional)* **Text `=`/`<>` case sensitivity** — same shape;
-   believed case-sensitive in SF formulas, UNKNOWN-NEEDS-ORG.
+4. ~~*(conditional)*~~ **ISPICKVAL case sensitivity — SETTLED 2026-08-11:
+   case-INSENSITIVE, live-probed (D-444).** Two-create probe on env-59
+   against the pre-existing `PLS_BM_VR07_Critical_Risk`
+   (`ISPICKVAL(PLS_BM_Risk_Level__c, "Critical") && …`), no VR touched:
+   control `{Risk_Level: "Critical"}` → 400
+   `FIELD_CUSTOM_VALIDATION_EXCEPTION` "Critical Risk deals require
+   Compliance Approval and an Override Reason." (proves the conjuncts fire
+   under exact case); variant `{Risk_Level: "critical"}` → **the identical
+   VR07 rejection** — the staged case-variant fired the exact-case literal
+   rule. Not a restricted-picklist bounce (the error is the VR's own).
+   Mechanism (insensitive compare vs pre-VR canonicalization) is
+   indistinguishable from outside and verdict-equivalent. Both creates
+   rejected → nothing persisted (row count 0→0). Consequence: our
+   exact-match `False` on a case-only mismatch was a wrong-direction
+   verdict path → **closed by the D-444 guard**: exact → True, case-only
+   difference → NonEvaluable (one sandbox probe is not platform law —
+   refuse, don't emulate), beyond-case difference → False. The D-337 gate
+   was already tri-state here (`_text_eq`), unchanged.
+5. *(conditional — still open)* **Text `=`/`<>` case sensitivity** —
+   UNKNOWN-NEEDS-ORG, **not settleable on this org without a P3-class
+   action (D-444)**. Tried 2026-08-11: (a) SOQL read-only case-variant
+   WHERE probes matched case-insensitively (Account `Name`, Opportunity
+   `StageName`) — SOQL WHERE semantics, NOT formula evaluation;
+   deliberately not extrapolated. (b) Write-path inventory: the only
+   active-VR text `=` on env-59 is VR08's `RecordType.DeveloperName =
+   "PLS_BM_Enterprise"`, whose left side is metadata-derived — a
+   case-variant cannot be staged; the text-comparing formula FIELDS all
+   live on managed-package objects behind multi-object reference chains
+   (not a minimal write). Settling requires a VR or formula field
+   comparing a writable text field — creating/editing one is P3-class and
+   was not authorised. Evaluator stays exact-match (no guess in either
+   direction); external evidence is genuinely conflicted (docs silent;
+   SFSE top-authority says platform-insensitive via ISCHANGED tests;
+   practitioner threads with direct `=` observations + accepted
+   UPPER()/LOWER() fixes say sensitive).
 
 ### C. PARSES (or trivially parseable), NOT EVALUABLE — 14 groups, closable
 
