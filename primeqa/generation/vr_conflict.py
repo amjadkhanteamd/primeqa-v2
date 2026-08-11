@@ -127,6 +127,9 @@ def entails_firing(vr_formula_text: str, states: list) -> Optional[bool]:
 
 def find_staged_vr_conflict(
     vr_rules, staged_create: dict, staged_update: Optional[dict] = None,
+    *, field_types: Optional[dict] = None,
+    record_type_developer_name=None,
+    context_enabled: bool = True,
 ) -> Optional[str]:
     """The refusal detail when a staged state provably fires an active VR,
     else ``None``.
@@ -142,11 +145,27 @@ def find_staged_vr_conflict(
     surprise inside a rule contributes unknown, never an exception."""
     try:
         create = _bare_payload(staged_create)
+        ftypes = ({str(k).rsplit(".", 1)[-1].lower(): v
+                   for k, v in (field_types or {}).items()}
+                  if context_enabled and field_types else None)
+        # D-443: per-phase gate context. Emission time KNOWS the staged
+        # update is the COMPLETE intended mutation, so on the update phase
+        # ISCHANGED is provably False outside its key set; the prior state
+        # IS the staged create. context_enabled=False pins the byte-old
+        # (context-less) behaviour for the sizing comparison.
         phases = []
         if create:
-            phases.append(("create", create))
+            gctx = ({"is_create": True, "prior": None, "update_keys": None,
+                     "rt": record_type_developer_name}
+                    if context_enabled else None)
+            phases.append(("create", create, gctx))
         if staged_update:
-            phases.append(("update", {**create, **_bare_payload(staged_update)}))
+            upd = _bare_payload(staged_update)
+            gctx = ({"is_create": False, "prior": create,
+                     "update_keys": frozenset(upd),
+                     "rt": record_type_developer_name}
+                    if context_enabled else None)
+            phases.append(("update", {**create, **upd}, gctx))
         if not phases:
             return None
         parsed = []
@@ -154,10 +173,10 @@ def find_staged_vr_conflict(
             ast = parse(text)
             if is_parsed(ast):
                 parsed.append((name, text, ast))
-        for phase, payload in phases:
+        for phase, payload, gctx in phases:
             for name, text, ast in parsed:
                 try:
-                    fires = _fires(ast, payload)
+                    fires = _fires(ast, payload, gctx, ftypes)
                 except Exception:
                     fires = None                 # unknown, never a crash
                 if fires is True:
@@ -195,18 +214,21 @@ def _lookup(payload: dict, fref: FieldRef):
 
 # -- the Kleene walk: True (provably fires) / False (provably not) / None ----
 
-def _fires(node, payload: dict) -> Optional[bool]:
+def _fires(node, payload: dict, gctx: Optional[dict] = None,
+           ftypes: Optional[dict] = None) -> Optional[bool]:
     if isinstance(node, And):
-        return _k_and(_fires(op, payload) for op in node.operands)
+        return _k_and(_fires(op, payload, gctx, ftypes)
+                      for op in node.operands)
     if isinstance(node, Or):
-        return _k_or(_fires(op, payload) for op in node.operands)
+        return _k_or(_fires(op, payload, gctx, ftypes)
+                     for op in node.operands)
     if isinstance(node, Not):
-        r = _fires(node.operand, payload)
+        r = _fires(node.operand, payload, gctx, ftypes)
         return None if r is None else (not r)
     if isinstance(node, Comparison):
-        return _comparison(node, payload)
+        return _comparison(node, payload, gctx, ftypes)
     if isinstance(node, FunctionCall):
-        return _function(node, payload)
+        return _function(node, payload, gctx, ftypes)
     if isinstance(node, FieldRef):
         return _as_bool(_lookup(payload, node))  # bare boolean predicate
     if isinstance(node, Literal):
@@ -236,9 +258,11 @@ def _k_or(results) -> Optional[bool]:
 
 # -- leaves -------------------------------------------------------------------
 
-def _function(node: FunctionCall, payload: dict) -> Optional[bool]:
+def _function(node: FunctionCall, payload: dict,
+              gctx: Optional[dict] = None,
+              ftypes: Optional[dict] = None) -> Optional[bool]:
     if node.name in _ORG_STATE_FUNCS:
-        return None
+        return _org_state(node, payload, gctx)
     if node.name in ("ISBLANK", "ISNULL"):
         if len(node.args) == 1 and isinstance(node.args[0], FieldRef):
             v = _lookup(payload, node.args[0])
@@ -254,33 +278,129 @@ def _function(node: FunctionCall, payload: dict) -> Optional[bool]:
                     or not isinstance(node.args[1].value, str):
                 return None
             return _text_eq(v, node.args[1].value)
+        # D-443: the corpus composition ISPICKVAL(PRIORVALUE(f), "lit").
+        if (len(node.args) == 2 and isinstance(node.args[0], FunctionCall)
+                and node.args[0].name == "PRIORVALUE"
+                and isinstance(node.args[1], Literal)
+                and isinstance(node.args[1].value, str)):
+            prior = _prior_value(node.args[0], payload, gctx)
+            if prior is _MISSING or not isinstance(prior, str):
+                return None
+            return _text_eq(prior, node.args[1].value)
         return None
     return None
 
 
-def _comparison(node: Comparison, payload: dict) -> Optional[bool]:
+def _org_state(node: FunctionCall, payload: dict,
+               gctx: Optional[dict]) -> Optional[bool]:
+    """D-443: emission-time org-state. The staged update is the COMPLETE
+    intended mutation, so on the update phase ISCHANGED(f) is provably
+    False for f outside the update's key set — stronger than attribution
+    can ever be. Create-phase semantics are D-439's verified set (ISNEW →
+    True; ISCHANGED → unknown, the unverified-create refusal)."""
+    if gctx is None:
+        return None
+    if node.name == "ISNEW":
+        return bool(gctx.get("is_create"))
+    if node.name == "ISCHANGED":
+        if not (len(node.args) == 1 and isinstance(node.args[0], FieldRef)
+                and not node.args[0].is_dotted):
+            return None
+        if gctx.get("is_create"):
+            return None          # create-context semantics not verified (D-439)
+        keys = gctx.get("update_keys")
+        if keys is None:
+            return None
+        field = node.args[0].path[0].lower()
+        if field not in keys:
+            return False         # the staged update provably does not touch it
+        prior = (gctx.get("prior") or {})
+        if field not in prior:
+            return None          # pre-update value unknown (unstaged at create)
+        return prior[field] != payload.get(field)
+    return None                  # PRIORVALUE alone is a value, not a predicate
+
+
+def _prior_value(node: FunctionCall, payload: dict, gctx: Optional[dict]):
+    """``PRIORVALUE(f)`` as a staged value; ``_MISSING`` when unknowable."""
+    if gctx is None:
+        return _MISSING
+    if not (len(node.args) == 1 and isinstance(node.args[0], FieldRef)
+            and not node.args[0].is_dotted):
+        return _MISSING
+    field = node.args[0].path[0].lower()
+    if gctx.get("is_create"):
+        # D-439 verified: on creation PRIORVALUE returns the CURRENT value.
+        return payload.get(field, _MISSING)
+    prior = gctx.get("prior")
+    if prior is None or field not in prior:
+        return _MISSING
+    return prior[field]
+
+
+_RT_PATH = ("RecordType", "DeveloperName")
+
+
+def _comparison(node: Comparison, payload: dict,
+                gctx: Optional[dict] = None,
+                ftypes: Optional[dict] = None) -> Optional[bool]:
     left, right, op = node.left, node.right, node.op
     if isinstance(left, Literal) and isinstance(right, FieldRef):
         left, right, op = right, left, _FLIP[op]
     if isinstance(left, FieldRef) and isinstance(right, Literal):
+        # D-443: RecordType.DeveloperName resolves via the injected S1
+        # resolver when the staged payload carries RecordTypeId.
+        if (tuple(left.path) == _RT_PATH and gctx is not None
+                and gctx.get("rt") is not None
+                and op in ("=", "<>")
+                and isinstance(right.value, str)):
+            rt_id = payload.get("recordtypeid")
+            if not rt_id:
+                return None
+            dev = gctx["rt"](str(rt_id))
+            if dev is None:
+                return None
+            eq = _text_eq(dev, right.value)
+            if eq is None:
+                return None
+            return eq if op == "=" else (not eq)
         v = _lookup(payload, left)
         if v is _MISSING:
             return None
-        return _cmp_value_literal(v, op, right)
+        return _cmp_value_literal(
+            v, op, right, _ftype(ftypes, left))
     if isinstance(left, FieldRef) and isinstance(right, FieldRef):
         a, b = _lookup(payload, left), _lookup(payload, right)
         if a is _MISSING or b is _MISSING:
             return None
-        return _cmp_value_value(a, op, b)
+        return _cmp_value_value(a, op, b, _ftype(ftypes, left),
+                                _ftype(ftypes, right))
     return None                                  # arithmetic / nested — unknown
 
 
-def _cmp_value_literal(value, op: str, literal: Literal) -> Optional[bool]:
+def _ftype(ftypes: Optional[dict], fref: FieldRef) -> Optional[str]:
+    if ftypes is None or fref.is_dotted:
+        return None
+    return ftypes.get(fref.path[0].lower())
+
+
+def _pct(value, ftype: Optional[str]):
+    """D-442/D-443: percent fields evaluate in FRACTION space (÷100,
+    live-proven). Convert only on a KNOWN percent type."""
+    if ftype is not None and str(ftype).lower() == "percent":
+        d = as_decimal(value)
+        if d is not None:
+            return d / Decimal(100)
+    return value
+
+
+def _cmp_value_literal(value, op: str, literal: Literal,
+                       ftype: Optional[str] = None) -> Optional[bool]:
     if value is None:
         return None                              # null comparison — unknown
     kind, lit = literal.kind, literal.value
     if kind == "number":
-        d = as_decimal(value)
+        d = as_decimal(_pct(value, ftype))
         if d is None:
             return None                          # non-numeric staged value
         return _ORDER[op](d, Decimal(str(lit)))
@@ -299,9 +419,11 @@ def _cmp_value_literal(value, op: str, literal: Literal) -> Optional[bool]:
     return None
 
 
-def _cmp_value_value(a, op: str, b) -> Optional[bool]:
+def _cmp_value_value(a, op: str, b, ftype_a: Optional[str] = None,
+                     ftype_b: Optional[str] = None) -> Optional[bool]:
     """Field-to-field — the live-catch shape (``Loan_Amount__c >
     Property_Value__c`` with both sides staged)."""
+    a, b = _pct(a, ftype_a), _pct(b, ftype_b)
     da, db = as_decimal(a), as_decimal(b)
     if da is not None and db is not None:
         return _ORDER[op](da, db)

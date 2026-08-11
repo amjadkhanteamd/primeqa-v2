@@ -542,9 +542,49 @@ def _grounding_vr_messages(claim_kind: str, neighborhood: list) -> dict:
     return out
 
 
+def _staged_field_types(s1, version_seq: int, staged: dict) -> dict:
+    """D-443: ``{external_id: field_type}`` for the staged fields — feeds
+    the gate's percent fraction conversion. Best-effort: an unresolvable
+    field simply has no type (no conversion, pre-D-443 behaviour)."""
+    out: dict = {}
+    for key in staged or {}:
+        try:
+            ents = s1.get_entities("Field", at_seq=version_seq,
+                                   filters={"sf_api_name": str(key)})
+            if len(ents) == 1:
+                details = s1.get_entity_details(ents[0].id,
+                                                at_seq=version_seq) or {}
+                if details.get("field_type") is not None:
+                    out[str(key)] = str(details["field_type"])
+        except Exception:                        # noqa: BLE001 — best-effort
+            continue
+    return out
+
+
+def _staged_rt_resolver(s1, version_seq: int):
+    """D-443: RecordTypeId -> DeveloperName through S1 (the D-439 first-15
+    case-sensitive convention); None on unresolvable/ambiguous."""
+    def resolve(record_type_id: str):
+        try:
+            rid = (record_type_id or "").strip()
+            if len(rid) < 15:
+                return None
+            names = set()
+            for e in s1.get_entities("RecordType", at_seq=version_seq):
+                sid = e.sf_id or ""
+                api = e.sf_api_name or ""
+                if sid[:15] == rid[:15] and "." in api:
+                    names.add(api.split(".", 1)[1])
+            return names.pop() if len(names) == 1 else None
+        except Exception:                        # noqa: BLE001
+            return None
+    return resolve
+
+
 def _staged_vr_conflict_detail(
         neighborhood: list, staged_create: dict,
-        staged_update: Optional[dict] = None) -> Optional[str]:
+        staged_update: Optional[dict] = None,
+        *, s1=None, version_seq: Optional[int] = None) -> Optional[str]:
     """D-337: the authoring-time staged-state VR-conflict guard — the refusal
     detail when the claim's OWN staged values provably fire one of the
     subject's ACTIVE ValidationRules, else ``None``. Reads the same
@@ -567,7 +607,19 @@ def _staged_vr_conflict_detail(
             rules.append((r.entity.sf_api_name or "", text))
     if not rules:
         return None
-    return find_staged_vr_conflict(rules, staged_create, staged_update)
+    field_types = None
+    rt_resolver = None
+    if s1 is not None and version_seq is not None:
+        # D-443: percent conversion + RecordType resolution need S1; the
+        # callers pass their in-scope model + pinned batch seq. Absent
+        # (narrow tests), the gate simply runs without them.
+        merged = dict(staged_create or {})
+        merged.update(staged_update or {})
+        field_types = _staged_field_types(s1, version_seq, merged) or None
+        rt_resolver = _staged_rt_resolver(s1, version_seq)
+    return find_staged_vr_conflict(
+        rules, staged_create, staged_update, field_types=field_types,
+        record_type_developer_name=rt_resolver)
 
 
 def _claim_condition_fields(grounded_conds) -> frozenset[str]:
@@ -2540,7 +2592,8 @@ class RefusalRouter:
 
     def emission_deferred(self, archetype: str, claim_kind: str,
                           detail: Optional[str] = None,
-                          candidates: Optional[dict] = None) -> RefusalDirective:
+                          candidates: Optional[dict] = None,
+                          defer_class: Optional[str] = None) -> RefusalDirective:
         """A groundable claim whose emission for this claim_kind isn't built yet
         (D-105). Operational/substrate-runtime: the requirement is admissible,
         but the emission machinery is deferred (D-097.6) — an honest capability
@@ -2548,7 +2601,10 @@ class RefusalRouter:
         ``detail`` overrides the generic message when a SPECIFIC sub-shape
         defers (D-210.1 — e.g. cross-object transitions). ``candidates`` (B0.2)
         carries a near-miss offer payload exactly as ``no_relevant_context``
-        does — provenance: substrate."""
+        does — provenance: substrate. ``defer_class`` is the D-413
+        sub-discriminator on the payload JSONB (as value-membership /
+        representation carry) so declination aggregation can slice the
+        refusal class; absent for the generic capability-boundary shape."""
         payload: dict[str, Any] = {
             "detail": detail or (
                 f"{archetype}/{claim_kind} is groundable, but emission for "
@@ -2560,6 +2616,8 @@ class RefusalRouter:
         }
         if candidates:
             payload["candidates"] = candidates
+        if defer_class:
+            payload["defer_class"] = defer_class
         return RefusalDirective(RefusalKind.EMISSION_DEFERRED, payload)
 
     def from_dismissed(self, cand: _Candidate, *, is_negative: bool) -> RefusalDirective:
@@ -3117,13 +3175,15 @@ class GovernanceCore:
                 conflict = _staged_vr_conflict_detail(
                     neighborhood,
                     {c.field.external_id: c.value for c in staged_conds
-                     if c.predicate == "equals"})
+                     if c.predicate == "equals"},
+                    s1=self._s1, version_seq=at)
                 if conflict is not None:
                     return IntentResolution(
                         grounded_candidates=[], next_action=NextAction.REFUSE,
                         interpretation_delta=delta,
                         refusal=self._router.emission_deferred(
-                            archetype, claim_kind, detail=conflict))
+                            archetype, claim_kind, detail=conflict,
+                            defer_class="staged-vr-conflict"))
                 _stash_grounding(state, GroundedNegative(
                     archetype=archetype, claim_kind=claim_kind,
                     operation_hint=hint.get("operation"), version_seq=at,
@@ -3522,13 +3582,15 @@ class GovernanceCore:
                  if c.predicate == "equals"},
                 staged_update=(None if arc_actions else
                                {c.field.external_id: c.value
-                                for c in grounded_upd}))
+                                for c in grounded_upd}),
+                s1=self._s1, version_seq=at)
             if conflict is not None:
                 return IntentResolution(
                     grounded_candidates=[], next_action=NextAction.REFUSE,
                     interpretation_delta=delta,
                     refusal=self._router.emission_deferred(
-                        archetype, claim_kind, detail=conflict))
+                        archetype, claim_kind, detail=conflict,
+                        defer_class="staged-vr-conflict"))
             _stash_grounding(state, GroundedAcceptance(
                 archetype=archetype, claim_kind=claim_kind, version_seq=at,
                 subject=_Endpoint(
@@ -3743,14 +3805,16 @@ class GovernanceCore:
                     # the org's own active VRs (Kleene; unstaged = unknown)
                     conflict = _staged_vr_conflict_detail(
                         neighborhood, dict(_st_staging["create"]),
-                        staged_update=dict(_st_staging["update"]))
+                        staged_update=dict(_st_staging["update"]),
+                        s1=self._s1, version_seq=at)
                     if conflict is not None:
                         return IntentResolution(
                             grounded_candidates=[],
                             next_action=NextAction.REFUSE,
                             interpretation_delta=delta,
                             refusal=self._router.emission_deferred(
-                                archetype, claim_kind, detail=conflict))
+                                archetype, claim_kind, detail=conflict,
+                                defer_class="staged-vr-conflict"))
                     _st_trans_create = tuple(
                         (_st_eps[f], _st_staging["create"][f])
                         for f in sorted(_st_staging["create"]))
@@ -4272,13 +4336,15 @@ class GovernanceCore:
                 # trigger shapes — a bounced subject create never stamps.
                 conflict = _staged_vr_conflict_detail(
                     neighborhood,
-                    {ep.external_id: v for ep, v in ps_triggers})
+                    {ep.external_id: v for ep, v in ps_triggers},
+                    s1=self._s1, version_seq=at)
                 if conflict is not None:
                     return IntentResolution(
                         grounded_candidates=[], next_action=NextAction.REFUSE,
                         interpretation_delta=delta,
                         refusal=self._router.emission_deferred(
-                            archetype, claim_kind, detail=conflict))
+                            archetype, claim_kind, detail=conflict,
+                            defer_class="staged-vr-conflict"))
                 _stash_grounding(state, GroundedAutomationEffect(
                     archetype=archetype, claim_kind=claim_kind, version_seq=at,
                     subject=subj_ep, automation=flow_ep,
@@ -4687,14 +4753,16 @@ class GovernanceCore:
                         neighborhood,
                         {ep.external_id: v for ep, v in _u_triggers},
                         staged_update={ep.external_id: v
-                                       for ep, v in _u_updates})
+                                       for ep, v in _u_updates},
+                        s1=self._s1, version_seq=at)
                     if conflict is not None:
                         return IntentResolution(
                             grounded_candidates=[],
                             next_action=NextAction.REFUSE,
                             interpretation_delta=delta,
                             refusal=self._router.emission_deferred(
-                                archetype, claim_kind, detail=conflict))
+                                archetype, claim_kind, detail=conflict,
+                                defer_class="staged-vr-conflict"))
                     _stash_grounding(state, GroundedAutomationEffect(
                         archetype=archetype, claim_kind=claim_kind,
                         version_seq=at, subject=subj_ep,
@@ -4839,13 +4907,15 @@ class GovernanceCore:
                     neighborhood,
                     {ep.external_id: v for ep, v in xo_triggers},
                     staged_update={ep.external_id: v
-                                   for ep, v in xo_update_fields})
+                                   for ep, v in xo_update_fields},
+                    s1=self._s1, version_seq=at)
                 if conflict is not None:
                     return IntentResolution(
                         grounded_candidates=[], next_action=NextAction.REFUSE,
                         interpretation_delta=delta,
                         refusal=self._router.emission_deferred(
-                            archetype, claim_kind, detail=conflict))
+                            archetype, claim_kind, detail=conflict,
+                            defer_class="staged-vr-conflict"))
                 _stash_grounding(state, GroundedAutomationEffect(
                     archetype=archetype, claim_kind=claim_kind, version_seq=at,
                     subject=subj_ep, automation=flow_ep,
@@ -5133,14 +5203,16 @@ class GovernanceCore:
                                            for f in sorted(_wit))
                             _conf = _staged_vr_conflict_detail(
                                 neighborhood,
-                                {ep.external_id: v for ep, v in _pairs})
+                                {ep.external_id: v for ep, v in _pairs},
+                                s1=self._s1, version_seq=at)
                             if _conf is not None:
                                 return IntentResolution(
                                     grounded_candidates=[],
                                     next_action=NextAction.REFUSE,
                                     interpretation_delta=delta,
                                     refusal=self._router.emission_deferred(
-                                        archetype, claim_kind, detail=_conf))
+                                        archetype, claim_kind, detail=_conf,
+                                        defer_class="staged-vr-conflict"))
                             _l_stashes.append(GroundedAutomationEffect(
                                 archetype=archetype, claim_kind=claim_kind,
                                 version_seq=at, subject=subj_ep,
@@ -5180,7 +5252,8 @@ class GovernanceCore:
                                     if _staged_vr_conflict_detail(
                                             neighborhood,
                                             {ep.external_id: v
-                                             for ep, v in _bpairs}) is not None:
+                                             for ep, v in _bpairs},
+                                            s1=self._s1, version_seq=at) is not None:
                                         continue   # edge collides with a VR:
                                     #              skip the probe, never refuse
                                     #              the whole enumeration
@@ -5719,13 +5792,15 @@ class GovernanceCore:
                     neighborhood,
                     {ep.external_id: v for ep, v in trigger_fields},
                     staged_update={ep.external_id: v
-                                   for ep, v in update_trigger_fields})
+                                   for ep, v in update_trigger_fields},
+                    s1=self._s1, version_seq=at)
                 if conflict is not None:
                     return IntentResolution(
                         grounded_candidates=[], next_action=NextAction.REFUSE,
                         interpretation_delta=delta,
                         refusal=self._router.emission_deferred(
-                            archetype, claim_kind, detail=conflict))
+                            archetype, claim_kind, detail=conflict,
+                            defer_class="staged-vr-conflict"))
                 _stash_grounding(state, GroundedAutomationEffect(
                     archetype=archetype, claim_kind=claim_kind, version_seq=at,
                     subject=subj_ep, automation=flow_ep,
@@ -5965,7 +6040,8 @@ class GovernanceCore:
                     f"from the correlation witness — unstageable")
         subject_staged[corr_g] = witness
         for _staged_map in (dict(staged), subject_staged):
-            conflict = _staged_vr_conflict_detail(neighborhood, _staged_map)
+            conflict = _staged_vr_conflict_detail(neighborhood, _staged_map,
+                                                  s1=self._s1, version_seq=at)
             if conflict is not None:
                 return conflict
         return flow_ent, {
@@ -6178,7 +6254,8 @@ class GovernanceCore:
             return (f"the rollup's expected value is not derivable "
                     f"({expected})")
         conflict = _staged_vr_conflict_detail(
-            child_neigh, dict(staged))
+            child_neigh, dict(staged),
+            s1=self._s1, version_seq=at)
         if conflict is not None:
             return conflict
         return flow_ent, {
