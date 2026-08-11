@@ -217,6 +217,26 @@ def _percent_adjusted(value, field: str, ctx: Optional[EvalContext]):
     return value
 
 
+def _pickval_eq(value, literal):
+    """D-444: ISPICKVAL matching, live-probed case-INSENSITIVE on env-59 —
+    a staged case-variant (`Risk_Level='critical'`) fired the exact-literal
+    rule (`ISPICKVAL(f, "Critical")`, VR07); whether by insensitive compare
+    or pre-VR canonicalization is indistinguishable and verdict-equivalent.
+    Exact → True; case-only difference → NonEvaluable (one sandbox probe is
+    not platform law — the old exact-match False was the proven
+    wrong-direction verdict, and emulating insensitivity would guess the
+    other way); beyond-case difference → False (unchanged)."""
+    if value == literal:
+        return True
+    if (isinstance(value, str) and isinstance(literal, str)
+            and value.casefold() == literal.casefold()):
+        return NonEvaluable(
+            "ISPICKVAL case-variant match — org-probed case-insensitive "
+            "(D-444); exact-match evaluation would be wrong-direction; "
+            "refusing")
+    return False
+
+
 def _eval_field_vs_field(left: FieldRef, right: FieldRef, op: str,
                          payload,
                          ctx: Optional[EvalContext] = None) -> EvalResult:
@@ -330,13 +350,13 @@ def _eval_function(node: FunctionCall, payload,
                 "idiom) — Salesforce semantics disputed; refusing (D-442)")
         field = _single_field(node)
         if field is not None:
-            return payload.get(field) == node.args[1].value
+            return _pickval_eq(payload.get(field), node.args[1].value)
         # D-439: the corpus composition ISPICKVAL(PRIORVALUE(f), "lit").
         prior = _prior_value_of(node.args[0], payload, ctx)
         if prior is not None:
             if isinstance(prior, NonEvaluable):
                 return prior
-            return prior[0] == node.args[1].value
+            return _pickval_eq(prior[0], node.args[1].value)
         return NonEvaluable("ISPICKVAL without a single same-object field")
     return NonEvaluable(f"function {name} not evaluable")
 
