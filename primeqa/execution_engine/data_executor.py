@@ -71,6 +71,7 @@ from primeqa.execution_engine.plan import (
 )
 from primeqa.execution_engine.provisioning import CreatedRecordTracker
 from primeqa.execution_engine.temporal import TemporalBoundaryClient
+from primeqa.test_representation.temporal import is_symbolic
 from primeqa.execution_engine.refs import resolve_field_value_refs, resolve_step_refs
 from primeqa.execution_engine.world import (
     _sf_field,
@@ -220,7 +221,38 @@ def execute_data_recipe(
     # absence (a non-identity run's evidence is byte-identical to before).
     if executing_identity is not None:
         ev = replace(ev, executing_identity=executing_identity)
+    # D-449: stamp the run's temporal reference once, at the envelope —
+    # present ONLY when a symbolic value was actually materialised this run
+    # (the wrapper captures lazily), so a non-temporal run's evidence stays
+    # byte-identical (the D-419 discipline). The TODAY evaluation clock is
+    # THIS date, never attribution time.
+    ref = getattr(client, "reference", None)
+    if ref is not None and getattr(client, "materialised_any", False):
+        ev = replace(ev, temporal_reference={
+            "reference_date": ref.reference_date.isoformat(),
+            "reference_timezone": ref.reference_timezone,
+            "captured_at": ref.captured_at,
+            "source": ref.source,
+        })
     return ev
+
+
+def _realized(client, payload) -> "Optional[dict]":
+    """D-449: the transport payload the boundary materialised for the
+    JUST-COMPLETED create/update, captured for evidence beside the symbolic
+    payload (the D-424 pattern applied to staging). None when the payload
+    carried no symbolic values — nothing was materialised, the symbolic IS
+    the transport payload. FAILS LOUD when a symbolic payload crossed the
+    boundary without a recording: a capture gap is an error, never a silent
+    omission."""
+    if not payload or not any(is_symbolic(v) for v in payload.values()):
+        return None
+    realized = getattr(client, "last_realized", None)
+    if realized is None:
+        raise RuntimeError(
+            "temporal materialisation happened but its realized payload was "
+            "not captured for evidence (D-449 fail-loud)")
+    return dict(realized)
 
 
 def _nulls_for(sobject: str, null_asserted_fields) -> frozenset:
@@ -432,6 +464,7 @@ def _run_negative_with_setup(
                        err, created_records=tracker.records)
 
     http_status = env["http_status"]
+    realized = _realized(client, field_values)
     if not env["success"]:
         tracker.teardown(td, _best_effort_delete)
         rejection_body = _as_error_tuple(env["api_response"]["body"])
@@ -444,7 +477,7 @@ def _run_negative_with_setup(
             setup, sobject, c_start, _now(), http_status=http_status,
             success=False, rejection_body=rejection_body, matched=None,
             cleanup=CleanupRecord(attempted=False), error=err,
-            field_values=field_values)
+            field_values=field_values, realized=realized)
         return _result(plan, run_id, started, environment_id, (ev,), "errored",
                        err, created_records=tracker.records)
 
@@ -473,7 +506,7 @@ def _run_negative_with_setup(
                                http_status=http_status, success=True,
                                rejection_body=(), matched=None,
                                cleanup=CleanupRecord(attempted=False),
-                               field_values=field_values),) + entry_evs,
+                               field_values=field_values, realized=realized),) + entry_evs,
                            "errored", entry_err,
                            created_records=tracker.records)
 
@@ -498,7 +531,7 @@ def _run_negative_with_setup(
                                http_status=http_status, success=True,
                                rejection_body=(), matched=None,
                                cleanup=CleanupRecord(attempted=False),
-                               field_values=field_values),) + arc_evs,
+                               field_values=field_values, realized=realized),) + arc_evs,
                            "errored", arc_err,
                            created_records=tracker.records)
 
@@ -520,7 +553,7 @@ def _run_negative_with_setup(
     setup_ev = _evidence(
         setup, sobject, c_start, c_end, http_status=http_status, success=True,
         rejection_body=(), matched=None, cleanup=cleanup,
-        field_values=field_values)
+        field_values=field_values, realized=realized)
 
     return _result(plan, run_id, started, environment_id,
                    (setup_ev,) + entry_evs + arc_evs + (mut_ev,),
@@ -553,13 +586,14 @@ def _run_mutation_attempt(mutation, sobject, record_id, client):
     http_status = env["http_status"]
     rejection_body = _as_error_tuple(env["api_response"]["body"])
     end = _now()
+    realized = _realized(client, changes) if is_update else None
 
     if env["success"]:
         # The prohibition did NOT enforce — the org accepted the mutation.
         ev = _mutation_evidence(
             mutation, sobject, record_id, changes, start, end,
             http_status=http_status, success=True, rejection_body=(),
-            matched=False)
+            matched=False, realized=realized)
         return ev, "failed", None
 
     if http_status == _BUSINESS_REJECTION_STATUS:
@@ -568,7 +602,7 @@ def _run_mutation_attempt(mutation, sobject, record_id, client):
         ev = _mutation_evidence(
             mutation, sobject, record_id, changes, start, end,
             http_status=http_status, success=False,
-            rejection_body=rejection_body, matched=matched)
+            rejection_body=rejection_body, matched=matched, realized=realized)
         return ev, ("passed" if matched else "failed"), None
 
     if (http_status == _PERMISSION_REJECTION_STATUS
@@ -582,7 +616,7 @@ def _run_mutation_attempt(mutation, sobject, record_id, client):
         ev = _mutation_evidence(
             mutation, sobject, record_id, changes, start, end,
             http_status=http_status, success=False,
-            rejection_body=rejection_body, matched=matched)
+            rejection_body=rejection_body, matched=matched, realized=realized)
         return ev, ("passed" if matched else "failed"), None
 
     err = ErrorSurface(
@@ -591,13 +625,13 @@ def _run_mutation_attempt(mutation, sobject, record_id, client):
     ev = _mutation_evidence(
         mutation, sobject, record_id, changes, start, end,
         http_status=http_status, success=False, rejection_body=rejection_body,
-        matched=None, error=err)
+        matched=None, error=err, realized=realized)
     return ev, "errored", err
 
 
 def _mutation_evidence(mutation, sobject, record_id, changes, start, end, *,
                        http_status, success, rejection_body, matched,
-                       error=None, ordinal=1):
+                       error=None, ordinal=1, realized=None):
     """Assemble Update/DeleteAttemptEvidence. ``changes`` is the bare-ified
     payload actually PATCHed (the api_request analog); None for a delete.
     ``ordinal`` defaults to 1 (the 2-step negative's mutation slot); the
@@ -613,7 +647,8 @@ def _mutation_evidence(mutation, sobject, record_id, changes, start, end, *,
         started_at=start, finished_at=end, duration_ms=_ms(start, end),
         error=error)
     if isinstance(mutation, PlannedUpdate):
-        return UpdateAttemptEvidence(field_changes=dict(changes or {}), **common)
+        return UpdateAttemptEvidence(field_changes=dict(changes or {}),
+                                     field_changes_realized=realized, **common)
     return DeleteAttemptEvidence(**common)
 
 
@@ -640,6 +675,7 @@ def _run_entry_updates(entries, sobject, record_id, client):
             return tuple(evidences), err
         end = _now()
         http = env["http_status"]
+        realized = _realized(client, changes)
         if not env["success"]:
             body = _as_error_tuple(env["api_response"]["body"])
             err = ErrorSurface(
@@ -650,12 +686,12 @@ def _run_entry_updates(entries, sobject, record_id, client):
             evidences.append(_mutation_evidence(
                 step, sobject, record_id, changes, start, end,
                 http_status=http, success=False, rejection_body=body,
-                matched=None, error=err, ordinal=1 + i))
+                matched=None, error=err, ordinal=1 + i, realized=realized))
             return tuple(evidences), err
         evidences.append(_mutation_evidence(
             step, sobject, record_id, changes, start, end,
             http_status=http, success=True, rejection_body=(),
-            matched=None, ordinal=1 + i))
+            matched=None, ordinal=1 + i, realized=realized))
     return tuple(evidences), None
 
 
@@ -1021,6 +1057,7 @@ def _run_positive(plan: DataRecipePlan, *, client, environment_id: int, s1=None,
         body = env["api_response"]["body"]
         record_id = env["record_id"]
         rejection_body = _as_error_tuple(body)
+        realized = _realized(client, field_values)
 
         if not env["success"]:
             # This create did not land — grade with THIS create's semantic
@@ -1038,7 +1075,7 @@ def _run_positive(plan: DataRecipePlan, *, client, environment_id: int, s1=None,
                 success=False, rejection_body=rejection_body, matched=None,
                 cleanup=CleanupRecord(attempted=False),
                 error=(top_error if outcome == "errored" else None),
-                field_values=field_values, ordinal=ordinal))
+                field_values=field_values, ordinal=ordinal, realized=realized))
             record_ids.append(None)
             return _result(plan, run_id, started, environment_id, _torn_down(),
                            outcome, top_error, created_records=tracker.records)
@@ -1052,7 +1089,7 @@ def _run_positive(plan: DataRecipePlan, *, client, environment_id: int, s1=None,
             create, sobject, c_start, c_end, http_status=http_status,
             success=True, rejection_body=(), matched=None,
             cleanup=CleanupRecord(attempted=False),     # attached at teardown
-            field_values=field_values, ordinal=ordinal))
+            field_values=field_values, ordinal=ordinal, realized=realized))
         record_ids.append(record_id)
 
     # 4a. D-333: the approval-action arc — staging against the TERMINAL
@@ -1115,6 +1152,7 @@ def _run_positive(plan: DataRecipePlan, *, client, environment_id: int, s1=None,
         u_status = env["http_status"]
         u_rejection = _as_error_tuple(env["api_response"]["body"])
         u_end = _now()
+        realized = _realized(client, changes)
         if not env["success"]:
             if (u_status == _BUSINESS_REJECTION_STATUS
                     and getattr(update, "expect_acceptance", False)):
@@ -1125,7 +1163,7 @@ def _run_positive(plan: DataRecipePlan, *, client, environment_id: int, s1=None,
                     update, u_sobject, u_record_id, changes, u_start, u_end,
                     http_status=u_status, success=False,
                     rejection_body=u_rejection, matched=None,
-                    ordinal=len(creates) + len(arc))
+                    ordinal=len(creates) + len(arc), realized=realized)
                 return _result(plan, run_id, started, environment_id,
                                _torn_down() + (update_ev,), "failed", None,
                                created_records=tracker.records)
@@ -1140,14 +1178,14 @@ def _run_positive(plan: DataRecipePlan, *, client, environment_id: int, s1=None,
                 update, u_sobject, u_record_id, changes, u_start, u_end,
                 http_status=u_status, success=False,
                 rejection_body=u_rejection, matched=None, error=err,
-                ordinal=len(creates) + len(arc))
+                ordinal=len(creates) + len(arc), realized=realized)
             return _result(plan, run_id, started, environment_id,
                            _torn_down() + (update_ev,), "errored", err,
                            created_records=tracker.records)
         update_ev = _mutation_evidence(
             update, u_sobject, u_record_id, changes, u_start, u_end,
             http_status=u_status, success=True, rejection_body=(),
-            matched=None, ordinal=len(creates) + len(arc))
+            matched=None, ordinal=len(creates) + len(arc), realized=realized)
 
     mid = (update_ev,) if update_ev is not None else ()
     base = len(creates) + len(mid)
@@ -1493,6 +1531,7 @@ def _run_create(create, sobject, client, teardown_client=None):
         return ev, "errored", err
 
     http_status = env["http_status"]
+    realized = _realized(client, create.field_values)
     success = env["success"]
     body = env["api_response"]["body"]
     record_id = env["record_id"]
@@ -1508,7 +1547,7 @@ def _run_create(create, sobject, client, teardown_client=None):
         end = _now()
         ev = _evidence(
             create, sobject, start, end, http_status=http_status, success=True,
-            rejection_body=(), matched=False, cleanup=cleanup)
+            rejection_body=(), matched=False, cleanup=cleanup, realized=realized)
         return ev, "failed", None
 
     if http_status == _BUSINESS_REJECTION_STATUS:
@@ -1518,7 +1557,7 @@ def _run_create(create, sobject, client, teardown_client=None):
         ev = _evidence(
             create, sobject, start, end, http_status=http_status, success=False,
             rejection_body=rejection_body, matched=matched,
-            cleanup=CleanupRecord(attempted=False))
+            cleanup=CleanupRecord(attempted=False), realized=realized)
         return ev, ("passed" if matched else "failed"), None
 
     if (http_status == _PERMISSION_REJECTION_STATUS
@@ -1535,7 +1574,7 @@ def _run_create(create, sobject, client, teardown_client=None):
         ev = _evidence(
             create, sobject, start, end, http_status=http_status, success=False,
             rejection_body=rejection_body, matched=matched,
-            cleanup=CleanupRecord(attempted=False))
+            cleanup=CleanupRecord(attempted=False), realized=realized)
         return ev, ("passed" if matched else "failed"), None
 
     # A non-2xx, non-400 response with no recognized business-rejection signal
@@ -1548,13 +1587,14 @@ def _run_create(create, sobject, client, teardown_client=None):
     ev = _evidence(
         create, sobject, start, end, http_status=http_status, success=False,
         rejection_body=rejection_body, matched=None,
-        cleanup=CleanupRecord(attempted=False), error=err)
+        cleanup=CleanupRecord(attempted=False), error=err, realized=realized)
     return ev, "errored", err
 
 
 def _evidence(create, sobject, start, end, *, http_status, success,
               rejection_body, matched, cleanup, error=None,
-              field_values=None, ordinal=0) -> CreateAttemptEvidence:
+              field_values=None, ordinal=0,
+              realized=None) -> CreateAttemptEvidence:
     first = rejection_body[0] if rejection_body else {}
     # The actual posted payload — for the positive vertical that is the semantic
     # field + S4's operational padding; for the negative it is the create's own
@@ -1569,7 +1609,8 @@ def _evidence(create, sobject, start, end, *, http_status, success,
         message=(first.get("message") if isinstance(first, dict) else None),
         rejection_body=rejection_body, matched=matched, cleanup=cleanup,
         error_fields=_named_fields(rejection_body),
-        started_at=start, finished_at=end, duration_ms=_ms(start, end), error=error)
+        started_at=start, finished_at=end, duration_ms=_ms(start, end),
+        error=error, field_values_realized=realized)
 
 
 def _matches(expect, rejection_body) -> bool:

@@ -181,7 +181,7 @@ def _evidence_trace(evidence: RunEvidence) -> dict:
     (JSONB-safe); the typed run-level timestamps stay in their columns."""
     trace = {
         "api_choice": evidence.api_choice,
-        "steps": [_jsonable(dataclasses.asdict(s)) for s in evidence.steps],
+        "steps": [_step_dict(s) for s in evidence.steps],
         "error": (dataclasses.asdict(evidence.error)
                   if evidence.error is not None else None),
     }
@@ -190,7 +190,23 @@ def _evidence_trace(evidence: RunEvidence) -> dict:
     # every non-run-as trace byte-identical to pre-run-as traces.
     if evidence.executing_identity is not None:
         trace["executing_identity"] = evidence.executing_identity
+    # D-449: the run's temporal reference — present only when a symbolic
+    # value was materialised this run (same absence-stays-absence contract).
+    if getattr(evidence, "temporal_reference", None) is not None:
+        trace["temporal_reference"] = evidence.temporal_reference
     return trace
+
+
+def _step_dict(step) -> dict:
+    """One step's trace dict. D-449: the realized-payload keys are stripped
+    when None so every non-temporal step trace stays byte-identical to its
+    pre-D-449 shape (the D-419 discipline); a temporal step carries BOTH the
+    symbolic payload and the realized one."""
+    d = _jsonable(dataclasses.asdict(step))
+    for key in ("field_values_realized", "field_changes_realized"):
+        if key in d and d[key] is None:
+            d.pop(key)
+    return d
 
 
 def _jsonable(value):

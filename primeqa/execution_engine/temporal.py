@@ -61,6 +61,16 @@ class TemporalBoundaryClient:
     def __init__(self, inner, reference: Optional[TemporalReference] = None):
         self._inner = inner
         self._reference = reference
+        # D-449: the transport payload of the MOST RECENT create/update,
+        # recorded ONLY when materialisation actually changed it (a symbolic
+        # value was present); None otherwise. Read immediately after each
+        # call by the evidence assembly (`_realized`) — calls are strictly
+        # sequential per run, so most-recent is unambiguous.
+        self.last_realized: Optional[dict] = None
+        # D-449: True once ANY symbolic value was materialised this run —
+        # the envelope-stamp signal (a pre-supplied reference alone must not
+        # imply temporal activity).
+        self.materialised_any: bool = False
 
     @property
     def reference(self) -> Optional[TemporalReference]:
@@ -76,6 +86,7 @@ class TemporalBoundaryClient:
             return value
         if self._reference is None:
             self._reference = capture_temporal_reference(self._inner)
+        self.materialised_any = True
         return materialise(value, self._reference.reference_date)
 
     def _mat(self, payload):
@@ -83,14 +94,21 @@ class TemporalBoundaryClient:
             return payload
         if self._reference is None:
             self._reference = capture_temporal_reference(self._inner)
+        self.materialised_any = True
         ref = self._reference.reference_date
         return {k: materialise(v, ref) for k, v in payload.items()}
 
     def create(self, sobject, field_values):
-        return self._inner.create(sobject, self._mat(field_values))
+        mat = self._mat(field_values)
+        # D-449: `_mat` returns the payload IDENTITY-unchanged when nothing
+        # was symbolic — the recording is None exactly then.
+        self.last_realized = dict(mat) if mat is not field_values else None
+        return self._inner.create(sobject, mat)
 
     def update(self, sobject, record_id, field_changes):
-        return self._inner.update(sobject, record_id, self._mat(field_changes))
+        mat = self._mat(field_changes)
+        self.last_realized = dict(mat) if mat is not field_changes else None
+        return self._inner.update(sobject, record_id, mat)
 
     def __getattr__(self, name):
         return getattr(self._inner, name)

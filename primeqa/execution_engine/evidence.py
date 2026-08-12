@@ -149,6 +149,13 @@ class CreateAttemptEvidence:
     before_state: None = None
     after_state: None = None
     field_diff: None = None
+    # D-449: the TRANSPORT payload when materialisation changed it — the
+    # realized ISO dates beside the symbolic tokens in ``field_values`` (the
+    # D-424 asserted/symbolic pattern applied to staging). None when the
+    # payload carried no symbolic values (the symbolic IS the transport
+    # payload) — and on pre-D-449 rows, where a token-bearing payload with
+    # None here reads "not captured".
+    field_values_realized: Optional[dict] = None
 
 
 @dataclass(frozen=True)
@@ -216,6 +223,9 @@ class UpdateAttemptEvidence:
     before_state: None = None
     after_state: None = None
     field_diff: None = None
+    # D-449: the transport payload when materialisation changed it (see
+    # CreateAttemptEvidence.field_values_realized).
+    field_changes_realized: Optional[dict] = None
 
 
 @dataclass(frozen=True)
@@ -317,6 +327,12 @@ class RunEvidence:
     # service identity and the ledger does not assert who that was (absence
     # stays absence; never backfilled to the admin).
     executing_identity: Optional[str] = None
+    # D-449: the run's single TemporalReference as a JSON-shaped dict
+    # (reference_date ISO / reference_timezone / captured_at / source) —
+    # present ONLY when the run materialised a symbolic temporal value
+    # (absence stays absence, the D-419 discipline). The TODAY evaluation
+    # clock is THIS date, never attribution time.
+    temporal_reference: Optional[dict] = None
     # read-only-vertical N/As, reserved:
     artifacts: tuple = ()
     # Records S4 created during this run (positive vertical) — the cleanup audit
