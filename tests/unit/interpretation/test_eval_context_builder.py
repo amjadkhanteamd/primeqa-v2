@@ -67,14 +67,17 @@ def test_create_context_has_no_prior_state():
     assert ctx.prior_state is None
 
 
-def test_more_than_one_mutation_step_drops_the_pair():
-    """Prior-state ambiguity → no org-state context — the pinned guard."""
+def test_more_than_one_mutation_now_folds_d448():
+    """The D-441 blanket guard is REPLACED by the ordered fold (D-448): a
+    SUCCEEDED intermediate update contributes to the prior state of the
+    graded step. (The guard's survivors are pinned in
+    test_attribution_d448.py.)"""
     create = _create({"Stage__c": "Draft"})
     u1 = _update({"Stage__c": "A"}, ordinal=1)
     u2 = _update({"Stage__c": "B"}, ordinal=2)
     ctx = _eval_context(u2, _run([create, u1, u2]), _S1Bare())
-    assert ctx.is_create is None
-    assert ctx.prior_state is None
+    assert ctx.is_create is False
+    assert ctx.prior_state == {"Stage__c": "A"}
 
 
 def test_resolver_is_picked_up_duck_typed():

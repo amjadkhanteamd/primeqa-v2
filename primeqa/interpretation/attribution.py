@@ -190,10 +190,15 @@ def _eval_context(step, evidence: RunEvidence, s1) -> EvalContext:
     """The D-439 evaluation context for the graded step.
 
     * ORG-STATE pair: graded create → ``is_create=True`` (no prior state);
-      graded update → ``is_create=False`` + the setup create's posted payload
-      as the prior state. **More than one mutation step → prior-state
-      ambiguity → NO pair** (org-state functions stay NonEvaluable — pinned);
-      today's 2-step negatives have exactly one, this guards the future.
+      graded update → ``is_create=False`` + the ORDERED-FOLD prior state
+      (D-448): the same-record setup create's posted payload folded with
+      every SUCCEEDED same-record mutation that precedes the graded step,
+      in evidence order — a rejected intermediate changed nothing in the
+      org and contributes nothing. Where the fold cannot be sound (no or
+      multiple candidate setup creates, a preceding delete, an
+      unknown-outcome intermediate) it refuses and the org-state functions
+      stay NonEvaluable — the D-441 guard surviving for exactly the cases
+      the fold cannot resolve.
     * RecordType resolver: taken from the S1 reader when it offers one
       (duck-typed — a narrow test stub without the method simply leaves the
       RecordType family NonEvaluable).
@@ -212,27 +217,83 @@ def _eval_context(step, evidence: RunEvidence, s1) -> EvalContext:
                 except Exception:                        # noqa: BLE001
                     _cache[field] = None                 # unknown, never raise
             return _cache[field]
-    mutations = [s for s in evidence.steps
-                 if isinstance(s, (UpdateAttemptEvidence,
-                                   DeleteAttemptEvidence))]
-    if len(mutations) > 1:
-        return EvalContext(record_type_developer_name=resolver,
-                           field_type_of=field_type_of)
     if isinstance(step, CreateAttemptEvidence):
         return EvalContext(is_create=True,
                            record_type_developer_name=resolver,
                            field_type_of=field_type_of)
     if isinstance(step, UpdateAttemptEvidence):
-        setup = _create_step(evidence)
-        if setup is None:
+        prior, refusal = _ordered_fold(evidence, step)
+        if refusal is not None or prior is None:
             return EvalContext(record_type_developer_name=resolver,
                                field_type_of=field_type_of)
-        return EvalContext(prior_state=dict(setup.field_values),
+        return EvalContext(prior_state=prior,
                            is_create=False,
                            record_type_developer_name=resolver,
                            field_type_of=field_type_of)
     return EvalContext(record_type_developer_name=resolver,
                        field_type_of=field_type_of)
+
+
+def _ordered_fold(evidence: RunEvidence, graded):
+    """D-448: ``(prior_state, refusal_reason)`` for a graded UPDATE — the
+    same-record setup create's payload folded with every SUCCEEDED
+    same-record mutation that PRECEDES the graded step, in evidence order.
+    Deterministic over the evidence tuple; no timestamps, no guessing.
+
+    Steps pair by ``record_id`` when both sides carry one, else by
+    ``sobject``. A REJECTED intermediate (clean rejection, no transport
+    error) changed nothing in the org and is SKIPPED — pinned. Refusals
+    (``prior_state=None`` + the reason) are the D-441 guard's survivors:
+    the graded step missing from the evidence, no or multiple candidate
+    setup creates, a successfully-deleted subject, and any preceding
+    same-record mutation whose org effect is unknown (a transport error —
+    the request may or may not have applied)."""
+    steps = list(evidence.steps)
+    gi = next((i for i, s in enumerate(steps) if s is graded), None)
+    if gi is None:
+        return None, "graded step not present in the evidence steps"
+
+    def _same_record(s):
+        rid_g = getattr(graded, "record_id", None)
+        rid_s = getattr(s, "record_id", None)
+        if isinstance(s, CreateAttemptEvidence):
+            rid_s = getattr(getattr(s, "cleanup", None), "record_id", None) \
+                or rid_s
+        if rid_g and rid_s:
+            return rid_g == rid_s
+        return getattr(s, "sobject", None) == graded.sobject
+
+    creates = [s for s in steps[:gi]
+               if isinstance(s, CreateAttemptEvidence) and _same_record(s)]
+    if not creates:
+        return None, "no same-record setup create precedes the graded step"
+    if len(creates) > 1:
+        return None, ("multiple candidate setup creates precede the graded "
+                      "step — the fold's base record is ambiguous")
+    base = creates[0]
+    state = dict(base.field_values)
+    for s in steps[steps.index(base) + 1:gi]:
+        if isinstance(s, DeleteAttemptEvidence) and _same_record(s):
+            if getattr(s, "error", None) is not None:
+                return None, ("a preceding same-record delete has an "
+                              "unknown org effect (transport error)")
+            if s.success:
+                return None, ("a preceding delete removed the record the "
+                              "fold describes")
+            continue                     # rejected delete: org unchanged
+        if not isinstance(s, UpdateAttemptEvidence) or not _same_record(s):
+            continue
+        if getattr(s, "error", None) is not None:
+            return None, ("a preceding same-record mutation has an unknown "
+                          "org effect (transport error)")
+        if s.success is True:
+            state.update(s.field_changes)
+        elif s.success is False:
+            continue      # rejected: the org state did not change (pinned)
+        else:
+            return None, ("a preceding same-record mutation has an unknown "
+                          "outcome")
+    return state, None
 
 
 def _attribute_acceptance_rejected(evidence, s1) -> Optional[Cause]:
@@ -881,8 +942,17 @@ def _create_step(evidence: RunEvidence):
 
 
 def _mutation_step(evidence: RunEvidence):
-    """The rejection-bearing update/delete attempt of a 2-step negative
-    (D-203), if present."""
+    """The rejection-GRADED update/delete of a negative (D-203/D-448): the
+    step carrying the expectation marker — the executor sets ``matched``
+    (True/False) only where an ``expect_rejection`` was graded, while
+    acceptance/setup mutations carry ``matched=None`` (measured on the
+    3-step specimen, run 495707b6). Last-marked wins; no marked mutation →
+    the first mutation, the byte-old 2-step behaviour."""
+    marked = [s for s in evidence.steps
+              if isinstance(s, (UpdateAttemptEvidence, DeleteAttemptEvidence))
+              and s.matched is not None]
+    if marked:
+        return marked[-1]
     for s in evidence.steps:
         if isinstance(s, (UpdateAttemptEvidence, DeleteAttemptEvidence)):
             return s
@@ -914,16 +984,23 @@ def _effective_state(step, evidence: RunEvidence) -> Optional[dict]:
     """The field state a VR formula is evaluated against (D-203):
 
       - create: the attempted payload as-is;
-      - update: the setup create's posted payload overlaid with the attempted
-        ``field_changes`` — the record state the org evaluated at update time
-        (both are bare-named posted payloads, matching formula field names);
+      - update: the D-448 ordered-fold prior (setup create ⊕ preceding
+        SUCCEEDED same-record mutations, in evidence order) overlaid with
+        the attempted ``field_changes`` — the record state the org
+        evaluated at update time. Where the fold refuses, the pre-D-448
+        naive shape (first create ⊕ changes) stands — no new refusal path
+        at the value level (documented posture, the org-state pair already
+        refuses through ``_eval_context``);
       - delete: ``None`` — no field state; the caller passes through.
     """
     if isinstance(step, CreateAttemptEvidence):
         return step.field_values
     if isinstance(step, UpdateAttemptEvidence):
-        setup = _create_step(evidence)
-        state = dict(setup.field_values) if setup is not None else {}
+        prior, _refusal = _ordered_fold(evidence, step)
+        if prior is None:
+            setup = _create_step(evidence)
+            prior = dict(setup.field_values) if setup is not None else {}
+        state = dict(prior)
         state.update(step.field_changes)
         return state
     return None
