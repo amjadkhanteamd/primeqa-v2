@@ -526,6 +526,35 @@ evaluator side but the covering claims stage token payloads).
 **Demonstrated attribution reds: still 0 of 8** — unchanged by arming,
 per the standing rule.
 
+**Reachability refresh 3 (2026-08-11, D-448 — same method):**
+**PRIORVALUE → REACHABLE, measured on the family's real 3-step evidence**
+(run `495707b6`, claim `aec3aee2`, the D-441 specimen): the ordered-fold
+prior (create ⊕ preceding SUCCEEDED same-record mutations) run through
+the PRODUCTION `_mutation_step → _eval_context → _effective_state →
+evaluate` chain selects `update-violating` as the graded step, folds
+`Stage='Approved'` from the accepted intermediate, and evaluates VR05
+**True** — where the naive create-pairing demonstrably produced the
+wrong-direction False. Rejected intermediates contribute nothing
+(pinned); the D-441 guard survives as refusal for unknown intermediate
+outcomes, a deleted subject, and no/multiple base creates. Blast radius
+measured: exactly 1 of 720 stored runs carries >1 mutation (the specimen
+itself, verdict `prohibition_enforced`, no attribution row) — zero
+stored causes changed; sweep identical; sizing 0-newly-refused.
+**REACHABLE 7 of 8; BLOCKED 1** — date/temporal, owner: the S4
+RelativeDate realized-value arc (§6.2). **Demonstrated attribution reds:
+still 0 of 8.** With this refresh the evaluator side is COMPLETE for
+every construct env-59's rules exercise EXCEPT the TODAY family — whose
+remaining work is S4 evidence (persist the realized ISO date + the run's
+TemporalReference alongside the symbolic token at the
+`TemporalBoundaryClient` materialisation boundary, the D-424
+asserted/symbolic pattern applied to staging) plus a small
+run-date-clocked TODAY comparison arm; the evaluation clock is the RUN's
+reference date, never attribution time (a D-425.1-style re-read must not
+shift a boundary-day verdict). Attribution-side re-resolution was
+REJECTED: it would have to reproduce S4's materialisation semantics
+exactly (org-default-timezone anchoring, the midnight-straddle residual)
+and any divergence is a silent wrong verdict.
+
 **Detection coverage per artifact type (2026-08-09, D-437 — measured on the
 retroactive acceptance runs):**
 
