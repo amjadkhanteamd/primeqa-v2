@@ -56,6 +56,14 @@ fixed same-day (§5.1); ISPICKVAL case settled + guarded (D-444);
 constant-boolean, ISCHANGED-on-create (verified), and REGEX (guarded) armed
 C→A by D-447.*
 
+*Superseded again 2026-08-13 (D-449/D-450): **A = 16 · B = 1 + 1
+conditional · C = 9 · D = 15.** TODAY comparisons and RelativeDate token
+payloads armed — the evaluator half run-date-clocked (never the wall
+clock), the evidence half persisting realized values beside the symbolic
+tokens. With this, the evaluator side is COMPLETE for every construct
+env-59's active rules exercise; the remaining C members have no env-59
+instance.*
+
 ---
 
 ## 1. The construct census
@@ -113,10 +121,10 @@ Columns: **PARSE** (vr dialect, the one attribution and D-337 use) ·
 
 | Construct | PARSE | EVALUATE | SOUND | CAT |
 |---|---|---|---|---|
-| `TODAY()` in comparison | **ok** (D-344) | NE[`comparison without a single field + literal`] | honest. Arming needs date-parse + an injected **run-date** clock (attribution-time TODAY = wrong verdicts near boundaries) — and the corpus's covering claims stage RelativeDate TOKENS (dict payloads → NE regardless), an S4 evidence arc (D-424 pattern), not evaluator work | **C** (two-part) |
+| `TODAY()` in comparison | **ok** (D-344) | **armed (D-450)**: decides against `EvalContext.run_date` (the RUN's persisted reference, else started_at flagged as fallback — NEVER the wall clock, source-scan + stability pinned); strict ISO dates only | sound within the refusals: no clock / blank / datetime-string / symbolic token → NE; **boundary-day ±1 under the fallback clock → NE** (the org-midnight window the persisted reference does not have). Live-proven composing D-448/D-449 on fresh env-59 evidence | **A** (D-450) |
 | `DATE` `DATEVALUE` `DAY` `MONTH` `YEAR` `WEEKDAY` `ADDMONTHS` | **NotParsed** | — | honest; deterministic date math given a date value | **C** (small-medium) |
 | `NOW` `TIMEVALUE` `DATETIMEVALUE` `HOUR` `MINUTE` `SECOND` | **NotParsed** | — | honest — and time-of-day + **timezone semantics depend on runtime clock/user TZ**, which a staged payload does not carry | **D** |
-| RelativeDate token payloads (`{"$relative_date": …}`) | n/a (payload side) | NE | honest | **C** via the S4 realized-value evidence arc |
+| RelativeDate token payloads (`{"$relative_date": …}`) | n/a (payload side) | **realized beside the token (D-449)**: evidence persists the transport ISO date + the run TemporalReference; the realized payload IS the evaluation state | pre-D-449 rows stay honestly NE ("not captured"); new evidence decides. Live side-by-side: symbolic `offset_days: 1` ↔ realized `2026-08-14`, run 21565741 | **A** via D-449 evidence (was C) |
 
 ### 1.5 Number functions
 

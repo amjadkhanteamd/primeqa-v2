@@ -555,6 +555,35 @@ REJECTED: it would have to reproduce S4's materialisation semantics
 exactly (org-default-timezone anchoring, the midnight-straddle residual)
 and any divergence is a silent wrong verdict.
 
+**Reachability refresh 4 (2026-08-13, D-449/D-450 — same method):**
+**date/temporal → REACHABLE, measured — 8 of 8.** Both halves of the
+token arc are BUILT (branches pushed, merge pending): D-449 persists the
+realized transport payload beside the symbolic token plus the run's
+TemporalReference on the envelope (capture-only; transport byte-identical,
+pinned; non-temporal traces byte-identical; JSONB → no migration), and
+D-450 arms `field <op> TODAY()` clocked by the run's reference date —
+never the wall clock (source-scan + reread-stability pinned; boundary-day
+±1 refuses under the started_at fallback). **Measured on fresh env-59
+runs through the full production chain:** VR06's three covering claims
+(`3da23105`/`df306052`/`f0a552f6`) each evaluate **True**, agreeing with
+all three live rejections — with the honest note that their decisive
+disjunct is ISBLANK (their staged token is D-338-stripped because the
+claims assert the blank), so the TODAY comparison itself is live-proven
+on run `21565741` (claim `aec3aee2`): persisted side-by-side symbolic
+`{"$relative_date": {…, "offset_days": 1}}` ↔ realized `2026-08-14`,
+envelope reference `2026-08-13 Asia/Kolkata organization_timezone`,
+fold prior `Stage='Approved'`, VR05 True — D-448 + D-449 + D-450
+composing on one real run. Full-production recompute of all 3 stored
+`prohibition_not_enforced` rows with the armed clock: identical causes
+(zero verdict changes). **The evaluator side is now COMPLETE for every
+construct env-59's active rules exercise** (census: A=16 / B=1+1 / C=9 /
+D=15; the remaining C members have no env-59 instance). **Demonstrated
+attribution reds: still 0 of 8.** What remains for full VR attribution,
+by owner: **B-3 before-state capture** (the payload-model gap — the D-203
+residual, bounding every family's soundness on payload-unset fields) and
+**a signed window** (P2′/P3′, on file, UNSIGNED — demonstration is the
+one thing arming cannot produce).
+
 **Detection coverage per artifact type (2026-08-09, D-437 — measured on the
 retroactive acceptance runs):**
 
