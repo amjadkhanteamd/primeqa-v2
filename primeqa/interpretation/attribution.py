@@ -21,6 +21,7 @@ S1's query interface.
 from __future__ import annotations
 
 from dataclasses import dataclass, replace
+from datetime import date
 from typing import Optional, Protocol
 
 from primeqa.execution_engine.evidence import (
@@ -203,6 +204,7 @@ def _eval_context(step, evidence: RunEvidence, s1) -> EvalContext:
       (duck-typed — a narrow test stub without the method simply leaves the
       RecordType family NonEvaluable).
     """
+    run_date, run_fb = _run_clock(evidence)
     resolver = getattr(s1, "record_type_developer_name", None)
     # D-442: bare-field -> S1 field_type, memoized per attribution (feeds
     # the ISNULL nullable-type guard + the percent fraction conversion).
@@ -220,18 +222,56 @@ def _eval_context(step, evidence: RunEvidence, s1) -> EvalContext:
     if isinstance(step, CreateAttemptEvidence):
         return EvalContext(is_create=True,
                            record_type_developer_name=resolver,
-                           field_type_of=field_type_of)
+                           field_type_of=field_type_of,
+                           run_date=run_date,
+                           run_date_is_fallback=run_fb)
     if isinstance(step, UpdateAttemptEvidence):
         prior, refusal = _ordered_fold(evidence, step)
         if refusal is not None or prior is None:
             return EvalContext(record_type_developer_name=resolver,
-                               field_type_of=field_type_of)
+                               field_type_of=field_type_of,
+                           run_date=run_date,
+                           run_date_is_fallback=run_fb)
         return EvalContext(prior_state=prior,
                            is_create=False,
                            record_type_developer_name=resolver,
-                           field_type_of=field_type_of)
+                           field_type_of=field_type_of,
+                           run_date=run_date,
+                           run_date_is_fallback=run_fb)
     return EvalContext(record_type_developer_name=resolver,
-                       field_type_of=field_type_of)
+                       field_type_of=field_type_of,
+                           run_date=run_date,
+                           run_date_is_fallback=run_fb)
+
+
+def _run_clock(evidence: RunEvidence):
+    """D-450: the TODAY evaluation clock — the run's PERSISTED reference
+    date (the D-449 envelope), else evidence ``started_at``'s date flagged
+    as a fallback (pre-D-449 rows). Never the wall clock: attribution time
+    must not move a verdict."""
+    ref = getattr(evidence, "temporal_reference", None)
+    if isinstance(ref, dict) and ref.get("reference_date"):
+        try:
+            return date.fromisoformat(str(ref["reference_date"])), False
+        except ValueError:
+            pass
+    started = getattr(evidence, "started_at", None)
+    if started is not None:
+        return started.date(), True
+    return None, False
+
+
+def _staged_values(step) -> dict:
+    """D-450: the CREATE state the org evaluated — the realized transport
+    payload where captured (D-449), else the symbolic field_values."""
+    return getattr(step, "field_values_realized", None) or step.field_values
+
+
+def _staged_changes(step) -> dict:
+    """D-450: the UPDATE changes the org evaluated — realized where
+    captured, else the symbolic field_changes."""
+    return (getattr(step, "field_changes_realized", None)
+            or step.field_changes)
 
 
 def _ordered_fold(evidence: RunEvidence, graded):
@@ -271,7 +311,7 @@ def _ordered_fold(evidence: RunEvidence, graded):
         return None, ("multiple candidate setup creates precede the graded "
                       "step — the fold's base record is ambiguous")
     base = creates[0]
-    state = dict(base.field_values)
+    state = dict(_staged_values(base))
     for s in steps[steps.index(base) + 1:gi]:
         if isinstance(s, DeleteAttemptEvidence) and _same_record(s):
             if getattr(s, "error", None) is not None:
@@ -287,7 +327,7 @@ def _ordered_fold(evidence: RunEvidence, graded):
             return None, ("a preceding same-record mutation has an unknown "
                           "org effect (transport error)")
         if s.success is True:
-            state.update(s.field_changes)
+            state.update(_staged_changes(s))
         elif s.success is False:
             continue      # rejected: the org state did not change (pinned)
         else:
@@ -994,14 +1034,14 @@ def _effective_state(step, evidence: RunEvidence) -> Optional[dict]:
       - delete: ``None`` — no field state; the caller passes through.
     """
     if isinstance(step, CreateAttemptEvidence):
-        return step.field_values
+        return _staged_values(step)
     if isinstance(step, UpdateAttemptEvidence):
         prior, _refusal = _ordered_fold(evidence, step)
         if prior is None:
             setup = _create_step(evidence)
-            prior = dict(setup.field_values) if setup is not None else {}
+            prior = dict(_staged_values(setup)) if setup is not None else {}
         state = dict(prior)
-        state.update(step.field_changes)
+        state.update(_staged_changes(step))
         return state
     return None
 

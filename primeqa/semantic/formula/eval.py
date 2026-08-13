@@ -32,6 +32,7 @@ from __future__ import annotations
 import operator
 import re
 from dataclasses import dataclass
+from datetime import date
 from typing import Callable, Mapping, Optional, Union
 
 from primeqa.semantic.formula.nodes import (
@@ -113,6 +114,13 @@ class EvalContext:
     # boundary: create Discount=20 succeeds against `> 0.20`, update 20.01
     # fires).
     field_type_of: Optional[Callable[[str], Optional[str]]] = None
+    # D-450: the TODAY evaluation clock — the RUN's reference date (the
+    # D-449 envelope), never the wall clock. ``run_date_is_fallback`` marks
+    # a clock derived from evidence started_at (pre-D-449 rows): under it a
+    # boundary-day comparison (±1 day) refuses — the org-midnight ambiguity
+    # window the persisted reference does not have.
+    run_date: Optional["date"] = None
+    run_date_is_fallback: bool = False
 
 
 def evaluate(ast, payload: dict, *, context: Optional[EvalContext] = None,
@@ -190,6 +198,10 @@ def _kleene_not(r: EvalResult) -> EvalResult:
 def _eval_comparison(node: Comparison, payload,
                      ctx: Optional[EvalContext] = None) -> EvalResult:
     left, right = node.left, node.right
+    if _is_today_call(right) and isinstance(left, FieldRef):
+        return _eval_today_comparison(left, node.op, payload, ctx)
+    if _is_today_call(left) and isinstance(right, FieldRef):
+        return _eval_today_comparison(right, _FLIP[node.op], payload, ctx)
     if isinstance(left, FieldRef) and isinstance(right, Literal):
         fref, lit, op = left, right, node.op
     elif isinstance(left, Literal) and isinstance(right, FieldRef):
@@ -207,6 +219,49 @@ def _eval_comparison(node: Comparison, payload,
         return NonEvaluable(f"field {fref.path[0]} absent from payload")
     return _compare(_percent_adjusted(payload[fref.path[0]], fref.path[0],
                                       ctx), op, lit)
+
+
+def _is_today_call(node) -> bool:
+    return isinstance(node, FunctionCall) and node.name == "TODAY" \
+        and not node.args
+
+
+def _eval_today_comparison(fref: FieldRef, op: str, payload,
+                           ctx: Optional[EvalContext]) -> EvalResult:
+    """D-450: ``field <op> TODAY()``, clocked by the RUN's reference date —
+    NEVER the wall clock (a re-read days later must not move a boundary-day
+    verdict). Strict ISO-date field values only; everything else refuses
+    (blank — SF blank-vs-TODAY unverified; datetime strings — DATEVALUE
+    territory; symbolic tokens — pre-D-449 evidence, "not captured")."""
+    if ctx is None or ctx.run_date is None:
+        return NonEvaluable(
+            "TODAY comparison without a run-date clock (D-450)")
+    if fref.is_dotted:
+        return NonEvaluable(f"cross-object ref {fref.name}")
+    field = fref.path[0]
+    if field not in payload:
+        return NonEvaluable(f"field {field} absent from payload")
+    value = payload[field]
+    if value is None or value == "":
+        return NonEvaluable(
+            "blank date vs TODAY — Salesforce blank-date semantics not "
+            "verified; refusing (D-450)")
+    if not isinstance(value, str):
+        return NonEvaluable(
+            "non-ISO-date value vs TODAY — refusing rather than guessing "
+            "a date coercion (D-450)")
+    try:
+        field_date = date.fromisoformat(value)
+    except ValueError:
+        return NonEvaluable(
+            "value does not parse as a strict ISO date (datetime strings "
+            "are DATEVALUE territory) — refusing (D-450)")
+    if (ctx.run_date_is_fallback
+            and abs((field_date - ctx.run_date).days) <= 1):
+        return NonEvaluable(
+            "boundary-day comparison under a fallback clock (evidence "
+            "started_at, org midnight ambiguity) — refusing (D-450)")
+    return _ORDER[op](field_date, ctx.run_date)
 
 
 def _percent_adjusted(value, field: str, ctx: Optional[EvalContext]):
