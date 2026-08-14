@@ -1,0 +1,8 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<ValidationRule xmlns="http://soap.sforce.com/2006/04/metadata">
+    <fullName>PLS_TA_VR02_Archive_Reason</fullName>
+    <active>true</active>
+    <description>Archived probes require an archive reason.</description>
+    <errorConditionFormula>PLS_TA_Archived__c = TRUE &amp;&amp; ISBLANK(PLS_TA_Archive_Reason__c)</errorConditionFormula>
+    <errorMessage>Archived probes require an archive reason.</errorMessage>
+</ValidationRule>
