@@ -6938,12 +6938,15 @@ class GovernanceCore:
                                        (getattr(state, "presented_candidates", None) or [])]
             delta = {"selected_path_ids": ai["selected_path_ids"]}
 
-        # D-454: surface the surviving bundles' coverage flags on the
-        # outcome's reasoning artifact (the D-361 telemetry precedent) —
-        # batch-level visibility beside the per-claim provenance event.
-        _cov = [{"archetype": b.archetype, "claim_kind": b.claim_kind,
-                 "flags": list(b.coverage_flag)}
-                for b in bundles if getattr(b, "coverage_flag", None)]
+        # D-454/D-455: the OUTCOME surface stays signal-only (what needs
+        # attention in this batch) — clean COVERED entries live in the
+        # claim's provenance, not here.
+        _cov = []
+        for b in bundles:
+            _sig = _coverage_signal_only(getattr(b, "coverage_flag", None))
+            if _sig:
+                _cov.append({"archetype": b.archetype,
+                             "claim_kind": b.claim_kind, "flags": _sig})
         if _cov:
             ai["coverage_flags"] = _cov
 
@@ -7312,12 +7315,21 @@ def _coverage_flags_for(grounding, bundle, rules: list) -> tuple:
                     vr_name=r["name"], vr_formula=r["formula"],
                     vr_active=r["active"], pinned_fields=pins,
                     mechanism_kind="boundary-literal-proxy"))
-    # Only PARTIAL / CANNOT_ASSESS (or an inactive mechanism) are worth a
-    # persisted flag — a clean COVERED on an active rule is the no-op case.
-    kept = tuple(f for f in flags
-                 if f.verdict != "COVERED" or f.mechanism_inactive)
-    return kept
+    # D-455 (absence discipline): EVERY mechanism-resolved assessment
+    # persists — including clean COVERED — so "assessed, clean" is
+    # distinguishable from "predates the flag" at the review surface.
+    # No-mechanism bundles still return () (for them "not assessed" is
+    # the true state). The OUTCOME surface filters to signal-only
+    # separately (`_coverage_signal_only`).
+    return tuple(flags)
 
+
+
+def _coverage_signal_only(flags) -> list:
+    """D-455: the outcome-surface filter — PARTIAL / CANNOT_ASSESS / any
+    inactive-mechanism entry; clean COVERED stays provenance-only."""
+    return [dict(f) for f in (flags or ())
+            if f.get("verdict") != "COVERED" or f.get("mechanism_inactive")]
 
 
 def _vm_declination_payload(invalid_checks: list, vm_index) -> dict:

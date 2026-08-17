@@ -152,9 +152,11 @@ def _bundle(conds=(), staged=()):
         coverage_flag=None)
 
 
-def test_covered_active_rules_produce_no_flag_at_all():
-    """Full coverage on an active mechanism = the no-op case: nothing is
-    attached, nothing would persist — the zero-behaviour-change contract."""
+def test_covered_active_rules_persist_but_stay_off_the_outcome_surface():
+    """D-455 amended D-454's filter: a mechanism-resolved COVERED persists
+    (provenance — so "assessed, clean" is distinguishable from "predates
+    the flag") but stays OFF the outcome's signal-only surface."""
+    from primeqa.generation.governance_core import _coverage_signal_only
     g = SimpleNamespace(vr_formulas=(_TA2,), claim_kind="prohibition-claim")
     b = _bundle(conds=(("PLS_TA_Archived__c", "equals", True),
                        ("PLS_TA_Archive_Reason__c", "is_null", None)),
@@ -162,7 +164,12 @@ def test_covered_active_rules_produce_no_flag_at_all():
     rules = [{"name": "TA2", "formula": _TA2, "active": True,
               "nums": set(), "bare": {"pls_ta_archived__c",
                                       "pls_ta_archive_reason__c"}}]
-    assert _coverage_flags_for(g, b, rules) == ()
+    flags = _coverage_flags_for(g, b, rules)
+    assert len(flags) == 1 and flags[0].verdict == COVERED
+    payloads = [f.to_payload() for f in flags]
+    assert _coverage_signal_only(payloads) == []          # signal-only filter
+    inactive = [dict(p, mechanism_inactive=True) for p in payloads]
+    assert _coverage_signal_only(inactive) == inactive    # sub-flag passes
 
 
 def test_no_mechanism_produces_no_flag():

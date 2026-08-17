@@ -603,13 +603,49 @@ def read_claim_detail(tenant_id: int, test_id) -> dict:
             session = Session(bind=conn)
             try:
                 detail = _read_claim_detail(session, test_id, labels)
-                return {"available": True, "found": detail is not None, "claim": detail}
+                coverage = _read_claim_coverage(session, test_id)
+                return {"available": True, "found": detail is not None,
+                        "claim": detail, "coverage_assessment": coverage}
             finally:
                 session.close()
     except Exception as exc:
         log.warning("read_claim_detail unavailable for tenant %s test %s: %s",
                     tenant_id, test_id, exc)
         return {"available": False, "found": False, "claim": None}
+
+
+def _read_claim_coverage(session, test_id) -> dict:
+    """D-455: the claim's D-454 coverage assessment — the NEWEST write's
+    ``coverage_flag`` provenance events (one transaction's events share
+    ``now()``, so the latest ``event_at`` group IS the current assessment).
+    ``{available, assessed, flags}``; ``assessed=False`` with no events means
+    NOT ASSESSED (predates the flag, or no VR mechanism was found) — the
+    render must show that state explicitly, never as clean (D-424 absence
+    discipline). Best-effort: a read failure is ``available=False``, worded
+    as unavailable, never as clean."""
+    import json as _json
+    from sqlalchemy import text as _text
+    try:
+        rows = session.execute(_text(
+            "SELECT event_data, event_at FROM test_provenance "
+            "WHERE claim_test_id = CAST(:tid AS uuid) "
+            "  AND event_kind = 'coverage_flag' "
+            "ORDER BY event_at DESC"), {"tid": str(test_id)}).fetchall()
+    except Exception:
+        return {"available": False, "assessed": False, "flags": []}
+    if not rows:
+        return {"available": True, "assessed": False, "flags": []}
+    newest = rows[0][1]
+    flags = []
+    for data, at in rows:
+        if at != newest:
+            break
+        if isinstance(data, str):
+            data = _json.loads(data)
+        flags.append(dict(data))
+    return {"available": True, "assessed": True,
+            "assessed_at": newest.isoformat() if newest else None,
+            "flags": flags}
 
 
 # --- read: sibling claims (D-228 / F3 — the supersession context) -------------
