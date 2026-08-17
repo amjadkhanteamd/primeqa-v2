@@ -2008,6 +2008,22 @@ class SemanticTransactionCoordinator:
             updated_at=row.updated_at,
         )
 
+    def append_claim_event(self, session, *, actor: str, test_id,
+                           event_kind: str, event_data: dict) -> None:
+        """Append ONE provenance event to a claim (D-454: the
+        ``coverage_flag`` writer). Append-only, same-transaction with the
+        caller's write; never touches claim rows. The event kind must be a
+        member of the ``provenance_event_kind`` enum (the D-454 tenant
+        migration added ``coverage_flag``)."""
+        session.add(TestProvenance(
+            id=_uuid_mod.uuid4(),
+            claim_test_id=test_id,
+            recipe_id=None,
+            event_kind=event_kind,
+            event_data=dict(event_data),
+            event_actor=actor,
+        ))
+
     def link_requirement(
         self,
         session: Session,

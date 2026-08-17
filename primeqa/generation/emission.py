@@ -633,6 +633,11 @@ class EmissionBundle:
     # must not enter a boundary strict-AND). Empty () = no boundary set (every
     # claim today); populated ONLY alongside strategy_kind='bva' (S3).
     boundary_recipes: tuple = ()
+    # D-454: the partial-coverage flag payload(s) — REVIEW metadata only,
+    # attached at finalize, persisted as claim provenance + on the outcome's
+    # attempted_interpretation. None = full coverage or no VR mechanism; the
+    # claim/recipe bodies above are NEVER touched by it.
+    coverage_flag: Optional[tuple] = None
 
 
 # ---------------------------------------------------------------------------

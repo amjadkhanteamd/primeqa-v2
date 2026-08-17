@@ -174,6 +174,15 @@ class LedgerPersister:
             outcome.equivalent_existing = (outcome.equivalent_existing or []) + [cr.test_id]
             return
 
+        # D-454: the partial-coverage flag rides claim-keyed provenance —
+        # append-only review metadata, written only when finalize attached a
+        # flag; claim/recipe bodies are untouched by it.
+        for flag in (getattr(emission, "coverage_flag", None) or ()):
+            self._coordinator.append_claim_event(
+                session, actor="s3", test_id=cr.test_id,
+                event_kind="coverage_flag", event_data=flag)
+
+
         rr = self._coordinator.write_recipe(
             session, actor="s3", recipe_id=None, claim_test_id=cr.test_id,
             trigger_kind=emission.trigger_kind, recipe_kind=emission.recipe_kind,

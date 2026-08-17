@@ -69,6 +69,7 @@ from primeqa.generation.protocol import (
     RefusalEntry,
 )
 from primeqa.semantic.edges import TIER_1_EDGES
+from primeqa.generation.coverage_flag import assess_rule_coverage
 from primeqa.generation.decision_branch import decision_branch_shape
 from primeqa.generation.transition import (
     _flatten_and, _prior_constraint, temporal_boundary_shape,
@@ -6831,6 +6832,18 @@ class GovernanceCore:
         bundles = [author_emission(g, enable_bva_boundaries=enable_bva)
                    for g in groundings]
 
+        # D-454: partial-coverage flags — computed per (grounding, bundle)
+        # BEFORE dedup/gates so a surviving bundle carries its own flag.
+        # FLAG-FOR-REVIEW ONLY (D-453 measured the refuse ceiling at 159/215
+        # with 112 live-green): a flag failure must never block generation —
+        # loud log, never a raise (unlike the vm/rep GATES, which decide).
+        try:
+            self._attach_coverage_flags(groundings, bundles, ctx)
+        except Exception:
+            log.exception(
+                "D-454 coverage-flag attachment failed — flags skipped for "
+                "this draft (generation unaffected)")
+
         # D-339: collapse re-proposal duplicates before persistence. The D-247
         # coverage re-prompt can re-send the FULL intent array, so a later
         # propose turn re-grounds intents already grounded on an earlier turn;
@@ -6925,6 +6938,15 @@ class GovernanceCore:
                                        (getattr(state, "presented_candidates", None) or [])]
             delta = {"selected_path_ids": ai["selected_path_ids"]}
 
+        # D-454: surface the surviving bundles' coverage flags on the
+        # outcome's reasoning artifact (the D-361 telemetry precedent) —
+        # batch-level visibility beside the per-claim provenance event.
+        _cov = [{"archetype": b.archetype, "claim_kind": b.claim_kind,
+                 "flags": list(b.coverage_flag)}
+                for b in bundles if getattr(b, "coverage_flag", None)]
+        if _cov:
+            ai["coverage_flags"] = _cov
+
         # Control-telemetry Phase 0: the control-coverage map (stages through
         # EMITTED), from the stashed control facts + the deduped bundle set.
         # Read-only telemetry on a NEW ai key — explanation_hash canonicalizes
@@ -6983,6 +7005,25 @@ class GovernanceCore:
                               interpretation_delta=delta)
 
     # -- D-413 value-membership gate -------------------------------------
+    def _attach_coverage_flags(self, groundings, bundles, ctx) -> None:
+        """D-454: compute + attach partial-coverage flags per (grounding,
+        bundle). REVIEW METADATA ONLY — never refuses, never declines, never
+        mutates claim/recipe bodies; a bundle with full coverage or no VR
+        mechanism is left byte-identical (``coverage_flag`` stays None)."""
+        at = ctx.semantic_context.s1_version_seq
+        cache: dict = {}
+        for g, b in zip(groundings, bundles):
+            subject = getattr(getattr(g, "subject", None),
+                              "external_id", None)
+            if not subject:
+                continue
+            if subject not in cache:
+                cache[subject] = _coverage_subject_rules(
+                    self._s1, at, subject)
+            flags = _coverage_flags_for(g, b, cache[subject])
+            if flags:
+                b.coverage_flag = tuple(f.to_payload() for f in flags)
+
     def _value_membership_gate(
             self, bundles: list, ctx, state) -> tuple[list, list]:
         """Filter authored bundles through the D-412 membership check.
@@ -7161,6 +7202,122 @@ def _vm_bundle_bodies(bundle) -> list:
         bodies.append(_dump(getattr(extra, "causal_initiation", None)))
         bodies.append(_dump(getattr(extra, "observation_realization", None)))
     return [b for b in bodies if b is not None]
+
+
+def _coverage_subject_rules(s1, at: int, subject_external_id: str) -> list:
+    """D-454: the subject's ValidationRules at the batch seq, shaped for the
+    coverage assessment: ``{name, formula, active, nums, bare_fields}``.
+    VR api-names are ``Object.RuleName`` throughout the corpus, so a prefix
+    filter needs no edge traversal. Best-effort (a read failure yields no
+    flags, never a raise — the caller's fail-open wall)."""
+    import re as _re
+    from primeqa.semantic.formula import parse as _parse
+    from primeqa.semantic.formula.nodes import NotParsed as _NotParsed
+    out = []
+    prefix = f"{subject_external_id}."
+    for ent in s1.get_entities("ValidationRule", at_seq=at):
+        api = ent.sf_api_name or ""
+        if not api.startswith(prefix):
+            continue
+        attrs = ent.attributes or {}
+        formula = vr_formula_text(attrs)
+        if not formula:
+            continue
+        nums = set()
+        for m in _re.finditer(r"(?<![\w.])(\d+(?:\.\d+)?)(?![\w.])",
+                              _re.sub(r"'[^']*'|\"[^\"]*\"", " ", formula)):
+            nums.add(float(m.group(1)))
+        bare = set()
+        ast = _parse(formula)
+        if not isinstance(ast, _NotParsed) and ast is not None:
+            _coverage_leaf_fields(ast, bare)
+        out.append({"name": api.split(".")[-1], "formula": formula,
+                    "active": vr_is_active(attrs), "nums": nums,
+                    "bare": bare})
+    return out
+
+
+def _coverage_leaf_fields(node, out: set) -> None:
+    from primeqa.semantic.formula.nodes import FieldRef as _FieldRef
+    if isinstance(node, _FieldRef):
+        if not node.is_dotted:
+            out.add(node.path[0].lower())
+        return
+    for attr in ("operand", "operands", "args", "left", "right"):
+        v = getattr(node, attr, None)
+        if v is None:
+            continue
+        if isinstance(v, (list, tuple)):
+            for x in v:
+                _coverage_leaf_fields(x, out)
+        else:
+            _coverage_leaf_fields(v, out)
+
+
+def _coverage_pinned_fields(bundle) -> frozenset:
+    """The claim's staged+asserted bare field names: every field a recipe
+    step stages plus every semantic-condition subject (is_null included —
+    an asserted blank IS a pin)."""
+    pins = set()
+    sc = getattr(bundle, "semantic_conditions", None)
+    for c in (getattr(sc, "conditions", None) or ()):
+        ext = getattr(getattr(c, "subject", None), "external_id", None)
+        if ext:
+            pins.add(str(ext).rsplit(".", 1)[-1].lower())
+    for recipe_attr in ("observation_realization",):
+        body = getattr(bundle, recipe_attr, None)
+        for step in (getattr(body, "steps", None) or ()):
+            for m in (getattr(step, "field_values", None),
+                      getattr(step, "field_changes", None)):
+                for k in (m or {}):
+                    pins.add(str(k).rsplit(".", 1)[-1].lower())
+    return frozenset(pins)
+
+
+def _coverage_flags_for(grounding, bundle, rules: list) -> tuple:
+    """The bundle's coverage flags. Mechanism resolution: a grounding
+    carrying ``vr_formulas`` uses them directly (name best-effort by
+    normalized formula-text match); a VR-blind acceptance grounding gets
+    the boundary-literal PROXY (a numeric equals-condition equal to an
+    active rule's literal, on a field that rule references)."""
+    import json as _json
+    pins = _coverage_pinned_fields(bundle)
+    flags = []
+    vr_formulas = tuple(getattr(grounding, "vr_formulas", ()) or ())
+    if vr_formulas:
+        norm = {" ".join((r["formula"] or "").split()): r for r in rules}
+        for text_ in vr_formulas:
+            r = norm.get(" ".join((text_ or "").split()))
+            flags.append(assess_rule_coverage(
+                vr_name=r["name"] if r else None, vr_formula=text_,
+                vr_active=(r["active"] if r else None),
+                pinned_fields=pins, mechanism_kind="grounding"))
+    elif getattr(grounding, "claim_kind", None) == "acceptance-claim":
+        sc = getattr(bundle, "semantic_conditions", None)
+        cond_vals = []
+        for c in (getattr(sc, "conditions", None) or ()):
+            ext = getattr(getattr(c, "subject", None), "external_id", None)
+            v = getattr(c, "value", None)
+            if (ext and getattr(c, "predicate", None) == "equals"
+                    and isinstance(v, (int, float))
+                    and not isinstance(v, bool)):
+                cond_vals.append((str(ext).rsplit(".", 1)[-1].lower(),
+                                  float(v)))
+        for r in rules:
+            if r["active"] is False:
+                continue
+            if any(cf in r["bare"] and cv in r["nums"]
+                   for cf, cv in cond_vals):
+                flags.append(assess_rule_coverage(
+                    vr_name=r["name"], vr_formula=r["formula"],
+                    vr_active=r["active"], pinned_fields=pins,
+                    mechanism_kind="boundary-literal-proxy"))
+    # Only PARTIAL / CANNOT_ASSESS (or an inactive mechanism) are worth a
+    # persisted flag — a clean COVERED on an active rule is the no-op case.
+    kept = tuple(f for f in flags
+                 if f.verdict != "COVERED" or f.mechanism_inactive)
+    return kept
+
 
 
 def _vm_declination_payload(invalid_checks: list, vm_index) -> dict:
