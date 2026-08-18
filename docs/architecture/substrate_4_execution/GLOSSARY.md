@@ -24,4 +24,4 @@ Terms specific to substrate-4. Cross-cutting terms live in the relevant substrat
 
 **k14 (teardown as execution-isolation).** Cleanup (delete the created record) is framed as leaving the org as found — an isolation concern, never part of the semantic verdict.
 
-**Docs MCP (the design-time-only boundary).** Docs MCP is a design-time input. It is never a product-runtime dependency. It is never an evidence source. (Cross-cutting — binds S3, S4 and S6 alike; see D-448.)
+**Docs MCP (the design-time-only boundary).** Docs MCP is a design-time input. It is never a product-runtime dependency. It is never an evidence source. (Cross-cutting — binds S3, S4 and S6 alike; see D-458.)
