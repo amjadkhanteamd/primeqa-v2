@@ -88,6 +88,18 @@ def test_template_placeholder_line_is_not_an_entry(tmp_path):
     assert main(["--file", _write(tmp_path, text)]) == 0
 
 
+def test_real_ledger_is_clean(capsys):
+    # The enforcement backstop: the actual ledger must pass. A collision
+    # above the D-458 baseline turns the unit gate suite red with the
+    # checker's own output.
+    repo_root = os.path.dirname(os.path.dirname(
+        os.path.dirname(os.path.abspath(__file__))))
+    ledger = os.path.join(repo_root, "docs", "architecture",
+                          "DECISIONS_LOG.md")
+    rc = main(["--file", ledger])
+    assert rc == 0, capsys.readouterr().out
+
+
 def test_check_lines_pure_baseline_override():
     lines = ["## D-448 — first\n", "## D-448 — second, no marker\n"]
     assert check_lines(lines, baseline="447")      # judged: collision

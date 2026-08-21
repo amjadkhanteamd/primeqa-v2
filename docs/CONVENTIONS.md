@@ -208,7 +208,12 @@ For PostgreSQL on macOS Homebrew:
 - **`PRIMEQA_PRODUCT_DEFINITION.md`** describes the product built on
   this architecture.
 - **`DECISIONS_LOG.md`** is append-only; decisions are not edited in
-  place, only superseded by later decisions.
+  place, only superseded by later decisions. New headings above D-458
+  must take an unused number, or carry a continuation marker
+  (`(close)` / `CLOSE` / `(design)` / `Result` / `REALIZED` / `(cont.)`)
+  when they extend an existing decision — enforced by
+  `scripts/check_decision_numbers.py` (runs in the unit gate suite;
+  commit-time via `git config core.hooksPath .githooks`, once per clone).
 - **`EVOLUTION.md`** (per substrate) is append-only.
 - **`PHASE_N_PLAN.md`** documents are locked planning artifacts;
   corrections tracked in `PHASE_N_PLAN_corrections.md`.

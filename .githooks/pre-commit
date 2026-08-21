@@ -1,0 +1,23 @@
+#!/bin/sh
+# Blocks a commit that stages a decision-number collision in the ledger
+# (the D-302 / D-448 race — two workstreams taking the same next number).
+# Checks the STAGED content, not the working tree.
+#
+# Activate once per clone:  git config core.hooksPath .githooks
+# The backstop is the unit gate suite (test_real_ledger_is_clean), which
+# fails on the same collision even where this hook is not activated.
+# --no-verify is prohibited by the working agreement (docs/CONVENTIONS.md).
+
+if git diff --cached --name-only | grep -q '^docs/architecture/DECISIONS_LOG\.md$'; then
+    tmp=$(mktemp) || exit 1
+    git show :docs/architecture/DECISIONS_LOG.md > "$tmp" || { rm -f "$tmp"; exit 1; }
+    python3 scripts/check_decision_numbers.py --file "$tmp"
+    status=$?
+    rm -f "$tmp"
+    if [ "$status" -ne 0 ]; then
+        echo "pre-commit: decision-number check FAILED on the staged ledger (see above)." >&2
+        echo "pre-commit: fix the heading before committing; --no-verify is prohibited." >&2
+        exit 1
+    fi
+fi
+exit 0
