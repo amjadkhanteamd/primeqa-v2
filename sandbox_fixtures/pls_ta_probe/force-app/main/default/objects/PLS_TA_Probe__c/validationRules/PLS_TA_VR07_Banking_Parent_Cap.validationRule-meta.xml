@@ -1,0 +1,8 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<ValidationRule xmlns="http://soap.sforce.com/2006/04/metadata">
+    <fullName>PLS_TA_VR07_Banking_Parent_Cap</fullName>
+    <active>true</active>
+    <description>Probes under Banking accounts are capped at 50,000.</description>
+    <errorConditionFormula>TEXT(PLS_TA_Parent__r.Industry) = &quot;Banking&quot; &amp;&amp; PLS_TA_Amount__c &gt; 50000</errorConditionFormula>
+    <errorMessage>Probes under Banking accounts are capped at 50,000.</errorMessage>
+</ValidationRule>

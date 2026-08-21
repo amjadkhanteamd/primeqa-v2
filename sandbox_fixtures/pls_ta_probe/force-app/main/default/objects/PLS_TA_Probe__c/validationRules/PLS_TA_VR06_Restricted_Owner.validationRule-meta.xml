@@ -1,0 +1,8 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<ValidationRule xmlns="http://soap.sforce.com/2006/04/metadata">
+    <fullName>PLS_TA_VR06_Restricted_Owner</fullName>
+    <active>true</active>
+    <description>Only the integration user may modify restricted probes.</description>
+    <errorConditionFormula>PLS_TA_Restricted__c = TRUE &amp;&amp; $User.Alias &lt;&gt; &quot;AKhan&quot;</errorConditionFormula>
+    <errorMessage>Only the integration user may modify restricted probes.</errorMessage>
+</ValidationRule>
