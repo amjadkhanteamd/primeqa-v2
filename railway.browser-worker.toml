@@ -1,0 +1,8 @@
+[build]
+builder = "dockerfile"
+dockerfilePath = "Dockerfile.browser-worker"
+
+[deploy]
+startCommand = "sleep infinity"
+restartPolicyType = "ON_FAILURE"
+restartPolicyMaxRetries = 3
