@@ -135,3 +135,18 @@
   verified against the live org describe (0 values each, incl. the one
   required+createable survivor `Location.LocationType`); `no_values` is
   genuine absence, not a fourth silent exit.
+
+## Added 2026-08-21 — from ui-s2.3 verification
+
+- **FIX-1: fresh tenant-chain provisioning crashes at revision 20260817_0010
+  (D-454).** `autocommit_block()` asserts alembic owns the transaction;
+  `alembic/env.py:113` opens its own, so the assertion fires on any
+  fresh-chain run. Existing tenants are unaffected (revision already
+  applied); ANY NEW TENANT PROVISION IN PRODUCTION WILL CRASH MID-CHAIN.
+  Severity: blocks client onboarding — must be fixed before the first new
+  tenant is provisioned. Found during ui-s2.3 verification (local fresh
+  chain, 2026-08-21). Root cause is the env.py/autocommit_block
+  transaction-ownership contract mismatch; candidate fixes: (a) env.py
+  yields transaction ownership to alembic, (b) rewrite 20260817_0010
+  without autocommit_block. Fix needs its own diagnosis pass + decision;
+  do NOT patch as part of unrelated work.
