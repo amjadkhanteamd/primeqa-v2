@@ -213,3 +213,7 @@ SESSION_STATE.md
 # run-as JWT keypair — never commit (D-416)
 plimsol_jwt.key
 plimsol_jwt.crt
+
+# never-commit probe scripts
+scratch_*.py
+scratch/
