@@ -174,6 +174,14 @@ reason).
 
 ## Fixture strategy — loopback `http.server`, not `data:` URLs
 
+> **Stabilisation superseded (2026-08-23):** the `networkidle` + all-DOM-quiet
+> stabilise policy described in this LLD was falsified by the first live
+> Salesforce Aura page and is replaced by the **structural-quiet gate +
+> `domcontentloaded`/retry** contract in `LLD_SESSION_SUBSTRATE.md`
+> (*Stabilisation amendment*). The fixture rationale below still holds for
+> the static fixtures; `networkidle` is no longer part of the required chain
+> on live pages.
+
 **Choice: a loopback `http.server` (127.0.0.1:8642) serving fixture files
 the spike owns.** Two reasons, the first decisive:
 

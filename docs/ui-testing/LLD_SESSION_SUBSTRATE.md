@@ -40,14 +40,15 @@ Corollaries applied here:
 `login(context, base_url, start_path, creds) -> LoginOutcome`
 
 1. Open a page in the (fresh) browser context; navigate to
-   `base_url + start_path` (an authenticated URL); wait for load +
-   networkidle.
+   `base_url + start_path` (an authenticated URL) with the amended
+   navigation policy (`domcontentloaded` + bounded retry — see
+   *Stabilisation amendment*), then apply the structural-quiet settle.
 2. EXPECT the login form. Inventory the page (see Detection) and
    classify:
    - LOGIN form recognized → fill username + password, click the submit
      control, log `LOGIN_SUBMITTED`.
    - anything else → fail `LOGIN_PAGE_NOT_RECOGNIZED`.
-3. After submit, wait for load + networkidle; inventory + classify again:
+3. After submit, apply the structural-quiet settle; inventory + classify again:
    - MFA form recognized → if `PORTAL_TOTP_SEED` is unset → fail
      `MFA_REQUIRED_NOT_CONFIGURED`; else compute `pyotp.TOTP(seed).now()`
      at this instant, fill the code field, click the verify control, log
@@ -58,7 +59,7 @@ Corollaries applied here:
      logged as the event `MFA_NOT_PRESENTED` — an observation, not a
      failure: the session is what it is; MFA enforcement is a site
      policy, not a scanner fault).
-4. After the MFA submit, wait for load + networkidle; inventory +
+4. After the MFA submit, apply the structural-quiet settle; inventory +
    classify:
    - MFA form still recognized → fail `MFA_FAILED`.
    - LOGIN form recognized → fail `MFA_FAILED` (the portal bounced to
@@ -74,6 +75,88 @@ step is reported as `LOGIN_PAGE_NOT_RECOGNIZED` with detail
 `timeout@<step>` — never as `BAD_CREDENTIAL` or `MFA_FAILED`: we did not
 SEE a recognizable outcome, and we do not infer credential quality from
 silence.
+
+## Stabilisation amendment (2026-08-23 — supersedes the 2.1/2.4 stabilise policy)
+
+The 2.1 stabilise policy (`networkidle` + 500ms quiet on **all** DOM
+mutations) was validated on static fixtures. The first live Salesforce
+Experience Cloud (Aura/LWC) page falsified it — a genuine spike outcome,
+diagnosed 2026-08-23:
+
+- `goto(wait_until="load")` timed out at 45s; `domcontentloaded` succeeded
+  once and timed out twice across three tries (guest→login client-side
+  redirect + SPA bootstrap over persistent connections).
+- longest mutation-free gap over a 12s window: **0ms** — Aura mutates the
+  DOM perpetually (live regions, timers, re-renders), so an all-mutation
+  500ms quiet gate can never fire on the target application class.
+
+This section is the authoritative stabilisation contract for the browser
+worker; it supersedes the 2.1 `_DOM_QUIET_JS`/networkidle description and
+the 2.4 LLD's `wait_for_load_state("networkidle")` mention (cross-ref note
+added there).
+
+### 1. Navigation: `domcontentloaded` + bounded retry
+
+Navigate with `goto(wait_until="domcontentloaded")`, not `"load"`.
+Rationale (recorded): Experience Cloud holds persistent/streaming
+connections, so the `load` event may never fire. On a navigation timeout,
+retry with a **fresh navigation** up to **2** more times (max 3 total
+attempts); exhausting them is the honest failure (scan → `NOT_REACHED`;
+login → `LOGIN_PAGE_NOT_RECOGNIZED` detail `timeout@<step>`). Retry
+applies to **navigation only** — never to credential submission.
+
+### 2. Structural-quiet gate (replaces all-mutation quiet)
+
+The primary settle gate is a `MutationObserver` counting **structural**
+changes only:
+
+- node additions / removals (`childList`), and
+- changes to `role`, `aria-label`, `alt`, `title`, `placeholder`, and the
+  tag identity of existing nodes (an `attributes` filter over exactly the
+  fingerprint's identity attributes).
+
+The page is settled when **500ms of structural quiet** elapses within the
+bounded budget. `attribute`/`characterData` churn outside that set (text
+ticking, class/style toggling, data-* updates) **never blocks a scan**.
+This aligns the gate with what the fingerprint already measures
+(role/name/tag/hierarchy; text/ids/classes/styles excluded), so
+non-structural Aura churn no longer starves the scan.
+
+**`networkidle` is REMOVED from the required chain** — it exhibits the
+same streaming pathology as `load` (never idle while Aura polls). The
+Salesforce loading-indicator absence check is RETAINED and is noted as
+already-structural: spinners are elements, so their removal is a
+`childList`/structural event the gate already observes.
+
+On budget exhaustion without 500ms structural quiet → `NOT_REACHED`
+(unchanged contract: an unstable page is never scanned).
+
+### 3. Determinism criterion
+
+Determinism is proven by **fingerprint equality across runs** (arm A's
+method), not by DOM silence. On live pages, a cross-run fingerprint delta
+is **DE-18 `NOT_COMPARABLE`** behaviour (the page genuinely differed
+structurally between runs), not a stabilisation failure. Arm A's
+kill-criterion (a `DIFFERS` on identical inputs) still binds on the
+static fixtures; on live SPAs the honest label for structural drift is
+`NOT_COMPARABLE`.
+
+### 4. Lock-check method (this check only)
+
+The guest **302-redirect to `/s/login/` with a visible password field** is
+accepted as **direct lock proof**, superseding the fingerprint-diff method
+for the lock check. (Observed 2026-08-23: guest `/s/` →
+`/s/login/?ec=302`, password field present.) The fingerprint diff remains
+the **persona-differential** instrument (guest structure vs authenticated
+structure) where both personas render a scannable page.
+
+### 5. Credential-attempt discipline
+
+`G-1` (wrong password) and `G-2` (wrong seed) are **single-attempt** runs:
+the login module never retries credentials (retry applies to navigation
+only, per §1). Verification sequence: **(b) success first, then G-1, then
+G-2.** Prerequisite (recorded): AK disables invalid-login lockout on the
+test profile before G-1/G-2.
 
 ### Detection is explicit (k16 spirit — refuse ambiguity)
 
