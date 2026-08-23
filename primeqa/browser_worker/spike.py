@@ -282,6 +282,13 @@ def _scan_in_context(context, browser_version: str, url: str, *, viewport,
         if landed_check is not None:
             landed_check(page)
 
+        # Capture phase (ui-s2.5): full-page PNG of the stabilised page as
+        # the engine is about to see it — an observation artifact, held in
+        # memory (bytes returned, never written to disk here).
+        t0 = time.monotonic()
+        screenshot_png = page.screenshot(full_page=True)
+        timings_ms["capture"] = round((time.monotonic() - t0) * 1000, 1)
+
         # Phase d: inject the vendored engine from the local file
         t0 = time.monotonic()
         page.add_script_tag(path=str(_AXE_PATH))
@@ -306,6 +313,8 @@ def _scan_in_context(context, browser_version: str, url: str, *, viewport,
         "timings_ms": timings_ms,
         "peak_rss_mb": _peak_rss_mb(),
         "fingerprint": fingerprint,
+        "screenshot_png": screenshot_png,          # bytes; callers pop before JSON
+        "screenshot_bytes": len(screenshot_png),
         "engine_observations": {
             "violations_count": len(raw.get("violations", [])),
             "passes_count": len(raw.get("passes", [])),

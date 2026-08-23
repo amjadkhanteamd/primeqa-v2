@@ -48,6 +48,10 @@ def open_tenant_session(tenant_id: int, database_url: str | None = None) -> Sess
 
     session.execute(text(f'SET search_path TO "{schema}", public'))
     session.execute(text("SET app.tenant_id = :tid"), {"tid": str(tenant_id)})
+    # The evidence store derives its tenant key prefix from here — never
+    # from a caller argument (LLD_EVIDENCE_STORE, DE-19).
+    session.info["tenant_schema"] = schema
+    session.info["tenant_id"] = tenant_id
 
     @event.listens_for(session, "after_begin")
     def _reapply(_session, _trans, conn):
@@ -95,13 +99,14 @@ def claim_one(session: Session, claimed_by: str | None = None) -> dict | None:
             LIMIT 1
             FOR UPDATE SKIP LOCKED
         )
-        RETURNING id, payload, attempts, reaps
+        RETURNING id, payload, attempts, reaps, manifest_id
     """), {"cb": claimed_by or worker_identity()}).fetchall()
     session.commit()
     if not rows:
         return None
     r = rows[0]
-    return {"job_id": str(r[0]), "payload": r[1], "attempts": r[2], "reaps": r[3]}
+    return {"job_id": str(r[0]), "payload": r[1], "attempts": r[2],
+            "reaps": r[3], "manifest_id": str(r[4]) if r[4] else None}
 
 
 def heartbeat(session: Session, job_id: str) -> None:
@@ -115,21 +120,82 @@ def heartbeat(session: Session, job_id: str) -> None:
     session.commit()
 
 
+EVIDENCE_INCOMPLETE = "EVIDENCE_INCOMPLETE"
+EVIDENCE_UPLOADED = "UPLOADED"
+EVIDENCE_REFERENCED = "REFERENCED"
+_FINALIZE_STATES = {"CAPTURED", "UPLOADED", "VERIFIED", EVIDENCE_INCOMPLETE}
+
+
 def finalize_surface(session: Session, job_id: str, surface_key: str,
-                     attempt: int, observation: dict) -> None:
-    """UPSERT one surface's engine observation. A retried batch rewrites
-    completed surfaces idempotently; duplicates are impossible by the
-    (job_id, surface_key) UNIQUE constraint."""
+                     attempt: int, observation: dict,
+                     evidence: dict | None = None) -> None:
+    """UPSERT one surface's engine observation + the evidence custody state
+    the surface actually REACHED. A retried batch rewrites completed
+    surfaces idempotently; duplicates are impossible by the
+    (job_id, surface_key) UNIQUE constraint.
+
+    evidence: {"state", "keys", "checksums", "sizes", "content_types",
+    "detail"} or None (= no evidence record -> EVIDENCE_INCOMPLETE).
+    This function NEVER writes REFERENCED — only mark_evidence_referenced
+    does, after verification (LLD_EVIDENCE_STORE completion rule)."""
+    ev = evidence or {"state": EVIDENCE_INCOMPLETE,
+                      "detail": {"reached": "NONE", "error": "no evidence record"}}
+    if ev.get("state") not in _FINALIZE_STATES:
+        raise ValueError(f"finalize_surface refuses evidence state {ev.get('state')!r}")
     session.execute(text("""
         INSERT INTO s4_ui_inspection_results
-            (job_id, surface_key, attempt, observation)
-        VALUES (:job_id, :surface_key, :attempt, CAST(:observation AS JSONB))
+            (job_id, surface_key, attempt, observation,
+             evidence_state, evidence_keys, evidence_checksums, evidence_sizes,
+             evidence_content_types, evidence_detail, evidence_verified_at)
+        VALUES (:job_id, :surface_key, :attempt, CAST(:observation AS JSONB),
+                :ev_state, CAST(:ev_keys AS JSONB), CAST(:ev_sums AS JSONB),
+                CAST(:ev_sizes AS JSONB), CAST(:ev_types AS JSONB),
+                CAST(:ev_detail AS JSONB), NULL)
         ON CONFLICT (job_id, surface_key)
-        DO UPDATE SET observation = EXCLUDED.observation,
-                      attempt     = EXCLUDED.attempt,
-                      created_at  = NOW()
+        DO UPDATE SET observation            = EXCLUDED.observation,
+                      attempt                = EXCLUDED.attempt,
+                      created_at             = NOW(),
+                      evidence_state         = EXCLUDED.evidence_state,
+                      evidence_keys          = EXCLUDED.evidence_keys,
+                      evidence_checksums     = EXCLUDED.evidence_checksums,
+                      evidence_sizes         = EXCLUDED.evidence_sizes,
+                      evidence_content_types = EXCLUDED.evidence_content_types,
+                      evidence_detail        = EXCLUDED.evidence_detail,
+                      evidence_verified_at   = NULL
     """), {"job_id": job_id, "surface_key": surface_key,
-           "attempt": attempt, "observation": json.dumps(observation)})
+           "attempt": attempt, "observation": json.dumps(observation),
+           "ev_state": ev["state"],
+           "ev_keys": json.dumps(ev.get("keys")) if ev.get("keys") else None,
+           "ev_sums": json.dumps(ev.get("checksums")) if ev.get("checksums") else None,
+           "ev_sizes": json.dumps(ev.get("sizes")) if ev.get("sizes") else None,
+           "ev_types": json.dumps(ev.get("content_types")) if ev.get("content_types") else None,
+           "ev_detail": json.dumps(ev.get("detail")) if ev.get("detail") else None})
+    session.commit()
+
+
+def mark_evidence_referenced(session: Session, job_id: str,
+                             surface_key: str) -> None:
+    """UPLOADED -> REFERENCED (verification passed); stamps verified_at.
+    The DB CHECK refuses REFERENCED without keys/checksums/sizes."""
+    session.execute(text("""
+        UPDATE s4_ui_inspection_results
+        SET evidence_state = 'REFERENCED', evidence_verified_at = NOW(),
+            evidence_detail = NULL
+        WHERE job_id = :j AND surface_key = :k AND evidence_state = 'UPLOADED'
+    """), {"j": job_id, "k": surface_key})
+    session.commit()
+
+
+def set_evidence_incomplete(session: Session, job_id: str, surface_key: str,
+                            reached: str, error: str) -> None:
+    """The honest terminal for a surface whose evidence never verified."""
+    session.execute(text("""
+        UPDATE s4_ui_inspection_results
+        SET evidence_state = 'EVIDENCE_INCOMPLETE',
+            evidence_detail = CAST(:detail AS JSONB)
+        WHERE job_id = :j AND surface_key = :k
+    """), {"j": job_id, "k": surface_key,
+           "detail": json.dumps({"reached": reached, "error": (error or "")[:500]})})
     session.commit()
 
 

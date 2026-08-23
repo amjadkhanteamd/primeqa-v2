@@ -39,6 +39,7 @@ def main() -> int:
     results = []
     for url in args.url:
         result = scan_page(url)
+        result.pop("screenshot_png", None)   # bytes; the size stays in screenshot_bytes
         results.append(result)
         total_ms = round(sum(result["timings_ms"].values()), 1)
         obs = result.get("engine_observations")

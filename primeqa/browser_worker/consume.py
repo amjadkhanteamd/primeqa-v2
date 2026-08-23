@@ -21,6 +21,7 @@ import os
 import time
 from urllib.parse import urlsplit, urlunsplit
 
+from primeqa.browser_worker import evidence as ev
 from primeqa.browser_worker import queue as q
 from primeqa.browser_worker.session import (
     CREDENTIAL_NOT_CONFIGURED, Credentials, LoginError, assert_session, login)
@@ -61,9 +62,58 @@ def _split_start(url: str) -> tuple[str, str]:
     return base, start
 
 
+class _EvidenceSink:
+    """Per-job evidence uploader. Builds the S3 client lazily (env read at
+    first use); any failure is reported per surface as EVIDENCE_INCOMPLETE
+    with the stage reached — never raised into the batch."""
+
+    def __init__(self, session, manifest_id: str, job_id: str):
+        self.session = session
+        self.manifest_id = manifest_id
+        self.job_id = job_id
+        self._s3 = None
+        self._bucket = None
+
+    def _client(self):
+        if self._s3 is None:
+            self._s3 = ev.client()
+            self._bucket = ev.bucket_name()
+        return self._s3, self._bucket
+
+    def upload(self, surface_key: str, attempt: int, png: bytes,
+               observation: dict):
+        """CAPTURED -> UPLOADED. Returns (evidence_dict_for_db, record|None)."""
+        try:
+            s3, bucket = self._client()
+            keys = ev.build_keys(ev.key_prefix(self.session), self.manifest_id,
+                                 self.job_id, surface_key, attempt)
+            rec = ev.put_evidence(s3, bucket, keys, png, observation)
+            return rec.as_db(q.EVIDENCE_UPLOADED), rec
+        except Exception as exc:  # noqa: BLE001 — custody failure, recorded
+            return ({"state": q.EVIDENCE_INCOMPLETE,
+                     "detail": {"reached": "CAPTURED",
+                                "error": f"{type(exc).__name__}: {exc}"[:500]}},
+                    None)
+
+    def verify_and_reference(self, surface_key: str, rec) -> str:
+        """UPLOADED -> VERIFIED -> REFERENCED, or the honest incomplete."""
+        try:
+            s3, bucket = self._client()
+            ok, detail = ev.verify_evidence(s3, bucket, rec)
+        except Exception as exc:  # noqa: BLE001
+            ok, detail = False, {"error": f"{type(exc).__name__}: {exc}"[:300]}
+        if ok:
+            q.mark_evidence_referenced(self.session, self.job_id, surface_key)
+            return q.EVIDENCE_REFERENCED
+        q.set_evidence_incomplete(self.session, self.job_id, surface_key,
+                                  reached="UPLOADED", error=str(detail))
+        return q.EVIDENCE_INCOMPLETE
+
+
 def _run_surfaces(session, job_id: str, attempt: int, surfaces: list,
-                  stabilisation: dict, *, context=None,
-                  landed_check=None) -> None:
+                  stabilisation: dict, *, manifest_id: str | None = None,
+                  context=None, landed_check=None) -> None:
+    sink = _EvidenceSink(session, manifest_id or "no-manifest", job_id)
     for surface in surfaces:
         key, url = surface["key"], surface["url"]
         q.heartbeat(session, job_id)
@@ -75,8 +125,24 @@ def _run_surfaces(session, job_id: str, attempt: int, surfaces: list,
             raise                      # SESSION_LOST: fail the job here
         except Exception as exc:  # noqa: BLE001 — surface-level wall
             observation = {"status": "ERROR", "error": repr(exc)[:2000]}
-        q.finalize_surface(session, job_id, key, attempt, observation)
-        print(f"  surface {key} -> {observation.get('status')}", flush=True)
+        png = observation.pop("screenshot_png", None)   # bytes never reach JSON/DB
+
+        # Evidence discipline: upload BEFORE the DB result write; the DB
+        # write records keys+checksums+state; verify AFTER; REFERENCED only
+        # on verification (LLD_EVIDENCE_STORE).
+        evidence_db, rec = (sink.upload(key, attempt, png, observation)
+                            if observation.get("status") == "OK" and png is not None
+                            else ({"state": q.EVIDENCE_INCOMPLETE,
+                                   "detail": {"reached": "NONE",
+                                              "error": "no capture (scan not OK)"}},
+                                  None))
+        q.finalize_surface(session, job_id, key, attempt, observation,
+                           evidence=evidence_db)
+        ev_state = evidence_db["state"]
+        if rec is not None:
+            ev_state = sink.verify_and_reference(key, rec)
+        print(f"  surface {key} -> {observation.get('status')} "
+              f"evidence={ev_state}", flush=True)
 
 
 def consume_job(session, job: dict) -> None:
@@ -92,9 +158,10 @@ def consume_job(session, job: dict) -> None:
     try:
         if auth_mode == AUTH_MODE_TOTP_ENV:
             _consume_authenticated(session, job_id, attempt, surfaces,
-                                   stabilisation)
+                                   stabilisation, manifest_id=job.get("manifest_id"))
         else:
-            _run_surfaces(session, job_id, attempt, surfaces, stabilisation)
+            _run_surfaces(session, job_id, attempt, surfaces, stabilisation,
+                          manifest_id=job.get("manifest_id"))
         q.mark_succeeded(session, job_id)
         print(f"job {job_id} succeeded", flush=True)
     except LoginError as exc:
@@ -107,7 +174,7 @@ def consume_job(session, job: dict) -> None:
 
 
 def _consume_authenticated(session, job_id, attempt, surfaces,
-                           stabilisation) -> None:
+                           stabilisation, *, manifest_id=None) -> None:
     """One browser, one context, ONE login for the whole batch; every
     surface scanned in the authenticated context with the session-lost
     check. Credentials live only in this frame."""
@@ -135,7 +202,8 @@ def _consume_authenticated(session, job_id, attempt, surfaces,
                             max_wait_s=max_wait_s)
             print(f"  login events: {outcome.events}", flush=True)
             _run_surfaces(session, job_id, attempt, surfaces, stabilisation,
-                          context=context, landed_check=assert_session)
+                          manifest_id=manifest_id, context=context,
+                          landed_check=assert_session)
         finally:
             context.close()
             browser.close()
