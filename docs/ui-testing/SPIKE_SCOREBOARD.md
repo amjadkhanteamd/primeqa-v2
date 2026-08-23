@@ -1,4 +1,4 @@
-# UI spike scoreboard — after Phase 2.4 (2026-08-23)
+# UI spike scoreboard — after Phase 2.5 (2026-08-23)
 
 Branch: `phase-ui-s2-spike`. Companion to
 `LLD_PHASE2_3_QUEUE.md` + `LLD_PHASE2_4_MANIFEST.md`.
@@ -20,12 +20,21 @@ Branch: `phase-ui-s2-spike`. Companion to
 - **J-partial — poison cap**: a job at max attempts with a stale
   heartbeat reaps to failed_permanent, never back to pending (closes
   the enrichment reaper's poison-killer gap).
+- **J-completion — evidence never falsely complete (2.5)**: interrupted
+  upload (unroutable endpoint) → every surface EVIDENCE_INCOMPLETE
+  (reached=CAPTURED), zero REFERENCED, batch still succeeds; REFERENCED is
+  DB-guarded to require keys+checksums+sizes+verified_at. Proven against
+  the live R2 bucket. Orphan sweep reports the crash-window objects.
+- **Session substrate (unit-only)**: TOTP login, batch session reuse,
+  six-class credential taxonomy, redaction — 25/25 unit tests. Arm G
+  (live credential failure) + the first authenticated scan remain
+  UNPROVEN until the a–e portal runs (blocked on portal.env).
 
 ## Arms pending
 
-- **J-completion + evidence lifecycle** → 2.5.
-- **G — credential failure + real portal auth** → session substrate;
-  blocked on AK 2.2 (dev-org portal).
+- **G — live credential failure + first authenticated scan** → session
+  substrate a–e runs; blocked on AK's portal.env confirmation (arm G is
+  UNPROVEN at runtime; unit-level only so far).
 - **H — locator NOT-DETERMINED** → Phase 3A.
 - **I — tenant denial** → 2.6.
 - **D/E/F — causal candidates** → Phase 7; need release history.
