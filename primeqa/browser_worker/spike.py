@@ -188,22 +188,30 @@ def _peak_rss_mb() -> float:
 
 
 def scan_page(url: str, *, viewport=(1440, 900), max_wait_s: int = 30,
-              quiet_ms: int = _DOM_QUIET_MS, locale: str | None = None) -> dict:
+              quiet_ms: int = _DOM_QUIET_MS, locale: str | None = None,
+              context=None, landed_check=None) -> dict:
     """Scan one page and return the engine observations.
 
     Phase timings are measured separately with time.monotonic(). The
     navigate + stabilise phases share a single max_wait_s budget; if the
-    page never reaches a 500 ms mutation-quiet state inside that budget the
-    result is status="NOT_REACHED" with the timings gathered so far — an
-    unstable page is never scanned.
+    page never reaches a quiet_ms mutation-quiet state inside that budget
+    the result is status="NOT_REACHED" with the timings gathered so far —
+    an unstable page is never scanned.
+
+    context: an existing (e.g. pre-authenticated) browser context owned by
+    the caller — the scan opens a page in it and closes only that page;
+    no launch, so timings omit the "launch" phase. landed_check: optional
+    callable(page) run after stabilise (the session-lost check); any
+    exception it raises propagates unchanged.
     """
     timings_ms: dict[str, float] = {}
     deadline = time.monotonic() + max_wait_s
 
-    def _remaining_ms() -> float:
-        # Floor at 1 ms: playwright reads timeout=0 as "no timeout", which
-        # would turn an exhausted budget into an unbounded wait.
-        return max(1.0, (deadline - time.monotonic()) * 1000)
+    if context is not None:
+        return _scan_in_context(
+            context, context.browser.version, url, viewport=viewport,
+            quiet_ms=quiet_ms, deadline=deadline, timings_ms=timings_ms,
+            locale=locale, landed_check=landed_check)
 
     with sync_playwright() as pw:
         # Phase a: launch
@@ -214,72 +222,84 @@ def scan_page(url: str, *, viewport=(1440, 900), max_wait_s: int = 30,
                                        "height": viewport[1]}}
         if locale:
             context_kwargs["locale"] = locale
-        context = browser.new_context(**context_kwargs)
-        page = context.new_page()
+        own_context = browser.new_context(**context_kwargs)
         timings_ms["launch"] = round((time.monotonic() - t0) * 1000, 1)
-
-        base = {
-            "url": url,
-            "browser_version": browser_version,
-            "axe_version": axe_version(),
-            "viewport": {"width": viewport[0], "height": viewport[1]},
-        }
-
         try:
-            # Phase b: navigate, wait for load
-            t0 = time.monotonic()
-            try:
-                page.goto(url, wait_until="load", timeout=_remaining_ms())
-            except PlaywrightTimeoutError:
-                timings_ms["navigate"] = round((time.monotonic() - t0) * 1000, 1)
-                return {
-                    "status": "NOT_REACHED",
-                    "timings_ms": timings_ms,
-                    "peak_rss_mb": _peak_rss_mb(),
-                    **base,
-                }
-            timings_ms["navigate"] = round((time.monotonic() - t0) * 1000, 1)
-
-            # Phase c: stabilise — networkidle, then a DOM-mutation quiet
-            # period, both inside the remaining max_wait_s budget.
-            t0 = time.monotonic()
-            quiet_reached = False
-            try:
-                page.wait_for_load_state("networkidle", timeout=_remaining_ms())
-                quiet_reached = page.evaluate(
-                    _DOM_QUIET_JS, [quiet_ms, max(1, int(_remaining_ms()))]
-                )
-            except PlaywrightTimeoutError:
-                quiet_reached = False
-            timings_ms["stabilise"] = round((time.monotonic() - t0) * 1000, 1)
-            if not quiet_reached:
-                return {
-                    "status": "NOT_REACHED",
-                    "timings_ms": timings_ms,
-                    "peak_rss_mb": _peak_rss_mb(),
-                    **base,
-                }
-
-            # Phase d: inject the vendored engine from the local file
-            t0 = time.monotonic()
-            page.add_script_tag(path=str(_AXE_PATH))
-            timings_ms["inject"] = round((time.monotonic() - t0) * 1000, 1)
-
-            # Phase e: run the engine, collect its raw JSON
-            t0 = time.monotonic()
-            raw = page.evaluate("axe.run(document)")
-            timings_ms["axe_run"] = round((time.monotonic() - t0) * 1000, 1)
-
-            # Phase f: normalised semantic fingerprint (ui-s2.4) — an
-            # observation of page structure, judged nowhere here.
-            t0 = time.monotonic()
-            tree = page.evaluate(_FINGERPRINT_JS)
-            fingerprint = _fingerprint_from_tree(tree)
-            timings_ms["fingerprint"] = round(
-                (time.monotonic() - t0) * 1000, 1)
+            return _scan_in_context(
+                own_context, browser_version, url, viewport=viewport,
+                quiet_ms=quiet_ms, deadline=deadline, timings_ms=timings_ms,
+                locale=locale, landed_check=landed_check)
         finally:
-            context.close()
+            own_context.close()
             browser.close()
+
+
+def _scan_in_context(context, browser_version: str, url: str, *, viewport,
+                     quiet_ms: int, deadline: float, timings_ms: dict,
+                     locale: str | None, landed_check) -> dict:
+    def _remaining_ms() -> float:
+        # Floor at 1 ms: playwright reads timeout=0 as "no timeout", which
+        # would turn an exhausted budget into an unbounded wait.
+        return max(1.0, (deadline - time.monotonic()) * 1000)
+
+    base = {
+        "url": url,
+        "browser_version": browser_version,
+        "axe_version": axe_version(),
+        "viewport": {"width": viewport[0], "height": viewport[1]},
+        "locale": locale,
+    }
+    page = context.new_page()
+    page.set_viewport_size({"width": viewport[0], "height": viewport[1]})
+    try:
+        # Phase b: navigate, wait for load
+        t0 = time.monotonic()
+        try:
+            page.goto(url, wait_until="load", timeout=_remaining_ms())
+        except PlaywrightTimeoutError:
+            timings_ms["navigate"] = round((time.monotonic() - t0) * 1000, 1)
+            return {"status": "NOT_REACHED", "timings_ms": timings_ms,
+                    "peak_rss_mb": _peak_rss_mb(), **base}
+        timings_ms["navigate"] = round((time.monotonic() - t0) * 1000, 1)
+
+        # Phase c: stabilise — networkidle, then a DOM-mutation quiet
+        # period, both inside the remaining max_wait_s budget.
+        t0 = time.monotonic()
+        quiet_reached = False
+        try:
+            page.wait_for_load_state("networkidle", timeout=_remaining_ms())
+            quiet_reached = page.evaluate(
+                _DOM_QUIET_JS, [quiet_ms, max(1, int(_remaining_ms()))]
+            )
+        except PlaywrightTimeoutError:
+            quiet_reached = False
+        timings_ms["stabilise"] = round((time.monotonic() - t0) * 1000, 1)
+        if not quiet_reached:
+            return {"status": "NOT_REACHED", "timings_ms": timings_ms,
+                    "peak_rss_mb": _peak_rss_mb(), **base}
+
+        # Landed-page check (session substrate): may raise; propagates.
+        if landed_check is not None:
+            landed_check(page)
+
+        # Phase d: inject the vendored engine from the local file
+        t0 = time.monotonic()
+        page.add_script_tag(path=str(_AXE_PATH))
+        timings_ms["inject"] = round((time.monotonic() - t0) * 1000, 1)
+
+        # Phase e: run the engine, collect its raw JSON
+        t0 = time.monotonic()
+        raw = page.evaluate("axe.run(document)")
+        timings_ms["axe_run"] = round((time.monotonic() - t0) * 1000, 1)
+
+        # Phase f: normalised semantic fingerprint (ui-s2.4) — an
+        # observation of page structure, judged nowhere here.
+        t0 = time.monotonic()
+        tree = page.evaluate(_FINGERPRINT_JS)
+        fingerprint = _fingerprint_from_tree(tree)
+        timings_ms["fingerprint"] = round((time.monotonic() - t0) * 1000, 1)
+    finally:
+        page.close()
 
     return {
         "status": "OK",

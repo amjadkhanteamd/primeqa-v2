@@ -20,6 +20,8 @@ import json
 from sqlalchemy import text
 from sqlalchemy.orm import Session
 
+_AUTH_MODES = {"totp_env"}
+
 
 def create_manifest(session: Session, payload: dict) -> str:
     """Persist a manifest — own transaction, committed here, before any
@@ -55,6 +57,13 @@ def enqueue_for_manifest(session: Session, manifest_id: str) -> str:
         "surfaces": mp.get("surfaces", []),
         "stabilisation": mp.get("stabilisation", {}),
     }
+    auth = mp.get("auth")
+    if auth is not None:
+        # Descriptor only ({"mode": "totp_env"}); never a value. Unknown
+        # modes are refused here — a malformed manifest creates no job.
+        if auth.get("mode") not in _AUTH_MODES:
+            raise ValueError(f"unsupported auth mode: {auth.get('mode')!r}")
+        job_payload["auth"] = {"mode": auth["mode"]}
     row = session.execute(text("""
         INSERT INTO s4_ui_inspection_jobs (payload, manifest_id)
         VALUES (CAST(:payload AS JSONB), :manifest_id)
