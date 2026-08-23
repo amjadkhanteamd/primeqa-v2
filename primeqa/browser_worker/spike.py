@@ -14,6 +14,7 @@ Boundaries (deliberate, per the spike brief):
 
 from __future__ import annotations
 
+import hashlib
 import re
 import resource
 import sys
@@ -59,6 +60,117 @@ _DOM_QUIET_JS = """
 """
 
 
+# Semantic-structure walk for the normalised fingerprint (ui-s2.4).
+# Emits a node per semantic element (explicit role, implicit role of a
+# fixed tag map, or custom element); bare div/span wrappers collapse —
+# their children attach to the nearest emitted ancestor. Accessible names
+# are attribute-borne (+ label association for form controls): they are
+# what assistive technology announces. Text content, ids, classes and
+# styles are never read. Hashing happens python-side (see
+# _fingerprint_from_tree) so the page needs no crypto access.
+_FINGERPRINT_JS = """
+() => {
+  const SKIP = new Set(['SCRIPT','STYLE','TEMPLATE','NOSCRIPT']);
+  const IMPLICIT = {
+    NAV:'navigation', MAIN:'main', HEADER:'banner', FOOTER:'contentinfo',
+    FORM:'form', IMG:'img', BUTTON:'button', SELECT:'combobox',
+    TEXTAREA:'textbox', LABEL:'label', DIALOG:'dialog', SECTION:'region',
+    ARTICLE:'article', ASIDE:'complementary', UL:'list', OL:'list',
+    LI:'listitem', TABLE:'table', TR:'row', TD:'cell', TH:'columnheader',
+    H1:'heading', H2:'heading', H3:'heading', H4:'heading',
+    H5:'heading', H6:'heading',
+  };
+  const INPUT_ROLES = {checkbox:'checkbox', radio:'radio', button:'button',
+    submit:'button', reset:'button', range:'slider', number:'spinbutton',
+    search:'searchbox'};
+  function roleOf(el) {
+    const explicit = el.getAttribute('role');
+    if (explicit) return explicit;
+    const tag = el.tagName;
+    if (tag === 'A') return el.hasAttribute('href') ? 'link' : null;
+    if (tag === 'INPUT') {
+      const t = (el.getAttribute('type') || 'text').toLowerCase();
+      if (t === 'hidden') return null;
+      return INPUT_ROLES[t] || 'textbox';
+    }
+    return IMPLICIT[tag] || null;
+  }
+  function accName(el) {
+    for (const attr of ['aria-label', 'alt', 'title', 'placeholder']) {
+      const v = el.getAttribute(attr);
+      if (v) return v;
+    }
+    const tag = el.tagName;
+    if (tag === 'INPUT' || tag === 'SELECT' || tag === 'TEXTAREA') {
+      if (el.id) {
+        const lab = document.querySelector(
+          'label[for="' + CSS.escape(el.id) + '"]');
+        if (lab) return lab.textContent.trim();
+      }
+      const anc = el.closest('label');
+      if (anc) return anc.textContent.trim();
+    }
+    return '';
+  }
+  function walk(el) {
+    const out = [];
+    for (const child of el.children) {
+      if (SKIP.has(child.tagName)) continue;
+      const role = roleOf(child);
+      const custom = child.tagName.includes('-')
+        ? child.tagName.toLowerCase() : '';
+      const kids = walk(child);
+      if (role !== null || custom) {
+        out.push({role: role || '', name: accName(child),
+                  tag: custom, children: kids});
+      } else {
+        out.push(...kids);
+      }
+    }
+    return out;
+  }
+  return {children: walk(document.body)};
+}
+"""
+
+_SUMMARY_NAMED_CAP = 50
+
+
+def _hash_fingerprint_node(node: dict) -> str:
+    # Child digests SORTED: sibling reordering is invisible; ancestry
+    # still binds because a moved child changes two parents' digests.
+    child_hashes = sorted(
+        _hash_fingerprint_node(c) for c in node.get("children", []))
+    canonical = (f"{node.get('role', '')}|{node.get('name', '')}|"
+                 f"{node.get('tag', '')}|[{','.join(child_hashes)}]")
+    return hashlib.sha256(canonical.encode("utf-8")).hexdigest()
+
+
+def _fingerprint_from_tree(tree: dict) -> dict:
+    """sha256 + compact summary from the in-page walk's tree. An
+    OBSERVATION about page structure — judged nowhere in this module."""
+    root = {"role": "", "name": "", "tag": "",
+            "children": tree.get("children", [])}
+    sha = _hash_fingerprint_node(root)
+
+    roles: dict[str, int] = {}
+    named: list[list[str]] = []
+    count = 0
+    stack = list(tree.get("children", []))
+    while stack:
+        n = stack.pop()
+        count += 1
+        key = n.get("tag") or n.get("role") or ""
+        roles[key] = roles.get(key, 0) + 1
+        if n.get("name"):
+            named.append([key, n["name"]])
+        stack.extend(n.get("children", []))
+    named.sort()
+    return {"sha256": sha,
+            "summary": {"element_count": count, "roles": roles,
+                        "named": named[:_SUMMARY_NAMED_CAP]}}
+
+
 def axe_version() -> str:
     """Read the engine version out of the vendored file's banner."""
     head = _AXE_PATH.read_text(encoding="utf-8", errors="replace")[:200]
@@ -75,7 +187,8 @@ def _peak_rss_mb() -> float:
     return round(peak / divisor, 1)
 
 
-def scan_page(url: str, *, viewport=(1440, 900), max_wait_s: int = 30) -> dict:
+def scan_page(url: str, *, viewport=(1440, 900), max_wait_s: int = 30,
+              quiet_ms: int = _DOM_QUIET_MS, locale: str | None = None) -> dict:
     """Scan one page and return the engine observations.
 
     Phase timings are measured separately with time.monotonic(). The
@@ -97,9 +210,11 @@ def scan_page(url: str, *, viewport=(1440, 900), max_wait_s: int = 30) -> dict:
         t0 = time.monotonic()
         browser = pw.chromium.launch(headless=True)
         browser_version = browser.version
-        context = browser.new_context(
-            viewport={"width": viewport[0], "height": viewport[1]}
-        )
+        context_kwargs = {"viewport": {"width": viewport[0],
+                                       "height": viewport[1]}}
+        if locale:
+            context_kwargs["locale"] = locale
+        context = browser.new_context(**context_kwargs)
         page = context.new_page()
         timings_ms["launch"] = round((time.monotonic() - t0) * 1000, 1)
 
@@ -132,7 +247,7 @@ def scan_page(url: str, *, viewport=(1440, 900), max_wait_s: int = 30) -> dict:
             try:
                 page.wait_for_load_state("networkidle", timeout=_remaining_ms())
                 quiet_reached = page.evaluate(
-                    _DOM_QUIET_JS, [_DOM_QUIET_MS, max(1, int(_remaining_ms()))]
+                    _DOM_QUIET_JS, [quiet_ms, max(1, int(_remaining_ms()))]
                 )
             except PlaywrightTimeoutError:
                 quiet_reached = False
@@ -154,6 +269,14 @@ def scan_page(url: str, *, viewport=(1440, 900), max_wait_s: int = 30) -> dict:
             t0 = time.monotonic()
             raw = page.evaluate("axe.run(document)")
             timings_ms["axe_run"] = round((time.monotonic() - t0) * 1000, 1)
+
+            # Phase f: normalised semantic fingerprint (ui-s2.4) — an
+            # observation of page structure, judged nowhere here.
+            t0 = time.monotonic()
+            tree = page.evaluate(_FINGERPRINT_JS)
+            fingerprint = _fingerprint_from_tree(tree)
+            timings_ms["fingerprint"] = round(
+                (time.monotonic() - t0) * 1000, 1)
         finally:
             context.close()
             browser.close()
@@ -162,6 +285,7 @@ def scan_page(url: str, *, viewport=(1440, 900), max_wait_s: int = 30) -> dict:
         "status": "OK",
         "timings_ms": timings_ms,
         "peak_rss_mb": _peak_rss_mb(),
+        "fingerprint": fingerprint,
         "engine_observations": {
             "violations_count": len(raw.get("violations", [])),
             "passes_count": len(raw.get("passes", [])),

@@ -57,14 +57,18 @@ def open_tenant_session(tenant_id: int, database_url: str | None = None) -> Sess
     return session
 
 
-def enqueue(session: Session, payload: dict) -> str:
+def enqueue(session: Session, payload: dict, manifest_id: str) -> str:
     """Insert a pending job; payload spike shape:
-    {"surfaces": [{"key": ..., "url": ...}]}. Returns the job id."""
+    {"surfaces": [{"key": ..., "url": ...}]}. manifest_id is required
+    (NOT NULL FK since 2.4 — a job can never exist without its persisted
+    manifest); manifest.enqueue_for_manifest is the normal entry point.
+    Returns the job id."""
     row = session.execute(text("""
-        INSERT INTO s4_ui_inspection_jobs (payload)
-        VALUES (CAST(:payload AS JSONB))
+        INSERT INTO s4_ui_inspection_jobs (payload, manifest_id)
+        VALUES (CAST(:payload AS JSONB), :manifest_id)
         RETURNING id
-    """), {"payload": json.dumps(payload)}).fetchone()
+    """), {"payload": json.dumps(payload),
+           "manifest_id": manifest_id}).fetchone()
     session.commit()
     return str(row[0])
 

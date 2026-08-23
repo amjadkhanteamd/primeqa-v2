@@ -1,7 +1,7 @@
 """Queue tests for ui-s2.3 — env-gated like the smoke test.
 
 Enable with SPIKE_DATABASE_URL pointing at a NON-production database whose
-tenant_1 schema carries revision 20260821_0010. Default test runs skip the
+tenant_1 schema carries revision 20260823_0010 (2.3 queue + 2.4 manifests). Default test runs skip the
 module entirely (and pytest.ini testpaths exclude this directory anyway).
 The happy-path consume test additionally needs SPIKE_BROWSER=1 (real
 chromium scan).
@@ -34,6 +34,17 @@ def session():
     s.close()
 
 
+@pytest.fixture()
+def manifest_id(session):
+    # 2.4: jobs.manifest_id is NOT NULL — every enqueued job needs a
+    # persisted manifest first (D-281 idiom).
+    from primeqa.browser_worker.manifest import create_manifest
+    return create_manifest(session, {
+        "surfaces": [], "pins": {}, "stabilisation": {},
+        "execution": {"mode": "manual-spike"},
+    })
+
+
 def _job_row(session, job_id):
     from sqlalchemy import text
     r = session.execute(text("""
@@ -46,7 +57,7 @@ def _job_row(session, job_id):
 
 @pytest.mark.skipif(os.environ.get("SPIKE_BROWSER") != "1",
                     reason="needs chromium (set SPIKE_BROWSER=1)")
-def test_enqueue_consume_happy_path(session):
+def test_enqueue_consume_happy_path(session, manifest_id):
     from sqlalchemy import text
 
     from primeqa.browser_worker import queue as q
@@ -54,7 +65,7 @@ def test_enqueue_consume_happy_path(session):
 
     job_id = q.enqueue(session, {"surfaces": [
         {"key": "example-home", "url": "https://example.com"},
-    ]})
+    ]}, manifest_id)
     job = q.claim_one(session)
     assert job is not None and job["job_id"] == job_id
     consume_job(session, job)
@@ -70,12 +81,12 @@ def test_enqueue_consume_happy_path(session):
     assert rows[0][2] == "OK"
 
 
-def test_reap_returns_stale_to_pending(session):
+def test_reap_returns_stale_to_pending(session, manifest_id):
     from sqlalchemy import text
 
     from primeqa.browser_worker import queue as q
 
-    job_id = q.enqueue(session, {"surfaces": []})
+    job_id = q.enqueue(session, {"surfaces": []}, manifest_id)
     claimed = q.claim_one(session)
     assert claimed["attempts"] == 1
 
@@ -96,12 +107,12 @@ def test_reap_returns_stale_to_pending(session):
     assert row["heartbeat_at"] is None
 
 
-def test_finalize_upsert_idempotent(session):
+def test_finalize_upsert_idempotent(session, manifest_id):
     from sqlalchemy import text
 
     from primeqa.browser_worker import queue as q
 
-    job_id = q.enqueue(session, {"surfaces": []})
+    job_id = q.enqueue(session, {"surfaces": []}, manifest_id)
     q.finalize_surface(session, job_id, "s1", 1, {"status": "OK", "n": 1})
     q.finalize_surface(session, job_id, "s1", 2, {"status": "OK", "n": 2})
 
@@ -115,12 +126,12 @@ def test_finalize_upsert_idempotent(session):
     assert obs["n"] == 2
 
 
-def test_poison_cap_reaps_to_failed_permanent(session):
+def test_poison_cap_reaps_to_failed_permanent(session, manifest_id):
     from sqlalchemy import text
 
     from primeqa.browser_worker import queue as q
 
-    job_id = q.enqueue(session, {"surfaces": []})
+    job_id = q.enqueue(session, {"surfaces": []}, manifest_id)
     q.claim_one(session)
     # A poison batch on its 5th start whose worker just died.
     session.execute(text("""

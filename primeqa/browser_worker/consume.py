@@ -23,14 +23,29 @@ def consume_job(session, job: dict) -> None:
     """Run one claimed job's surfaces to completion."""
     job_id = job["job_id"]
     attempt = job["attempts"]
-    surfaces = (job["payload"] or {}).get("surfaces", [])
+    payload = job["payload"] or {}
+    surfaces = payload.get("surfaces", [])
+    stabilisation = payload.get("stabilisation") or {}
     print(f"job {job_id} attempt={attempt} surfaces={len(surfaces)}", flush=True)
     try:
         for surface in surfaces:
             key, url = surface["key"], surface["url"]
+            # The job payload is built FROM the manifest (2.4) — execute
+            # exactly what it pins; 2.3-shaped payloads fall back to the
+            # scan_page defaults.
+            scan_kwargs = {}
+            if surface.get("viewport"):
+                scan_kwargs["viewport"] = (surface["viewport"]["width"],
+                                           surface["viewport"]["height"])
+            if surface.get("locale"):
+                scan_kwargs["locale"] = surface["locale"]
+            if stabilisation.get("max_wait_s"):
+                scan_kwargs["max_wait_s"] = stabilisation["max_wait_s"]
+            if stabilisation.get("quiet_ms"):
+                scan_kwargs["quiet_ms"] = stabilisation["quiet_ms"]
             q.heartbeat(session, job_id)
             try:
-                observation = scan_page(url)
+                observation = scan_page(url, **scan_kwargs)
             except Exception as exc:  # noqa: BLE001 — surface-level wall
                 observation = {"status": "ERROR", "error": repr(exc)[:2000]}
             q.finalize_surface(session, job_id, key, attempt, observation)
