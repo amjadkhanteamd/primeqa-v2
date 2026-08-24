@@ -85,9 +85,10 @@ class _EvidenceSink:
         """CAPTURED -> UPLOADED. Returns (evidence_dict_for_db, record|None)."""
         try:
             s3, bucket = self._client()
-            keys = ev.build_keys(ev.key_prefix(self.session), self.manifest_id,
+            keys = ev.build_keys(self.session, self.manifest_id,
                                  self.job_id, surface_key, attempt)
-            rec = ev.put_evidence(s3, bucket, keys, png, observation)
+            rec = ev.put_evidence(self.session, s3, bucket, keys, png,
+                                  observation)
             return rec.as_db(q.EVIDENCE_UPLOADED), rec
         except Exception as exc:  # noqa: BLE001 — custody failure, recorded
             return ({"state": q.EVIDENCE_INCOMPLETE,

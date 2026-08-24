@@ -16,8 +16,11 @@ from __future__ import annotations
 import argparse
 import hashlib
 import json
+import logging
 import os
 from dataclasses import dataclass, field
+
+_log = logging.getLogger("primeqa.browser_worker.evidence")
 
 SCREENSHOT = "screenshot"
 OBSERVATION = "observation"
@@ -76,8 +79,35 @@ def key_prefix(session) -> str:
     return schema
 
 
-def build_keys(prefix: str, manifest_id: str, job_id: str,
+class TenantBoundaryError(RuntimeError):
+    """A key/prefix names a tenant other than the session's. Refused (arm I:
+    deny + audit at every key-accepting surface, LLD_TENANT_BOUNDARY)."""
+
+
+def assert_tenant_scoped(session, key_or_prefix: str, op: str) -> None:
+    """Refuse any key/prefix whose first path segment is not the SESSION's
+    tenant prefix (derived from connection context, never caller args), or
+    that carries a ``..`` segment. Emits the structured audit event
+    TENANT_BOUNDARY_REFUSED naming the op + both tenants before raising."""
+    expected = key_prefix(session)
+    head = (key_or_prefix or "").lstrip("/").split("/", 1)[0]
+    if not head or head != expected or ".." in (key_or_prefix or ""):
+        _log.warning("TENANT_BOUNDARY_REFUSED op=%s tenant=%s offending=%s",
+                     op, expected, head or "<empty>")
+        raise TenantBoundaryError(
+            f"{op}: key prefix {head!r} is not the session tenant {expected!r}")
+
+
+def build_keys(session, manifest_id: str, job_id: str,
                surface_key: str, attempt: int) -> dict:
+    """Evidence keys for one surface attempt. The tenant prefix is DERIVED
+    from the session (DE-19) — callers cannot supply one."""
+    return _build_keys(key_prefix(session), manifest_id, job_id,
+                       surface_key, attempt)
+
+
+def _build_keys(prefix: str, manifest_id: str, job_id: str,
+                surface_key: str, attempt: int) -> dict:
     base = f"{prefix}/{manifest_id}/{job_id}/{surface_key}/{attempt}"
     return {k: f"{base}/{fn}" for k, fn in _FILENAMES.items()}
 
@@ -100,11 +130,15 @@ def _digests(data: bytes) -> dict:
             "md5": hashlib.md5(data).hexdigest()}
 
 
-def put_evidence(s3, bucket: str, keys: dict, screenshot_png: bytes,
+def put_evidence(session, s3, bucket: str, keys: dict, screenshot_png: bytes,
                  observation: dict) -> EvidenceRecord:
     """UPLOADED: PUT both objects with sha256 metadata; returns the record
     (keys, sha256+md5, sizes, content types). Raises on any failure —
-    the caller records EVIDENCE_INCOMPLETE (reached=CAPTURED)."""
+    the caller records EVIDENCE_INCOMPLETE (reached=CAPTURED). Every key is
+    guarded against the session tenant (defence in depth — the sink derives
+    keys from the session already; the guard makes it structural)."""
+    for artifact_key in keys.values():
+        assert_tenant_scoped(session, artifact_key, "put_evidence")
     obs_bytes = json.dumps(observation, sort_keys=True,
                            default=str).encode("utf-8")
     rec = EvidenceRecord(keys=dict(keys))
@@ -150,15 +184,22 @@ def verify_evidence(s3, bucket: str, rec: EvidenceRecord) -> tuple[bool, dict]:
     return ok, detail
 
 
-def sign_url(s3, bucket: str, key: str,
+def sign_url(session, s3, bucket: str, key: str,
              expires_s: int = DEFAULT_SIGN_EXPIRES_S) -> str:
-    """Presigned GET; pure/on-demand; nothing stored. Never public."""
+    """Presigned GET for a key of the SESSION's tenant; on-demand; nothing
+    stored. Never public. A foreign-tenant key is refused + audited."""
+    assert_tenant_scoped(session, key, "sign_url")
+    return _presign(s3, bucket, key, expires_s)
+
+
+def _presign(s3, bucket: str, key: str,
+             expires_s: int = DEFAULT_SIGN_EXPIRES_S) -> str:
     return s3.generate_presigned_url(
         "get_object", Params={"Bucket": bucket, "Key": key},
         ExpiresIn=int(expires_s))
 
 
-def list_keys(s3, bucket: str, prefix: str) -> list:
+def _list_keys(s3, bucket: str, prefix: str) -> list:
     keys = []
     paginator = s3.get_paginator("list_objects_v2")
     for page in paginator.paginate(Bucket=bucket, Prefix=prefix):
@@ -180,10 +221,14 @@ def referenced_keys(session) -> set:
     return out
 
 
-def sweep_orphans(session, s3, bucket: str, prefix: str) -> list:
+def sweep_orphans(session, s3, bucket: str, prefix: str | None = None) -> list:
     """REPORT-ONLY: object keys under prefix that no result row references.
-    The crash window between upload and DB write produces exactly these."""
-    listed = set(list_keys(s3, bucket, prefix))
+    The crash window between upload and DB write produces exactly these.
+    prefix defaults to the SESSION's tenant prefix; an explicit prefix is
+    guarded — a foreign tenant's prefix is refused + audited (arm I)."""
+    prefix = prefix if prefix is not None else key_prefix(session)
+    assert_tenant_scoped(session, prefix, "sweep_orphans")
+    listed = set(_list_keys(s3, bucket, prefix))
     return sorted(listed - referenced_keys(session))
 
 
@@ -218,10 +263,18 @@ def main() -> int:
             if row is None or not row[0]:
                 print("no evidence keys for that result"); return 1
             print(f"evidence_state={row[1]}")
-            print(sign_url(s3, bucket, row[0][SCREENSHOT], a.expires_s))
+            # belt: even a corrupted row cannot leak a foreign signed URL
+            try:
+                print(sign_url(session, s3, bucket, row[0][SCREENSHOT],
+                               a.expires_s))
+            except TenantBoundaryError as exc:
+                print(f"REFUSED: {exc}"); return 2
         elif a.cmd == "sweep":
             prefix = a.prefix or key_prefix(session)
-            orphans = sweep_orphans(session, s3, bucket, prefix)
+            try:
+                orphans = sweep_orphans(session, s3, bucket, prefix)
+            except TenantBoundaryError as exc:
+                print(f"REFUSED: {exc}"); return 2
             print(f"prefix={prefix} orphans={len(orphans)}")
             for k in orphans:
                 print(f"  {k}")

@@ -124,6 +124,20 @@ divergence; those docstrings update with the implementation.
 
 - **`PLIMSOL_SERVICE_ROLE`** env ∈ {`web`, `worker`, `scheduler`,
   `browser-worker`}.
+- **Full effective set per role** (resolved 2026-08-23 — what the gate
+  ENFORCES when validation runs in production under that role; everything
+  else a service needs, e.g. `DATABASE_URL`, is checked by its own existing
+  gate and is unchanged by this proposal):
+
+  | role | enforced secret set | notes |
+  |---|---|---|
+  | *(unset — legacy)* | `{JWT_SECRET, CREDENTIAL_ENCRYPTION_KEY}` | byte-identical to today; valid forever |
+  | `web` | `{JWT_SECRET, CREDENTIAL_ENCRYPTION_KEY}` | = legacy → tagging is a no-op, deferred |
+  | `worker` | `{JWT_SECRET, CREDENTIAL_ENCRYPTION_KEY}` | = legacy → tagging is a no-op, deferred |
+  | `scheduler` | `{JWT_SECRET, CREDENTIAL_ENCRYPTION_KEY}` | = legacy → tagging is a no-op, deferred |
+  | `browser-worker` | `{PORTAL_FERNET_KEY}` | ENFORCED whenever validation runs under this role in production; the Railway tagging waits for the vault key to exist. JWT/CEK deliberately excluded (least privilege). |
+  | *(unknown value)* | — | fail closed: `SecretConfigError` naming the valid roles |
+
 - **Role → required secret set** (proposal):
   - `web` / `worker` / `scheduler`: `{JWT_SECRET,
     CREDENTIAL_ENCRYPTION_KEY}` — identical to legacy, so tagging them is
