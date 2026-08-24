@@ -219,9 +219,11 @@ marks the job PERMANENT (`retryable=False`) and records only the exception
 TYPE name — an uncoded/unexpected error is never assumed transient, so it
 can never become `failed_retryable`-by-default and resubmit credentials.
 
-### 8. Live-run findings (2026-08-23, a-e proven against env-59 portal)
+### 8. Live-run findings (2026-08-23, a-e proven against the DE portal org)
 
 The a-e verification against the real Salesforce Experience Cloud portal
+(the fresh Developer Edition org orgfarm-4399654d2d-dev-ed — NOT env-59,
+which has no Experience Cloud licences; that is why the DE org exists)
 surfaced three implementation facts the static fixtures could not:
 
 - **CSP blocks `add_script_tag`.** Experience Cloud sends a strict
@@ -250,7 +252,7 @@ surfaced three implementation facts the static fixtures could not:
   this live: a nav that failed its 3 in-flow attempts was re-claimed and
   succeeded on a later consume, never resubmitting a credential.
 
-Proven a-e (env-59, orgfarm dev): (a)/(a2) guest determinism (fingerprint
+Proven a-e (DE org orgfarm-4399654d2d-dev-ed): (a)/(a2) guest determinism (fingerprint
 `aecaf4a46fa46481` twice); (b) first authenticated scan — ONE login, both
 surfaces REFERENCED; LOCK proven (guest `aecaf4a46fa46481` != authenticated
 `41ad9361541974ad`, plus the direct guest 302->/s/login/ redirect);

@@ -26,7 +26,9 @@ Branch: `phase-ui-s2-spike`. Companion to
   DB-guarded to require keys+checksums+sizes+verified_at. Proven against
   the live R2 bucket. Orphan sweep reports the crash-window objects.
 - **G — credential failure + first authenticated scan (LIVE PROVEN,
-  2026-08-23)**: against the env-59 Experience Cloud portal — (a)/(a2)
+  2026-08-23)**: against the Experience Cloud portal of the fresh Developer
+  Edition org orgfarm-4399654d2d-dev-ed (NOT env-59 — it has no Experience
+  Cloud licences; that is why the DE org exists) — (a)/(a2)
   guest determinism (fingerprint `aecaf4a46fa46481` twice); (b) the FIRST
   authenticated Salesforce scan — ONE login (TOTP), both surfaces
   REFERENCED; LOCK proven (guest `aecaf4a46fa46481` != authenticated
@@ -52,7 +54,7 @@ Branch: `phase-ui-s2-spike`. Companion to
   loads after structural-quiet). Cross-run differences there are DE-18
   NOT_COMPARABLE by design, not a stabilisation fault; a tab-content-ready
   wait is future work.
-- **Nav flakiness (~1/3 on the dev org)**: raw `domcontentloaded` on env-59
+- **Nav flakiness (~1/3 on the dev org)**: raw `domcontentloaded` on the DE portal org
   succeeds ~2/3 of the time (8-15s) and otherwise exceeds 20s. Absorbed by
   `PAGE_NOT_REACHED`-retryable (pre-submit, never resubmits a credential) —
   validated live (a failed nav re-claimed and succeeded on a later consume).
