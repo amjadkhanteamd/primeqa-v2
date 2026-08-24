@@ -1,0 +1,8 @@
+# Browser-worker spike dependencies (Phase 2.1, dormant).
+# Installed ONLY in Dockerfile.browser-worker — never in the web/worker/
+# scheduler images. The spike imports playwright + stdlib; nothing else.
+playwright==1.62.0
+# Session substrate: TOTP code generation at login time (seed from env only).
+pyotp==2.10.0
+# Evidence store: S3-compatible (R2) upload/verify/sign from the worker.
+boto3==1.43.78

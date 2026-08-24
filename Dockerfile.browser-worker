@@ -1,0 +1,20 @@
+# Browser-worker spike image (Phase 2.1, dormant, manual-only).
+# Same python base as the main Dockerfile; adds chromium via playwright.
+FROM python:3.11-slim
+
+WORKDIR /app
+
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    libpq-dev gcc \
+    && rm -rf /var/lib/apt/lists/*
+
+COPY requirements.txt requirements-browser.txt ./
+RUN pip install --no-cache-dir -r requirements.txt -r requirements-browser.txt
+
+# Chromium + its OS dependencies, baked at build time. Nothing is fetched
+# at container run time (the axe engine is vendored in the repo).
+RUN python -m playwright install --with-deps chromium
+
+COPY . .
+
+CMD ["python", "-m", "primeqa.browser_worker"]

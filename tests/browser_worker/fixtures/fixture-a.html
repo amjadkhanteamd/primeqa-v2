@@ -1,0 +1,33 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <title>Fixture A — Plimsol UI spike</title>
+</head>
+<body>
+  <header>
+    <h1>Fixture A</h1>
+    <nav aria-label="Primary">
+      <ul>
+        <li><a href="/one">Section one</a></li>
+        <li><a href="/two">Section two</a></li>
+      </ul>
+    </nav>
+  </header>
+  <main>
+    <h2>Deterministic content</h2>
+    <p>Static text. No scripts, no external assets, no timestamps.</p>
+    <img src="data:image/gif;base64,R0lGODlhAQABAAAAACw=" alt="Team logo">
+    <!-- Deliberate violation for observation signal: no alt attribute. -->
+    <img src="data:image/gif;base64,R0lGODlhAQABAAAAACw=">
+    <form>
+      <label for="fa-name">Full name</label>
+      <input id="fa-name" type="text">
+      <button type="submit">Submit</button>
+    </form>
+  </main>
+  <footer>
+    <p>Footer text.</p>
+  </footer>
+</body>
+</html>

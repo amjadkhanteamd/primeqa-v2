@@ -81,12 +81,64 @@ def get_webhook_secret() -> str:
     return os.getenv("WEBHOOK_SECRET", "")
 
 
+# Valid PLIMSOL_SERVICE_ROLE values (role-aware boot gate, ui-s2.6). Absent =
+# legacy behaviour (all mandatory secrets). Unknown = fail closed.
+VALID_SERVICE_ROLES = ("web", "worker", "scheduler", "browser-worker")
+
+
+def get_portal_fernet_key() -> str:
+    """The Fernet key that will wrap portal credentials for the browser-worker
+    role. MANDATORY in production UNDER THE browser-worker ROLE (the key itself
+    arrives with the vault work; until a service is tagged browser-worker in
+    production this resolver is never called). Mirrors
+    :func:`get_credential_encryption_key`'s fail-closed shape."""
+    raw = os.getenv("PORTAL_FERNET_KEY", "")
+    if is_production() and not raw:
+        raise SecretConfigError(
+            "PORTAL_FERNET_KEY is unset in production under the browser-worker "
+            "role — portal-credential encryption cannot work. Set it in Railway "
+            "for the browser-worker service."
+        )
+    return raw
+
+
+# Role -> the resolvers whose secrets that role REQUIRES at boot. web/worker/
+# scheduler == the legacy mandatory set, so tagging them is a behavioural no-op;
+# browser-worker needs only PORTAL_FERNET_KEY (least privilege: it serves no
+# HTTP and touches no connected-app credential rows, so it must NOT be able to
+# demand — or, once vault-scoped, hold — JWT_SECRET or CREDENTIAL_ENCRYPTION_KEY).
+_ROLE_REQUIRED = {
+    "web": (get_jwt_secret, get_credential_encryption_key),
+    "worker": (get_jwt_secret, get_credential_encryption_key),
+    "scheduler": (get_jwt_secret, get_credential_encryption_key),
+    "browser-worker": (get_portal_fernet_key,),
+}
+
+
 def validate_boot_secrets() -> None:
     """Boot-time fail-closed gate, called from every entrypoint (web
     ``create_app`` + the worker + the scheduler). In production, the MANDATORY
-    secrets (``JWT_SECRET`` + ``CREDENTIAL_ENCRYPTION_KEY``) must each be a real,
-    non-default value or the process refuses to start (raises
-    :class:`SecretConfigError`). ``WEBHOOK_SECRET`` is intentionally NOT required
-    (optional; its consumer fails closed). A no-op outside production."""
-    get_jwt_secret()
-    get_credential_encryption_key()
+    secrets for the process's ROLE must each be a real, non-default value or the
+    process refuses to start (raises :class:`SecretConfigError`).
+    ``WEBHOOK_SECRET`` is intentionally NOT required (optional; its consumer
+    fails closed). A no-op outside production.
+
+    Role-aware (ui-s2.6): ``PLIMSOL_SERVICE_ROLE`` selects the required secret
+    set. When it is UNSET the behaviour is byte-identical to the historical gate
+    (``JWT_SECRET`` + ``CREDENTIAL_ENCRYPTION_KEY``) — existing services are
+    untouched until explicitly role-tagged, and the legacy default is valid
+    forever. A KNOWN role validates that role's set; an UNKNOWN role fails closed
+    naming the valid roles (a typo must never degrade to a lenient default)."""
+    role = os.getenv("PLIMSOL_SERVICE_ROLE", "").strip()
+    if not role:
+        # Legacy path — unchanged from before the role gate existed.
+        get_jwt_secret()
+        get_credential_encryption_key()
+        return
+    if role not in _ROLE_REQUIRED:
+        raise SecretConfigError(
+            f"PLIMSOL_SERVICE_ROLE={role!r} is not a valid service role; "
+            f"expected one of: {', '.join(VALID_SERVICE_ROLES)}."
+        )
+    for resolver in _ROLE_REQUIRED[role]:
+        resolver()
