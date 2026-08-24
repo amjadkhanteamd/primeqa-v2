@@ -1,4 +1,4 @@
-# UI spike scoreboard — after the session substrate (2026-08-23)
+# UI spike scoreboard — COMPLETE (2026-08-23)
 
 Branch: `phase-ui-s2-spike`. Companion to
 `LLD_PHASE2_3_QUEUE.md` + `LLD_PHASE2_4_MANIFEST.md`.
@@ -41,11 +41,19 @@ Branch: `phase-ui-s2-spike`. Companion to
   rounds; CSP-safe axe injection + login->MFA transition-race confirm +
   wait-for-form initial classify were the live-only fixes.
 
+## Spike status: COMPLETE
+
+All ten arms accounted for:
+
+- **PROVEN**: A (determinism), B (kill/reclaim/zero-dup), C (world-change
+  honesty), G (credential failure + first authenticated scan + lock),
+  I (tenant denial), J (poison cap + evidence-never-falsely-complete).
+- **Deferred by design**: H (locator NOT-DETERMINED) → Phase 3A;
+  D/E/F (causal candidates) → Phase 7 (need release history).
+
 ## Arms pending
 
-- **H — locator NOT-DETERMINED** → Phase 3A.
-- **I — tenant denial** → 2.6.
-- **D/E/F — causal candidates** → Phase 7; need release history.
+- (none for the spike — H and D/E/F are out-of-phase by design, above.)
 
 ## Known-open items (session substrate)
 
