@@ -105,6 +105,7 @@ artifact of the stabilised page as the engine saw it.
   that prints a signed URL for a given result row's screenshot.
 - Never a public URL; the bucket stays private; a past-expiry URL is
   refused by the store (asserted by test).
+- **Bearer-rule scope (2026-08-23):** the prohibition on sharing a signed (bearer) URL or distributing captured evidence scopes to **client-tenant** evidence. Plimsol-owned test orgs (e.g. env-59) and committed fixtures are EXEMPT — their signed URLs may be shared for verification (as in the arm-G spike). Client-tenant evidence is never shared outside the authorised viewer.
 
 ## Upload discipline and the two failure windows (stated explicitly)
 

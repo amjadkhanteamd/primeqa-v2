@@ -238,7 +238,10 @@ def test_no_secret_reaches_logs_or_reprs(caplog):
 
 # ---------- manifest auth descriptor (DB-gated) ----------
 
-@pytest.mark.skipif(not SPIKE_DB, reason="set SPIKE_DATABASE_URL")
+@pytest.mark.skipif(
+    not SPIKE_DB or os.environ.get("SPIKE_DB_TESTS_OK") != "1",
+    reason="destructive (DELETEs queue rows); need SPIKE_DATABASE_URL and "
+           "SPIKE_DB_TESTS_OK=1 — never set during live sequences")
 def test_manifest_auth_descriptor_round_trip():
     from sqlalchemy import text
 

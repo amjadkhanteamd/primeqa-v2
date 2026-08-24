@@ -13,10 +13,17 @@ import os
 import pytest
 
 SPIKE_DB = os.environ.get("SPIKE_DATABASE_URL")
+# DESTRUCTIVE: the `session` fixture DELETEs all queue rows on setup. This
+# whole module additionally requires SPIKE_DB_TESTS_OK=1 so it cannot run
+# (and cannot wipe a live spike queue) unless explicitly opted in. Live a-e
+# sequences never set it — the wipe class is structurally impossible there.
+_DB_TESTS_OK = os.environ.get("SPIKE_DB_TESTS_OK") == "1"
 
 pytestmark = pytest.mark.skipif(
-    not SPIKE_DB,
-    reason="queue spike disabled (set SPIKE_DATABASE_URL to a non-prod DB)",
+    not SPIKE_DB or not _DB_TESTS_OK,
+    reason="destructive queue tests disabled (need SPIKE_DATABASE_URL and "
+           "SPIKE_DB_TESTS_OK=1; they DELETE queue rows — never set during "
+           "live sequences)",
 )
 
 

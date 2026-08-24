@@ -212,6 +212,8 @@ codes. Only `PAGE_NOT_REACHED` (pre-submit — no credential sent) and
 `SESSION_LOST` (post-login recovery with CORRECT credentials) remain
 retryable. The single-attempt guarantee for G-1/G-2 is now CODE-enforced.
 
+**Ratified (AK/Claude, 2026-08-23):** credential-rejection is permanent by PRINCIPLE — for a rejected credential, retry equals resubmission. Retryability is reserved for the pre-submit navigation classes (`PAGE_NOT_REACHED`) and correct-credential session recovery (`SESSION_LOST`); no class that has submitted a rejected credential is ever retryable.
+
 Consumer fail-safe: `consume_job`'s generic `except Exception` wall now
 marks the job PERMANENT (`retryable=False`) and records only the exception
 TYPE name — an uncoded/unexpected error is never assumed transient, so it

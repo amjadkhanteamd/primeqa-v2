@@ -1,4 +1,4 @@
-# UI spike scoreboard — after Phase 2.5 (2026-08-23)
+# UI spike scoreboard — after the session substrate (2026-08-23)
 
 Branch: `phase-ui-s2-spike`. Companion to
 `LLD_PHASE2_3_QUEUE.md` + `LLD_PHASE2_4_MANIFEST.md`.
@@ -25,19 +25,37 @@ Branch: `phase-ui-s2-spike`. Companion to
   (reached=CAPTURED), zero REFERENCED, batch still succeeds; REFERENCED is
   DB-guarded to require keys+checksums+sizes+verified_at. Proven against
   the live R2 bucket. Orphan sweep reports the crash-window objects.
-- **Session substrate (unit-only)**: TOTP login, batch session reuse,
-  six-class credential taxonomy, redaction — 25/25 unit tests. Arm G
-  (live credential failure) + the first authenticated scan remain
-  UNPROVEN until the a–e portal runs (blocked on portal.env).
+- **G — credential failure + first authenticated scan (LIVE PROVEN,
+  2026-08-23)**: against the env-59 Experience Cloud portal — (a)/(a2)
+  guest determinism (fingerprint `aecaf4a46fa46481` twice); (b) the FIRST
+  authenticated Salesforce scan — ONE login (TOTP), both surfaces
+  REFERENCED; LOCK proven (guest `aecaf4a46fa46481` != authenticated
+  `41ad9361541974ad`, plus the direct guest 302->/s/login/ redirect);
+  (G-1) wrong password -> BAD_CREDENTIAL, zero rows; (G-2) wrong seed ->
+  MFA_FAILED, zero rows. SINGLE-ATTEMPT is code-guaranteed: every
+  credential-rejection class is permanent (retry == resubmission), so a
+  rejected credential is never resubmitted. DB hygiene clean (no password,
+  seed, or username in any row). Hardened through 4 adversarial-review
+  rounds; CSP-safe axe injection + login->MFA transition-race confirm +
+  wait-for-form initial classify were the live-only fixes.
 
 ## Arms pending
 
-- **G — live credential failure + first authenticated scan** → session
-  substrate a–e runs; blocked on AK's portal.env confirmation (arm G is
-  UNPROVEN at runtime; unit-level only so far).
 - **H — locator NOT-DETERMINED** → Phase 3A.
 - **I — tenant denial** → 2.6.
 - **D/E/F — causal candidates** → Phase 7; need release history.
+
+## Known-open items (session substrate)
+
+- **Tabset late-load nondeterminism**: the `?tabset-398be=2` surface renders
+  identically to the base surface under the current settle (its tab content
+  loads after structural-quiet). Cross-run differences there are DE-18
+  NOT_COMPARABLE by design, not a stabilisation fault; a tab-content-ready
+  wait is future work.
+- **Nav flakiness (~1/3 on the dev org)**: raw `domcontentloaded` on env-59
+  succeeds ~2/3 of the time (8-15s) and otherwise exceeds 20s. Absorbed by
+  `PAGE_NOT_REACHED`-retryable (pre-submit, never resubmits a credential) —
+  validated live (a failed nav re-claimed and succeeded on a later consume).
 
 ## FIX-1 status
 
