@@ -21,6 +21,7 @@ import sys
 import time
 from pathlib import Path
 
+from playwright.sync_api import Error as PlaywrightError
 from playwright.sync_api import TimeoutError as PlaywrightTimeoutError
 from playwright.sync_api import sync_playwright
 
@@ -30,34 +31,197 @@ _AXE_PATH = _VENDOR_DIR / "axe.min.js"
 # The vendored file opens with a banner like: /*! axe v4.13.0
 _AXE_VERSION_RE = re.compile(r"/\*!\s*axe\s+v(\d+\.\d+\.\d+)")
 
-# Quiet period the DOM must hold with zero mutations before we scan.
+# Structural quiet period the DOM must hold before we scan (ui-session
+# stabilisation amendment, 2026-08-23). "Structural" = exactly the changes
+# the fingerprint measures; non-structural churn (text, class/style, data-*,
+# characterData) never blocks a scan. See LLD_SESSION_SUBSTRATE.md.
 _DOM_QUIET_MS = 500
 
-# Resolves true when the DOM has been mutation-free for quietMs, false when
-# timeoutMs elapses first. Observing document with full coverage so any
-# late-arriving async render restarts the quiet timer.
-_DOM_QUIET_JS = """
-([quietMs, timeoutMs]) => new Promise((resolve) => {
+# The fingerprint-identity attributes the gate treats as STRUCTURAL: the
+# name determinants (aria-label/alt/title/placeholder) and the role
+# determinants (role, plus href on <a> and type on <input>, which
+# _FINGERPRINT_JS.roleOf reads). Single source of truth: interpolated into
+# the observer JS AND used by the pure is_structural_mutation() spec. NOTE:
+# label textContent also feeds an accessible NAME, but it is characterData
+# and deliberately NOT watched — a dynamic accessible name is DE-18
+# NOT_COMPARABLE by design, not a stabilisation stall.
+_STRUCT_ATTRS = ("role", "aria-label", "alt", "title", "placeholder",
+                 "href", "type")
+
+# Navigation policy: Experience Cloud (Aura) holds persistent/streaming
+# connections, so `load`/`networkidle` may never fire. Navigate on
+# `domcontentloaded` with a bounded retry (fresh re-navigation on timeout).
+_NAV_TIMEOUT_MS = 20000      # per-attempt domcontentloaded cap
+_NAV_MAX_ATTEMPTS = 3        # 1 initial + 2 retries
+
+
+def is_structural_mutation(mut: dict) -> bool:
+    """Pure spec mirrored by the observer JS below. A mutation is structural
+    iff it adds/removes an ELEMENT node, or changes a fingerprint-identity
+    attribute on an existing node. The fingerprint walks element children
+    only (`el.children`), so text-node add/remove (e.g. `textContent=`),
+    characterData, class / style / data-* / aria-busy changes are all
+    NON-structural and never restart the quiet timer. `addedCount` /
+    `removedCount` are ELEMENT counts."""
+    t = mut.get("type")
+    if t == "childList":
+        return bool(mut.get("addedCount", 0)) or bool(mut.get("removedCount", 0))
+    if t == "attributes":
+        return mut.get("attributeName") in _STRUCT_ATTRS
+    return False
+
+
+# Resolves true when the DOM holds `quietMs` free of STRUCTURAL mutations,
+# false when timeoutMs elapses first. The observer is scoped to childList +
+# the identity attributes (attributeFilter) and does NOT watch characterData,
+# so non-structural churn cannot fire it; the explicit classify is defence in
+# depth and keeps the runtime rule identical to is_structural_mutation().
+_STRUCT_QUIET_JS = """
+([quietMs, timeoutMs, structAttrs]) => new Promise((resolve) => {
   let done = false;
   let timer = null;
-  const observer = new MutationObserver(() => {
+  const arm = () => { if (timer) clearTimeout(timer);
+                      timer = setTimeout(() => finish(true), quietMs); };
+  const hasElement = (nodes) => {
+    for (const n of nodes) { if (n.nodeType === 1) return true; }
+    return false;
+  };
+  const structural = (r) => {
+    if (r.type === 'childList')
+      return hasElement(r.addedNodes) || hasElement(r.removedNodes);
+    if (r.type === 'attributes')
+      return structAttrs.indexOf(r.attributeName) !== -1;
+    return false;
+  };
+  const observer = new MutationObserver((records) => {
     if (done) return;
-    if (timer) clearTimeout(timer);
-    timer = setTimeout(() => finish(true), quietMs);
+    for (const r of records) { if (structural(r)) { arm(); break; } }
   });
   const finish = (quietReached) => {
     if (done) return;
-    done = true;
-    observer.disconnect();
-    resolve(quietReached);
+    done = true; observer.disconnect(); resolve(quietReached);
   };
   observer.observe(document, {
-    subtree: true, childList: true, attributes: true, characterData: true,
+    subtree: true, childList: true, attributes: true,
+    attributeFilter: structAttrs, characterData: false,
   });
   timer = setTimeout(() => finish(true), quietMs);
   setTimeout(() => finish(false), timeoutMs);
 })
 """
+
+
+def is_nav_destroyed_error(exc: Exception) -> bool:
+    """True for the benign 'execution context was destroyed by a navigation'
+    Playwright error — a normal SPA transition, not a fault."""
+    msg = str(exc).lower()
+    return ("execution context was destroyed" in msg
+            or "context was destroyed" in msg
+            or "navigation" in msg)
+
+
+def _navigate_with_retry(page, url, remaining_ms_fn):
+    """domcontentloaded navigation with bounded retry. Catches BOTH timeouts
+    and non-timeout navigation errors (net::ERR_*, aborted redirects) so a
+    nav fault never escapes raw. Retry is NAVIGATION ONLY. Returns
+    (ok, attempts_used)."""
+    for attempt in range(_NAV_MAX_ATTEMPTS):
+        rem = remaining_ms_fn()
+        if rem <= 1:
+            return False, attempt
+        try:
+            page.goto(url, wait_until="domcontentloaded",
+                      timeout=min(_NAV_TIMEOUT_MS, int(rem)))
+            return True, attempt + 1
+        except PlaywrightError:
+            continue
+    return False, _NAV_MAX_ATTEMPTS
+
+
+_ARM_CHANGE_JS = """
+(structAttrs) => {
+  window.__plqChanged = false;
+  if (window.__plqObs) { try { window.__plqObs.disconnect(); } catch (e) {} }
+  const hasElement = (nodes) => {
+    for (const n of nodes) { if (n.nodeType === 1) return true; }
+    return false;
+  };
+  const structural = (r) => {
+    if (r.type === 'childList')
+      return hasElement(r.addedNodes) || hasElement(r.removedNodes);
+    if (r.type === 'attributes')
+      return structAttrs.indexOf(r.attributeName) !== -1;
+    return false;
+  };
+  const o = new MutationObserver((recs) => {
+    for (const r of recs) { if (structural(r)) { window.__plqChanged = true; break; } }
+  });
+  o.observe(document, {
+    subtree: true, childList: true, attributes: true,
+    attributeFilter: structAttrs, characterData: false,
+  });
+  window.__plqObs = o;
+}
+"""
+
+# Cap for waiting for a submit's FIRST visible effect (nav or in-place render)
+# before settling. Bounded further by the caller's remaining budget.
+_ACTION_SETTLE_CAP_MS = 15000
+
+
+def arm_change_observer(page) -> None:
+    """Install a one-shot structural-change flag BEFORE an action (click), so
+    the outcome is detectable whether the submit navigates or validates
+    in-place. Best-effort — a failure here never raises into the caller."""
+    try:
+        page.evaluate(_ARM_CHANGE_JS, list(_STRUCT_ATTRS))
+    except PlaywrightError:
+        pass
+
+
+def await_submit_outcome(page, quiet_ms, remaining_ms_fn) -> None:
+    """After a submit click (with arm_change_observer already installed), wait
+    for the submit's first visible effect — a NAVIGATION (URL change) OR an
+    in-place structural change (the __plqChanged flag) OR a destroyed context
+    — then structural-quiet the resulting page. The URL check matters because
+    a full-page navigation loads a new document where __plqChanged is
+    undefined; polling the flag alone would burn the whole cap on a classic
+    full-nav login (adversarial-review #7/#8)."""
+    old_url = page.url
+    cap = min(int(remaining_ms_fn()), _ACTION_SETTLE_CAP_MS)
+    try:
+        page.wait_for_function(
+            "(o) => window.location.href !== o || window.__plqChanged === true",
+            arg=old_url, timeout=max(1, cap))
+    except PlaywrightTimeoutError:
+        pass  # no detectable change (rare) — settle the page as-is
+    except PlaywrightError:
+        pass  # context destroyed == navigation happened — settle the new page
+    structural_quiet(page, quiet_ms, remaining_ms_fn())
+
+
+def structural_quiet(page, quiet_ms, remaining_ms) -> bool:
+    """True when the page holds quiet_ms free of structural mutations within
+    the remaining budget; False otherwise. networkidle is NOT used. If the
+    execution context is destroyed by a navigation mid-probe (normal on an
+    Aura SPA), wait for the new document and retry the probe ONCE; any other
+    error, or a second destruction, returns False (never escapes)."""
+    budget = max(1, int(remaining_ms))
+    for attempt in range(2):
+        try:
+            return bool(page.evaluate(
+                _STRUCT_QUIET_JS, [quiet_ms, budget, list(_STRUCT_ATTRS)]))
+        except PlaywrightTimeoutError:
+            return False
+        except PlaywrightError as exc:
+            if attempt == 0 and is_nav_destroyed_error(exc):
+                try:
+                    page.wait_for_load_state("domcontentloaded", timeout=budget)
+                except PlaywrightError:
+                    return False
+                continue
+            return False
+    return False
 
 
 # Semantic-structure walk for the normalised fingerprint (ui-s2.4).
@@ -252,27 +416,20 @@ def _scan_in_context(context, browser_version: str, url: str, *, viewport,
     page = context.new_page()
     page.set_viewport_size({"width": viewport[0], "height": viewport[1]})
     try:
-        # Phase b: navigate, wait for load
+        # Phase b: navigate — domcontentloaded + bounded retry (Aura may
+        # never fire load/networkidle; retry is navigation-only).
         t0 = time.monotonic()
-        try:
-            page.goto(url, wait_until="load", timeout=_remaining_ms())
-        except PlaywrightTimeoutError:
-            timings_ms["navigate"] = round((time.monotonic() - t0) * 1000, 1)
+        nav_ok, nav_attempts = _navigate_with_retry(page, url, _remaining_ms)
+        timings_ms["navigate"] = round((time.monotonic() - t0) * 1000, 1)
+        base["navigate_attempts"] = nav_attempts
+        if not nav_ok:
             return {"status": "NOT_REACHED", "timings_ms": timings_ms,
                     "peak_rss_mb": _peak_rss_mb(), **base}
-        timings_ms["navigate"] = round((time.monotonic() - t0) * 1000, 1)
 
-        # Phase c: stabilise — networkidle, then a DOM-mutation quiet
-        # period, both inside the remaining max_wait_s budget.
+        # Phase c: stabilise — STRUCTURAL-quiet gate (networkidle removed;
+        # non-structural churn never blocks the scan).
         t0 = time.monotonic()
-        quiet_reached = False
-        try:
-            page.wait_for_load_state("networkidle", timeout=_remaining_ms())
-            quiet_reached = page.evaluate(
-                _DOM_QUIET_JS, [quiet_ms, max(1, int(_remaining_ms()))]
-            )
-        except PlaywrightTimeoutError:
-            quiet_reached = False
+        quiet_reached = structural_quiet(page, quiet_ms, _remaining_ms())
         timings_ms["stabilise"] = round((time.monotonic() - t0) * 1000, 1)
         if not quiet_reached:
             return {"status": "NOT_REACHED", "timings_ms": timings_ms,
@@ -289,9 +446,14 @@ def _scan_in_context(context, browser_version: str, url: str, *, viewport,
         screenshot_png = page.screenshot(full_page=True)
         timings_ms["capture"] = round((time.monotonic() - t0) * 1000, 1)
 
-        # Phase d: inject the vendored engine from the local file
+        # Phase d: inject the vendored engine. NOT via add_script_tag — that
+        # appends a DOM <script>, which a strict Content-Security-Policy
+        # (Salesforce Experience Cloud) blocks. page.evaluate runs the source
+        # in the main world over CDP, which is not subject to the page's
+        # script-src CSP; the vendored file is still the only source, read
+        # from local disk, never fetched.
         t0 = time.monotonic()
-        page.add_script_tag(path=str(_AXE_PATH))
+        page.evaluate(_AXE_PATH.read_text(encoding="utf-8"))
         timings_ms["inject"] = round((time.monotonic() - t0) * 1000, 1)
 
         # Phase e: run the engine, collect its raw JSON

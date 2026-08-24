@@ -110,7 +110,9 @@ applies to **navigation only** — never to credential submission.
 The primary settle gate is a `MutationObserver` counting **structural**
 changes only:
 
-- node additions / removals (`childList`), and
+- **element** node additions / removals (`childList`, nodeType 1 only —
+  text-node churn such as `textContent=` is non-structural, matching the
+  fingerprint's element-only `el.children` walk), and
 - changes to `role`, `aria-label`, `alt`, `title`, `placeholder`, and the
   tag identity of existing nodes (an `attributes` filter over exactly the
   fingerprint's identity attributes).
@@ -150,6 +152,37 @@ for the lock check. (Observed 2026-08-23: guest `/s/` →
 the **persona-differential** instrument (guest structure vs authenticated
 structure) where both personas render a scannable page.
 
+### 6. TOTP seed handling + the uncoded-escape belt (2026-08-23, post-review)
+
+Two adversarial-review rounds hardened the login path against exceptions
+that are neither `LoginError` nor `PlaywrightError`:
+
+- **Seed normalisation + `MFA_SEED_INVALID`:** the seed is normalised
+  (`[\s-]` stripped, upper-cased) before `pyotp.TOTP(seed).now()`, so a
+  valid seed in space/hyphen-grouped display form works. If the seed is not
+  valid base32, `pyotp` raises `binascii.Error` (a `ValueError`); this is
+  caught and mapped to a NEW **PERMANENT** class `MFA_SEED_INVALID`
+  (present but unusable — distinct from `MFA_REQUIRED_NOT_CONFIGURED` =
+  unset, and from `MFA_FAILED` = portal rejected a validly-computed code).
+  Permanent because a deterministic decode fault cannot be fixed by retry —
+  so it never resubmits credentials.
+- **Contract catch-all belt:** `login()` ends with `except Exception ->
+  LoginError(LOGIN_PAGE_NOT_RECOGNIZED, "error@<step>:<ExcType>")`, after
+  the `LoginError` / `PlaywrightTimeoutError` / `PlaywrightError` arms.
+  Nothing escapes `login()` uncoded (the docstring contract), so no failure
+  can reach the consumer's generic wall and be marked `failed_retryable`
+  by default -> no credential resubmission. The detail carries the
+  exception TYPE only, never its message (which could echo secret input).
+- **Premature-quiet guard:** after a submit, `_stable_classify_after_submit`
+  re-inventories until a recognised form appears OR the URL leaves the login
+  page, so a transiently-cleared form mid-render is not misread as
+  `unknown`; the landed check additionally refuses any URL still under
+  `/login` as success.
+- **Full-nav settle:** `await_submit_outcome` detects the outcome by URL
+  change OR the in-place change flag OR a destroyed context, so a classic
+  full-page-navigation login is detected immediately instead of burning the
+  settle cap polling a flag that a new document does not carry.
+
 ### 5. Credential-attempt discipline
 
 `G-1` (wrong password) and `G-2` (wrong seed) are **single-attempt** runs:
@@ -157,6 +190,75 @@ the login module never retries credentials (retry applies to navigation
 only, per §1). Verification sequence: **(b) success first, then G-1, then
 G-2.** Prerequisite (recorded): AK disables invalid-login lockout on the
 test profile before G-1/G-2.
+
+### 7. Credential-rejection failures are PERMANENT (2026-08-23, final review)
+
+The final adversarial round showed a valid-base32 BUT WRONG seed (the
+realistic G-2 input) computes a code without error, submits it, is rejected,
+and reaches `MFA_FAILED` — which was retryable, so the queue re-claimed the
+job and resubmitted username+password+a fresh wrong code up to the
+max-attempts cap. That resubmits a known-bad credential to a live auth
+endpoint (MFA-lockout risk) and violates §5's single-attempt guarantee,
+which was previously enforced only by operator discipline, not by code.
+
+Fix (root cause): every CREDENTIAL-REJECTION class is PERMANENT —
+`BAD_CREDENTIAL`, `MFA_FAILED`, `MFA_SEED_INVALID`,
+`MFA_REQUIRED_NOT_CONFIGURED`, `CREDENTIAL_NOT_CONFIGURED`,
+`LOGIN_PAGE_NOT_RECOGNIZED`. A rejected credential will not be accepted on
+retry, so retrying only resubmits it. `MFA_FAILED` moving to permanent
+reverses the earlier clock-skew-retry rationale: the rare transient-code
+case is better served by a human re-enqueue than by auto-resubmitting wrong
+codes. Only `PAGE_NOT_REACHED` (pre-submit — no credential sent) and
+`SESSION_LOST` (post-login recovery with CORRECT credentials) remain
+retryable. The single-attempt guarantee for G-1/G-2 is now CODE-enforced.
+
+Consumer fail-safe: `consume_job`'s generic `except Exception` wall now
+marks the job PERMANENT (`retryable=False`) and records only the exception
+TYPE name — an uncoded/unexpected error is never assumed transient, so it
+can never become `failed_retryable`-by-default and resubmit credentials.
+
+### 8. Live-run findings (2026-08-23, a-e proven against env-59 portal)
+
+The a-e verification against the real Salesforce Experience Cloud portal
+surfaced three implementation facts the static fixtures could not:
+
+- **CSP blocks `add_script_tag`.** Experience Cloud sends a strict
+  `Content-Security-Policy` (`script-src 'self' ...`) that refuses the
+  inline `<script>` `page.add_script_tag` appends. The vendored axe engine
+  is now injected via `page.evaluate(source)` — CDP main-world execution,
+  not subject to the DOM `script-src` CSP (this CSP even allows
+  `unsafe-eval`). Still the only source, read from local disk, never
+  fetched. (spike.py Phase d.)
+- **The login form renders after a JS-load quiet gap.** Aura reaches
+  `domcontentloaded`, goes structurally quiet while it loads its JS, THEN
+  injects the login form. A single settle can return in that gap (observed:
+  initial inventory `inputs=0 buttons=0`). The initial classify now uses the
+  same wait-for-a-recognised-form loop as the post-submit path.
+- **login->MFA is a deferred navigation (transition race).** After a correct
+  password, the login form lingers in the DOM on `/s/login/` for a beat
+  before the client navigates to `/_ui/identity/verification/` (the MFA
+  page). A first inventory can catch that transient login form and wrongly
+  conclude `BAD_CREDENTIAL`. Both submit steps now CONFIRM a `login`/`mfa`
+  classification with one more settle before concluding a rejection — a
+  transient form resolves to the real next state; a persistent one is the
+  true rejection.
+- **Navigation is flaky (validated PAGE_NOT_REACHED retry).** Raw
+  `domcontentloaded` on this dev org succeeds ~2/3 of the time (8-15s) and
+  otherwise exceeds 20s. `PAGE_NOT_REACHED` (retryable, pre-submit) absorbed
+  this live: a nav that failed its 3 in-flow attempts was re-claimed and
+  succeeded on a later consume, never resubmitting a credential.
+
+Proven a-e (env-59, orgfarm dev): (a)/(a2) guest determinism (fingerprint
+`aecaf4a46fa46481` twice); (b) first authenticated scan — ONE login, both
+surfaces REFERENCED; LOCK proven (guest `aecaf4a46fa46481` != authenticated
+`41ad9361541974ad`, plus the direct guest 302->/s/login/ redirect);
+(G-1) wrong password -> BAD_CREDENTIAL, zero result rows, single attempt;
+(G-2) wrong seed -> MFA_FAILED, zero result rows, single attempt;
+(e) DB hygiene — no password, seed, or username in any manifest/job/result
+row. Open observation: the `?tabset-398be=2` surface renders identically to
+the base surface under the current settle (its tab content loads late); a
+tab-content-ready wait is future work, and cross-run differences there are
+DE-18 NOT_COMPARABLE by design, not a stabilisation fault.
 
 ### Detection is explicit (k16 spirit — refuse ambiguity)
 
@@ -187,7 +289,7 @@ element. Classification is pure Python over the inventory:
 | class | meaning | job status |
 |---|---|---|
 | `BAD_CREDENTIAL` | the portal re-presented the credential form after submit | `failed_permanent` |
-| `MFA_FAILED` | the portal rejected the code (MFA form persisted, or bounced to login) | `failed_retryable` (clock skew / one-time glitch is possible; the max-attempts cap still bounds it) |
+| `MFA_FAILED` | the portal rejected the code (MFA form persisted, or bounced to login) | `failed_permanent` (credential rejection — a wrong code must not be resubmitted; reversed from the earlier retryable choice, see §6/§7) |
 | `MFA_REQUIRED_NOT_CONFIGURED` | the portal asked for a code and `PORTAL_TOTP_SEED` is unset | `failed_permanent` |
 | `LOGIN_PAGE_NOT_RECOGNIZED` | the expected form was not recognized at any step (incl. timeouts) | `failed_permanent` |
 | `SESSION_LOST` | mid-batch, a surface navigation landed on a recognized LOGIN/MFA form | `failed_retryable` |
@@ -203,7 +305,10 @@ Invariants:
   redoes them via the 2.3 UPSERT). No result row is written for the
   surface that lost the session.
 - The `failed_permanent` classes are permanent because re-running the
-  same inputs cannot succeed; `MFA_FAILED` / `SESSION_LOST` may.
+  same inputs cannot succeed AND, for credential rejections, must not
+  resubmit. Only `PAGE_NOT_REACHED` (pre-submit) and `SESSION_LOST`
+  (correct-credential session recovery) are retryable — neither resubmits
+  a WRONG credential.
 - `CREDENTIAL_NOT_CONFIGURED` is kept distinct from `BAD_CREDENTIAL`
   because configuration absence and credential rejection are different
   facts with different fixes; conflating them would store a false

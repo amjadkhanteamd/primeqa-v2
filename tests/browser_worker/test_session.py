@@ -60,8 +60,18 @@ class FakePage:
     def wait_for_load_state(self, *a, **kw):
         pass
 
-    def evaluate(self, js):
-        return self._inventories.pop(0)
+    def evaluate(self, js, arg=None):
+        # structural_quiet()/arm pass a second arg and expect a bool; the
+        # inventory call passes none. Inventories are sticky-last: once one
+        # remains it is returned on every re-poll (a settled page yields the
+        # same inventory), so the 4-iter stable-classify loop never runs dry.
+        if arg is not None:
+            return True
+        if not self._inventories:
+            return {"inputs": [], "buttons": []}
+        if len(self._inventories) > 1:
+            return self._inventories.pop(0)
+        return self._inventories[0]
 
     def fill(self, selector, value):
         self.fills.append((selector, value))
@@ -74,6 +84,9 @@ class FakePage:
     @contextmanager
     def expect_navigation(self, **kw):
         yield
+
+    def wait_for_function(self, expr, arg=None, timeout=None):
+        return True   # await_submit_outcome: pretend a change was detected
 
     def close(self):
         self.closed = True
@@ -140,12 +153,15 @@ def test_bad_credential_is_permanent():
     assert ei.value.code == BAD_CREDENTIAL and ei.value.retryable is False
 
 
-def test_mfa_failed_is_retryable():
+def test_mfa_failed_is_permanent():
+    # A portal-rejected TOTP code is a credential rejection: PERMANENT, so a
+    # wrong code is never resubmitted (single-attempt discipline / MFA-lockout
+    # safety). Reversed from the earlier clock-skew-retry choice.
     from primeqa.browser_worker.session import MFA_FAILED, LoginError
     with pytest.raises(LoginError) as ei:
         _login([LOGIN_INV, MFA_INV, MFA_INV],
                [f"{BASE}/s/login/", f"{BASE}/verify", f"{BASE}/verify"])
-    assert ei.value.code == MFA_FAILED and ei.value.retryable is True
+    assert ei.value.code == MFA_FAILED and ei.value.retryable is False
 
 
 def test_mfa_required_not_configured():
@@ -165,8 +181,11 @@ def test_login_page_not_recognized_initial_and_landed():
         _login([HOME_INV], [f"{BASE}/s/"])
     assert ei.value.code == LOGIN_PAGE_NOT_RECOGNIZED
     assert "step=initial" in ei.value.detail
+    # Lenient landed rule: a formless page still on a /login route is not
+    # authenticated -> step=landed failure (guards against false success).
     with pytest.raises(LoginError) as ei2:
-        _login([LOGIN_INV, HOME_INV], [f"{BASE}/s/login/", f"{BASE}/elsewhere"])
+        _login([LOGIN_INV, HOME_INV],
+               [f"{BASE}/s/login/", f"{BASE}/s/login/stuck"])
     assert ei2.value.code == LOGIN_PAGE_NOT_RECOGNIZED
     assert "step=landed" in ei2.value.detail
 
@@ -251,3 +270,171 @@ def test_manifest_auth_descriptor_round_trip():
             m.enqueue_for_manifest(s, mid2)
     finally:
         s.close()
+
+
+# ---------- adversarial-review fixes: PAGE_NOT_REACHED + login belt ----------
+
+class _RaisingGotoContext:
+    """A context whose page.goto always raises a non-timeout Playwright error
+    (network fault) — exercises the nav-failure -> PAGE_NOT_REACHED path."""
+    def __init__(self):
+        self.page = _RaisingGotoPage()
+
+    def new_page(self):
+        return self.page
+
+
+class _RaisingGotoPage(FakePage):
+    def __init__(self):
+        super().__init__([], [])
+
+    def goto(self, url, **kw):
+        from playwright.sync_api import Error as PlaywrightError
+        raise PlaywrightError("net::ERR_NAME_NOT_RESOLVED")
+
+
+def test_nav_failure_is_page_not_reached_and_retryable():
+    from primeqa.browser_worker.session import (
+        PAGE_NOT_REACHED, LoginError, login)
+    with pytest.raises(LoginError) as ei:
+        login(_RaisingGotoContext(), BASE, "/s/", _creds())
+    assert ei.value.code == PAGE_NOT_REACHED
+    assert ei.value.retryable is True          # transient, pre-submit
+
+
+class _InventoryErrorPage(FakePage):
+    """Navigates fine, but every inventory evaluate raises a bare (non-nav)
+    Playwright error — exercises the login belt (must map to a coded
+    PERMANENT failure, never escape raw)."""
+    def evaluate(self, js, arg=None):
+        from playwright.sync_api import Error as PlaywrightError
+        if arg is not None:
+            return True                        # arm / structural_quiet
+        raise PlaywrightError("Protocol error (Runtime.evaluate): boom")
+
+
+def test_login_belt_maps_residual_playwright_error_to_permanent():
+    from primeqa.browser_worker.session import (
+        LOGIN_PAGE_NOT_RECOGNIZED, LoginError, login)
+
+    class Ctx:
+        page = _InventoryErrorPage([], [f"{BASE}/s/login/"])
+        def new_page(self):
+            return self.page
+    with pytest.raises(LoginError) as ei:
+        login(Ctx(), BASE, "/s/", _creds())
+    assert ei.value.code == LOGIN_PAGE_NOT_RECOGNIZED   # coded, not raw
+    assert ei.value.retryable is False                  # permanent, no resubmit
+    assert "page_error@" in ei.value.detail
+
+
+# ---------- re-review fixes: seed handling + generic catch-all belt ----------
+
+def test_malformed_seed_is_mfa_seed_invalid_permanent():
+    from primeqa.browser_worker.session import (
+        MFA_SEED_INVALID, Credentials, LoginError, login)
+    bad = Credentials(FAKE_USER, FAKE_PASS, "not a base32 seed!")
+    with pytest.raises(LoginError) as ei:
+        # LOGIN form -> MFA form -> compute code (crashes on bad base32)
+        page = FakePage([LOGIN_INV, MFA_INV], [f"{BASE}/s/login/", f"{BASE}/verify"])
+        login(FakeContext(page), BASE, "/s/", bad)
+    assert ei.value.code == MFA_SEED_INVALID
+    assert ei.value.retryable is False           # deterministic; never resubmit
+    # the detail must not echo the seed value
+    assert "base32" in ei.value.detail and "not a base32 seed" not in ei.value.detail
+
+
+def test_space_grouped_valid_seed_is_normalised_and_works():
+    from primeqa.browser_worker.session import Credentials, login
+    # a valid base32 seed in the common space-grouped display form
+    grouped = Credentials(FAKE_USER, FAKE_PASS, "JBSW Y3DP EHPK 3PXP")
+    page = FakePage([LOGIN_INV, MFA_INV, HOME_INV],
+                    [f"{BASE}/s/login/", f"{BASE}/verify", f"{BASE}/s/"])
+    out = login(FakeContext(page), BASE, "/s/", grouped)
+    assert out.ok and out.events == ["LOGIN_SUBMITTED", "MFA_SUBMITTED"]
+
+
+class _ValueErrorInventoryPage(FakePage):
+    """Navigates fine, but inventory raises a NON-Playwright exception — must be
+    caught by the generic catch-all belt (contract: login never escapes uncoded)."""
+    def evaluate(self, js, arg=None):
+        if arg is not None:
+            return True
+        raise ValueError("unexpected boom")
+
+
+def test_generic_exception_caught_by_contract_belt():
+    from primeqa.browser_worker.session import (
+        LOGIN_PAGE_NOT_RECOGNIZED, LoginError, login)
+
+    class Ctx:
+        page = _ValueErrorInventoryPage([], [f"{BASE}/s/login/"])
+        def new_page(self):
+            return self.page
+    with pytest.raises(LoginError) as ei:      # NOT a raw ValueError
+        login(Ctx(), BASE, "/s/", _creds())
+    assert ei.value.code == LOGIN_PAGE_NOT_RECOGNIZED
+    assert ei.value.retryable is False
+    assert "error@" in ei.value.detail and "ValueError" in ei.value.detail
+
+
+# ---------- final-review fixes: lenient landed + delayed MFA + empty seed ----------
+
+def test_correct_login_landing_off_deep_path_still_succeeds():
+    # #1: a correct login that lands on an intermediate/home URL (not the deep
+    # surface path) must NOT be misreported as LOGIN_PAGE_NOT_RECOGNIZED.
+    out, _ = _login([LOGIN_INV, HOME_INV],
+                    [f"{BASE}/s/login/", f"{BASE}/s/"])
+    # start_path is the DEEP surface path; landing at /s/ (off-login) succeeds.
+    from primeqa.browser_worker.session import login
+    page = FakePage([LOGIN_INV, HOME_INV], [f"{BASE}/s/login/", f"{BASE}/s/"])
+    out = login(FakeContext(page), BASE, "/s/detail/deep-xyz", _creds(seed=None))
+    assert out.ok and out.events == ["LOGIN_SUBMITTED", "MFA_NOT_PRESENTED"]
+
+
+def test_delayed_mfa_render_is_not_skipped():
+    # stable-classify sees 'unknown' first, then the MFA form renders on the
+    # next poll -> must classify mfa (not skip to a false success).
+    from primeqa.browser_worker.session import login
+    page = FakePage([LOGIN_INV, HOME_INV, MFA_INV, HOME_INV],
+                    [f"{BASE}/s/login/", f"{BASE}/verify", f"{BASE}/s/"])
+    out = login(FakeContext(page), BASE, "/s/", _creds())
+    # reaching MFA_SUBMITTED proves the delayed MFA form was picked up
+    assert out.ok and "MFA_SUBMITTED" in out.events
+
+
+def test_whitespace_only_seed_is_mfa_seed_invalid():
+    # #2: a seed that is all separators normalises to '' (pyotp would return a
+    # bogus code) -> must fail fast as MFA_SEED_INVALID, not submit + MFA_FAILED.
+    from primeqa.browser_worker.session import (
+        MFA_SEED_INVALID, Credentials, LoginError, login)
+    ws = Credentials(FAKE_USER, FAKE_PASS, "  - -  ")
+    page = FakePage([LOGIN_INV, MFA_INV], [f"{BASE}/s/login/", f"{BASE}/verify"])
+    with pytest.raises(LoginError) as ei:
+        login(FakeContext(page), BASE, "/s/", ws)
+    assert ei.value.code == MFA_SEED_INVALID and ei.value.retryable is False
+
+
+# ---------- login->MFA transition race (live-observed) ----------
+
+def test_transient_login_form_before_mfa_is_not_bad_credential():
+    # After a correct password, the login form lingers briefly before the
+    # portal navigates to the MFA page. The post-password confirm must NOT
+    # conclude BAD_CREDENTIAL on that transient form.
+    from primeqa.browser_worker.session import login
+    # initial LOGIN, transient LOGIN post-password, then MFA, then success HOME
+    page = FakePage([LOGIN_INV, LOGIN_INV, MFA_INV, HOME_INV],
+                    [f"{BASE}/s/login/", f"{BASE}/s/login/",
+                     f"{BASE}/_ui/verify", f"{BASE}/s/"])
+    out = login(FakeContext(page), BASE, "/s/", _creds())
+    assert out.ok and out.events == ["LOGIN_SUBMITTED", "MFA_SUBMITTED"]
+
+
+def test_persistent_login_form_is_still_bad_credential():
+    # A login form that persists across the confirm settle IS a rejection.
+    from primeqa.browser_worker.session import BAD_CREDENTIAL, LoginError, login
+    page = FakePage([LOGIN_INV, LOGIN_INV, LOGIN_INV, LOGIN_INV],
+                    [f"{BASE}/s/login/", f"{BASE}/s/login/"])
+    with pytest.raises(LoginError) as ei:
+        login(FakeContext(page), BASE, "/s/", _creds())
+    assert ei.value.code == BAD_CREDENTIAL

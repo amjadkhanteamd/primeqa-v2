@@ -169,8 +169,15 @@ def consume_job(session, job: dict) -> None:
                                attempt, retryable=exc.retryable)
         print(f"job {job_id} {status}: {exc.code} ({exc.detail})", flush=True)
     except Exception as exc:  # noqa: BLE001 — batch-level wall
-        status = q.mark_failed(session, job_id, repr(exc), attempt)
-        print(f"job {job_id} {status}: {exc!r}", flush=True)
+        # Fail SAFE: an uncoded/unexpected exception is not known-transient,
+        # so mark it PERMANENT (retryable=False) — never failed_retryable by
+        # default, which would re-claim the job and resubmit credentials.
+        # error_text carries the exception TYPE only (repr could echo secret
+        # input); login() itself never reaches here (its catch-all belt
+        # returns a coded LoginError, handled above).
+        status = q.mark_failed(session, job_id, type(exc).__name__, attempt,
+                               retryable=False)
+        print(f"job {job_id} {status}: {type(exc).__name__}", flush=True)
 
 
 def _consume_authenticated(session, job_id, attempt, surfaces,
