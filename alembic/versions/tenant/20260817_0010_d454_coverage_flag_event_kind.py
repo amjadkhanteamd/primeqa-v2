@@ -7,8 +7,15 @@ append-only ``test_provenance`` event. ``event_kind`` is the PG enum
 needs. Additive only — no existing rows or members change.
 
 MIGRATE-FIRST (D-285/D-438): apply before the writer deploys. ``ADD VALUE
-IF NOT EXISTS`` is idempotent; enum additions cannot run inside the same
-transaction that uses them on PG < 12, so autocommit is forced.
+IF NOT EXISTS`` is idempotent; on PG 12+ it is transaction-safe as long as
+the same transaction does not USE the new member (nothing in this chain
+does) — the same posture as the five sibling ADD-VALUE revisions.
+
+FIX-1 (2026-08-24): autocommit_block removed — it asserts alembic owns the
+transaction, but env.py opens its own via connection.begin(), so fresh
+chains crashed here and rolled back atomically. Already-applied tenants
+never re-run this; IF NOT EXISTS makes re-execution a no-op. See
+docs/reviews/PLIMSOL_FIX_PLAN.md.
 
 Downgrade is deliberately a no-op: PG cannot drop an enum member in place,
 and rows written with it must not be orphaned by a schema rollback.
@@ -22,11 +29,10 @@ depends_on = None
 
 
 def upgrade():
-    with op.get_context().autocommit_block():
-        op.execute(
-            "ALTER TYPE provenance_event_kind "
-            "ADD VALUE IF NOT EXISTS 'coverage_flag'"
-        )
+    op.execute(
+        "ALTER TYPE provenance_event_kind "
+        "ADD VALUE IF NOT EXISTS 'coverage_flag'"
+    )
 
 
 def downgrade():

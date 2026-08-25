@@ -150,3 +150,12 @@
   yields transaction ownership to alembic, (b) rewrite 20260817_0010
   without autocommit_block. Fix needs its own diagnosis pass + decision;
   do NOT patch as part of unrelated work.
+  **RESOLVED 2026-08-24 — recommendation (b)+(c): revision rewritten to
+  plain in-transaction ADD VALUE IF NOT EXISTS; guard test prevents
+  recurrence. Fresh-chain + no-op verification below.** Diagnosis pass
+  confirmed a one-off, not a class (exactly one autocommit_block user in
+  both chains); fresh-chain crash rolls back atomically (empty schema, no
+  partial state); already-applied tenants never re-execute the revision.
+  Decision: D-459. Verification: fresh scratch-DB chain to head
+  20260823_0020 with coverage_flag present; existing-tenant upgrade head
+  no-op (no re-execution); guard test + full tests/unit green.
