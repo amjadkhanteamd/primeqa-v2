@@ -242,6 +242,31 @@ release pair.
   explicit ACC-05 → PLM-id cross-list as part of the fixture review so
   the coverage claim is inspectable, not asserted.
 
+### 3a. ACC-05/WCAG-2.2 collision ruling + item-level cross-list (2026-08-24)
+
+**Collision + ruling:** the duplicate-id engine rules are excluded from the
+WCAG22 seed (criterion 4.1.1 is removed in WCAG 2.2) but remain VALID RULE
+ATOMS — EN 301 549 / Section 508 bind WCAG 2.0/2.1 where 4.1.1 persists.
+Plan: append `PLM-A11Y-069` (duplicate-id) and `PLM-A11Y-070`
+(duplicate-id-active) — never renumber — when the first non-WCAG22 standard
+map lands (R2); ACC-05's "duplicate IDs" item then closes fully via those
+maps. **Fork B / D2: rules are atoms, standards are maps — this collision is
+the model's first live proof** (the atom outlives the standard that dropped
+its criterion).
+
+**Item-level cross-list (baseline v3.1's 16 items, recorded in the fixture
+provenance with per-item PLM ids):** ground truth against the pinned
+inventory is **12 CLOSED + 1 PARTIAL + 3 OPEN** — not the expected 15/16:
+- PARTIAL — *duplicate IDs*: `duplicate-id-aria` (4.1.2) IS seeded; the
+  generic pair awaits the 069/070 plan above.
+- OPEN — *headings*: axe's heading rules are best-practice or experimental
+  (`p-as-heading` is wcag131 + experimental), so the seed criterion excludes
+  them all. OPEN — *landmarks*: every landmark/region rule is
+  best-practice-tagged. OPEN — *status messages*: axe 4.13.0 maps ZERO rules
+  to 4.1.3. Closure paths (future lifecycle work, not seed edits): Plimsol
+  rules bound to those engine rules under Plimsol's own criterion judgment
+  (rules are atoms), or HUMAN_* capability rules where no automation exists.
+
 ## 4. Read API + write paths (`primeqa/knowledge/`)
 
 New modules (S5's package; result-processor-side only, per A10):

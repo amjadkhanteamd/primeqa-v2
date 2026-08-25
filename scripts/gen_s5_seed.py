@@ -8,8 +8,12 @@ assigns FROZEN deterministic PLM-A11Y ids (engine rule ids sorted
 lexicographically, numbered from 001), and writes:
   migrations/seeds/s5_rule_seed_axe4130_wcag22.json   (the reviewable fixture)
   migrations/063_s5_rule_seed.sql                     (idempotent seed SQL)
-Re-running must be a byte-identical no-op while the artifact is unchanged —
-ids never renumber (the fixture, once committed, is the frozen record).
+Re-running must reproduce the rules array identically while the artifact is
+unchanged — ids never renumber (the fixture, once committed, is the frozen
+record). The committed fixture's provenance additionally carries
+POST-GENERATION review records (ACC-05 cross-list, collision rulings): on any
+regeneration those records must be preserved/merged, never blindly
+overwritten.
 WCAG 2.2 note: criterion 4.1.1 (parsing) is REMOVED in WCAG 2.2; any
 wcag411-tagged mapping is excluded, with the exclusion recorded in
 provenance.

@@ -159,3 +159,14 @@
   Decision: D-459. Verification: fresh scratch-DB chain to head
   20260823_0020 with coverage_flag present; existing-tenant upgrade head
   no-op (no re-execution); guard test + full tests/unit green.
+
+## Added 2026-08-24 — from 3A-1 scratch verification
+
+- **Low: migration 017 is pre-016 non-idempotent on fresh public-chain
+  replay.** A fresh scratch replay (001 → 017 → 062/063, during 3A-1
+  verification) hit failures in 017 requiring its role-CHECK statements
+  (`users_role_check` widen to superadmin, 017:18-20) to be re-applied
+  standalone. No production impact — 017 has long been applied and the
+  public chain has no fresh-replay consumer today. Worth an idempotence
+  guard (or a documented fresh-replay runbook) when the public chain next
+  gains a fresh-replay consumer (e.g. scratch-env provisioning tooling).
