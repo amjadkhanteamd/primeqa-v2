@@ -94,16 +94,17 @@ identity; version = normalised source hash):
 
 The mapping shape, stated now: a DOM custom-element tag `c-loan-widget`
 maps to bundle DeveloperName `loanWidget` by the deterministic LWC
-rule — strip the `c-` namespace prefix, kebab→camel. The upgrade:
-`classify_ownership` currently returns CONFIRMED on the `c-*` marker
-alone; with bundles synced, CONFIRMED means **the tag resolves to a
-synced bundle row** (tag → DeveloperName → entity lookup), and a `c-*`
-tag with NO matching bundle drops to PROBABLE (client-namespace markup
-we cannot attribute). The join is one indexed lookup per FAIL row —
-cheap — so 3A-5 IMPLEMENTS it behind the data: when the org has no
-bundle rows the classifier behaves exactly as today (no synced bundles
-→ no CONFIRMED upgrade, no regression). The verdict row gains
-`owner_bundle_ref` (nullable) when the join resolves. Wiring verdicts
+rule — strip the `c-` namespace prefix, kebab→camel. The rule (per the
+2026-08-26 ruling): **CONFIRMED requires resolution** — the tag resolves
+to a synced bundle row (tag → DeveloperName → entity lookup) — and
+**no resolution ⇒ PROBABLE unconditionally**, including when the org
+has no bundle rows at all: `c-*` markup we cannot attribute to a known
+bundle is client-namespace evidence, never a confirmed identity. The
+3A-4 spike-grade behavior (CONFIRMED on the `c-*` marker alone) is
+corrected in this slice as a SIGNED-DESIGN CONFORMANCE FIX — it is not
+preserved as compatibility. The join is one indexed lookup per FAIL
+row — cheap — so 3A-5 implements it. The verdict row gains
+`owner_bundle_ref` (nullable), set exactly when the join resolves. Wiring verdicts
 to entity references beyond this lookup is the first phase-7-adjacent
 task, named.
 
