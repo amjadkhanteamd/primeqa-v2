@@ -1,0 +1,321 @@
+"""S6 UI-conformance result processor — engine observations → verdicts
+(LLD 3A-4 §b/§c/§e).
+
+THE BOUNDARY (D-460 / SAD A10): this module is the ONLY place UI
+verdicts are computed. The browser worker produces engine observations
+and nothing else; this processor runs service-side, after the fact, over
+stored observation rows — the worker does not know it exists. Any
+mapping, applicability, ownership, or verdict logic belongs here and
+never in ``primeqa/browser_worker``.
+
+Deterministic and LLM-free. The honest remainder is a first-class
+output: unmapped engine ids are counted and recorded (never dropped,
+never judged); surfaces whose scan did not complete produce STATUSES,
+not verdicts; members the processor cannot judge are listed with their
+reason. A processor that cannot prove what it saw refuses to convict
+(arm H): an unresolvable element or unmapped dependency is
+NOT_DETERMINED, never FAIL.
+"""
+from __future__ import annotations
+
+import hashlib
+import json
+import re
+import uuid as _uuid_mod
+from typing import Optional
+from uuid import UUID
+
+from sqlalchemy import text
+from sqlalchemy.orm import Session
+
+PASS = "PASS"
+FAIL = "FAIL"
+NEEDS_HUMAN = "NEEDS_HUMAN"
+NOT_DETERMINED = "NOT_DETERMINED"
+
+_ENGINE = "axe-core"
+
+
+class ProcessingError(ValueError):
+    """A refused processing run — the message names the exact cause."""
+
+
+# ---------------------------------------------------------------------------
+# DE-11 ownership — processor-side by principle (LLD §e): fingerprints
+# are observations (structure the worker saw); ownership is
+# interpretation (whose structure it is).
+# ---------------------------------------------------------------------------
+
+_CLIENT_COMPONENT = re.compile(r"<c-[\w-]+|(?:^|[\s\"'>])c-[\w-]+")
+_PLATFORM_MARKERS = re.compile(
+    r"<(?:lightning|force|flexipage|laf|one)-[\w-]+|class=\"[^\"]*slds-")
+
+
+def classify_ownership(node: dict) -> str:
+    """Origin marker for ONE failing element from its stored evidence
+    fragment. Conservative: UNKNOWN is an honest answer, never upgraded
+    by guesswork.
+
+      - ``c-*`` custom-element markup → CONFIRMED (client-authored LWC
+        namespace);
+      - ``lightning-*``/``force-*``/``flexipage-*`` markup or ``slds-``
+        classes → PROBABLE (platform-standard chrome);
+      - anything else → UNKNOWN.
+    """
+    fragment = " ".join(filter(None, (
+        node.get("html") or "",
+        " ".join(str(t) for t in (node.get("target") or [])),
+    )))
+    if _CLIENT_COMPONENT.search(fragment):
+        return "CONFIRMED"
+    if _PLATFORM_MARKERS.search(fragment):
+        return "PROBABLE"
+    return "UNKNOWN"
+
+
+def _resolvable(node: dict) -> bool:
+    return bool(node.get("html") or node.get("target"))
+
+
+# ---------------------------------------------------------------------------
+# The verdict decision — pure (LLD §c, exact semantics)
+# ---------------------------------------------------------------------------
+
+def decide_verdict(
+    *,
+    applicability: str,
+    executable: bool,
+    capability: str,
+    rule_engine_ids: frozenset,
+    observation: dict,
+) -> tuple[Optional[str], dict]:
+    """(verdict, basis) for one member against one COMPLETED surface
+    observation — or (None, {"no_verdict_reason": …}) for members this
+    slice never judges. The caller has already established the scan
+    completed (statuses are not verdicts)."""
+    if applicability == "NOT_APPLICABLE":
+        return None, {"no_verdict_reason": "not_applicable"}
+    if applicability == "APPLICABLE" and not executable:
+        return None, {"no_verdict_reason": "not_executable_mode_b"}
+    if capability == "HUMAN_ONLY":
+        return None, {"no_verdict_reason": "human_only_no_engine_input"}
+
+    obs = observation.get("engine_observations") or {}
+    if capability == "HUMAN_WITH_CANDIDATE":
+        incomplete = obs.get("incomplete")
+        if incomplete is not None:
+            candidates = [i for i in incomplete
+                          if i.get("id") in rule_engine_ids]
+            return NEEDS_HUMAN, {"candidates": candidates}
+        # The spike observation schema records incomplete_count only —
+        # honest, never fabricated (see LLD §g / the HOLD note).
+        return NEEDS_HUMAN, {
+            "candidates_unavailable": True,
+            "incomplete_count": obs.get("incomplete_count", 0)}
+
+    # AUTO from here.
+    if not rule_engine_ids:
+        return NOT_DETERMINED, {"reason": "unmapped_dependency",
+                                "detail": "no engine binding for this "
+                                          "rule at the pinned engine"}
+    if not (observation.get("fingerprint") or {}).get("sha256"):
+        return NOT_DETERMINED, {"reason": "missing_fingerprint"}
+
+    mapped = [v for v in (obs.get("violations") or [])
+              if v.get("id") in rule_engine_ids]
+    if not mapped:
+        return PASS, {"engine_ids_checked": sorted(rule_engine_ids)}
+    nodes = [n for v in mapped for n in (v.get("nodes") or [])]
+    resolvable = [n for n in nodes if _resolvable(n)]
+    if not resolvable:
+        return NOT_DETERMINED, {
+            "reason": "unresolvable_element",
+            "engine_ids": sorted({v["id"] for v in mapped}),
+            "node_count": len(nodes)}
+    return FAIL, {
+        "engine_ids": sorted({v["id"] for v in mapped}),
+        "nodes": [{"html": n.get("html"), "target": n.get("target")}
+                  for n in resolvable[:10]],
+    }
+
+
+# ---------------------------------------------------------------------------
+# The processor
+# ---------------------------------------------------------------------------
+
+def _bindings(session: Session, engine_version: str) -> tuple[dict, dict, str]:
+    """(engine_id -> [(rule, ver)], plm_rule -> frozenset(engine_ids),
+    bindings snapshot hash)."""
+    from primeqa.knowledge.rule_registry import bindings_for_engine
+
+    fwd = bindings_for_engine(session, _ENGINE, engine_version)
+    rev: dict[str, set] = {}
+    for engine_id, rules in fwd.items():
+        for rule_id, _ver in rules:
+            rev.setdefault(rule_id, set()).add(engine_id)
+    snapshot = hashlib.sha256(json.dumps(
+        {k: sorted(str(r) for r in v) for k, v in sorted(fwd.items())},
+        sort_keys=True).encode()).hexdigest()
+    return fwd, {k: frozenset(v) for k, v in rev.items()}, snapshot
+
+
+def process_job(session: Session, *, job_id: UUID) -> dict:
+    """Process one scan job's stored observations into verdicts.
+
+    Idempotent: UPSERT on (job_id, test_id) — reprocessing rewrites
+    byte-identical rows from the same deterministic inputs; a changed
+    outcome is attributable via the recorded bindings snapshot hash.
+    """
+    from primeqa.browser_worker.manifest import get_manifest
+    from primeqa.execution_engine.ui_manifest import (
+        _release_capabilities, load_members_with_claims)
+
+    jrow = session.execute(text(
+        "SELECT manifest_id FROM s4_ui_inspection_jobs WHERE id = :i"),
+        {"i": str(job_id)}).fetchone()
+    if jrow is None:
+        raise ProcessingError(f"job {job_id} does not exist")
+    manifest_id = str(jrow[0])
+    payload = get_manifest(session, manifest_id)["payload"]
+    claim_set_id = payload.get("claim_set_id")
+    if not claim_set_id:
+        raise ProcessingError(
+            f"job {job_id}'s manifest is not claim_set-built — 3A-4 "
+            "processes claim_set manifests only")
+    pins = payload.get("pins") or {}
+    engine_version = pins.get("axe_version")
+    if not engine_version:
+        raise ProcessingError("manifest pins carry no axe_version")
+
+    data = load_members_with_claims(session, UUID(claim_set_id))
+    caps = _release_capabilities(session, data["catalogue_release_id"])
+    _fwd, rev, bindings_hash = _bindings(session, engine_version)
+
+    results = {r[0]: {"observation": r[1], "evidence_state": r[2]}
+               for r in session.execute(text("""
+                   SELECT surface_key, observation, evidence_state
+                   FROM s4_ui_inspection_results WHERE job_id = :i
+               """), {"i": str(job_id)}).fetchall()}
+
+    surface_statuses = {k: (v["observation"] or {}).get("status", "MISSING")
+                        for k, v in results.items()}
+    known_engine_ids = set(_fwd.keys())
+    unmapped: set[str] = set()
+    for v in results.values():
+        obs = (v["observation"] or {}).get("engine_observations") or {}
+        observed = {viol.get("id") for viol in (obs.get("violations") or [])}
+        observed |= {i.get("id") for i in (obs.get("incomplete") or [])}
+        unmapped |= {i for i in observed if i and i not in known_engine_ids}
+
+    verdict_counts: dict[str, int] = {}
+    no_verdict: dict[str, str] = {}
+    written = 0
+    for m in data["members"]:
+        if m["revoked"]:
+            no_verdict[m["test_id"]] = "revoked"
+            continue
+        result = results.get(m["surface_key"])
+        if result is None:
+            no_verdict[m["test_id"]] = "surface_not_in_job"
+            continue
+        observation = result["observation"] or {}
+        status = observation.get("status")
+        if status != "OK":
+            # A run that couldn't look is not a run that judged.
+            no_verdict[m["test_id"]] = f"surface_status:{status}"
+            continue
+        capability = caps.get(m["plimsol_rule_id"], "AUTO")
+        verdict, basis = decide_verdict(
+            applicability=m["applicability"], executable=m["executable"],
+            capability=capability,
+            rule_engine_ids=rev.get(m["plimsol_rule_id"], frozenset()),
+            observation=observation)
+        if verdict is None:
+            no_verdict[m["test_id"]] = basis["no_verdict_reason"]
+            continue
+        ownership = None
+        if verdict == FAIL:
+            ownership = classify_ownership(basis["nodes"][0])
+        session.execute(text("""
+            INSERT INTO s6_ui_verdicts
+                (id, manifest_id, job_id, surface_key, claim_set_id,
+                 test_id, plimsol_rule_id, verdict, verdict_basis,
+                 ownership, evidence_state_at_write, processed_at)
+            VALUES (:id, :m, :j, :sk, :cs, :t, :r, :v,
+                    CAST(:b AS JSONB), :o, :e, NOW())
+            ON CONFLICT (job_id, test_id) DO UPDATE SET
+                verdict = EXCLUDED.verdict,
+                verdict_basis = EXCLUDED.verdict_basis,
+                ownership = EXCLUDED.ownership,
+                evidence_state_at_write = EXCLUDED.evidence_state_at_write,
+                processed_at = NOW()
+        """), {"id": str(_uuid_mod.uuid4()), "m": manifest_id,
+               "j": str(job_id), "sk": m["surface_key"],
+               "cs": claim_set_id, "t": m["test_id"],
+               "r": m["plimsol_rule_id"], "v": verdict,
+               "b": json.dumps(basis, sort_keys=True), "o": ownership,
+               "e": result["evidence_state"]})
+        verdict_counts[verdict] = verdict_counts.get(verdict, 0) + 1
+        written += 1
+
+    session.execute(text("""
+        INSERT INTO s6_ui_processing_runs
+            (job_id, manifest_id, claim_set_id, engine, engine_version,
+             bindings_hash, unmapped_engine_ids, surface_statuses,
+             verdict_counts, no_verdict_members, processed_at)
+        VALUES (:j, :m, :cs, :en, :ev, :bh, CAST(:u AS JSONB),
+                CAST(:ss AS JSONB), CAST(:vc AS JSONB),
+                CAST(:nv AS JSONB), NOW())
+        ON CONFLICT (job_id) DO UPDATE SET
+            bindings_hash = EXCLUDED.bindings_hash,
+            unmapped_engine_ids = EXCLUDED.unmapped_engine_ids,
+            surface_statuses = EXCLUDED.surface_statuses,
+            verdict_counts = EXCLUDED.verdict_counts,
+            no_verdict_members = EXCLUDED.no_verdict_members,
+            processed_at = NOW()
+    """), {"j": str(job_id), "m": manifest_id, "cs": claim_set_id,
+           "en": _ENGINE, "ev": engine_version, "bh": bindings_hash,
+           "u": json.dumps(sorted(unmapped)),
+           "ss": json.dumps(surface_statuses, sort_keys=True),
+           "vc": json.dumps(verdict_counts, sort_keys=True),
+           "nv": json.dumps(no_verdict, sort_keys=True)})
+    session.flush()
+    return {"job_id": str(job_id), "claim_set_id": claim_set_id,
+            "verdicts_written": written, "verdict_counts": verdict_counts,
+            "unmapped_engine_ids": sorted(unmapped),
+            "surface_statuses": surface_statuses,
+            "no_verdict_members": len(no_verdict)}
+
+
+def list_verdicts(session: Session, *, claim_set_id: UUID,
+                  verdict: Optional[str] = None,
+                  limit: int = 50, offset: int = 0) -> list[dict]:
+    """The minimal verdict listing (LLD §h) — claim identity, verdict,
+    ownership, evidence. ``evidence_complete`` JOINs the LIVE result-row
+    evidence state (2.5 law): a verdict over sub-VERIFIED evidence is
+    NEVER presented evidence-complete, whatever was true at write."""
+    where = "v.claim_set_id = :cs"
+    params: dict = {"cs": str(claim_set_id),
+                    "lim": min(limit, 50), "off": offset}
+    if verdict:
+        where += " AND v.verdict = :v"
+        params["v"] = verdict
+    rows = session.execute(text(f"""
+        SELECT v.test_id, v.plimsol_rule_id, v.surface_key, v.verdict,
+               v.ownership, v.verdict_basis, v.job_id,
+               r.evidence_state, r.evidence_keys
+        FROM s6_ui_verdicts v
+        LEFT JOIN s4_ui_inspection_results r
+          ON r.job_id = v.job_id AND r.surface_key = v.surface_key
+        WHERE {where}
+        ORDER BY v.verdict, v.plimsol_rule_id, v.surface_key
+        LIMIT :lim OFFSET :off
+    """), params).fetchall()
+    return [{
+        "test_id": str(r[0]), "plimsol_rule_id": r[1],
+        "surface_key": r[2], "verdict": r[3], "ownership": r[4],
+        "verdict_basis": r[5], "job_id": str(r[6]),
+        "evidence_state": r[7],
+        "evidence_complete": r[7] == "REFERENCED",
+        "evidence_keys": r[8],
+    } for r in rows]
