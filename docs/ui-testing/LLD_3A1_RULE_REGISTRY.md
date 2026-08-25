@@ -247,16 +247,29 @@ release pair.
 **Collision + ruling:** the duplicate-id engine rules are excluded from the
 WCAG22 seed (criterion 4.1.1 is removed in WCAG 2.2) but remain VALID RULE
 ATOMS — EN 301 549 / Section 508 bind WCAG 2.0/2.1 where 4.1.1 persists.
-Plan: append `PLM-A11Y-069` (duplicate-id) and `PLM-A11Y-070`
-(duplicate-id-active) — never renumber — when the first non-WCAG22 standard
-map lands (R2); ACC-05's "duplicate IDs" item then closes fully via those
-maps. **Fork B / D2: rules are atoms, standards are maps — this collision is
+Plan (wording amended 2026-08-25: ids are assigned at APPEND TIME, never
+reserved): the duplicate-id pair takes the next-available `PLM-A11Y` ids
+when the first non-WCAG22 standard map lands (R2) — ids once assigned never
+renumber; ACC-05's "duplicate IDs" item then closes fully via those maps. **Fork B / D2: rules are atoms, standards are maps — this collision is
 the model's first live proof** (the atom outlives the standard that dropped
 its criterion).
 
 **Item-level cross-list (baseline v3.1's 16 items, recorded in the fixture
-provenance with per-item PLM ids):** ground truth against the pinned
-inventory is **12 CLOSED + 1 PARTIAL + 3 OPEN** — not the expected 15/16:
+provenance with per-item PLM ids):** initial ground truth against the pinned
+inventory was **12 CLOSED + 1 PARTIAL + 3 OPEN** — not the expected 15/16.
+**RESOLVED 2026-08-25 (feat 3a-1b): FINAL = 14 CLOSED + 1 PARTIAL of 15** —
+headings CLOSED (PLM-A11Y-069 heading-order + PLM-A11Y-070 empty-heading →
+WCAG22 1.3.1) and landmarks CLOSED (PLM-A11Y-071 region + PLM-A11Y-072
+landmark-one-main → 1.3.1 + 2.4.1), both created through the LIVE rule
+lifecycle (the machinery's first genuine exercise: real actor, activity_log,
+full DRAFT→…→ACTIVE chains, catalogue release 2 with 72 recorded members)
+under Plimsol mapping authority (TA review pt 13; axe tags these engine
+rules best-practice and declines the normative claim; Plimsol makes it),
+replayed to production state by migration 064 — a LIFECYCLE REPLAY, not a
+bootstrap: the chain ran, 064 lands its outcome, the service bootstrap
+guard is untouched. Status messages MOVED to ACC-06/Mode B (D-462, §11
+post-freeze baseline change; item count 16 → 15). The original per-item
+root causes below stand as the historical record:
 - PARTIAL — *duplicate IDs*: `duplicate-id-aria` (4.1.2) IS seeded; the
   generic pair awaits the 069/070 plan above.
 - OPEN — *headings*: axe's heading rules are best-practice or experimental

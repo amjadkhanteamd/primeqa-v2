@@ -125,6 +125,68 @@ def _insert_version(session, rule_id, version, name, description,
            "actor": actor_user_id})
 
 
+def next_rule_id(session, family: str = "A11Y") -> str:
+    """Next-available PLM id for a family — assigned at APPEND TIME, never
+    reserved (LLD §3a wording, amended 2026-08-25)."""
+    row = session.execute(text(
+        "SELECT COALESCE(MAX(CAST(RIGHT(rule_id, 3) AS INT)), 0) "
+        "FROM s5_rules WHERE rule_id LIKE :pfx"),
+        {"pfx": f"PLM-{family}-%"}).fetchone()
+    return f"PLM-{family}-{row[0] + 1:03d}"
+
+
+def _require_draft(session, rule_id: str, version: int) -> None:
+    """Authoring writes (bindings, standard maps) are allowed ONLY while the
+    version is in DRAFT — content is frozen from REVIEW onward (ACTIVE
+    immutability starts, in authoring terms, at submission)."""
+    row = session.execute(text(
+        "SELECT state FROM s5_rule_versions "
+        "WHERE rule_id = :rid AND version = :v"),
+        {"rid": rule_id, "v": version}).fetchone()
+    if row is None:
+        raise LifecycleError(f"no such rule version {rule_id} v{version}")
+    if row[0] != "DRAFT":
+        raise LifecycleError(
+            f"authoring writes require DRAFT; {rule_id} v{version} is {row[0]}")
+
+
+def add_engine_binding(session, *, rule_id: str, version: int, engine: str,
+                       engine_version: str, engine_rule_id: str,
+                       actor_user_id: int, actor_tenant_id: int,
+                       actor_role: str) -> None:
+    _require_superadmin(actor_role)
+    _require_draft(session, rule_id, version)
+    session.execute(text("""
+        INSERT INTO s5_engine_bindings
+            (rule_id, rule_version, engine, engine_version, engine_rule_id)
+        VALUES (:rid, :v, :e, :ev, :eid)
+    """), {"rid": rule_id, "v": version, "e": engine, "ev": engine_version,
+           "eid": engine_rule_id})
+    _audit(session, actor_tenant_id, actor_user_id, "s5.rule.bind_engine",
+           rule_id, {"version": version, "engine": engine,
+                     "engine_version": engine_version,
+                     "engine_rule_id": engine_rule_id})
+    session.commit()
+
+
+def add_standard_map(session, *, rule_id: str, version: int, standard: str,
+                     criterion: str, level: str | None,
+                     actor_user_id: int, actor_tenant_id: int,
+                     actor_role: str) -> None:
+    _require_superadmin(actor_role)
+    _require_draft(session, rule_id, version)
+    session.execute(text("""
+        INSERT INTO s5_standard_maps
+            (rule_id, rule_version, standard, criterion, level)
+        VALUES (:rid, :v, :std, :c, :lvl)
+    """), {"rid": rule_id, "v": version, "std": standard, "c": criterion,
+           "lvl": level})
+    _audit(session, actor_tenant_id, actor_user_id, "s5.rule.map_standard",
+           rule_id, {"version": version, "standard": standard,
+                     "criterion": criterion, "level": level})
+    session.commit()
+
+
 def transition(session, *, rule_id: str, version: int, to_state: str,
                actor_user_id: int, actor_tenant_id: int,
                actor_role: str) -> None:

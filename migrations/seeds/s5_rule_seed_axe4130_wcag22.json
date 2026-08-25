@@ -17,11 +17,12 @@
   "acc05_cross_list": {
    "source": "ACC-05 automated rule list, requirements baseline v3.1 (verbatim, 16 items; supplied by AK 2026-08-24)",
    "tally": {
-    "CLOSED": 12,
+    "CLOSED": 14,
     "PARTIAL": 1,
-    "OPEN": 3
+    "MOVED_TO_ACC06": 1,
+    "of_items": 15
    },
-   "brief_expectation_vs_ground_truth": "the brief expected 15/16 closing with duplicate IDs the sole exception; the pinned-inventory ground truth is 12 CLOSED + 1 PARTIAL (duplicate IDs closes partially via duplicate-id-aria) + 3 OPEN (headings, landmarks, status messages) \u2014 each OPEN item's root cause and closure path recorded on the item; none is silently forced closed.",
+   "brief_expectation_vs_ground_truth": "initial ground truth (2026-08-24) was 12 CLOSED + 1 PARTIAL + 3 OPEN vs the brief's 15/16. Resolved 2026-08-25: headings + landmarks CLOSED via the live lifecycle (PLM-A11Y-069..072, migration 064, Plimsol mapping authority); status messages MOVED to ACC-06/Mode B (D-462, item count 16 -> 15). FINAL: 14 CLOSED + 1 PARTIAL of 15.",
    "items": [
     {
      "item": "contrast",
@@ -56,15 +57,21 @@
     },
     {
      "item": "headings",
-     "status": "OPEN",
-     "plm_ids": [],
-     "note": "axe 4.13.0 heading rules are best-practice (heading-order, empty-heading, page-has-heading-one) or experimental (p-as-heading, wcag131+experimental) \u2014 the WCAG-mapped non-experimental seed criterion excludes all of them. Closure path: lifecycle seed-extension binding Plimsol heading rules to those engine rules under Plimsol's own WCAG 1.3.1/2.4.6 judgment (rules are atoms), or HUMAN_* capability."
+     "status": "CLOSED",
+     "plm_ids": [
+      "PLM-A11Y-069",
+      "PLM-A11Y-070"
+     ],
+     "note": "closed 2026-08-25 via the LIVE rule lifecycle (migration 064): PLM-A11Y-069 (heading-order) + PLM-A11Y-070 (empty-heading), WCAG22 1.3.1, Plimsol mapping under registry authority (TA review pt 13) \u2014 axe tags these best-practice and declines the normative claim; Plimsol makes it."
     },
     {
      "item": "landmarks",
-     "status": "OPEN",
-     "plm_ids": [],
-     "note": "every axe landmark/region rule is best-practice-tagged (landmark-*, region) \u2014 none WCAG-mapped, so none seeded. Same closure path as headings (Plimsol-judged 1.3.1/2.4.1 bindings via the lifecycle)."
+     "status": "CLOSED",
+     "plm_ids": [
+      "PLM-A11Y-071",
+      "PLM-A11Y-072"
+     ],
+     "note": "closed 2026-08-25 via the LIVE rule lifecycle (migration 064): PLM-A11Y-071 (region) + PLM-A11Y-072 (landmark-one-main), WCAG22 1.3.1 + 2.4.1, same Plimsol-mapping-authority judgment."
     },
     {
      "item": "ARIA validity",
@@ -88,7 +95,7 @@
      "plm_ids": [
       "PLM-A11Y-034"
      ],
-     "note": "duplicate-id-aria (ARIA id references, WCAG 4.1.2) IS seeded; the generic duplicate-id / duplicate-id-active are 4.1.1-only and 4.1.1 is removed in WCAG 2.2 \u2014 see the collision ruling: PLM-A11Y-069/070 append when the first non-WCAG22 standard map lands (R2)."
+     "note": "duplicate-id-aria (ARIA id references, WCAG 4.1.2) IS seeded; the generic duplicate-id / duplicate-id-active are 4.1.1-only and 4.1.1 is removed in WCAG 2.2 \u2014 see the collision ruling: the pair takes next-available ids at append time when the first non-WCAG22 standard map lands (R2); never reserved, never renumbered."
     },
     {
      "item": "link purpose",
@@ -135,9 +142,9 @@
     },
     {
      "item": "status messages",
-     "status": "OPEN",
+     "status": "MOVED-TO-ACC-06",
      "plm_ids": [],
-     "note": "axe 4.13.0 maps ZERO rules to WCAG 4.1.3 (verified against the pinned artifact's inventory) \u2014 no engine automation exists to bind. Closure path: HUMAN_WITH_CANDIDATE / HUMAN_ONLY Plimsol rule via the lifecycle."
+     "note": "D-462 (2026-08-25): post-freeze baseline change per \u00a711 \u2014 moves to ACC-06/Mode B where announcement verification belongs; axe 4.13.0 maps zero rules to 4.1.3 and announcement requires action context. ACC-05 item count 16 -> 15."
     },
     {
      "item": "focusable elements",
@@ -171,7 +178,7 @@
    ]
   },
   "set_review_principle": "D3 claim_set analog: set-level human review (this fixture's PR) with per-item inspectability (line-reviewable).",
-  "wcag411_collision_ruling": "ACC-05/WCAG-2.2 collision, ruled 2026-08-24: duplicate-id rules are excluded from the WCAG22 seed (criterion 4.1.1 removed in WCAG 2.2) but remain VALID RULE ATOMS \u2014 EN 301 549 / Section 508 bind WCAG 2.0/2.1 where 4.1.1 persists. Plan: append PLM-A11Y-069 (duplicate-id) and PLM-A11Y-070 (duplicate-id-active) \u2014 never renumber \u2014 when the first non-WCAG22 standard map lands (R2); ACC-05's 'duplicate IDs' item then closes fully via those maps. Fork B / D2: rules are atoms, standards are maps \u2014 this is the model's first live proof.",
+  "wcag411_collision_ruling": "ACC-05/WCAG-2.2 collision, ruled 2026-08-24 (wording amended 2026-08-25: ids are assigned at APPEND TIME, never reserved): duplicate-id rules are excluded from the WCAG22 seed (criterion 4.1.1 removed in WCAG 2.2) but remain VALID RULE ATOMS \u2014 EN 301 549 / Section 508 bind WCAG 2.0/2.1 where 4.1.1 persists. Plan: the duplicate-id pair takes the NEXT-AVAILABLE PLM-A11Y ids at append time when the first non-WCAG22 standard map lands (R2); ids once assigned never renumber. ACC-05's 'duplicate IDs' item then closes fully via those maps. Fork B / D2: rules are atoms, standards are maps \u2014 this is the model's first live proof.",
   "generation_note": "provenance carries POST-GENERATION review records (the ACC-05 cross-list and rulings above). scripts/gen_s5_seed.py regenerates the rules array; review records must be preserved on regeneration, never blindly overwritten."
  },
  "rules": [
