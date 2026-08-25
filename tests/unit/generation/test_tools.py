@@ -143,4 +143,12 @@ def test_s2_vocabularies_match_models_db_enums():
     # module). If S2 evolves these, this test fails loud.
     from primeqa.test_representation.models_db import ARCHETYPE_ENUM, CLAIM_KIND_ENUM
     assert T._ARCHETYPES == list(ARCHETYPE_ENUM.enums)
-    assert T._CLAIM_KINDS == list(CLAIM_KIND_ENUM.enums)
+    # ENUMERATED_ONLY (LLD 3A-2 §d.11): kinds derived deterministically
+    # (active rules × surface inventory, DE-05) are the platform's
+    # deterministic-before-LLM principle applied per kind — they are
+    # deliberately ABSENT from the LLM vocabulary. The exception is to this
+    # TOOLING CONTRACT only, not to the taxonomy: the contract reads
+    # tools == enum − ENUMERATED_ONLY.
+    ENUMERATED_ONLY = {"conformance-claim"}
+    assert set(T._CLAIM_KINDS) == set(CLAIM_KIND_ENUM.enums) - ENUMERATED_ONLY
+    assert not ENUMERATED_ONLY & set(T._CLAIM_KINDS)   # never offered to the LLM

@@ -68,6 +68,7 @@ from primeqa.test_representation.models.claims.permission import (
 # Importing the ui subpackage triggers @register_body on its bodies
 # (the first ui-archetype kind, D-124).
 from primeqa.test_representation.models.claims.ui import (
+    ConformanceClaimBody,
     LayoutClaimBody,
     UIClaimBody,
 )
@@ -89,6 +90,7 @@ __all__ = [
     "ExistenceClaimBody",
     "PropertyClaimBody",
     "CapabilityClaimBody",
+    "ConformanceClaimBody",
     "LayoutClaimBody",
     # Cross-archetype flat union (the substrate-level
     # dispatch type).
@@ -108,6 +110,7 @@ ClaimBody = Annotated[
         PropertyClaimBody,
         CapabilityClaimBody,
         LayoutClaimBody,
+        ConformanceClaimBody,
         # Future archetype body classes extend here. Order is
         # not semantically meaningful — Pydantic dispatches by
         # the ``kind`` discriminator value.

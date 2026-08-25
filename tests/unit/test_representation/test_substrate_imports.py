@@ -108,6 +108,7 @@ EXPECTED_REGISTRATIONS = (
     ("capability-claim", 1),
     # UI claim bodies (D-124 — the ui-archetype debut)
     ("layout-claim", 1),
+    ("conformance-claim", 1),         # 3A-2 — enumerated-only (DE-02)
     # Trigger bodies (B-γ; inspection-trigger added by D-099)
     ("inbound-trigger", 1),
     ("data-mutation-trigger", 1),
@@ -123,6 +124,7 @@ EXPECTED_REGISTRATIONS = (
     ("ui-recipe", 1),
     ("event-subscription-recipe", 1),
     ("callout-intercept-recipe", 1),
+    ("ui-inspection", 1),             # 3A-2 — browser-plane declarative scan
 )
 
 

@@ -98,8 +98,9 @@ _VALID_CLAIM_KINDS = frozenset({
     "existence-claim", "property-claim", "metadata-relationship-claim",
     # permission (2)
     "capability-claim", "sharing-rule-claim",
-    # ui (3)
+    # ui (4)
     "element-state-claim", "navigation-claim", "layout-claim",
+    "conformance-claim",
     # integration (4)
     "platform-event-claim", "outbound-message-claim",
     "callout-claim", "inbound-effect-claim",
@@ -120,6 +121,7 @@ _VALID_RECIPE_KINDS = frozenset({
     "ui-recipe",
     "event-subscription-recipe",
     "callout-intercept-recipe",
+    "ui-inspection",
 })
 
 

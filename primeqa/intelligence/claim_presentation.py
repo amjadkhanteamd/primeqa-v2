@@ -279,6 +279,13 @@ def claim_title(claim_kind: str, asserted_truth: Optional[dict],
     keeps every existing caller byte-identical."""
     body = asserted_truth or {}
     try:
+        if claim_kind == "conformance-claim":
+            rule = body.get("plimsol_rule_id") or "the rule"
+            surf = body.get("surface") or {}
+            where = f"{surf.get('site', '')}{surf.get('path', '')}" or "the surface"
+            persona = surf.get("persona_scope")
+            suffix = f" as {persona}" if persona else ""
+            return f"Conforms to {rule} on {where}{suffix}"
         if claim_kind == "prohibition-claim":
             target = _ref_name(body.get("target"), labels) or "the object"
             op = _OPERATION_WORDS.get(body.get("operation"), "the operation")

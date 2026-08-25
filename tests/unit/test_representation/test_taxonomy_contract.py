@@ -24,6 +24,7 @@ _CLAIM_KINDS = {
     "prohibition-claim", "acceptance-claim", "existence-claim", "property-claim",
     "metadata-relationship-claim", "capability-claim", "sharing-rule-claim",
     "element-state-claim", "navigation-claim", "layout-claim",
+    "conformance-claim",   # 3A-2 — ENUMERATED-ONLY (not in the LLM vocab)
     "platform-event-claim", "outbound-message-claim", "callout-claim",
     "inbound-effect-claim",
 }
@@ -31,6 +32,7 @@ _CLAIM_KINDS = {
 _RECIPE_KINDS = {
     "data-recipe", "metadata-recipe", "ui-recipe",
     "event-subscription-recipe", "callout-intercept-recipe",
+    "ui-inspection",   # 3A-2 — browser-plane declarative scan
 }
 # The 6 trigger kinds.
 _TRIGGER_KINDS = {
@@ -39,13 +41,13 @@ _TRIGGER_KINDS = {
 }
 
 
-def test_claim_kind_taxonomy_is_the_16_breadth_kinds():
-    assert len(_CLAIM_KINDS) == 17          # guard the expected set itself
+def test_claim_kind_taxonomy_is_the_18_kinds():
+    assert len(_CLAIM_KINDS) == 18          # guard the expected set itself
     assert set(CLAIM_KIND_ENUM.enums) == _CLAIM_KINDS
 
 
-def test_recipe_kind_taxonomy_is_the_5_verticals():
-    assert len(_RECIPE_KINDS) == 5
+def test_recipe_kind_taxonomy_is_the_6_verticals():
+    assert len(_RECIPE_KINDS) == 6
     assert set(RECIPE_KIND_ENUM.enums) == _RECIPE_KINDS
 
 

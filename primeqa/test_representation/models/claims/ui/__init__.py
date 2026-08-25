@@ -8,15 +8,26 @@ Importing this package triggers ``@register_body`` on each shipped body.
 """
 from __future__ import annotations
 
+from typing import Annotated, Union
+
+from pydantic import Field
+
+from primeqa.test_representation.models.claims.ui.conformance_claim import (
+    ConformanceClaimBody,
+)
 from primeqa.test_representation.models.claims.ui.layout_claim import (
     LayoutClaimBody,
 )
 
 __all__ = [
+    "ConformanceClaimBody",
     "LayoutClaimBody",
     "UIClaimBody",
 ]
 
-# Archetype-scoped type. A single-member alias today; becomes a
-# ``kind``-discriminated Union when element-state / navigation land.
-UIClaimBody = LayoutClaimBody
+# Archetype-scoped ``kind``-discriminated union (two members since 3A-2;
+# element-state / navigation extend here when they land).
+UIClaimBody = Annotated[
+    Union[LayoutClaimBody, ConformanceClaimBody],
+    Field(discriminator="kind"),
+]

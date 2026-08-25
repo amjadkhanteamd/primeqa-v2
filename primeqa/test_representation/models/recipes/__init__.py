@@ -41,6 +41,9 @@ from primeqa.test_representation.models.recipes.event_subscription import (
 from primeqa.test_representation.models.recipes.metadata_recipe import (
     MetadataRecipeBody,
 )
+from primeqa.test_representation.models.recipes.ui_inspection import (
+    UiInspectionBody,
+)
 from primeqa.test_representation.models.recipes.ui_recipe import (
     UIRecipeBody,
 )
@@ -53,6 +56,7 @@ __all__ = [
     "MetadataRecipeBody",
     "ObservationRealizationBody",
     "UIRecipeBody",
+    "UiInspectionBody",
 ]
 
 
@@ -63,6 +67,7 @@ ObservationRealizationBody = Annotated[
         UIRecipeBody,
         EventSubscriptionRecipeBody,
         CalloutInterceptRecipeBody,
+        UiInspectionBody,
     ],
     Field(discriminator="kind"),
 ]
@@ -75,4 +80,5 @@ Per SPEC §4.7.2 + D-054. Pydantic dispatches by the universal
   - ``"ui-recipe"`` → :class:`UIRecipeBody`
   - ``"event-subscription-recipe"`` → :class:`EventSubscriptionRecipeBody`
   - ``"callout-intercept-recipe"`` → :class:`CalloutInterceptRecipeBody`
+  - ``"ui-inspection"`` → :class:`UiInspectionBody` (3A-2)
 """

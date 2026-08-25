@@ -46,6 +46,12 @@ _REQUIRED: dict[str, EvidenceTier] = {
     "metadata-relationship-claim": EvidenceTier.STRUCTURAL,
     "capability-claim": EvidenceTier.STRUCTURAL,
     "layout-claim": EvidenceTier.STRUCTURAL,
+    # 3A-2: conformance-claim evidence is the browser-plane ENGINE
+    # OBSERVATION class — structurally captured; its verdict semantics are
+    # owned by the result processor (3A-4), not the S4 org-evidence ladder.
+    # Declared STRUCTURAL deliberately (the unknown-kind default of
+    # ATTRIBUTED would demand org-causal evidence this kind cannot produce).
+    "conformance-claim": EvidenceTier.STRUCTURAL,
     "value-claim": EvidenceTier.ATTRIBUTED,          # write then read-back the value
     "acceptance-claim": EvidenceTier.ATTRIBUTED,     # accept + resulting state
     "prohibition-claim": EvidenceTier.ATTRIBUTED,    # reject + WHICH rule (message)

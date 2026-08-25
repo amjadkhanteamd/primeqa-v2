@@ -94,10 +94,11 @@ CLAIM_KIND_ENUM = ENUM(
     # permission archetype (2)
     "capability-claim",
     "sharing-rule-claim",
-    # ui archetype (3)
+    # ui archetype (4)
     "element-state-claim",
     "navigation-claim",
     "layout-claim",
+    "conformance-claim",   # 3A-2 — enumerated-only (DE-02)
     # integration archetype (4)
     "platform-event-claim",
     "outbound-message-claim",
@@ -124,6 +125,7 @@ RECIPE_KIND_ENUM = ENUM(
     "ui-recipe",
     "event-subscription-recipe",
     "callout-intercept-recipe",
+    "ui-inspection",       # 3A-2 — browser-plane declarative scan (SAD A3)
     name="recipe_kind",
     create_type=False,
 )

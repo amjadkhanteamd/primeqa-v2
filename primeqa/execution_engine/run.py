@@ -126,11 +126,12 @@ def _authorize_dispatch(recipe, *, execution_policy, is_production, caller_tier)
     non-Admin enqueue against a production env (D-245 review fix) — because the
     authenticated caller is known there, not in the worker.
 
-    ``recipe_kind == metadata-recipe`` IS the read-only inspection vertical: the
-    bridge enforces ``mode == metadata_read`` (``build_metadata_inspection_plan``
-    raises otherwise), so the kind is the reliable read-mode discriminator. **When
-    a metadata-write/deploy recipe kind is added, this gate MUST also check the
-    mode** — a write-mode metadata recipe mutates and is not inspection.
+    Read-only vs mutating is the DECLARED per-kind property in
+    :data:`primeqa.execution_engine.modes.RECIPE_MODES` (D6 / SAD A3, LLD
+    3A-2) — never inferred from kind names. An undeclared kind is refused
+    outright by :func:`modes.mode_for` (fail closed). This discharges the
+    former standing warning here: a future metadata-write kind declares
+    MUTATING in the table and this gate needs no change.
 
     Order:
       (i)  Resource policy (``env.execution_policy``) — env state, applies to
@@ -140,7 +141,8 @@ def _authorize_dispatch(recipe, *, execution_policy, is_production, caller_tier)
            non-Admin against a production env may run ONLY the inspection
            vertical; a data-recipe is hard-rejected (AuthorizationError).
     """
-    read_only_inspection = recipe.recipe_kind == _METADATA_RECIPE_KIND
+    from primeqa.execution_engine.modes import READ_ONLY, mode_for
+    read_only_inspection = mode_for(recipe.recipe_kind) == READ_ONLY
 
     if execution_policy == "disabled":
         raise PolicyError(

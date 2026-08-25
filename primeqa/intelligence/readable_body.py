@@ -64,13 +64,21 @@ _BEHAVIORAL_KINDS = frozenset({
     "value-claim", "prohibition-claim", "acceptance-claim",
     "state-transition-claim", "automation-effect-claim",
 })
-_REGISTERED_KINDS = _CONFIG_KINDS | _BEHAVIORAL_KINDS
+# 3A-2: conformance-claim gets a light gloss (like config kinds); the full
+# observation/verdict rendering arrives with the result processor (3A-4).
+_CONFORMANCE_KINDS = frozenset({"conformance-claim"})
+_REGISTERED_KINDS = _CONFIG_KINDS | _BEHAVIORAL_KINDS | _CONFORMANCE_KINDS
 
 # Static "what this checks" glosses. Per-kind, always TRUE of the kind (no
 # claim-specific tokens) — the headline carries the specifics.
 _CONFIG_GLOSS = (
     "This is a configuration check — it confirms the setup exists in the org "
     "but does not exercise its enforcement."
+)
+_CONFORMANCE_GLOSS = (
+    "This is a conformance check — an accessibility rule evaluated against "
+    "a declared surface; the engine reports observations and Plimsol "
+    "computes the verdict."
 )
 _BEHAVIORAL_CHECKS = {
     "value-claim":
@@ -650,6 +658,11 @@ def build_readable_body(*, claim_kind, archetype, asserted_truth,
                              if isinstance(r, dict)])
 
         # Configuration inspections: headline + a light one-line gloss only.
+        if claim_kind in _CONFORMANCE_KINDS:
+            return _assemble(
+                kind=claim_kind, registered=True, headline=headline, depth=depth,
+                checks=_CONFORMANCE_GLOSS, preconditions=(), test_data=(),
+                steps=(), expected_result=None, probes=(), tokens=tokens)
         if claim_kind in _CONFIG_KINDS:
             return _assemble(
                 kind=claim_kind, registered=True, headline=headline, depth=depth,
