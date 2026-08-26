@@ -41,11 +41,21 @@ next is examined; classification is the LAST step:**
    grain: there it refused comparison outright; here the comparison
    proceeds with the tool dimension recorded, because §d ranks it as a
    candidate — the honesty is in the labeled output, not a refusal.)
-4. **State context**: per surface, the stored structural fingerprints.
-   `fingerprint_A != fingerprint_B` on a claim's surface ⇒ that
-   claim's pair is **NOT_COMPARABLE** with the structural delta
-   attached (the arm-C machinery at verdict level) — the world changed
-   under the claim; no transition is minted.
+4. **State context — CONDITIONAL (amended per the 2026-08-26 GO)**:
+   per surface, the stored structural fingerprints.
+   `fingerprint_A != fingerprint_B` on a claim's surface yields
+   **NOT_COMPARABLE ONLY when no captured dimension moved** — no
+   environment delta at rung 2, no tool delta at rung 3, and no
+   owning-bundle version change in the (A, B) window for that claim's
+   surface. When a dimension DID move, the fingerprint delta ATTACHES
+   to the transition's causal evidence and classification proceeds —
+   a structural change caused by the release IS the release change,
+   not incomparability. Rationale on record: DE-18's signed ordering
+   places component/config-change after state context; this
+   operationalizes it. An unexplained structural change (nothing
+   captured moved) remains the arm-C NOT_COMPARABLE with the delta
+   attached — the world changed under the claim and nothing on record
+   explains it; no transition is minted.
 5. **Classify** (§b + §d) — only pairs that survived rungs 1–4.
 
 ## b. Verdict-transition taxonomy — exact semantics
@@ -62,7 +72,7 @@ NEEDS_HUMAN or NOT_DETERMINED is verdict-indeterminate → the pair is
 | **STILL_PASSING** | A=PASS, B=PASS |
 | **NEW_CLAIM** | claim in B's set membership, absent from A's (enumerated later — e.g. a new catalogue release's added rules) |
 | **RETIRED_CLAIM** | claim in A's, absent from B's (revoked / deprecated between runs) |
-| **NOT_COMPARABLE** | rung-4 fingerprint delta (attached verbatim), or an indeterminate side, or an unmapped/no-verdict side — reason always named |
+| **NOT_COMPARABLE** | rung-4 fingerprint delta WITH no captured dimension moved (delta attached verbatim — the unexplained-change case), or an indeterminate side, or an unmapped/no-verdict side — reason always named. A fingerprint delta WITH a moved dimension does NOT land here: it classifies, delta-in-evidence (§a rung 4 as amended) |
 | **NOT_RUN** | an EXECUTION-STATUS side: the claim's surface was NOT_REACHED / NO_ACCESS / ERROR in either run (the 3A-4 `no_verdict_members` record) — a status, surfaced as a status |
 
 **Statuses never masquerade as transitions**: NOT_RUN and
@@ -171,18 +181,23 @@ reads verdicts and interprets change; the worker and S4 are untouched).
 Two full runs (enumerate → approve → manifest → consume → process)
 against the fixture server, with ONE planted delta per arm:
 
-- **Arm D (CLIENT)**: a planted bundle source change between the runs
-  (the fixture claim's `owner_bundle_ref` bundle gets a new S1 version
-  in the window) → the NEW_FAIL's primary candidate is CLIENT **with
-  the bundle named** and the version pair in evidence.
+- **Arm D (CLIENT, strengthened per the amendment)**: the planted
+  client change is STRUCTURAL — fingerprint-visible — between the two
+  runs, with the owning bundle gaining a new S1 version in the window
+  → the NEW_FAIL classifies CLIENT **with the bundle named AND the
+  fingerprint delta in the causal evidence** (proving the conditional
+  rung 4: a moved dimension turns a structural delta into evidence,
+  not incomparability). A style-only variant may be included
+  additionally, never substituted.
 - **Arm E (ENVIRONMENT)**: a planted package-inventory delta between
   the two snapshots → primary ENVIRONMENT naming the package.
 - **Arm F (TOOL)**: a planted engine/catalogue pin delta → the verdict
   diff reported as **DRIFT, not regression** (tool primary; regression
   headline count 0 for that pair).
-- **Arm C at verdict level**: page state changed between runs → the
-  claim's pair is NOT_COMPARABLE with the structural delta attached —
-  **never a transition**.
+- **Arm C at verdict level (unchanged)**: page content changed between
+  runs with NO planted dimension (no env, tool, or bundle movement) →
+  the claim's pair is NOT_COMPARABLE with the structural delta
+  attached — **never a transition**.
 - Idempotence: re-compare → byte-identical rows.
 - Refusal: a cross-inventory-version pair → REFUSED naming both
   versions.
