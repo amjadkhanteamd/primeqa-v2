@@ -34,10 +34,10 @@ class TestEntityOrderComposition:
         # phase, and the flow-related Tier-1 entity per SPEC §9.
         assert "Flow" in ENTITY_ORDER
 
-    def test_entity_order_is_twelve_entity_materializing_phases(
+    def test_entity_order_is_thirteen_entity_materializing_phases(
         self,
     ) -> None:
-        """ENTITY_ORDER is 11 entries: the 10 SPEC §9 Tier-1
+        """ENTITY_ORDER is 13 entries: the 10 SPEC §9 Tier-1
         detail-table entity types PLUS PicklistValueSet (an
         entity-materializing phase that intentionally has no
         detail table — its shape lives in entities.attributes
@@ -57,8 +57,9 @@ class TestEntityOrderComposition:
             "User",
             "Flow",
             "ApprovalProcess",                     # D-308
+            "LightningComponentBundle",            # 3A-5
         )
-        assert len(ENTITY_ORDER) == 12                 # D-308: + ApprovalProcess
+        assert len(ENTITY_ORDER) == 13                 # 3A-5: + LightningComponentBundle
 
 
 class TestFKAssertion:

@@ -478,6 +478,15 @@ def _extract_external_id(entity_type: str, raw: dict[str, Any]) -> str:
                 f"phase_approval_process); got raw keys {sorted(raw.keys())}"
             )
         return developer_name
+    if entity_type == "LightningComponentBundle":
+        # 3A-5 (SF-08): keyed by the stable DeveloperName.
+        developer_name = raw.get("DeveloperName")
+        if not developer_name:
+            raise ValueError(
+                f"LightningComponentBundle requires 'DeveloperName'; "
+                f"got raw keys {sorted(raw.keys())}"
+            )
+        return developer_name
     if entity_type == "Flow":
         # Flow's external_id is the parent FlowDefinition's
         # DeveloperName — the STABLE identity across versions

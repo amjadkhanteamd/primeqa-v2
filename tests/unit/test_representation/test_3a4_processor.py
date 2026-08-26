@@ -115,14 +115,26 @@ def test_unjudged_members_get_reasons_not_verdicts():
 
 
 def test_ownership_markers():
+    # 3A-5 ruling: CONFIRMED requires bundle resolution; an unresolved
+    # c-* tag is PROBABLE unconditionally (the spike-grade
+    # CONFIRMED-on-marker behavior was corrected as a signed-design
+    # conformance fix).
+    resolver = lambda name: "E1" if name == "loanWidget" else None
     assert classify_ownership(
-        {"html": '<c-loan-widget class="x">', "target": []}) == "CONFIRMED"
+        {"html": '<c-loan-widget class="x">', "target": []},
+        resolver) == ("CONFIRMED", "E1")
     assert classify_ownership(
-        {"html": '<lightning-input class="slds-input">'}) == "PROBABLE"
+        {"html": '<c-loan-widget class="x">', "target": []}) == (
+        "PROBABLE", None)
     assert classify_ownership(
-        {"html": '<div class="slds-grid">'}) == "PROBABLE"
+        {"html": '<c-other-widget>'}, resolver) == ("PROBABLE", None)
     assert classify_ownership(
-        {"html": "<img src=x>", "target": ["img"]}) == "UNKNOWN"
+        {"html": '<lightning-input class="slds-input">'}) == (
+        "PROBABLE", None)
+    assert classify_ownership(
+        {"html": '<div class="slds-grid">'}) == ("PROBABLE", None)
+    assert classify_ownership(
+        {"html": "<img src=x>", "target": ["img"]}) == ("UNKNOWN", None)
 
 
 def test_collapse_rule():

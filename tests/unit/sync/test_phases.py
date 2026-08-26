@@ -56,7 +56,8 @@ class TestPhaseRegistry:
                        "Field", "RecordType", "Layout",
                        "ValidationRule", "Profile",
                        "PermissionSet", "User", "Flow",
-                       "ApprovalProcess"}          # D-308
+                       "ApprovalProcess",          # D-308
+                       "LightningComponentBundle"}  # 3A-5
         for entity_type, phase_fn in PHASE_REGISTRY.items():
             if entity_type in real_phases:
                 continue

@@ -38,7 +38,7 @@ def eng():
     from sqlalchemy import create_engine
     return create_engine(
         DB, pool_pre_ping=True,
-        connect_args={"options": "-csearch_path=tenant_1,public"})
+        connect_args={"options": "-csearch_path=tenant_1,public -capp.tenant_id=1"})
 
 
 @pytest.fixture(scope="module")

@@ -379,10 +379,11 @@ class TestDispatcher:
         assert "NotARealType" in str(exc_info.value)
 
     def test_known_types_count(self) -> None:
-        """12 normalizers registered — Object, Field, RecordType, Layout,
+        """13 normalizers registered — Object, Field, RecordType, Layout,
         PicklistValueSet, PicklistValue, Profile, PermissionSet, User,
-        ValidationRule, Flow, ApprovalProcess (D-308)."""
-        assert len(_NORMALIZERS) == 12
+        ValidationRule, Flow, ApprovalProcess (D-308),
+        LightningComponentBundle (3A-5)."""
+        assert len(_NORMALIZERS) == 13
 
     @pytest.mark.parametrize("entity_type", ALL_TYPES)
     def test_dispatches_each_known_type(self, entity_type: str) -> None:

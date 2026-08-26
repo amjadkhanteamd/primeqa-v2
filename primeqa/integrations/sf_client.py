@@ -1466,6 +1466,38 @@ class SalesforceClient:
         # and mass-close the missing approvals.
         return self._query_all(path, soql, require_complete=True)
 
+    def fetch_lwc_bundles(self) -> list[dict]:
+        """Tooling SOQL: LightningComponentBundle + its resources (3A-5,
+        SF-08). Identity = DeveloperName; the caller hashes the bundle's
+        normalised sources into its version. Both fetches are
+        completeness-gated (the bundle set doubles as the deletion-
+        reconcile present-set; a partial must RAISE, never mass-close).
+
+        Returns one dict per bundle: Id, DeveloperName, NamespacePrefix,
+        ApiVersion, Description, and ``_resources`` — the bundle's
+        LightningComponentResource rows (FilePath, Format, Source),
+        sorted by FilePath.
+        """
+        path = f"/services/data/{self.api_version}/tooling/query/"
+        bundles = self._query_all(path, (
+            "SELECT Id, DeveloperName, NamespacePrefix, ApiVersion, "
+            "Description FROM LightningComponentBundle"
+        ), require_complete=True)
+        resources = self._query_all(path, (
+            "SELECT LightningComponentBundleId, FilePath, Format, Source "
+            "FROM LightningComponentResource"
+        ), require_complete=True)
+        by_bundle: dict = {}
+        for r in resources:
+            bid = r.get("LightningComponentBundleId")
+            if bid:
+                by_bundle.setdefault(bid, []).append(r)
+        for b in bundles:
+            b["_resources"] = sorted(
+                by_bundle.get(b.get("Id"), []),
+                key=lambda r: r.get("FilePath") or "")
+        return bundles
+
     def fetch_flow_definitions(self) -> list[dict]:
         """Tooling SOQL: SELECT … FROM FlowDefinition, with FullName + Metadata.
 

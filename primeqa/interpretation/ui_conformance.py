@@ -46,18 +46,35 @@ class ProcessingError(ValueError):
 # interpretation (whose structure it is).
 # ---------------------------------------------------------------------------
 
-_CLIENT_COMPONENT = re.compile(r"<c-[\w-]+|(?:^|[\s\"'>])c-[\w-]+")
+_CLIENT_COMPONENT = re.compile(r"<(c-[\w-]+)|(?:^|[\s\"'>])(c-[\w-]+)")
 _PLATFORM_MARKERS = re.compile(
     r"<(?:lightning|force|flexipage|laf|one)-[\w-]+|class=\"[^\"]*slds-")
 
 
-def classify_ownership(node: dict) -> str:
-    """Origin marker for ONE failing element from its stored evidence
-    fragment. Conservative: UNKNOWN is an honest answer, never upgraded
-    by guesswork.
+def bundle_developer_name(tag: str) -> str:
+    """The deterministic LWC mapping (LLD 3A-5 §d): DOM tag
+    ``c-loan-widget`` → bundle DeveloperName ``loanWidget`` — strip the
+    ``c-`` namespace prefix, kebab→camel."""
+    parts = tag.removeprefix("c-").split("-")
+    return parts[0] + "".join(p.capitalize() for p in parts[1:])
 
-      - ``c-*`` custom-element markup → CONFIRMED (client-authored LWC
-        namespace);
+
+def classify_ownership(node: dict, resolve_bundle=None):
+    """(origin marker, resolved bundle entity id | None) for ONE failing
+    element from its stored evidence fragment. Conservative: UNKNOWN is
+    an honest answer, never upgraded by guesswork.
+
+    Per the 2026-08-26 ruling (LLD 3A-5 §d): **CONFIRMED requires
+    resolution** — the ``c-*`` tag maps to a synced
+    LightningComponentBundle entity via ``resolve_bundle(developer_name)
+    → entity_id | None``. **No resolution ⇒ PROBABLE unconditionally**
+    (client-namespace markup we cannot attribute), including when no
+    resolver is supplied or the org has no bundle rows. The 3A-4
+    spike-grade CONFIRMED-on-marker behavior is corrected here as a
+    signed-design conformance fix.
+
+      - ``c-*`` markup + the tag resolves → CONFIRMED (+ the bundle id);
+      - ``c-*`` markup, unresolved → PROBABLE;
       - ``lightning-*``/``force-*``/``flexipage-*`` markup or ``slds-``
         classes → PROBABLE (platform-standard chrome);
       - anything else → UNKNOWN.
@@ -66,11 +83,17 @@ def classify_ownership(node: dict) -> str:
         node.get("html") or "",
         " ".join(str(t) for t in (node.get("target") or [])),
     )))
-    if _CLIENT_COMPONENT.search(fragment):
-        return "CONFIRMED"
+    m = _CLIENT_COMPONENT.search(fragment)
+    if m:
+        tag = m.group(1) or m.group(2)
+        if resolve_bundle is not None:
+            bundle_id = resolve_bundle(bundle_developer_name(tag))
+            if bundle_id is not None:
+                return "CONFIRMED", str(bundle_id)
+        return "PROBABLE", None
     if _PLATFORM_MARKERS.search(fragment):
-        return "PROBABLE"
-    return "UNKNOWN"
+        return "PROBABLE", None
+    return "UNKNOWN", None
 
 
 def _resolvable(node: dict) -> bool:
@@ -191,6 +214,17 @@ def process_job(session: Session, *, job_id: UUID) -> dict:
     caps = _release_capabilities(session, data["catalogue_release_id"])
     _fwd, rev, bindings_hash = _bindings(session, engine_version)
 
+    def resolve_bundle(developer_name: str):
+        # Exactly-one resolution or nothing: two current bundles with
+        # the same DeveloperName (multi-org) make attribution ambiguous
+        # — that is a PROBABLE, never a guessed CONFIRMED.
+        rows = session.execute(text("""
+            SELECT id FROM entities
+            WHERE entity_type = 'LightningComponentBundle'
+              AND sf_api_name = :n AND valid_to_seq IS NULL
+        """), {"n": developer_name}).fetchall()
+        return rows[0][0] if len(rows) == 1 else None
+
     results = {r[0]: {"observation": r[1], "evidence_state": r[2]}
                for r in session.execute(text("""
                    SELECT surface_key, observation, evidence_state
@@ -234,19 +268,23 @@ def process_job(session: Session, *, job_id: UUID) -> dict:
             no_verdict[m["test_id"]] = basis["no_verdict_reason"]
             continue
         ownership = None
+        owner_bundle_ref = None
         if verdict == FAIL:
-            ownership = classify_ownership(basis["nodes"][0])
+            ownership, owner_bundle_ref = classify_ownership(
+                basis["nodes"][0], resolve_bundle)
         session.execute(text("""
             INSERT INTO s6_ui_verdicts
                 (id, manifest_id, job_id, surface_key, claim_set_id,
                  test_id, plimsol_rule_id, verdict, verdict_basis,
-                 ownership, evidence_state_at_write, processed_at)
+                 ownership, owner_bundle_ref, evidence_state_at_write,
+                 processed_at)
             VALUES (:id, :m, :j, :sk, :cs, :t, :r, :v,
-                    CAST(:b AS JSONB), :o, :e, NOW())
+                    CAST(:b AS JSONB), :o, :obr, :e, NOW())
             ON CONFLICT (job_id, test_id) DO UPDATE SET
                 verdict = EXCLUDED.verdict,
                 verdict_basis = EXCLUDED.verdict_basis,
                 ownership = EXCLUDED.ownership,
+                owner_bundle_ref = EXCLUDED.owner_bundle_ref,
                 evidence_state_at_write = EXCLUDED.evidence_state_at_write,
                 processed_at = NOW()
         """), {"id": str(_uuid_mod.uuid4()), "m": manifest_id,
@@ -254,6 +292,7 @@ def process_job(session: Session, *, job_id: UUID) -> dict:
                "cs": claim_set_id, "t": m["test_id"],
                "r": m["plimsol_rule_id"], "v": verdict,
                "b": json.dumps(basis, sort_keys=True), "o": ownership,
+               "obr": owner_bundle_ref,
                "e": result["evidence_state"]})
         verdict_counts[verdict] = verdict_counts.get(verdict, 0) + 1
         written += 1
@@ -303,7 +342,7 @@ def list_verdicts(session: Session, *, claim_set_id: UUID,
     rows = session.execute(text(f"""
         SELECT v.test_id, v.plimsol_rule_id, v.surface_key, v.verdict,
                v.ownership, v.verdict_basis, v.job_id,
-               r.evidence_state, r.evidence_keys
+               r.evidence_state, r.evidence_keys, v.owner_bundle_ref
         FROM s6_ui_verdicts v
         LEFT JOIN s4_ui_inspection_results r
           ON r.job_id = v.job_id AND r.surface_key = v.surface_key
@@ -318,4 +357,5 @@ def list_verdicts(session: Session, *, claim_set_id: UUID,
         "evidence_state": r[7],
         "evidence_complete": r[7] == "REFERENCED",
         "evidence_keys": r[8],
+        "owner_bundle_ref": str(r[9]) if r[9] else None,
     } for r in rows]

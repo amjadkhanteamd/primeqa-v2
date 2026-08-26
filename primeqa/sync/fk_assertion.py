@@ -32,7 +32,7 @@ from primeqa.sync.exceptions import EntityOrderViolation
 logger = logging.getLogger(__name__)
 
 
-# ENTITY_ORDER: 11 entity-materializing phases. The 10 Tier-1
+# ENTITY_ORDER: 13 entity-materializing phases. The 10 Tier-1
 # detail-table entity types per SPEC §9 (Object, Field, RecordType,
 # Layout, ValidationRule, Flow, Profile, PermissionSet, User,
 # PicklistValue) PLUS PicklistValueSet — an entity-materializing
@@ -66,6 +66,10 @@ ENTITY_ORDER: tuple[str, ...] = (
     # D-308: approval-process definitions — after Object (its TRIGGERS_ON
     # target); attributes-only like PicklistValueSet (no detail table).
     "ApprovalProcess",
+    # 3A-5: Lightning component bundles — no FK deps, no edges;
+    # attributes-only (the D-308 precedent). Last, so FINAL_PHASE moves
+    # with it (the D-308.1 sentinel reads ENTITY_ORDER[-1]).
+    "LightningComponentBundle",
 )
 
 # D-308.1 (review B2): the structural-completion sentinel — every SQL literal

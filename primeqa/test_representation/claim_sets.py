@@ -104,6 +104,12 @@ def create_inventory_version(
             "dn": m.get("display_name", ""), "notes": m.get("notes", ""),
             "auth": bool(m.get("auth_required", False)),
         })
+    # 3A-5: every declared surface gains (or reuses) its S1 Surface
+    # entity, and the member rows' identity-EXCLUDED surface_entity_ref
+    # fills — same transaction as the declaration.
+    from primeqa.semantic.surface_entities import (
+        materialize_surface_entities)
+    materialize_surface_entities(session, inventory_version=version)
     session.flush()
     return int(version)
 

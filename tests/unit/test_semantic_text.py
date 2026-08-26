@@ -336,7 +336,7 @@ class TestDispatcher:
         assert "NotARealType" in str(exc_info.value)
 
     def test_known_types_count(self) -> None:
-        assert len(_TEMPLATERS) == 12                 # D-308: + ApprovalProcess
+        assert len(_TEMPLATERS) == 13                 # 3A-5: + LightningComponentBundle
 
     @pytest.mark.parametrize("entity_type", ALL_TYPES)
     def test_dispatches_each_known_type(self, entity_type: str) -> None:

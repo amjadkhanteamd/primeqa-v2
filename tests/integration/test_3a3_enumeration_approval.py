@@ -34,6 +34,7 @@ def session():
     eng = create_engine(DB, pool_pre_ping=True)
     s = Session(bind=eng)
     s.execute(text("SET search_path TO tenant_1, public"))
+    s.execute(text("SET app.tenant_id = 1"))
     yield s
     s.rollback()
     s.close()
@@ -42,12 +43,15 @@ def session():
 def _seed_inventory(session):
     from primeqa.test_representation.claim_sets import (
         create_inventory_version)
+    # per-run unique site: the scratch DB accumulates COMMITTED claims
+    # from transcript scripts; fixed names would make "created" read 0.
+    site = f"p-{uuid.uuid4().hex[:8]}.example.com"
     return create_inventory_version(session, members=[
-        {"site": "portal.example.com", "path": "/s/home",
+        {"site": site, "path": "/s/home",
          "persona_scope": "customer", "display_name": "Portal home"},
-        {"site": "portal.example.com", "path": "/s/cases",
+        {"site": site, "path": "/s/cases",
          "persona_scope": "customer", "auth_required": True},
-        {"site": "portal.example.com", "path": "/s/home",
+        {"site": site, "path": "/s/home",
          "persona_scope": "guest"},
     ], created_by=USER_ID, notes="3A-3 verification inventory")
 
