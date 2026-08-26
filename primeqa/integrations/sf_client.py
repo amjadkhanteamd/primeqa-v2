@@ -1498,6 +1498,40 @@ class SalesforceClient:
                 key=lambda r: r.get("FilePath") or "")
         return bundles
 
+    def fetch_org_environment(self) -> dict:
+        """Phase 7 (LLD §c): the org-environment facts the causal
+        comparator diffs — platform api version (the org's latest from
+        GET /services/data), the Organization row, and the installed-
+        package inventory (Tooling InstalledSubscriberPackage,
+        completeness-gated: a partial package set would make an
+        ENVIRONMENT delta lie by omission)."""
+        resp = self._request("GET", "/services/data")
+        versions = resp.json() or []
+        latest = max((v.get("version") for v in versions
+                      if v.get("version")), key=float, default=None)
+        org_rows = self._query_all(
+            f"/services/data/{self.api_version}/query/",
+            "SELECT OrganizationType, InstanceName, IsSandbox "
+            "FROM Organization")
+        org = org_rows[0] if org_rows else {}
+        pkgs = self._query_all(
+            f"/services/data/{self.api_version}/tooling/query/",
+            "SELECT SubscriberPackageId, SubscriberPackageVersionId "
+            "FROM InstalledSubscriberPackage", require_complete=True)
+        return {
+            "platform_api_version": latest,
+            "organization": {
+                "organization_type": org.get("OrganizationType"),
+                "instance_name": org.get("InstanceName"),
+                "is_sandbox": org.get("IsSandbox"),
+            },
+            "packages": sorted(
+                ({"package_id": p.get("SubscriberPackageId"),
+                  "version_id": p.get("SubscriberPackageVersionId")}
+                 for p in pkgs),
+                key=lambda x: (x["package_id"] or "", x["version_id"] or "")),
+        }
+
     def fetch_flow_definitions(self) -> list[dict]:
         """Tooling SOQL: SELECT … FROM FlowDefinition, with FullName + Metadata.
 
