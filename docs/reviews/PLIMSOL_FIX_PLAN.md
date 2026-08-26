@@ -170,3 +170,16 @@
   public chain has no fresh-replay consumer today. Worth an idempotence
   guard (or a documented fresh-replay runbook) when the public chain next
   gains a fresh-replay consumer (e.g. scratch-env provisioning tooling).
+
+## Added 2026-08-26 — from the Phase 3A merge deploy watch
+
+- **Low: stale active-tenant rows without provisioned schemas generate
+  recurring scheduler repair-triage tracebacks.** `public.tenants` holds
+  15 `active` rows but only `tenant_1` has a provisioned substrate
+  schema (the other 14 are years-old integration-test tenants); the
+  scheduler's repair-triage tick iterates active tenants and logs an
+  `UndefinedTable: s6_interpretations` traceback per unprovisioned
+  tenant per tick. Pre-existing (predates the 3A merge; the failing path
+  is untouched by it). Remedy options: deactivate the stale rows, or
+  make repair-triage skip unprovisioned schemas loudly-once (one
+  warning per tenant per process lifetime, not a traceback per tick).
