@@ -19,7 +19,10 @@ live in ``primeqa/interpretation/ui_conformance.py`` only.
 from __future__ import annotations
 
 import hashlib
+import json
+import os
 import re
+import uuid as _uuid_mod
 from pathlib import Path
 from typing import Optional
 from uuid import UUID
@@ -73,7 +76,41 @@ def _engine_pins(session: Session) -> dict:
             f"but {art.repo_path} hashes {actual[:12]}… — refusing the "
             "build (the pin and the vendored engine must agree)")
     return {"axe_version": art.version, "axe_sha256": art.sha256,
-            "playwright_version": _playwright_pin()}
+            "playwright_version": _playwright_pin(),
+            # Phase 7: the spike-era pin restored — record what is
+            # known (env-provided in the deployed services; None is an
+            # honest "not recorded", and None->value counts as a moved
+            # tool dimension).
+            "worker_image_digest": os.environ.get(
+                "PLIMSOL_WORKER_IMAGE_DIGEST")}
+
+
+def capture_org_environment_snapshot(session: Session, sf_client) -> str:
+    """Phase 7 (LLD §c): record the org environment AT MANIFEST BUILD
+    time — the manifest records the world it was built for (the D-461
+    pin philosophy). Immutable + hash-keyed: identical content reuses
+    the existing snapshot row. Returns the snapshot id."""
+    env = sf_client.fetch_org_environment()
+    canonical = json.dumps(env, sort_keys=True, separators=(",", ":"),
+                           default=str)
+    content_hash = hashlib.sha256(canonical.encode()).hexdigest()
+    existing = session.execute(text(
+        "SELECT id FROM org_environment_snapshots "
+        "WHERE content_hash = :h"), {"h": content_hash}).scalar()
+    if existing is not None:
+        return str(existing)
+    snap_id = str(_uuid_mod.uuid4())
+    session.execute(text("""
+        INSERT INTO org_environment_snapshots
+            (id, platform_api_version, organization, packages,
+             content_hash)
+        VALUES (:i, :v, CAST(:o AS JSONB), CAST(:p AS JSONB), :h)
+    """), {"i": snap_id, "v": env.get("platform_api_version"),
+           "o": json.dumps(env.get("organization") or {}),
+           "p": json.dumps(env.get("packages") or []),
+           "h": content_hash})
+    session.flush()
+    return snap_id
 
 
 def _viewport_dict(viewport: Optional[str]) -> Optional[dict]:
@@ -155,6 +192,8 @@ def build_manifest_for_claim_set(
     stabilisation: Optional[dict] = None,
     auth: Optional[dict] = None,
     execution_mode: str = "claim-set",
+    sf_client=None,
+    org_env_snapshot_id: Optional[str] = None,
 ) -> str:
     """Build + persist an immutable Run Manifest from an APPROVED
     claim_set. Returns the manifest id. The payload records
@@ -197,6 +236,14 @@ def build_manifest_for_claim_set(
             f"claim_set {claim_set_id} yields zero scannable surfaces — "
             "an empty manifest is never built")
 
+    # Phase 7 (LLD §c): the org-environment pin. Captured live when a
+    # client is supplied; a pre-captured id is accepted (fixtures /
+    # planted flows); absent both, the pin records None — the
+    # comparator treats it as "not captured", honestly.
+    if sf_client is not None and org_env_snapshot_id is None:
+        org_env_snapshot_id = capture_org_environment_snapshot(
+            session, sf_client)
+
     payload = {
         "claim_set_id": str(claim_set_id),
         "excluded_revoked": excluded_revoked,
@@ -208,6 +255,7 @@ def build_manifest_for_claim_set(
                 "SELECT content_hash FROM s5_catalogue_releases "
                 "WHERE id = :r"),
                 {"r": data["catalogue_release_id"]}).scalar_one().strip(),
+            "org_env_snapshot_id": org_env_snapshot_id,
         },
         "stabilisation": stabilisation or {},
         "execution": {"mode": execution_mode},
