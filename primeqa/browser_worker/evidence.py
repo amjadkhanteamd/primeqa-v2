@@ -92,8 +92,17 @@ def assert_tenant_scoped(session, key_or_prefix: str, op: str) -> None:
     expected = key_prefix(session)
     head = (key_or_prefix or "").lstrip("/").split("/", 1)[0]
     if not head or head != expected or ".." in (key_or_prefix or ""):
+        # The structured line is the MANDATORY channel (GO amendment);
+        # the activity_log row is best-effort via record_event.
         _log.warning("TENANT_BOUNDARY_REFUSED op=%s tenant=%s offending=%s",
                      op, expected, head or "<empty>")
+        try:
+            from primeqa.browser_worker.audit import record_event
+            record_event(session, action="ui.tenant_boundary_refused",
+                         details={"op": op, "session_tenant": expected,
+                                  "offending_prefix": head or "<empty>"})
+        except Exception:  # noqa: BLE001 — the refusal must still raise
+            pass
         raise TenantBoundaryError(
             f"{op}: key prefix {head!r} is not the session tenant {expected!r}")
 

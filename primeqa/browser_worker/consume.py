@@ -29,6 +29,7 @@ from primeqa.browser_worker.spike import scan_page
 
 POLL_INTERVAL_S = 5
 AUTH_MODE_TOTP_ENV = "totp_env"
+AUTH_MODE_VAULT = "vault"
 
 
 def _scan_kwargs(surface: dict, stabilisation: dict) -> dict:
@@ -113,9 +114,15 @@ class _EvidenceSink:
 
 def _run_surfaces(session, job_id: str, attempt: int, surfaces: list,
                   stabilisation: dict, *, manifest_id: str | None = None,
-                  context=None, landed_check=None) -> None:
+                  context=None, landed_check=None,
+                  should_stop=None) -> bool:
+    """Returns True when every surface ran; False when should_stop
+    interrupted AFTER a finalized surface (the job stays leased for the
+    reaper)."""
     sink = _EvidenceSink(session, manifest_id or "no-manifest", job_id)
-    for surface in surfaces:
+    for i, surface in enumerate(surfaces):
+        if should_stop is not None and i > 0 and should_stop():
+            return False
         key, url = surface["key"], surface["url"]
         q.heartbeat(session, job_id)
         try:
@@ -144,28 +151,50 @@ def _run_surfaces(session, job_id: str, attempt: int, surfaces: list,
             ev_state = sink.verify_and_reference(key, rec)
         print(f"  surface {key} -> {observation.get('status')} "
               f"evidence={ev_state}", flush=True)
+    return True
 
 
-def consume_job(session, job: dict) -> None:
-    """Run one claimed job's surfaces to completion."""
+def consume_job(session, job: dict, should_stop=None) -> None:
+    """Run one claimed job's surfaces to completion.
+
+    ``should_stop`` (the SIGTERM lifecycle): consulted between surfaces —
+    when it returns True the CURRENT surface finalizes and the job is
+    LEFT in_progress for the reaper (claim-only attempts charging; the
+    lease returns via the proven arm-B path)."""
     job_id = job["job_id"]
     attempt = job["attempts"]
     payload = job["payload"] or {}
     surfaces = payload.get("surfaces", [])
     stabilisation = payload.get("stabilisation") or {}
-    auth_mode = (payload.get("auth") or {}).get("mode")
+    auth = payload.get("auth") or {}
+    auth_mode = auth.get("mode")
     print(f"job {job_id} attempt={attempt} surfaces={len(surfaces)} "
           f"auth={auth_mode or 'guest'}", flush=True)
     try:
-        if auth_mode == AUTH_MODE_TOTP_ENV:
-            _consume_authenticated(session, job_id, attempt, surfaces,
-                                   stabilisation, manifest_id=job.get("manifest_id"))
+        if auth_mode in (AUTH_MODE_TOTP_ENV, AUTH_MODE_VAULT):
+            completed = _consume_authenticated(
+                session, job_id, attempt, surfaces, stabilisation,
+                manifest_id=job.get("manifest_id"), auth=auth,
+                should_stop=should_stop)
         else:
-            _run_surfaces(session, job_id, attempt, surfaces, stabilisation,
-                          manifest_id=job.get("manifest_id"))
+            completed = _run_surfaces(
+                session, job_id, attempt, surfaces, stabilisation,
+                manifest_id=job.get("manifest_id"),
+                should_stop=should_stop)
+        if not completed:
+            print(f"job {job_id} interrupted after current surface; "
+                  f"lease left for the reaper (died_reason=SIGTERM)",
+                  flush=True)
+            return
         q.mark_succeeded(session, job_id)
         print(f"job {job_id} succeeded", flush=True)
     except LoginError as exc:
+        from primeqa.browser_worker.audit import record_event
+        record_event(session, action="ui.login_failed",
+                     details={"class": exc.code, "job_id": str(job_id),
+                              "persona": auth.get("persona"),
+                              "auth_mode": auth_mode},
+                     mandatory_log=True)
         status = q.mark_failed(session, job_id, f"{exc.code}: {exc.detail}",
                                attempt, retryable=exc.retryable)
         print(f"job {job_id} {status}: {exc.code} ({exc.detail})", flush=True)
@@ -181,16 +210,37 @@ def consume_job(session, job: dict) -> None:
         print(f"job {job_id} {status}: {type(exc).__name__}", flush=True)
 
 
+def _resolve_auth_credentials(session, auth: dict) -> Credentials:
+    """Per-mode credential resolution. totp_env is DEV-ONLY: refused
+    under the production browser-worker role (the vault is the only
+    production path). vault resolves from the tenant's portal_personas
+    with job-scoped decrypt."""
+    import os
+
+    mode = auth.get("mode")
+    if mode == AUTH_MODE_VAULT:
+        from primeqa.browser_worker.vault import resolve_credentials
+        return resolve_credentials(session, auth.get("persona") or "")
+    if os.environ.get("PLIMSOL_SERVICE_ROLE") == "browser-worker":
+        from primeqa.browser_worker.session import DEV_AUTH_MODE_REFUSED
+        raise LoginError(
+            DEV_AUTH_MODE_REFUSED,
+            "totp_env is dev-only; the production browser-worker accepts "
+            "vault personas only")
+    return _read_credentials()
+
+
 def _consume_authenticated(session, job_id, attempt, surfaces,
-                           stabilisation, *, manifest_id=None) -> None:
+                           stabilisation, *, manifest_id=None,
+                           auth=None, should_stop=None) -> bool:
     """One browser, one context, ONE login for the whole batch; every
     surface scanned in the authenticated context with the session-lost
     check. Credentials live only in this frame."""
     from playwright.sync_api import sync_playwright
 
     if not surfaces:
-        return
-    creds = _read_credentials()
+        return True
+    creds = _resolve_auth_credentials(session, auth or {"mode": AUTH_MODE_TOTP_ENV})
     base_url, start_path = _split_start(surfaces[0]["url"])
     first = surfaces[0]
     ctx_kwargs = {}
@@ -209,9 +259,11 @@ def _consume_authenticated(session, job_id, attempt, surfaces,
             outcome = login(context, base_url, start_path, creds,
                             max_wait_s=max_wait_s)
             print(f"  login events: {outcome.events}", flush=True)
-            _run_surfaces(session, job_id, attempt, surfaces, stabilisation,
-                          manifest_id=manifest_id, context=context,
-                          landed_check=assert_session)
+            return _run_surfaces(session, job_id, attempt, surfaces,
+                                 stabilisation, manifest_id=manifest_id,
+                                 context=context,
+                                 landed_check=assert_session,
+                                 should_stop=should_stop)
         finally:
             context.close()
             browser.close()

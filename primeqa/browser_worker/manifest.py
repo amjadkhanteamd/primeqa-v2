@@ -20,7 +20,7 @@ import json
 from sqlalchemy import text
 from sqlalchemy.orm import Session
 
-_AUTH_MODES = {"totp_env"}
+_AUTH_MODES = {"totp_env", "vault"}
 
 
 def create_manifest(session: Session, payload: dict) -> str:
@@ -63,7 +63,11 @@ def enqueue_for_manifest(session: Session, manifest_id: str) -> str:
         # modes are refused here — a malformed manifest creates no job.
         if auth.get("mode") not in _AUTH_MODES:
             raise ValueError(f"unsupported auth mode: {auth.get('mode')!r}")
+        if auth["mode"] == "vault" and not auth.get("persona"):
+            raise ValueError("auth mode 'vault' requires a persona key")
         job_payload["auth"] = {"mode": auth["mode"]}
+        if auth.get("persona"):
+            job_payload["auth"]["persona"] = auth["persona"]
     row = session.execute(text("""
         INSERT INTO s4_ui_inspection_jobs (payload, manifest_id)
         VALUES (CAST(:payload AS JSONB), :manifest_id)
