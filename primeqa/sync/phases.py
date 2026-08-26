@@ -2303,6 +2303,48 @@ def phase_approval_process(ctx: SyncContext, conn: Any) -> PhaseResult:
     return result
 
 
+def phase_lightning_component_bundle(
+    ctx: SyncContext, conn: Any,
+) -> PhaseResult:
+    """LightningComponentBundle phase (3A-5, SF-08) — the DE-11
+    attribution instrument's data source. Identity = the Salesforce
+    metadata identity (DeveloperName); version = the normalised source
+    hash (the normalizer folds per-file sha256 into the payload, so a
+    source edit is a new S1 version and a no-op resync writes nothing).
+    Attributes-only like ApprovalProcess (no detail table); NO edges in
+    3A-5 (Surface—renders→Bundle is phase 7, from scan evidence).
+    """
+    result = PhaseResult(entity_type="LightningComponentBundle")
+
+    bundles = ctx.sf_client.fetch_lwc_bundles()
+    payloads: list[dict[str, Any]] = [
+        b for b in bundles
+        if isinstance(b, dict) and b.get("DeveloperName")
+    ]
+
+    # DELETION RECONCILE — same DATA-1 posture as ApprovalProcess: the
+    # fetch is completeness-gated upstream (require_complete=True), and
+    # an empty present-set fail-safes to NO-reconcile rather than
+    # mass-closing on an ambiguous empty.
+    present_ids = {b.get("Id") for b in payloads if b.get("Id")}
+    if present_ids:
+        reconcile_deletions_by_sf_id(
+            conn, ctx, "LightningComponentBundle", present_ids, result,
+        )
+
+    if not payloads:
+        return result
+
+    batched_materialize(
+        ctx=ctx,
+        conn=conn,
+        entity_type="LightningComponentBundle",
+        raw_payloads=payloads,
+        result=result,
+    )
+    return result
+
+
 PHASE_REGISTRY["Object"] = phase_object
 PHASE_REGISTRY["PicklistValueSet"] = phase_picklist_value_set
 PHASE_REGISTRY["PicklistValue"] = phase_picklist_value
@@ -2315,6 +2357,7 @@ PHASE_REGISTRY["PermissionSet"] = phase_permission_set
 PHASE_REGISTRY["User"] = phase_user
 PHASE_REGISTRY["Flow"] = phase_flow
 PHASE_REGISTRY["ApprovalProcess"] = phase_approval_process
+PHASE_REGISTRY["LightningComponentBundle"] = phase_lightning_component_bundle
 
 
 def get_phase_function(entity_type: str) -> PhaseFunction:

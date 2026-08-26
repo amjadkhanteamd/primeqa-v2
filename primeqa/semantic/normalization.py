@@ -207,6 +207,38 @@ def _normalize_approval_process(raw: dict[str, Any]) -> dict[str, Any]:
     return _strip_volatile(raw)
 
 
+def _normalize_lwc_bundle(raw: dict[str, Any]) -> dict[str, Any]:
+    """3A-5 (SF-08): identity = DeveloperName; version = the normalised
+    source hash. The resource manifest carries per-file sha256 over
+    newline-normalised source, plus ``_source_hash`` over the sorted
+    manifest — so a source edit changes the normalized payload (a new
+    S1 version) and a no-op resync is byte-identical (no version)."""
+    import hashlib as _hashlib
+
+    manifest = []
+    for r in raw.get("_resources") or []:
+        source = (r.get("Source") or "").replace("\r\n", "\n")
+        manifest.append({
+            "file_path": r.get("FilePath"),
+            "format": r.get("Format"),
+            "source_sha256": _hashlib.sha256(
+                source.encode("utf-8")).hexdigest(),
+        })
+    manifest.sort(key=lambda m: m["file_path"] or "")
+    source_hash = _hashlib.sha256("\n".join(
+        f"{m['file_path']}:{m['source_sha256']}" for m in manifest
+    ).encode("utf-8")).hexdigest()
+    return {
+        "Id": raw.get("Id"),
+        "_developer_name": raw.get("DeveloperName"),
+        "namespace_prefix": raw.get("NamespacePrefix"),
+        "api_version": raw.get("ApiVersion"),
+        "description": raw.get("Description"),
+        "resources": manifest,
+        "_source_hash": source_hash,
+    }
+
+
 # ----------------------------------------------------------------------
 # Dispatcher
 # ----------------------------------------------------------------------
@@ -224,6 +256,7 @@ _NORMALIZERS: dict[str, Any] = {
     "ValidationRule":   _normalize_validation_rule,
     "Flow":             _normalize_flow,
     "ApprovalProcess":  _normalize_approval_process,
+    "LightningComponentBundle": _normalize_lwc_bundle,   # 3A-5
 }
 
 

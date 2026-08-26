@@ -48,7 +48,7 @@ class TestRunS1SyncReaperTick:
         store.reap_stale_jobs.assert_called_once()
         mock_runs.assert_called_once()
         # the stranded-run reaper receives the structural final phase + a window
-        assert mock_runs.call_args.kwargs["final_phase"] == "ApprovalProcess"  # D-308: the structural final phase
+        assert mock_runs.call_args.kwargs["final_phase"] == "LightningComponentBundle"  # 3A-5: the structural final phase (D-308.1 sentinel = ENTITY_ORDER[-1])
         assert mock_runs.call_args.kwargs["stale_minutes"] == 360
 
     def test_job_reap_failure_does_not_skip_run_reap(self) -> None:

@@ -2960,6 +2960,29 @@ def requirements_approve_drafts(req_id):
     return redirect(f"/requirements/{req_id}")
 
 
+@views_bp.route("/claim-sets/<claim_set_id>/approve", methods=["POST"])
+@role_required("admin", "ba", "tester", "superadmin")
+def claim_set_approve(claim_set_id):
+    """3A-3: ONE human act approves the enumerated claim_set (D3/F10).
+    Unlike the bulk route above, the act is fully attributed: real user id
+    + claim_set id ride every provenance event's event_data AND one
+    activity_log row (the audit the per-requirement bulk approve lacks)."""
+    from flask import flash
+    from primeqa.test_representation.claim_sets import (
+        approve_claim_set_for_tenant)
+    res = approve_claim_set_for_tenant(
+        request.user["tenant_id"], claim_set_id, request.user["id"])
+    if res.get("ok"):
+        flash(f"Claim set approved — {res['claims_promoted']} test case"
+              f"{'s' if res['claims_promoted'] != 1 else ''} and "
+              f"{res['recipes_promoted']} recipe"
+              f"{'s' if res['recipes_promoted'] != 1 else ''} promoted.",
+              "success")
+    else:
+        flash(f"Could not approve claim set: {res.get('error')}", "error")
+    return redirect(request.referrer or "/")
+
+
 @views_bp.route("/requirements/<int:req_id>/generation-runs/<uuid:request_id>")
 @login_required
 def requirements_generation_run_detail(req_id, request_id):

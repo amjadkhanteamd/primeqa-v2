@@ -310,6 +310,20 @@ def _to_text_approval_process(d: dict[str, Any]) -> str:
     )
 
 
+def _to_text_lwc_bundle(d: dict[str, Any]) -> str:
+    """3A-5: the Lightning component bundle in plain words."""
+    name = _str_or_default(d.get("name"), "(unnamed)")
+    description = _str_or_default_clean(
+        d.get("description"), "no description provided")
+    files = d.get("files") or []
+    file_list = ", ".join(f for f in files if f) or "(no source files)"
+    return (
+        f"Lightning web component bundle '{name}'. "
+        f"Description: {description}. "
+        f"Source files: {file_list}."
+    )
+
+
 # ----------------------------------------------------------------------
 # Dispatcher
 # ----------------------------------------------------------------------
@@ -327,6 +341,7 @@ _TEMPLATERS: dict[str, Any] = {
     "ValidationRule":   _to_text_validation_rule,
     "Flow":             _to_text_flow,
     "ApprovalProcess":  _to_text_approval_process,   # D-308
+    "LightningComponentBundle": _to_text_lwc_bundle,  # 3A-5
 }
 
 

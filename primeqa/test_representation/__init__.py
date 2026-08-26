@@ -113,6 +113,7 @@ from primeqa.test_representation.models.conditions import (
 from primeqa.test_representation.models.claims import (
     AutomationEffectClaimBody,
     ClaimBody,
+    ConformanceClaimBody,
     DataBehaviorClaimBody,
     ProhibitionClaimBody,
     StateTransitionClaimBody,
@@ -158,6 +159,7 @@ from primeqa.test_representation.models.recipes import (
     MetadataRecipeBody,
     ObservationRealizationBody,
     UIRecipeBody,
+    UiInspectionBody,
 )
 
 from primeqa.test_representation.models.recipes.callout_intercept import (
@@ -301,6 +303,7 @@ __all__ = [
     "SemanticConditionsBody",
     # ----- Claim bodies + unions -----
     "AutomationEffectClaimBody",
+    "ConformanceClaimBody",
     "ClaimBody",
     "DataBehaviorClaimBody",
     "ProhibitionClaimBody",
@@ -325,6 +328,7 @@ __all__ = [
     "MockResponse",
     "ObservationRealizationBody",
     "UIRecipeBody",
+    "UiInspectionBody",
     # ----- Execution environment + assumption shapes -----
     "AuthAssumption",
     "ExecutionEnvironmentBody",

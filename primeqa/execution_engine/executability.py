@@ -49,6 +49,15 @@ def check_recipe_executability(recipe) -> None:
                 translate_read(step)
     elif recipe.recipe_kind == "data-recipe":
         build_data_recipe_plan(recipe)
+    elif recipe.recipe_kind == "ui-inspection":
+        # Browser-plane kind (LLD 3A-2 §a): executed via the s4_ui_*
+        # manifest queue, never by the in-process S4 verticals. Honest
+        # refusal here; the browser-plane enqueue path wires in 3A-3.
+        raise PlanTranslationError(
+            "ui-inspection is a browser-plane kind; no in-process S4 "
+            "vertical executes it (dispatch via the UI manifest queue)",
+            recipe_id=recipe.recipe_id,
+        )
     else:
         raise PlanTranslationError(
             f"no S4 vertical executes recipe_kind={recipe.recipe_kind!r}",

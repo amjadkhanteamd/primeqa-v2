@@ -534,6 +534,20 @@ def _to_presentation_approval_process(
     }
 
 
+def _to_presentation_lwc_bundle(
+    normalized: dict[str, Any],
+) -> dict[str, Any]:
+    """3A-5: the bundle for semantic_text — name, api version, file
+    manifest (paths only; hashes are version machinery, not meaning)."""
+    return {
+        "name": normalized.get("_developer_name"),
+        "api_version": normalized.get("api_version"),
+        "description": normalized.get("description"),
+        "files": [m.get("file_path")
+                  for m in normalized.get("resources") or []],
+    }
+
+
 _PRESENTATION_FUNCTIONS: dict[str, Callable[[dict[str, Any]], dict[str, Any]]] = {
     "Object": _to_presentation_object,
     "PicklistValueSet": _to_presentation_picklist_value_set,
@@ -547,6 +561,7 @@ _PRESENTATION_FUNCTIONS: dict[str, Callable[[dict[str, Any]], dict[str, Any]]] =
     "User": _to_presentation_user,
     "Flow": _to_presentation_flow,
     "ApprovalProcess": _to_presentation_approval_process,   # D-308
+    "LightningComponentBundle": _to_presentation_lwc_bundle,  # 3A-5
     # Other entity types added by their respective phase cycles per
     # PHASE_2_PLAN_corrections.md §7.
 }

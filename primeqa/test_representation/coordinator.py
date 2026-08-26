@@ -98,8 +98,9 @@ _VALID_CLAIM_KINDS = frozenset({
     "existence-claim", "property-claim", "metadata-relationship-claim",
     # permission (2)
     "capability-claim", "sharing-rule-claim",
-    # ui (3)
+    # ui (4)
     "element-state-claim", "navigation-claim", "layout-claim",
+    "conformance-claim",
     # integration (4)
     "platform-event-claim", "outbound-message-claim",
     "callout-claim", "inbound-effect-claim",
@@ -120,6 +121,7 @@ _VALID_RECIPE_KINDS = frozenset({
     "ui-recipe",
     "event-subscription-recipe",
     "callout-intercept-recipe",
+    "ui-inspection",
 })
 
 
@@ -2244,8 +2246,15 @@ class SemanticTransactionCoordinator:
         actor: ActorKind,
         test_id: UUID,
         version_seq: int,
+        event_context: Optional[dict] = None,
     ) -> ClaimRead:
         """Promote a specific claim version to ``status='approved'``.
+
+        ``event_context`` (3A-3): optional attribution folded into the
+        provenance ``event_data`` — e.g. ``{"user_id": 7,
+        "claim_set_id": "…"}``. ``event_actor`` stays the D-ε-1 actor
+        kind; the REAL attribution rides event_data. Default ``None``
+        keeps every existing caller's event byte-identical.
 
         Per D-ε-1: humans only. The substrate's v1 conservative
         default refuses autonomous approval — S3's generations and
@@ -2305,6 +2314,7 @@ class SemanticTransactionCoordinator:
                 "version_seq": version_seq,
                 "prior_status": prior_status,
                 "new_status": "approved",
+                **(event_context or {}),
             },
             event_actor=actor,
         ))
@@ -2319,6 +2329,7 @@ class SemanticTransactionCoordinator:
         actor: ActorKind,
         recipe_id: UUID,
         version_seq: int,
+        event_context: Optional[dict] = None,
     ) -> RecipeRead:
         """Promote a specific recipe version to
         ``status='approved'``.
@@ -2326,7 +2337,8 @@ class SemanticTransactionCoordinator:
         Parallel of :meth:`promote_claim_to_approved` for
         recipes. Same humans-only authority per D-ε-1, same
         in-place mutation semantics, same no-op behavior when
-        already approved.
+        already approved. Same optional ``event_context``
+        attribution (3A-3), default ``None`` byte-identical.
 
         Status transitions:
           - ``generated_unapproved`` → ``approved``
@@ -2376,6 +2388,7 @@ class SemanticTransactionCoordinator:
                 "version_seq": version_seq,
                 "prior_status": prior_status,
                 "new_status": "approved",
+                **(event_context or {}),
             },
             event_actor=actor,
         ))

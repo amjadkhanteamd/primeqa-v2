@@ -1,0 +1,1162 @@
+{
+ "derivation": {
+  "engine": "axe-core",
+  "engine_version": "4.13.0",
+  "artifact_sha256": "c24f097bd2f451d4f933e8bc7d8d539f8672a2ebcb5cc9f9f3eec8ca9470a0c1",
+  "artifact_repo_path": "primeqa/browser_worker/vendor/axe.min.js",
+  "method": "axe.getRules() on the pinned vendored artifact, offline, at seed-authoring time (LLD 3A-1 \u00a73)",
+  "id_assignment": "engine rule ids sorted lexicographically, numbered PLM-A11Y-001.. \u2014 FROZEN, never renumbered",
+  "wcag411_exclusion": {
+   "reason": "criterion 4.1.1 (parsing) is removed in WCAG 2.2",
+   "engine_rules_affected": [
+    "duplicate-id",
+    "duplicate-id-active"
+   ]
+  },
+  "capability_note": "All seeded rules are engine-automated -> AUTO. The HUMAN_WITH_CANDIDATE population (incomplete-prone rules) arrives with the result-processor Class-3 feed as lifecycle version bumps \u2014 not fabricated at seed time.",
+  "acc05_cross_list": {
+   "source": "ACC-05 automated rule list, requirements baseline v3.1 (verbatim, 16 items; supplied by AK 2026-08-24)",
+   "tally": {
+    "CLOSED": 14,
+    "PARTIAL": 1,
+    "MOVED_TO_ACC06": 1,
+    "of_items": 15
+   },
+   "brief_expectation_vs_ground_truth": "initial ground truth (2026-08-24) was 12 CLOSED + 1 PARTIAL + 3 OPEN vs the brief's 15/16. Resolved 2026-08-25: headings + landmarks CLOSED via the live lifecycle (PLM-A11Y-069..072, migration 064, Plimsol mapping authority); status messages MOVED to ACC-06/Mode B (D-462, item count 16 -> 15). FINAL: 14 CLOSED + 1 PARTIAL of 15.",
+   "items": [
+    {
+     "item": "contrast",
+     "status": "CLOSED",
+     "plm_ids": [
+      "PLM-A11Y-029",
+      "PLM-A11Y-030"
+     ]
+    },
+    {
+     "item": "text alternatives",
+     "status": "CLOSED",
+     "plm_ids": [
+      "PLM-A11Y-001",
+      "PLM-A11Y-043",
+      "PLM-A11Y-045",
+      "PLM-A11Y-057",
+      "PLM-A11Y-058",
+      "PLM-A11Y-063"
+     ]
+    },
+    {
+     "item": "form labels",
+     "status": "CLOSED",
+     "plm_ids": [
+      "PLM-A11Y-009",
+      "PLM-A11Y-019",
+      "PLM-A11Y-035",
+      "PLM-A11Y-046",
+      "PLM-A11Y-060"
+     ]
+    },
+    {
+     "item": "headings",
+     "status": "CLOSED",
+     "plm_ids": [
+      "PLM-A11Y-069",
+      "PLM-A11Y-070"
+     ],
+     "note": "closed 2026-08-25 via the LIVE rule lifecycle (migration 064): PLM-A11Y-069 (heading-order) + PLM-A11Y-070 (empty-heading), WCAG22 1.3.1, Plimsol mapping under registry authority (TA review pt 13) \u2014 axe tags these best-practice and declines the normative claim; Plimsol makes it."
+    },
+    {
+     "item": "landmarks",
+     "status": "CLOSED",
+     "plm_ids": [
+      "PLM-A11Y-071",
+      "PLM-A11Y-072"
+     ],
+     "note": "closed 2026-08-25 via the LIVE rule lifecycle (migration 064): PLM-A11Y-071 (region) + PLM-A11Y-072 (landmark-one-main), WCAG22 1.3.1 + 2.4.1, same Plimsol-mapping-authority judgment."
+    },
+    {
+     "item": "ARIA validity",
+     "status": "CLOSED",
+     "plm_ids": [
+      "PLM-A11Y-002",
+      "PLM-A11Y-005",
+      "PLM-A11Y-006",
+      "PLM-A11Y-012",
+      "PLM-A11Y-013",
+      "PLM-A11Y-014",
+      "PLM-A11Y-015",
+      "PLM-A11Y-017",
+      "PLM-A11Y-021",
+      "PLM-A11Y-022"
+     ]
+    },
+    {
+     "item": "duplicate IDs",
+     "status": "PARTIAL",
+     "plm_ids": [
+      "PLM-A11Y-034"
+     ],
+     "note": "duplicate-id-aria (ARIA id references, WCAG 4.1.2) IS seeded; the generic duplicate-id / duplicate-id-active are 4.1.1-only and 4.1.1 is removed in WCAG 2.2 \u2014 see the collision ruling: the pair takes next-available ids at append time when the first non-WCAG22 standard map lands (R2); never reserved, never renumbered."
+    },
+    {
+     "item": "link purpose",
+     "status": "CLOSED",
+     "plm_ids": [
+      "PLM-A11Y-042",
+      "PLM-A11Y-048"
+     ]
+    },
+    {
+     "item": "button/input names",
+     "status": "CLOSED",
+     "plm_ids": [
+      "PLM-A11Y-004",
+      "PLM-A11Y-027",
+      "PLM-A11Y-044",
+      "PLM-A11Y-062"
+     ]
+    },
+    {
+     "item": "document language",
+     "status": "CLOSED",
+     "plm_ids": [
+      "PLM-A11Y-039",
+      "PLM-A11Y-040",
+      "PLM-A11Y-041",
+      "PLM-A11Y-067"
+     ]
+    },
+    {
+     "item": "page title",
+     "status": "CLOSED",
+     "plm_ids": [
+      "PLM-A11Y-033"
+     ]
+    },
+    {
+     "item": "iframe titles",
+     "status": "CLOSED",
+     "plm_ids": [
+      "PLM-A11Y-037",
+      "PLM-A11Y-038"
+     ]
+    },
+    {
+     "item": "status messages",
+     "status": "MOVED-TO-ACC-06",
+     "plm_ids": [],
+     "note": "D-462 (2026-08-25): post-freeze baseline change per \u00a711 \u2014 moves to ACC-06/Mode B where announcement verification belongs; axe 4.13.0 maps zero rules to 4.1.3 and announcement requires action context. ACC-05 item count 16 -> 15."
+    },
+    {
+     "item": "focusable elements",
+     "status": "CLOSED",
+     "plm_ids": [
+      "PLM-A11Y-008",
+      "PLM-A11Y-036",
+      "PLM-A11Y-055",
+      "PLM-A11Y-059"
+     ]
+    },
+    {
+     "item": "semantic structure",
+     "status": "CLOSED",
+     "plm_ids": [
+      "PLM-A11Y-031",
+      "PLM-A11Y-032",
+      "PLM-A11Y-049",
+      "PLM-A11Y-050",
+      "PLM-A11Y-065",
+      "PLM-A11Y-066"
+     ]
+    },
+    {
+     "item": "target size",
+     "status": "CLOSED",
+     "plm_ids": [
+      "PLM-A11Y-064"
+     ]
+    }
+   ]
+  },
+  "set_review_principle": "D3 claim_set analog: set-level human review (this fixture's PR) with per-item inspectability (line-reviewable).",
+  "wcag411_collision_ruling": "ACC-05/WCAG-2.2 collision, ruled 2026-08-24 (wording amended 2026-08-25: ids are assigned at APPEND TIME, never reserved): duplicate-id rules are excluded from the WCAG22 seed (criterion 4.1.1 removed in WCAG 2.2) but remain VALID RULE ATOMS \u2014 EN 301 549 / Section 508 bind WCAG 2.0/2.1 where 4.1.1 persists. Plan: the duplicate-id pair takes the NEXT-AVAILABLE PLM-A11Y ids at append time when the first non-WCAG22 standard map lands (R2); ids once assigned never renumber. ACC-05's 'duplicate IDs' item then closes fully via those maps. Fork B / D2: rules are atoms, standards are maps \u2014 this is the model's first live proof.",
+  "generation_note": "provenance carries POST-GENERATION review records (the ACC-05 cross-list and rulings above). scripts/gen_s5_seed.py regenerates the rules array; review records must be preserved on regeneration, never blindly overwritten."
+ },
+ "rules": [
+  {
+   "plm_id": "PLM-A11Y-001",
+   "engine_rule_id": "area-alt",
+   "name": "Active <area> elements must have alternative text",
+   "description": "Ensure <area> elements of image maps have alternative text",
+   "automation_capability": "AUTO",
+   "human_review_required": false,
+   "wcag22": [
+    {
+     "criterion": "2.4.4",
+     "level": "A"
+    },
+    {
+     "criterion": "4.1.2",
+     "level": "A"
+    }
+   ]
+  },
+  {
+   "plm_id": "PLM-A11Y-002",
+   "engine_rule_id": "aria-allowed-attr",
+   "name": "Elements must only use supported ARIA attributes",
+   "description": "Ensure an element's role supports its ARIA attributes",
+   "automation_capability": "AUTO",
+   "human_review_required": false,
+   "wcag22": [
+    {
+     "criterion": "4.1.2",
+     "level": "A"
+    }
+   ]
+  },
+  {
+   "plm_id": "PLM-A11Y-003",
+   "engine_rule_id": "aria-braille-equivalent",
+   "name": "aria-braille attributes must have a non-braille equivalent",
+   "description": "Ensure aria-braillelabel and aria-brailleroledescription have a non-braille equivalent",
+   "automation_capability": "AUTO",
+   "human_review_required": false,
+   "wcag22": [
+    {
+     "criterion": "4.1.2",
+     "level": "A"
+    }
+   ]
+  },
+  {
+   "plm_id": "PLM-A11Y-004",
+   "engine_rule_id": "aria-command-name",
+   "name": "ARIA commands must have an accessible name",
+   "description": "Ensure every ARIA button, link and menuitem has an accessible name",
+   "automation_capability": "AUTO",
+   "human_review_required": false,
+   "wcag22": [
+    {
+     "criterion": "4.1.2",
+     "level": "A"
+    }
+   ]
+  },
+  {
+   "plm_id": "PLM-A11Y-005",
+   "engine_rule_id": "aria-conditional-attr",
+   "name": "ARIA attributes must be used as specified for the element's role",
+   "description": "Ensure ARIA attributes are used as described in the specification of the element's role",
+   "automation_capability": "AUTO",
+   "human_review_required": false,
+   "wcag22": [
+    {
+     "criterion": "4.1.2",
+     "level": "A"
+    }
+   ]
+  },
+  {
+   "plm_id": "PLM-A11Y-006",
+   "engine_rule_id": "aria-deprecated-role",
+   "name": "Deprecated ARIA roles must not be used",
+   "description": "Ensure elements do not use deprecated roles",
+   "automation_capability": "AUTO",
+   "human_review_required": false,
+   "wcag22": [
+    {
+     "criterion": "4.1.2",
+     "level": "A"
+    }
+   ]
+  },
+  {
+   "plm_id": "PLM-A11Y-007",
+   "engine_rule_id": "aria-hidden-body",
+   "name": "aria-hidden=\"true\" must not be present on the document body",
+   "description": "Ensure aria-hidden=\"true\" is not present on the document body.",
+   "automation_capability": "AUTO",
+   "human_review_required": false,
+   "wcag22": [
+    {
+     "criterion": "1.3.1",
+     "level": "A"
+    },
+    {
+     "criterion": "4.1.2",
+     "level": "A"
+    }
+   ]
+  },
+  {
+   "plm_id": "PLM-A11Y-008",
+   "engine_rule_id": "aria-hidden-focus",
+   "name": "ARIA hidden element must not be focusable or contain focusable elements",
+   "description": "Ensure aria-hidden elements are not focusable nor contain focusable elements",
+   "automation_capability": "AUTO",
+   "human_review_required": false,
+   "wcag22": [
+    {
+     "criterion": "4.1.2",
+     "level": "A"
+    }
+   ]
+  },
+  {
+   "plm_id": "PLM-A11Y-009",
+   "engine_rule_id": "aria-input-field-name",
+   "name": "ARIA input fields must have an accessible name",
+   "description": "Ensure every ARIA input field has an accessible name",
+   "automation_capability": "AUTO",
+   "human_review_required": false,
+   "wcag22": [
+    {
+     "criterion": "4.1.2",
+     "level": "A"
+    }
+   ]
+  },
+  {
+   "plm_id": "PLM-A11Y-010",
+   "engine_rule_id": "aria-meter-name",
+   "name": "ARIA meter nodes must have an accessible name",
+   "description": "Ensure every ARIA meter node has an accessible name",
+   "automation_capability": "AUTO",
+   "human_review_required": false,
+   "wcag22": [
+    {
+     "criterion": "1.1.1",
+     "level": "A"
+    }
+   ]
+  },
+  {
+   "plm_id": "PLM-A11Y-011",
+   "engine_rule_id": "aria-progressbar-name",
+   "name": "ARIA progressbar nodes must have an accessible name",
+   "description": "Ensure every ARIA progressbar node has an accessible name",
+   "automation_capability": "AUTO",
+   "human_review_required": false,
+   "wcag22": [
+    {
+     "criterion": "1.1.1",
+     "level": "A"
+    }
+   ]
+  },
+  {
+   "plm_id": "PLM-A11Y-012",
+   "engine_rule_id": "aria-prohibited-attr",
+   "name": "Elements must only use permitted ARIA attributes",
+   "description": "Ensure ARIA attributes are not prohibited for an element's role",
+   "automation_capability": "AUTO",
+   "human_review_required": false,
+   "wcag22": [
+    {
+     "criterion": "4.1.2",
+     "level": "A"
+    }
+   ]
+  },
+  {
+   "plm_id": "PLM-A11Y-013",
+   "engine_rule_id": "aria-required-attr",
+   "name": "Required ARIA attributes must be provided",
+   "description": "Ensure elements with ARIA roles have all required ARIA attributes",
+   "automation_capability": "AUTO",
+   "human_review_required": false,
+   "wcag22": [
+    {
+     "criterion": "4.1.2",
+     "level": "A"
+    }
+   ]
+  },
+  {
+   "plm_id": "PLM-A11Y-014",
+   "engine_rule_id": "aria-required-children",
+   "name": "Certain ARIA roles must contain particular children",
+   "description": "Ensure elements with an ARIA role that require child roles contain them",
+   "automation_capability": "AUTO",
+   "human_review_required": false,
+   "wcag22": [
+    {
+     "criterion": "1.3.1",
+     "level": "A"
+    }
+   ]
+  },
+  {
+   "plm_id": "PLM-A11Y-015",
+   "engine_rule_id": "aria-required-parent",
+   "name": "Certain ARIA roles must be contained by particular parents",
+   "description": "Ensure elements with an ARIA role that require parent roles are contained by them",
+   "automation_capability": "AUTO",
+   "human_review_required": false,
+   "wcag22": [
+    {
+     "criterion": "1.3.1",
+     "level": "A"
+    }
+   ]
+  },
+  {
+   "plm_id": "PLM-A11Y-016",
+   "engine_rule_id": "aria-roledescription",
+   "name": "aria-roledescription must be on elements with a semantic role",
+   "description": "Ensure aria-roledescription is only used on elements with an implicit or explicit role",
+   "automation_capability": "AUTO",
+   "human_review_required": false,
+   "wcag22": [
+    {
+     "criterion": "4.1.2",
+     "level": "A"
+    }
+   ]
+  },
+  {
+   "plm_id": "PLM-A11Y-017",
+   "engine_rule_id": "aria-roles",
+   "name": "ARIA roles used must conform to valid values",
+   "description": "Ensure all elements with a role attribute use a valid value",
+   "automation_capability": "AUTO",
+   "human_review_required": false,
+   "wcag22": [
+    {
+     "criterion": "4.1.2",
+     "level": "A"
+    }
+   ]
+  },
+  {
+   "plm_id": "PLM-A11Y-018",
+   "engine_rule_id": "aria-tab-name",
+   "name": "ARIA tab nodes must have an accessible name",
+   "description": "Ensure every ARIA tab node has an accessible name",
+   "automation_capability": "AUTO",
+   "human_review_required": false,
+   "wcag22": [
+    {
+     "criterion": "4.1.2",
+     "level": "A"
+    }
+   ]
+  },
+  {
+   "plm_id": "PLM-A11Y-019",
+   "engine_rule_id": "aria-toggle-field-name",
+   "name": "ARIA toggle fields must have an accessible name",
+   "description": "Ensure every ARIA toggle field has an accessible name",
+   "automation_capability": "AUTO",
+   "human_review_required": false,
+   "wcag22": [
+    {
+     "criterion": "4.1.2",
+     "level": "A"
+    }
+   ]
+  },
+  {
+   "plm_id": "PLM-A11Y-020",
+   "engine_rule_id": "aria-tooltip-name",
+   "name": "ARIA tooltip nodes must have an accessible name",
+   "description": "Ensure every ARIA tooltip node has an accessible name",
+   "automation_capability": "AUTO",
+   "human_review_required": false,
+   "wcag22": [
+    {
+     "criterion": "4.1.2",
+     "level": "A"
+    }
+   ]
+  },
+  {
+   "plm_id": "PLM-A11Y-021",
+   "engine_rule_id": "aria-valid-attr",
+   "name": "ARIA attributes must conform to valid names",
+   "description": "Ensure attributes that begin with aria- are valid ARIA attributes",
+   "automation_capability": "AUTO",
+   "human_review_required": false,
+   "wcag22": [
+    {
+     "criterion": "4.1.2",
+     "level": "A"
+    }
+   ]
+  },
+  {
+   "plm_id": "PLM-A11Y-022",
+   "engine_rule_id": "aria-valid-attr-value",
+   "name": "ARIA attributes must conform to valid values",
+   "description": "Ensure all ARIA attributes have valid values",
+   "automation_capability": "AUTO",
+   "human_review_required": false,
+   "wcag22": [
+    {
+     "criterion": "4.1.2",
+     "level": "A"
+    }
+   ]
+  },
+  {
+   "plm_id": "PLM-A11Y-023",
+   "engine_rule_id": "audio-caption",
+   "name": "<audio> elements must have a captions track",
+   "description": "Ensure <audio> elements have captions",
+   "automation_capability": "AUTO",
+   "human_review_required": false,
+   "wcag22": [
+    {
+     "criterion": "1.2.1",
+     "level": "A"
+    }
+   ]
+  },
+  {
+   "plm_id": "PLM-A11Y-024",
+   "engine_rule_id": "autocomplete-valid",
+   "name": "autocomplete attribute must be used correctly",
+   "description": "Ensure the autocomplete attribute is correct and suitable for the form field",
+   "automation_capability": "AUTO",
+   "human_review_required": false,
+   "wcag22": [
+    {
+     "criterion": "1.3.5",
+     "level": "AA"
+    }
+   ]
+  },
+  {
+   "plm_id": "PLM-A11Y-025",
+   "engine_rule_id": "avoid-inline-spacing",
+   "name": "Inline text spacing must be adjustable with custom stylesheets",
+   "description": "Ensure that text spacing set through style attributes can be adjusted with custom stylesheets",
+   "automation_capability": "AUTO",
+   "human_review_required": false,
+   "wcag22": [
+    {
+     "criterion": "1.4.12",
+     "level": "AA"
+    }
+   ]
+  },
+  {
+   "plm_id": "PLM-A11Y-026",
+   "engine_rule_id": "blink",
+   "name": "<blink> elements are deprecated and must not be used",
+   "description": "Ensure <blink> elements are not used",
+   "automation_capability": "AUTO",
+   "human_review_required": false,
+   "wcag22": [
+    {
+     "criterion": "2.2.2",
+     "level": "A"
+    }
+   ]
+  },
+  {
+   "plm_id": "PLM-A11Y-027",
+   "engine_rule_id": "button-name",
+   "name": "Buttons must have discernible text",
+   "description": "Ensure buttons have discernible text",
+   "automation_capability": "AUTO",
+   "human_review_required": false,
+   "wcag22": [
+    {
+     "criterion": "4.1.2",
+     "level": "A"
+    }
+   ]
+  },
+  {
+   "plm_id": "PLM-A11Y-028",
+   "engine_rule_id": "bypass",
+   "name": "Page must have means to bypass repeated blocks",
+   "description": "Ensure each page has at least one mechanism for a user to bypass navigation and jump straight to the content",
+   "automation_capability": "AUTO",
+   "human_review_required": false,
+   "wcag22": [
+    {
+     "criterion": "2.4.1",
+     "level": "A"
+    }
+   ]
+  },
+  {
+   "plm_id": "PLM-A11Y-029",
+   "engine_rule_id": "color-contrast",
+   "name": "Elements must meet minimum color contrast ratio thresholds",
+   "description": "Ensure the contrast between foreground and background colors meets WCAG 2 AA minimum contrast ratio thresholds",
+   "automation_capability": "AUTO",
+   "human_review_required": false,
+   "wcag22": [
+    {
+     "criterion": "1.4.3",
+     "level": "AA"
+    }
+   ]
+  },
+  {
+   "plm_id": "PLM-A11Y-030",
+   "engine_rule_id": "color-contrast-enhanced",
+   "name": "Elements must meet enhanced color contrast ratio thresholds",
+   "description": "Ensure the contrast between foreground and background colors meets WCAG 2 AAA enhanced contrast ratio thresholds",
+   "automation_capability": "AUTO",
+   "human_review_required": false,
+   "wcag22": [
+    {
+     "criterion": "1.4.6",
+     "level": "AAA"
+    }
+   ]
+  },
+  {
+   "plm_id": "PLM-A11Y-031",
+   "engine_rule_id": "definition-list",
+   "name": "<dl> elements must only directly contain properly-ordered <dt> and <dd> groups, <script>, <template> or <div> elements",
+   "description": "Ensure <dl> elements are structured correctly",
+   "automation_capability": "AUTO",
+   "human_review_required": false,
+   "wcag22": [
+    {
+     "criterion": "1.3.1",
+     "level": "A"
+    }
+   ]
+  },
+  {
+   "plm_id": "PLM-A11Y-032",
+   "engine_rule_id": "dlitem",
+   "name": "<dt> and <dd> elements must be contained by a <dl>",
+   "description": "Ensure <dt> and <dd> elements are contained by a <dl>",
+   "automation_capability": "AUTO",
+   "human_review_required": false,
+   "wcag22": [
+    {
+     "criterion": "1.3.1",
+     "level": "A"
+    }
+   ]
+  },
+  {
+   "plm_id": "PLM-A11Y-033",
+   "engine_rule_id": "document-title",
+   "name": "Documents must have <title> element to aid in navigation",
+   "description": "Ensure each HTML document contains a non-empty <title> element",
+   "automation_capability": "AUTO",
+   "human_review_required": false,
+   "wcag22": [
+    {
+     "criterion": "2.4.2",
+     "level": "A"
+    }
+   ]
+  },
+  {
+   "plm_id": "PLM-A11Y-034",
+   "engine_rule_id": "duplicate-id-aria",
+   "name": "IDs used in ARIA and labels must be unique",
+   "description": "Ensure every id attribute value used in ARIA and in labels is unique",
+   "automation_capability": "AUTO",
+   "human_review_required": false,
+   "wcag22": [
+    {
+     "criterion": "4.1.2",
+     "level": "A"
+    }
+   ]
+  },
+  {
+   "plm_id": "PLM-A11Y-035",
+   "engine_rule_id": "form-field-multiple-labels",
+   "name": "Form field must not have multiple label elements",
+   "description": "Ensure form field does not have multiple label elements",
+   "automation_capability": "AUTO",
+   "human_review_required": false,
+   "wcag22": [
+    {
+     "criterion": "3.3.2",
+     "level": "A"
+    }
+   ]
+  },
+  {
+   "plm_id": "PLM-A11Y-036",
+   "engine_rule_id": "frame-focusable-content",
+   "name": "Frames with focusable content must not have tabindex=-1",
+   "description": "Ensure <frame> and <iframe> elements with focusable content do not have tabindex=-1",
+   "automation_capability": "AUTO",
+   "human_review_required": false,
+   "wcag22": [
+    {
+     "criterion": "2.1.1",
+     "level": "A"
+    }
+   ]
+  },
+  {
+   "plm_id": "PLM-A11Y-037",
+   "engine_rule_id": "frame-title",
+   "name": "Frames must have an accessible name",
+   "description": "Ensure <iframe> and <frame> elements have an accessible name",
+   "automation_capability": "AUTO",
+   "human_review_required": false,
+   "wcag22": [
+    {
+     "criterion": "4.1.2",
+     "level": "A"
+    }
+   ]
+  },
+  {
+   "plm_id": "PLM-A11Y-038",
+   "engine_rule_id": "frame-title-unique",
+   "name": "Frames must have a unique title attribute",
+   "description": "Ensure <iframe> and <frame> elements contain a unique title attribute",
+   "automation_capability": "AUTO",
+   "human_review_required": false,
+   "wcag22": [
+    {
+     "criterion": "4.1.2",
+     "level": "A"
+    }
+   ]
+  },
+  {
+   "plm_id": "PLM-A11Y-039",
+   "engine_rule_id": "html-has-lang",
+   "name": "<html> element must have a lang attribute",
+   "description": "Ensure every HTML document has a lang attribute",
+   "automation_capability": "AUTO",
+   "human_review_required": false,
+   "wcag22": [
+    {
+     "criterion": "3.1.1",
+     "level": "A"
+    }
+   ]
+  },
+  {
+   "plm_id": "PLM-A11Y-040",
+   "engine_rule_id": "html-lang-valid",
+   "name": "<html> element must have a valid value for the lang attribute",
+   "description": "Ensure the lang attribute of the <html> element has a valid value",
+   "automation_capability": "AUTO",
+   "human_review_required": false,
+   "wcag22": [
+    {
+     "criterion": "3.1.1",
+     "level": "A"
+    }
+   ]
+  },
+  {
+   "plm_id": "PLM-A11Y-041",
+   "engine_rule_id": "html-xml-lang-mismatch",
+   "name": "HTML elements with lang and xml:lang must have the same base language",
+   "description": "Ensure that HTML elements with both valid lang and xml:lang attributes agree on the base language of the page",
+   "automation_capability": "AUTO",
+   "human_review_required": false,
+   "wcag22": [
+    {
+     "criterion": "3.1.1",
+     "level": "A"
+    }
+   ]
+  },
+  {
+   "plm_id": "PLM-A11Y-042",
+   "engine_rule_id": "identical-links-same-purpose",
+   "name": "Links with the same name must have a similar purpose",
+   "description": "Ensure that links with the same accessible name serve a similar purpose",
+   "automation_capability": "AUTO",
+   "human_review_required": false,
+   "wcag22": [
+    {
+     "criterion": "2.4.9",
+     "level": "AAA"
+    }
+   ]
+  },
+  {
+   "plm_id": "PLM-A11Y-043",
+   "engine_rule_id": "image-alt",
+   "name": "Images must have alternative text",
+   "description": "Ensure <img> elements have alternative text or a role of none or presentation",
+   "automation_capability": "AUTO",
+   "human_review_required": false,
+   "wcag22": [
+    {
+     "criterion": "1.1.1",
+     "level": "A"
+    }
+   ]
+  },
+  {
+   "plm_id": "PLM-A11Y-044",
+   "engine_rule_id": "input-button-name",
+   "name": "Input buttons must have discernible text",
+   "description": "Ensure input buttons have discernible text",
+   "automation_capability": "AUTO",
+   "human_review_required": false,
+   "wcag22": [
+    {
+     "criterion": "4.1.2",
+     "level": "A"
+    }
+   ]
+  },
+  {
+   "plm_id": "PLM-A11Y-045",
+   "engine_rule_id": "input-image-alt",
+   "name": "Image buttons must have alternative text",
+   "description": "Ensure <input type=\"image\"> elements have alternative text",
+   "automation_capability": "AUTO",
+   "human_review_required": false,
+   "wcag22": [
+    {
+     "criterion": "1.1.1",
+     "level": "A"
+    },
+    {
+     "criterion": "4.1.2",
+     "level": "A"
+    }
+   ]
+  },
+  {
+   "plm_id": "PLM-A11Y-046",
+   "engine_rule_id": "label",
+   "name": "Form elements must have labels",
+   "description": "Ensure every form element has a label",
+   "automation_capability": "AUTO",
+   "human_review_required": false,
+   "wcag22": [
+    {
+     "criterion": "4.1.2",
+     "level": "A"
+    }
+   ]
+  },
+  {
+   "plm_id": "PLM-A11Y-047",
+   "engine_rule_id": "link-in-text-block",
+   "name": "Links must be distinguishable without relying on color",
+   "description": "Ensure links are distinguished from surrounding text in a way that does not rely on color",
+   "automation_capability": "AUTO",
+   "human_review_required": false,
+   "wcag22": [
+    {
+     "criterion": "1.4.1",
+     "level": "A"
+    }
+   ]
+  },
+  {
+   "plm_id": "PLM-A11Y-048",
+   "engine_rule_id": "link-name",
+   "name": "Links must have discernible text",
+   "description": "Ensure links have discernible text",
+   "automation_capability": "AUTO",
+   "human_review_required": false,
+   "wcag22": [
+    {
+     "criterion": "2.4.4",
+     "level": "A"
+    },
+    {
+     "criterion": "4.1.2",
+     "level": "A"
+    }
+   ]
+  },
+  {
+   "plm_id": "PLM-A11Y-049",
+   "engine_rule_id": "list",
+   "name": "<ul> and <ol> must only directly contain <li>, <script> or <template> elements",
+   "description": "Ensure that lists are structured correctly",
+   "automation_capability": "AUTO",
+   "human_review_required": false,
+   "wcag22": [
+    {
+     "criterion": "1.3.1",
+     "level": "A"
+    }
+   ]
+  },
+  {
+   "plm_id": "PLM-A11Y-050",
+   "engine_rule_id": "listitem",
+   "name": "<li> elements must be contained in a <ul> or <ol>",
+   "description": "Ensure <li> elements are used semantically",
+   "automation_capability": "AUTO",
+   "human_review_required": false,
+   "wcag22": [
+    {
+     "criterion": "1.3.1",
+     "level": "A"
+    }
+   ]
+  },
+  {
+   "plm_id": "PLM-A11Y-051",
+   "engine_rule_id": "marquee",
+   "name": "<marquee> elements are deprecated and must not be used",
+   "description": "Ensure <marquee> elements are not used",
+   "automation_capability": "AUTO",
+   "human_review_required": false,
+   "wcag22": [
+    {
+     "criterion": "2.2.2",
+     "level": "A"
+    }
+   ]
+  },
+  {
+   "plm_id": "PLM-A11Y-052",
+   "engine_rule_id": "meta-refresh",
+   "name": "Delayed refresh under 20 hours must not be used",
+   "description": "Ensure <meta http-equiv=\"refresh\"> is not used for delayed refresh",
+   "automation_capability": "AUTO",
+   "human_review_required": false,
+   "wcag22": [
+    {
+     "criterion": "2.2.1",
+     "level": "A"
+    }
+   ]
+  },
+  {
+   "plm_id": "PLM-A11Y-053",
+   "engine_rule_id": "meta-refresh-no-exceptions",
+   "name": "Delayed refresh must not be used",
+   "description": "Ensure <meta http-equiv=\"refresh\"> is not used for delayed refresh",
+   "automation_capability": "AUTO",
+   "human_review_required": false,
+   "wcag22": [
+    {
+     "criterion": "2.2.4",
+     "level": "AAA"
+    },
+    {
+     "criterion": "3.2.5",
+     "level": "AAA"
+    }
+   ]
+  },
+  {
+   "plm_id": "PLM-A11Y-054",
+   "engine_rule_id": "meta-viewport",
+   "name": "Zooming and scaling must not be disabled",
+   "description": "Ensure <meta name=\"viewport\"> does not disable text scaling and zooming",
+   "automation_capability": "AUTO",
+   "human_review_required": false,
+   "wcag22": [
+    {
+     "criterion": "1.4.4",
+     "level": "AA"
+    }
+   ]
+  },
+  {
+   "plm_id": "PLM-A11Y-055",
+   "engine_rule_id": "nested-interactive",
+   "name": "Interactive controls must not be nested",
+   "description": "Ensure interactive controls are not nested as they are not always announced by screen readers or can cause focus problems for assistive technologies",
+   "automation_capability": "AUTO",
+   "human_review_required": false,
+   "wcag22": [
+    {
+     "criterion": "4.1.2",
+     "level": "A"
+    }
+   ]
+  },
+  {
+   "plm_id": "PLM-A11Y-056",
+   "engine_rule_id": "no-autoplay-audio",
+   "name": "<video> or <audio> elements must not play automatically",
+   "description": "Ensure <video> or <audio> elements do not autoplay audio for more than 3 seconds without a control mechanism to stop or mute the audio",
+   "automation_capability": "AUTO",
+   "human_review_required": false,
+   "wcag22": [
+    {
+     "criterion": "1.4.2",
+     "level": "A"
+    }
+   ]
+  },
+  {
+   "plm_id": "PLM-A11Y-057",
+   "engine_rule_id": "object-alt",
+   "name": "<object> elements must have alternative text",
+   "description": "Ensure <object> elements have alternative text",
+   "automation_capability": "AUTO",
+   "human_review_required": false,
+   "wcag22": [
+    {
+     "criterion": "1.1.1",
+     "level": "A"
+    }
+   ]
+  },
+  {
+   "plm_id": "PLM-A11Y-058",
+   "engine_rule_id": "role-img-alt",
+   "name": "[role=\"img\"] and [role=\"image\"] elements must have alternative text",
+   "description": "Ensure [role=\"img\"] and [role=\"image\"] elements have alternative text",
+   "automation_capability": "AUTO",
+   "human_review_required": false,
+   "wcag22": [
+    {
+     "criterion": "1.1.1",
+     "level": "A"
+    }
+   ]
+  },
+  {
+   "plm_id": "PLM-A11Y-059",
+   "engine_rule_id": "scrollable-region-focusable",
+   "name": "Scrollable region must have keyboard access",
+   "description": "Ensure elements that have scrollable content are accessible by keyboard in Safari",
+   "automation_capability": "AUTO",
+   "human_review_required": false,
+   "wcag22": [
+    {
+     "criterion": "2.1.1",
+     "level": "A"
+    },
+    {
+     "criterion": "2.1.3",
+     "level": "A"
+    }
+   ]
+  },
+  {
+   "plm_id": "PLM-A11Y-060",
+   "engine_rule_id": "select-name",
+   "name": "Select element must have an accessible name",
+   "description": "Ensure select element has an accessible name",
+   "automation_capability": "AUTO",
+   "human_review_required": false,
+   "wcag22": [
+    {
+     "criterion": "4.1.2",
+     "level": "A"
+    }
+   ]
+  },
+  {
+   "plm_id": "PLM-A11Y-061",
+   "engine_rule_id": "server-side-image-map",
+   "name": "Server-side image maps must not be used",
+   "description": "Ensure that server-side image maps are not used",
+   "automation_capability": "AUTO",
+   "human_review_required": false,
+   "wcag22": [
+    {
+     "criterion": "2.1.1",
+     "level": "A"
+    }
+   ]
+  },
+  {
+   "plm_id": "PLM-A11Y-062",
+   "engine_rule_id": "summary-name",
+   "name": "Summary elements must have discernible text",
+   "description": "Ensure summary elements have discernible text",
+   "automation_capability": "AUTO",
+   "human_review_required": false,
+   "wcag22": [
+    {
+     "criterion": "4.1.2",
+     "level": "A"
+    }
+   ]
+  },
+  {
+   "plm_id": "PLM-A11Y-063",
+   "engine_rule_id": "svg-img-alt",
+   "name": "<svg> elements with an img or image role must have alternative text",
+   "description": "Ensure <svg> elements with an img, image, graphics-document or graphics-symbol role have accessible text",
+   "automation_capability": "AUTO",
+   "human_review_required": false,
+   "wcag22": [
+    {
+     "criterion": "1.1.1",
+     "level": "A"
+    }
+   ]
+  },
+  {
+   "plm_id": "PLM-A11Y-064",
+   "engine_rule_id": "target-size",
+   "name": "All touch targets must be 24px large, or leave sufficient space",
+   "description": "Ensure touch targets have sufficient size and space",
+   "automation_capability": "AUTO",
+   "human_review_required": false,
+   "wcag22": [
+    {
+     "criterion": "2.5.8",
+     "level": "AA"
+    }
+   ]
+  },
+  {
+   "plm_id": "PLM-A11Y-065",
+   "engine_rule_id": "td-headers-attr",
+   "name": "Table cell headers attributes must refer to other <th> elements in the same table",
+   "description": "Ensure that each cell in a table that uses the headers attribute refers only to other <th> elements in that table",
+   "automation_capability": "AUTO",
+   "human_review_required": false,
+   "wcag22": [
+    {
+     "criterion": "1.3.1",
+     "level": "A"
+    }
+   ]
+  },
+  {
+   "plm_id": "PLM-A11Y-066",
+   "engine_rule_id": "th-has-data-cells",
+   "name": "Table headers in a data table must refer to data cells",
+   "description": "Ensure that <th> elements and elements with role=columnheader/rowheader have data cells they describe",
+   "automation_capability": "AUTO",
+   "human_review_required": false,
+   "wcag22": [
+    {
+     "criterion": "1.3.1",
+     "level": "A"
+    }
+   ]
+  },
+  {
+   "plm_id": "PLM-A11Y-067",
+   "engine_rule_id": "valid-lang",
+   "name": "lang attribute must have a valid value",
+   "description": "Ensure lang attributes have valid values",
+   "automation_capability": "AUTO",
+   "human_review_required": false,
+   "wcag22": [
+    {
+     "criterion": "3.1.2",
+     "level": "AA"
+    }
+   ]
+  },
+  {
+   "plm_id": "PLM-A11Y-068",
+   "engine_rule_id": "video-caption",
+   "name": "<video> elements must have captions",
+   "description": "Ensure <video> elements have captions",
+   "automation_capability": "AUTO",
+   "human_review_required": false,
+   "wcag22": [
+    {
+     "criterion": "1.2.2",
+     "level": "A"
+    }
+   ]
+  }
+ ]
+}

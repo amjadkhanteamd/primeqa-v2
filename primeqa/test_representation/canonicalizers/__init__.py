@@ -196,6 +196,7 @@ def register_canonicalizer(
 
 from primeqa.test_representation.canonicalizers import (  # noqa: E402, F401
     automation_effect,
+    conformance,
     state_transition,
 )
 

@@ -482,6 +482,7 @@ def _scan_in_context(context, browser_version: str, url: str, *, viewport,
             "passes_count": len(raw.get("passes", [])),
             "incomplete_count": len(raw.get("incomplete", [])),
             "violations": raw.get("violations", []),
+            "incomplete": raw.get("incomplete", []),
         },
         **base,
     }

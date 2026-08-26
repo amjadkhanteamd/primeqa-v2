@@ -218,10 +218,11 @@ class TestDefaultRegistryBuiltins:
         assert "C1-B" in desc or "entity_id" in desc
 
     def test_default_registry_size_matches_track_c_shipped(self) -> None:
-        """B-δ + Track C ship two canonicalizers — state-transition
-        and automation-effect. Asserting the size catches any
-        accidental extra registration."""
-        assert len(default_canonicalizer_registry) == 2
+        """B-δ + Track C ship state-transition and automation-effect;
+        3A-2 adds the conformance-claim canonicalizer (natural-key
+        surface identity). Asserting the size catches any accidental
+        extra registration."""
+        assert len(default_canonicalizer_registry) == 3
 
 
 # ---------------------------------------------------------------------------
