@@ -43,8 +43,18 @@ client's claims live.
 
 **The write path — decided, with the lean: a CLI, not a web surface.**
 `python -m primeqa.browser_worker.vault register …` executed IN the
-browser-worker service environment (`railway run` against that service,
-or locally with the key exported transiently by the operator). Why:
+browser-worker service environment. **Secret input discipline (amended
+per the GO): secrets NEVER travel in argv** — argv carries non-secrets
+only (tenant, persona key, site, auth mode, actor); the username,
+password, and TOTP seed arrive via interactive prompts (`getpass`,
+no echo) or, non-interactively, via a SOURCED session environment
+(`PORTAL_REG_USERNAME` / `PORTAL_REG_PASSWORD` / `PORTAL_REG_TOTP_SEED`)
+— never on a command line, never in shell history. **Execution locus:
+inside the service (Railway console/SSH) is the PREFERRED path**; the
+documented fallback is a transient LOCAL export of PORTAL_FERNET_KEY
+with explicit unset discipline (`set +o history`-class care, `unset`
+of every PORTAL_* variable immediately after, stated verbatim in the
+runbook). Why:
 the role gate ALREADY excludes PORTAL_FERNET_KEY from the web role —
 enforced code, least privilege — and Fernet is symmetric, so any
 web-tier encrypt path would hand web the decrypt capability the SAD
@@ -152,6 +162,13 @@ search_path; the 3A-3 approval write is the precedent):
 | `ui.login_failed` | a permanent login-failure class | the CLASS (`BAD_CREDENTIAL` / `MFA_FAILED` / `MFA_REQUIRED_NOT_CONFIGURED` / `LOGIN_PAGE_NOT_RECOGNIZED` / `CREDENTIAL_NOT_CONFIGURED`), persona_key, job id — never a credential, never a code |
 | `ui.persona_registered` / `ui.persona_rotated` / `ui.persona_deactivated` | vault CLI acts | persona_key, auth_mode, real actor |
 | `ui.run_enqueued` | the enqueue boundary | claim_set + manifest ids, real actor |
+
+**The mandatory second channel (amended per the GO):** for
+`ui.tenant_boundary_refused` and `ui.login_failed`, a STRUCTURED LOG
+LINE (event name + the same non-secret fields) is emitted
+UNCONDITIONALLY alongside the best-effort activity_log write — a DB
+hiccup may lose the row, never the signal. The other events keep
+activity_log as their single record.
 
 **Actor semantics:** vault + enqueue events carry the REAL user id
 (the 3A-3 attribution posture). Worker-emitted events
