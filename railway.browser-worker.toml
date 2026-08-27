@@ -3,6 +3,11 @@ builder = "dockerfile"
 dockerfilePath = "Dockerfile.browser-worker"
 
 [deploy]
-startCommand = "sleep infinity"
+# P-1 arming: the spike-only `sleep infinity` keepalive is RETIRED (it
+# existed because the 2.1 CLI required --url and would have crash-looped).
+# The service now runs the real consumer loop: fail-closed boot, egress
+# print, schema-discovered tenant tick, reap -> claim -> consume, SIGTERM
+# finish-current-surface.
+startCommand = "python -m primeqa.browser_worker"
 restartPolicyType = "ON_FAILURE"
 restartPolicyMaxRetries = 3
