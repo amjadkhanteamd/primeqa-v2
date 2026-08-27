@@ -265,6 +265,46 @@ def build_manifest_for_claim_set(
     return create_manifest(session, payload)
 
 
+def enqueue_ui_run(session: Session, *, subject, claim_set_id: UUID,
+                   scheme: str = "https",
+                   stabilisation: Optional[dict] = None,
+                   auth: Optional[dict] = None,
+                   sf_client=None,
+                   org_env_snapshot_id: Optional[str] = None) -> dict:
+    """The enqueue boundary (LLD_PRODUCTIONISATION §c) — the D-245
+    posture replicated for ui-inspection: authorize(subject, MEMBER)
+    decides allowed (an AuthorizationError on deny — the route wrapper
+    envelopes it as 403), the RECIPE_MODES consult stays inside
+    enqueue_manifest_job (D6), and the act writes activity_log with the
+    REAL actor. The org execution_policy chokepoint governs S4 org
+    dispatch, not this plane — its three gates are tier + the declared
+    mode table + the manifest invariant (D-461)."""
+    from primeqa.core.authz import AuthorizationError, Tier, authorize
+
+    allow, reason = authorize(subject, Tier.MEMBER)
+    if not allow:
+        raise AuthorizationError(reason)
+    manifest_id = build_manifest_for_claim_set(
+        session, claim_set_id=claim_set_id, scheme=scheme,
+        stabilisation=stabilisation, auth=auth, sf_client=sf_client,
+        org_env_snapshot_id=org_env_snapshot_id)
+    job_id = enqueue_manifest_job(session, manifest_id)
+    from primeqa.browser_worker.audit import record_event
+    if isinstance(subject, dict):
+        user_id = subject.get("user_id") or subject.get("id")
+        subj_tenant = subject.get("tenant_id")
+    else:
+        user_id = getattr(subject, "user_id", None)
+        subj_tenant = getattr(subject, "tenant_id", None)
+    record_event(session, action="ui.run_enqueued",
+                 details={"claim_set_id": str(claim_set_id),
+                          "manifest_id": manifest_id,
+                          "job_id": str(job_id)},
+                 user_id=user_id, tenant_id=subj_tenant)
+    return {"manifest_id": manifest_id, "job_id": str(job_id),
+            "authorized": reason}
+
+
 def enqueue_manifest_job(session: Session, manifest_id: str) -> str:
     """The browser-plane enqueue — consults RECIPE_MODES (D6/SAD A3)
     before any job exists: browser dispatch is authorized by the

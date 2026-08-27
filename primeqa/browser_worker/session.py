@@ -30,6 +30,11 @@ MFA_REQUIRED_NOT_CONFIGURED = "MFA_REQUIRED_NOT_CONFIGURED"
 LOGIN_PAGE_NOT_RECOGNIZED = "LOGIN_PAGE_NOT_RECOGNIZED"
 SESSION_LOST = "SESSION_LOST"
 CREDENTIAL_NOT_CONFIGURED = "CREDENTIAL_NOT_CONFIGURED"
+# Productionisation (vault): distinct named classes for the vault read.
+PERSONA_NOT_FOUND = "PERSONA_NOT_FOUND"
+PERSONA_INACTIVE = "PERSONA_INACTIVE"
+# totp_env is DEV-ONLY: refused under PLIMSOL_SERVICE_ROLE=browser-worker.
+DEV_AUTH_MODE_REFUSED = "DEV_AUTH_MODE_REFUSED"
 # The login page could not be loaded/reached (nav timeout after the bounded
 # nav retries, or a network error) — distinct from LOGIN_PAGE_NOT_RECOGNIZED
 # (page loaded, form unrecognized). This is PRE-submit, so retry is
@@ -51,6 +56,7 @@ MFA_SEED_INVALID = "MFA_SEED_INVALID"
 # neither resubmits a WRONG credential.
 _PERMANENT = {BAD_CREDENTIAL, MFA_FAILED, MFA_REQUIRED_NOT_CONFIGURED,
               LOGIN_PAGE_NOT_RECOGNIZED, CREDENTIAL_NOT_CONFIGURED,
+              PERSONA_NOT_FOUND, PERSONA_INACTIVE, DEV_AUTH_MODE_REFUSED,
               MFA_SEED_INVALID}
 
 
