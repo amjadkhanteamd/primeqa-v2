@@ -1,0 +1,86 @@
+# Guest control captured 2026-08-27T17:05:54Z — the unauthenticated baseline for P-1 claim C3
+# (perishable: regenerated at verification time, preserved here per adversarial finding D-19)
+## GET /s/  -> bytes=1406
+
+
+
+<!DOCTYPE HTML PUBLIC "-//W3C//DTD HTML 4.01 Transitional//EN" "http://www.w3.org/TR/html4/loose.dtd">
+<html>
+<head>
+    <meta HTTP-EQUIV="PRAGMA" CONTENT="NO-CACHE">
+
+
+
+
+
+<script>
+function redirectOnLoad() {
+if (this.SfdcApp && this.SfdcApp.projectOneNavigator) { SfdcApp.projectOneNavigator.handleRedirect('https://orgfarm-4399654d2d-dev-ed.develop.my.site.com/s/login?ec=302&startURL=%2Fs%2F'); }  else 
+if (window.location.replace){ 
+window.location.replace('https://orgfarm-4399654d2d-dev-ed.develop.my.site.com/s/login?ec=302&startURL=%2Fs%2F');
+} else {
+window.location.href ='https://orgfarm-4399654d2d-dev-ed.develop.my.site.com/s/login?ec=302&startURL=%2Fs%2F';
+} 
+} 
+redirectOnLoad();
+</script>
+
+</head>
+
+
+</html>
+
+
+
+
+
+<!-- Body events -->
+<script type="text/javascript">function bodyOnLoad(){if(window.PreferenceBits){window.PreferenceBits.prototype.csrfToken="null";};}function bodyOnBeforeUnload(){}function bodyOnFocus(){}function bodyOnUnload(){}</script>
+			
+</body>
+</html>
+
+
+
+## GET /s/?tabset-398be=2  -> bytes=1463
+
+
+
+<!DOCTYPE HTML PUBLIC "-//W3C//DTD HTML 4.01 Transitional//EN" "http://www.w3.org/TR/html4/loose.dtd">
+<html>
+<head>
+    <meta HTTP-EQUIV="PRAGMA" CONTENT="NO-CACHE">
+
+
+
+
+
+<script>
+function redirectOnLoad() {
+if (this.SfdcApp && this.SfdcApp.projectOneNavigator) { SfdcApp.projectOneNavigator.handleRedirect('https://orgfarm-4399654d2d-dev-ed.develop.my.site.com/s/login?ec=302&startURL=%2Fs%2F%3Ftabset-398be%3D2'); }  else 
+if (window.location.replace){ 
+window.location.replace('https://orgfarm-4399654d2d-dev-ed.develop.my.site.com/s/login?ec=302&startURL=%2Fs%2F%3Ftabset-398be%3D2');
+} else {
+window.location.href ='https://orgfarm-4399654d2d-dev-ed.develop.my.site.com/s/login?ec=302&startURL=%2Fs%2F%3Ftabset-398be%3D2';
+} 
+} 
+redirectOnLoad();
+</script>
+
+</head>
+
+
+</html>
+
+
+
+
+
+<!-- Body events -->
+<script type="text/javascript">function bodyOnLoad(){if(window.PreferenceBits){window.PreferenceBits.prototype.csrfToken="null";};}function bodyOnBeforeUnload(){}function bodyOnFocus(){}function bodyOnUnload(){}</script>
+			
+</body>
+</html>
+
+
+

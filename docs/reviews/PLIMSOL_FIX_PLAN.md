@@ -183,3 +183,48 @@
   is untouched by it). Remedy options: deactivate the stale rows, or
   make repair-triage skip unprovisioned schemas loudly-once (one
   warning per tenant per process lifetime, not a traceback per tick).
+
+## Added 2026-08-27 — from the P-1 acceptance run + its adversarial verification
+
+- **Medium: `FLASK_ENV` absent on the browser-worker service leaves the
+  fail-closed portal-key gate UNARMED.** `secrets.is_production()` reads
+  `FLASK_ENV == 'production'`; the browser-worker service does not carry
+  that variable, so `get_portal_fernet_key()` never raises and
+  `validate_boot_secrets()` under the `browser-worker` role reduces to
+  the unknown-role check. If `PORTAL_FERNET_KEY` were removed the worker
+  would boot normally and fail per job with a generic `VaultError`.
+  *Correction on record: the D2 arming report of 2026-08-27 stated the
+  gate "PASSED" and would have refused to start without the key — that
+  was wrong, and is corrected here.* P-1 was unaffected (the key was
+  set). The `totp_env` dev-only refusal is separately armed (it gates on
+  `PLIMSOL_SERVICE_ROLE`). Remedy: set `FLASK_ENV=production` on the
+  browser-worker service (an ops act), and consider making the role gate
+  independent of the production flag.
+- **Medium: `claimed_by` is NULLed on success, leaving no permanent
+  worker identity in the DB.** `queue.mark_succeeded` clears
+  `claimed_by`, so a completed job's row cannot say which host or
+  process ran it; provenance rests entirely on the Railway deployment
+  log, which is retained only for the current deployment. For P-1 the
+  log was captured to `docs/ui-testing/p1-evidence/`. Remedy: persist a
+  worker identity (a `ran_by` column, or the identity on the result row).
+- **Low: 24 unreferenced evidence objects share the production
+  `tenant_1/` prefix.** Spike and development debris (`portal-home`,
+  `example-home`, `fx-b`, `fx-bad`, `127.0.0.1:8642|…`) sit alongside
+  P-1's four objects in the production bucket; isolation rests on UUID
+  uniqueness rather than a design boundary, `sweep_orphans` is
+  report-only, and there is no retention story. Remedy: sweep the
+  orphans, then decide bucket/prefix separation for dev vs production.
+- **Low: the DE-11 ownership marker set lacks Aura framework classes.**
+  Both P-1 FAILs carry `ownership=UNKNOWN`; the failing nodes are
+  Salesforce's own Aura chrome (`class="forceSkipLink"
+  data-aura-class="forceSkipLink"`). `_PLATFORM_MARKERS` matches only
+  `<force-…>`-style element tags or `slds-` classes, so Aura's
+  `force`-prefixed CLASS names slip through. Conservative-safe (UNKNOWN
+  never over-claims) but attribution is weaker than it looks. Remedy:
+  extend the platform marker set to Aura class prefixes.
+- **Low: `observation.url` records the REQUESTED url, not the LANDED
+  one.** `spike.py` sets it from the input argument; `page.url` after
+  redirects is never stored. Had the browser been bounced to `/s/login`
+  the row would still read `/s/`. C3 in the P-1 transcript is carried by
+  the fingerprint, pass counts and screenshots instead. Remedy: record a
+  `landed_url` alongside the requested one.
