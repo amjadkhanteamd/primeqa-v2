@@ -228,3 +228,20 @@
   the row would still read `/s/`. C3 in the P-1 transcript is carried by
   the fingerprint, pass counts and screenshots instead. Remedy: record a
   `landed_url` alongside the requested one.
+
+## Added 2026-08-28 — from the 3ba0c9f web-deploy failure
+
+- **Low: the build depends on a PUBLIC registry being reachable at
+  build time.** The web service's deploy of merge `3ba0c9f` failed twice
+  with `failed to resolve source metadata for
+  docker.io/library/python:3.11-slim … dial tcp <ip>:443: i/o timeout`
+  (two different Docker Hub IPs, 30 s timeouts) — a reachability
+  failure, not throttling (that returns 429) and not our code (the same
+  commit built cleanly on the other three services). Both Dockerfiles
+  now pull the identical base from AWS public ECR, which mirrors the
+  official images without anonymous throttling. **ECR mitigates
+  reachability; it does not remove the class** — any public registry can
+  become unreachable from a builder we do not control. If this recurs
+  (on ECR or elsewhere), the durable answer is a vendored or private
+  base image published to a registry we own, so a deploy never depends
+  on a third party's availability.

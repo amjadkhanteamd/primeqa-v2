@@ -1,4 +1,9 @@
-FROM python:3.11-slim
+# Base pulled from AWS public ECR (mirror of the official image) —
+# Docker Hub anonymous pulls proved unreachable from Railway builders on
+# 2026-08-28 (two consecutive i/o timeouts on registry-1.docker.io).
+# Same image lineage; avoids Docker Hub throttling/reachability as a
+# build dependency.
+FROM public.ecr.aws/docker/library/python:3.11-slim
 
 WORKDIR /app
 
