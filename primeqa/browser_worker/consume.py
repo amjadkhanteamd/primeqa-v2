@@ -32,8 +32,11 @@ AUTH_MODE_TOTP_ENV = "totp_env"
 AUTH_MODE_VAULT = "vault"
 
 
-def _scan_kwargs(surface: dict, stabilisation: dict) -> dict:
+def _scan_kwargs(surface: dict, stabilisation: dict,
+                 run_set: list | None = None) -> dict:
     kw = {}
+    if run_set:
+        kw["run_set"] = run_set
     if surface.get("viewport"):
         kw["viewport"] = (surface["viewport"]["width"],
                           surface["viewport"]["height"])
@@ -115,7 +118,7 @@ class _EvidenceSink:
 def _run_surfaces(session, job_id: str, attempt: int, surfaces: list,
                   stabilisation: dict, *, manifest_id: str | None = None,
                   context=None, landed_check=None,
-                  should_stop=None) -> bool:
+                  should_stop=None, run_set=None) -> bool:
     """Returns True when every surface ran; False when should_stop
     interrupted AFTER a finalized surface (the job stays leased for the
     reaper)."""
@@ -126,9 +129,9 @@ def _run_surfaces(session, job_id: str, attempt: int, surfaces: list,
         key, url = surface["key"], surface["url"]
         q.heartbeat(session, job_id)
         try:
-            observation = scan_page(url, context=context,
-                                    landed_check=landed_check,
-                                    **_scan_kwargs(surface, stabilisation))
+            observation = scan_page(
+                url, context=context, landed_check=landed_check,
+                **_scan_kwargs(surface, stabilisation, run_set))
         except LoginError:
             raise                      # SESSION_LOST: fail the job here
         except Exception as exc:  # noqa: BLE001 — surface-level wall
@@ -168,6 +171,7 @@ def consume_job(session, job: dict, should_stop=None) -> None:
     stabilisation = payload.get("stabilisation") or {}
     auth = payload.get("auth") or {}
     auth_mode = auth.get("mode")
+    run_set = payload.get("engine_run_set")
     print(f"job {job_id} attempt={attempt} surfaces={len(surfaces)} "
           f"auth={auth_mode or 'guest'}", flush=True)
     try:
@@ -175,12 +179,12 @@ def consume_job(session, job: dict, should_stop=None) -> None:
             completed = _consume_authenticated(
                 session, job_id, attempt, surfaces, stabilisation,
                 manifest_id=job.get("manifest_id"), auth=auth,
-                should_stop=should_stop)
+                should_stop=should_stop, run_set=run_set)
         else:
             completed = _run_surfaces(
                 session, job_id, attempt, surfaces, stabilisation,
                 manifest_id=job.get("manifest_id"),
-                should_stop=should_stop)
+                should_stop=should_stop, run_set=run_set)
         if not completed:
             print(f"job {job_id} interrupted after current surface; "
                   f"lease left for the reaper (died_reason=SIGTERM)",
@@ -263,7 +267,8 @@ def _consume_authenticated(session, job_id, attempt, surfaces,
                                  stabilisation, manifest_id=manifest_id,
                                  context=context,
                                  landed_check=assert_session,
-                                 should_stop=should_stop)
+                                 should_stop=should_stop,
+                                 run_set=run_set)
         finally:
             context.close()
             browser.close()

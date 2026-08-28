@@ -15,6 +15,24 @@ not verdicts; members the processor cannot judge are listed with their
 reason. A processor that cannot prove what it saw refuses to convict
 (arm H): an unresolvable element or unmapped dependency is
 NOT_DETERMINED, never FAIL.
+
+**AND IT REFUSES TO ACQUIT ON THE SAME IGNORANCE**
+(LLD_VERDICT_SEMANTICS, opened by D-465). PASS requires POSITIVE
+evidence that the rule RAN and found nothing — never merely the absence
+of a violation. A rule the engine reported INCOMPLETE, a rule outside
+the manifest-pinned run set, a rule the observation does not attest,
+and a rule reported inapplicable are each NOT_DETERMINED with their own
+named reason. A mechanism that did not run cannot acquit.
+
+**THE EVIDENCE LAW.** A verdict asserts only what the STORED EVIDENCE
+attests. Offline analysis ABOUT a record is not evidence WITHIN it: we
+can read the pinned engine artifact and work out which rules it ships
+disabled, and that analysis belongs in a report — but it cannot promote
+or demote a verdict, because the observation itself attests nothing
+about those rules. This is exactly why a pre-attestation observation
+re-decides to ``legacy_unattested`` even where the disabled subset is
+identifiable by hand: the record, not our knowledge of the record, is
+what a verdict may cite.
 """
 from __future__ import annotations
 
@@ -147,7 +165,7 @@ def decide_verdict(
     mapped = [v for v in (obs.get("violations") or [])
               if v.get("id") in rule_engine_ids]
     if not mapped:
-        return PASS, {"engine_ids_checked": sorted(rule_engine_ids)}
+        return _decide_non_violation(rule_engine_ids, obs)
     nodes = [n for v in mapped for n in (v.get("nodes") or [])]
     resolvable = [n for n in nodes if _resolvable(n)]
     if not resolvable:
@@ -160,6 +178,59 @@ def decide_verdict(
         "nodes": [{"html": n.get("html"), "target": n.get("target")}
                   for n in resolvable[:10]],
     }
+
+
+def _decide_non_violation(rule_engine_ids: frozenset, obs: dict):
+    """No mapped violation — which is NOT yet a pass. Establish, in
+    order, that the engine could not decide, that the rule ran, and that
+    the observation attests it (LLD_VERDICT_SEMANTICS §a + §b.2)."""
+    ids = set(rule_engine_ids)
+
+    # (a) the engine reported it could not determine this rule
+    incomplete = obs.get("incomplete")
+    if incomplete is not None:
+        candidates = [i for i in incomplete if i.get("id") in ids]
+        if candidates:
+            return NOT_DETERMINED, {
+                "reason": "engine_incomplete",
+                "engine_ids": sorted({c["id"] for c in candidates}),
+                "candidates": candidates}
+
+    # (b.2) attestation. An observation with no retained pass ids can
+    # attest nothing — every run before this fix. Never a PASS.
+    attested = obs.get("passes_ids")
+    if attested is None:
+        return NOT_DETERMINED, {
+            "reason": "legacy_unattested",
+            "detail": "observation predates rule-execution attestation; "
+                      "absence of a violation is not evidence the rule ran",
+            "engine_ids": sorted(ids)}
+
+    # (b.1) the rule was not in the manifest-pinned run set
+    run_set = obs.get("run_set")
+    if run_set is not None and not (ids & set(run_set)):
+        return NOT_DETERMINED, {
+            "reason": "rule_not_executed",
+            "detail": "engine id outside the manifest-pinned run set",
+            "engine_ids": sorted(ids)}
+
+    hit = ids & set(attested)
+    if hit:
+        return PASS, {"attested_by": sorted(hit),
+                      "engine_ids_checked": sorted(ids)}
+
+    inapplicable = ids & set(obs.get("inapplicable_ids") or ())
+    if inapplicable:
+        # Not exercised on this surface — visible as its own class, never
+        # dissolved into PASS.
+        return NOT_DETERMINED, {"reason": "rule_inapplicable",
+                                "engine_ids": sorted(inapplicable)}
+
+    return NOT_DETERMINED, {
+        "reason": "rule_unattested",
+        "detail": "in the run set, but the engine reported neither a "
+                  "pass nor an inapplicable for it",
+        "engine_ids": sorted(ids)}
 
 
 # ---------------------------------------------------------------------------

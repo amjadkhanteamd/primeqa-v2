@@ -44,10 +44,23 @@ def _auto(**kw):
     return base
 
 
-def test_pass_on_completed_scan_with_no_mapped_violation():
+def test_no_mapped_violation_without_attestation_is_not_a_pass():
+    """The D-465 correction: absence of a violation is NOT evidence of
+    conformance. The 3A-4-era observation (no retained pass ids) can
+    attest nothing, so it re-decides to NOT_DETERMINED — never PASS."""
     v, basis = decide_verdict(**_auto(), observation=_obs(
         violations=[{"id": "other-rule", "nodes": [{"html": "<img>"}]}]))
+    assert v == NOT_DETERMINED
+    assert basis["reason"] == "legacy_unattested"
+
+
+def test_pass_requires_attestation_that_the_rule_ran():
+    obs = _obs(violations=[{"id": "other-rule", "nodes": [{"html": "<img>"}]}])
+    obs["engine_observations"]["run_set"] = ["image-alt", "other-rule"]
+    obs["engine_observations"]["passes_ids"] = ["image-alt"]
+    v, basis = decide_verdict(**_auto(), observation=obs)
     assert v == PASS
+    assert basis["attested_by"] == ["image-alt"]
     assert basis["engine_ids_checked"] == ["image-alt"]
 
 
