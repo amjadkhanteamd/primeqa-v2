@@ -248,3 +248,57 @@ verdicts) instructed to REFUTE rather than confirm, plus a synthesis.
 C1–C5 survived; C6 was refuted in part, which is §9. The two
 load-bearing refutations in §9 were then re-verified directly against
 production and the vendored engine before being recorded here.
+
+---
+
+## 12. RE-DECIDE — the corrected record (2026-08-28)
+
+The verdict-semantics fix merged to main as **`3ba0c9f`** (deployed with
+`3d46516`, which switched the Docker bases to AWS public ECR after the
+web build could not reach Docker Hub). P-1's stored run was then
+re-decided on production as a gated act: **the processor was re-run over
+the STORED observations — no re-scan, no browser, no org contact.** A
+fresh dump (`prod_pre_redecide_20260828_103344.dump`, 165M) was taken
+before the 144-row rewrite.
+
+**Result — exactly the decomposition published in §9:**
+
+| | before | after |
+|---|---|---|
+| FAIL | 2 | **2** |
+| PASS | 142 | **0** |
+| NOT_DETERMINED | 0 | **142** — 3 `engine_incomplete`, 139 `legacy_unattested` |
+| total rows | 144 | 144 |
+
+The two FAILs are the same two, unchanged:
+
+```
+PLM-A11Y-071 on /s                   ownership=UNKNOWN  engine_ids=["region"]
+PLM-A11Y-071 on /s/?tabset-398be=2   ownership=UNKNOWN  engine_ids=["region"]
+```
+
+The three `engine_incomplete` are the three the engine actually declined
+to determine, each now carrying its candidate:
+
+```
+PLM-A11Y-022 on /s                   ["aria-valid-attr-value"]  candidates=1
+PLM-A11Y-022 on /s/?tabset-398be=2   ["aria-valid-attr-value"]  candidates=1
+PLM-A11Y-029 on /s/?tabset-398be=2   ["color-contrast"]         candidates=1
+```
+
+Untouched by the rewrite, verified: 144 verdict rows and 144 distinct
+test ids (no row added or lost); `evidence_state_at_write=REFERENCED` on
+all 144; both result rows still `REFERENCED` with `evidence_verified_at`
+intact. The processing-run counts moved with the verdicts
+(`{"FAIL": 2, "NOT_DETERMINED": 142}`).
+
+**Reading this against §9 and D-465.** D-465's headline — "142 PASS" —
+is the honest record of *what the run reported at the time*, and it was
+published from the outset with the decomposition that explained why the
+number could not be read as conformance. **This section is the corrected
+record.** Production now holds **zero PASS verdicts** for P-1, which is
+the truthful state: the run proved the production PATH, and nothing
+about it attests conformance. The first ATTESTED run becomes the
+programme's first conformance baseline; comparisons against P-1 will
+correctly read `NOT_COMPARABLE (indeterminate_side)` rather than a false
+`STILL_PASSING`.
