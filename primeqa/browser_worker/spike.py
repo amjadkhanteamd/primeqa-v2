@@ -353,7 +353,8 @@ def _peak_rss_mb() -> float:
 
 def scan_page(url: str, *, viewport=(1440, 900), max_wait_s: int = 30,
               quiet_ms: int = _DOM_QUIET_MS, locale: str | None = None,
-              context=None, landed_check=None) -> dict:
+              context=None, landed_check=None,
+              run_set: list | None = None) -> dict:
     """Scan one page and return the engine observations.
 
     Phase timings are measured separately with time.monotonic(). The
@@ -367,6 +368,13 @@ def scan_page(url: str, *, viewport=(1440, 900), max_wait_s: int = 30,
     no launch, so timings omit the "launch" phase. landed_check: optional
     callable(page) run after stabilise (the session-lost check); any
     exception it raises propagates unchanged.
+
+    run_set (the run-set pin (D-465 fix slice) §b.1): the engine rule ids the
+    MANIFEST pins for this run. Passed straight to the engine as
+    ``runOnly`` so the catalogue — not the engine's default enabled/
+    disabled flags — decides what is evaluated. ``None`` keeps the
+    engine default (dev/probe use only). The list arrives as manifest
+    DATA; the worker never derives it (it cannot read S5 — D-460).
     """
     timings_ms: dict[str, float] = {}
     deadline = time.monotonic() + max_wait_s
@@ -375,7 +383,7 @@ def scan_page(url: str, *, viewport=(1440, 900), max_wait_s: int = 30,
         return _scan_in_context(
             context, context.browser.version, url, viewport=viewport,
             quiet_ms=quiet_ms, deadline=deadline, timings_ms=timings_ms,
-            locale=locale, landed_check=landed_check)
+            locale=locale, landed_check=landed_check, run_set=run_set)
 
     with sync_playwright() as pw:
         # Phase a: launch
@@ -392,7 +400,7 @@ def scan_page(url: str, *, viewport=(1440, 900), max_wait_s: int = 30,
             return _scan_in_context(
                 own_context, browser_version, url, viewport=viewport,
                 quiet_ms=quiet_ms, deadline=deadline, timings_ms=timings_ms,
-                locale=locale, landed_check=landed_check)
+                locale=locale, landed_check=landed_check, run_set=run_set)
         finally:
             own_context.close()
             browser.close()
@@ -400,7 +408,8 @@ def scan_page(url: str, *, viewport=(1440, 900), max_wait_s: int = 30,
 
 def _scan_in_context(context, browser_version: str, url: str, *, viewport,
                      quiet_ms: int, deadline: float, timings_ms: dict,
-                     locale: str | None, landed_check) -> dict:
+                     locale: str | None, landed_check,
+                     run_set: list | None = None) -> dict:
     def _remaining_ms() -> float:
         # Floor at 1 ms: playwright reads timeout=0 as "no timeout", which
         # would turn an exhausted budget into an unbounded wait.
@@ -458,7 +467,17 @@ def _scan_in_context(context, browser_version: str, url: str, *, viewport,
 
         # Phase e: run the engine, collect its raw JSON
         t0 = time.monotonic()
-        raw = page.evaluate("axe.run(document)")
+        # the run-set pin (D-465 fix slice) §b.1: run EXACTLY the manifest-pinned
+        # rule set. Without runOnly the engine silently skips every rule
+        # it ships disabled (9 in axe 4.13.0), and the processor cannot
+        # tell "ran and found nothing" from "never ran".
+        if run_set:
+            raw = page.evaluate(
+                "ids => axe.run(document,"
+                " {runOnly: {type: 'rule', values: ids}})",
+                list(run_set))
+        else:
+            raw = page.evaluate("axe.run(document)")
         timings_ms["axe_run"] = round((time.monotonic() - t0) * 1000, 1)
 
         # Phase f: normalised semantic fingerprint (ui-s2.4) — an
@@ -483,6 +502,17 @@ def _scan_in_context(context, browser_version: str, url: str, *, viewport,
             "incomplete_count": len(raw.get("incomplete", [])),
             "violations": raw.get("violations", []),
             "incomplete": raw.get("incomplete", []),
+            # attestation (D-465 fix slice §b.2): rule IDS ONLY (never the node payloads —
+            # the result processor needs which rules reported, not
+            # their nodes).
+            # Their PRESENCE is what lets a PASS be re-verified later;
+            # their absence is what makes a legacy record unattested.
+            "passes_ids": sorted(
+                p.get("id") for p in raw.get("passes", []) if p.get("id")),
+            "inapplicable_ids": sorted(
+                p.get("id") for p in raw.get("inapplicable", [])
+                if p.get("id")),
+            "run_set": sorted(run_set) if run_set else None,
         },
         **base,
     }

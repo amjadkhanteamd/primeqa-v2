@@ -85,6 +85,33 @@ def _engine_pins(session: Session) -> dict:
                 "PLIMSOL_WORKER_IMAGE_DIGEST")}
 
 
+def engine_run_set(session: Session, release_id: int,
+                   engine: str, engine_version: str) -> list:
+    """The engine rule ids bound to the release's rules at this engine
+    version — the manifest's RUN-SET pin (LLD_VERDICT_SEMANTICS §b.1).
+
+    D-461 pinned the engine VERSION but not the engine RUN SET, so a
+    rule the engine ships disabled was silently never evaluated. The
+    builder resolves the set HERE (it may read S5); the worker receives
+    it as manifest data and never derives it (it cannot read S5 —
+    D-460)."""
+    rows = session.execute(text("""
+        SELECT DISTINCT b.engine_rule_id
+        FROM s5_catalogue_release_members m
+        JOIN s5_engine_bindings b
+          ON b.rule_id = m.rule_id AND b.rule_version = m.rule_version
+        WHERE m.release_id = :r AND b.engine = :e
+          AND b.engine_version = :v
+        ORDER BY b.engine_rule_id
+    """), {"r": release_id, "e": engine, "v": engine_version}).fetchall()
+    if not rows:
+        raise ManifestBuildError(
+            f"no {engine} {engine_version} bindings for catalogue release "
+            f"{release_id} — refusing to build a manifest whose run set "
+            "would be empty (an unpinned run set cannot attest a PASS)")
+    return [r[0] for r in rows]
+
+
 def capture_org_environment_snapshot(session: Session, sf_client) -> str:
     """Phase 7 (LLD §c): record the org environment AT MANIFEST BUILD
     time — the manifest records the world it was built for (the D-461
@@ -244,13 +271,20 @@ def build_manifest_for_claim_set(
         org_env_snapshot_id = capture_org_environment_snapshot(
             session, sf_client)
 
+    pins = _engine_pins(session)
+    run_set = engine_run_set(session, data["catalogue_release_id"],
+                             "axe-core", pins["axe_version"])
+
     payload = {
         "claim_set_id": str(claim_set_id),
         "excluded_revoked": excluded_revoked,
         "surfaces": [surfaces[k] for k in sorted(surfaces)],
         "pins": {
-            **_engine_pins(session),
+            **pins,
             "catalogue_release_id": data["catalogue_release_id"],
+            "engine_run_set": run_set,
+            "engine_run_set_hash": hashlib.sha256(
+                "\n".join(run_set).encode()).hexdigest(),
             "catalogue_content_hash": session.execute(text(
                 "SELECT content_hash FROM s5_catalogue_releases "
                 "WHERE id = :r"),

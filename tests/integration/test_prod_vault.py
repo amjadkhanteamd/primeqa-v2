@@ -296,3 +296,44 @@ def test_e_loop_mechanics(session, key, monkeypatch, capsys):
         "SELECT status FROM s4_ui_inspection_jobs WHERE id=:i"),
         {"i": job_id}).scalar_one() == "succeeded"
     session.commit()
+
+
+def test_f_manifest_pins_the_engine_run_set(session):
+    """D-465 fix slice §b.1 — the builder resolves the bound engine ids
+    for the release and pins them; the job payload carries them to the
+    worker (which cannot read S5 itself)."""
+    import hashlib
+
+    from primeqa.execution_engine.ui_manifest import (
+        engine_run_set, enqueue_ui_run)
+    from primeqa.generation.enumeration import enumerate_claims
+    from primeqa.test_representation.claim_sets import (
+        approve_claim_set, create_inventory_version)
+
+    sfx = uuid.uuid4().hex[:8]
+    inv = create_inventory_version(session, members=[
+        {"site": f"rs-{sfx}.example.com", "path": "/x",
+         "persona_scope": "rs"}], created_by=USER_ID)
+    res = enumerate_claims(session, catalogue_release_id=2,
+                           inventory_version=inv, persona_scope="rs",
+                           created_by=USER_ID)
+    approve_claim_set(session, claim_set_id=res["claim_set_id"],
+                      user_id=USER_ID, tenant_id=1)
+    out = enqueue_ui_run(session,
+                         subject={"role": "admin", "user_id": USER_ID,
+                                  "tenant_id": 1},
+                         claim_set_id=uuid.UUID(str(res["claim_set_id"])))
+
+    pins = session.execute(text(
+        "SELECT payload->'pins' FROM s4_ui_run_manifests WHERE id=:i"),
+        {"i": out["manifest_id"]}).scalar_one()
+    expected = engine_run_set(session, 2, "axe-core", pins["axe_version"])
+    assert pins["engine_run_set"] == expected
+    assert len(expected) == 72                     # the release's bound set
+    assert pins["engine_run_set_hash"] == hashlib.sha256(
+        "\n".join(expected).encode()).hexdigest()
+
+    job_payload = session.execute(text(
+        "SELECT payload FROM s4_ui_inspection_jobs WHERE id=:i"),
+        {"i": out["job_id"]}).scalar_one()
+    assert job_payload["engine_run_set"] == expected   # travels as DATA
