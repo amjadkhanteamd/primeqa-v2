@@ -277,3 +277,111 @@
   in place (planted observations now carry attestation). Remedy for the
   class: when a slice changes decision semantics, re-run EVERY DB-real
   suite, not the ones the slice touched.
+
+## Added 2026-08-31 — from the authenticated-consume production defect
+
+- **HIGH (fixed in this slice): coverage asymmetry between the guest and
+  authenticated consume paths.** `consume_job` forks on `auth.mode`: the
+  GUEST path calls `_run_surfaces` directly; the AUTHENTICATED path
+  (`vault` / `totp_env`) goes through `_consume_authenticated`. Only the
+  guest fork was ever executed by a test — `test_prod_vault.py::
+  test_e_loop_mechanics` drives `consume_job` with an auth-less payload,
+  and the browser-gated `test_queue.py::test_enqueue_consume_happy_path`
+  is likewise guest AND is **triple-gated** (module `pytestmark` requires
+  `SPIKE_DATABASE_URL` and `SPIKE_DB_TESTS_OK=1`; the test itself adds
+  `SPIKE_BROWSER=1`), with a module comment and the skip reason both
+  recording that `SPIKE_DB_TESTS_OK` is "never set during live
+  sequences" — so it does not run in practice. The authenticated fork's
+  only execution in the programme's history was **P-1, a manual act.** So
+  when the D-465 fix slice (`da8b907`) added `run_set` to the call at
+  `consume.py:182` while its edit to the DEFINITION silently failed to
+  match, nothing caught it: every authenticated job raised `TypeError:
+  unexpected keyword argument 'run_set'`, the catch-all in `consume_job`
+  walled it to `failed_permanent`, and it shipped through two merges
+  (`3ba0c9f`, `a2679c9`) to production. **Any branch reachable only by a
+  manual act is untested by construction.** Remedy applied:
+  `tests/unit/test_authenticated_consume_contract.py` — functional
+  coverage of the authenticated branch (one login per batch, one shared
+  context, the run set on every scan, heartbeats, cleanup, the SIGTERM
+  path), a guest-vs-authenticated parity test driven through the REAL
+  `consume_job` fork, and two mechanical guards described below.
+
+- **The two mechanical guards, and what each cannot see.** The class is
+  cheaper to close mechanically than case by case, but only if the limits
+  are stated:
+  - **The package-wide AST sweep** resolves a callee for **3,591** of
+    `primeqa`'s 24,567 calls and binds each against its real signature,
+    catching an unacceptable keyword, a **missing required argument** (the
+    mirror image of this defect) and positional over-supply in one
+    mechanism. It resolves same-module, cross-module (`from x import f`)
+    and module-alias (`m.f(...)`) callees. It is **blind** to method calls
+    (`self.f`), third-party callees, dynamic names, and — the exclusion
+    that matters here — **any call that unpacks `**kwargs`**.
+  - That blind spot is not academic: `run_set` reaches the engine through
+    `scan_page(url, …, **_scan_kwargs(surface, stabilisation, run_set))`,
+    so deleting `run_set` from `scan_page` is invisible to the sweep. The
+    **binding doubles** in the functional tests close that hop — each
+    double binds its arguments against the real signature, so the same
+    deletion fails four tests. Verified by mutation: seven injected
+    divergences, six caught by the sweep (including cross-module ones in
+    `session.py` and `queue.py` detected at their `consume.py` call
+    sites), the seventh — the `**kwargs` hop — caught only by the doubles.
+  Neither mechanism alone closes the class; the pair is the guard.
+
+- **The other paths in this class**, measured (grep across `tests/` for
+  an executing reference, 2026-08-31), not assumed:
+  - **`__main__.run_loop`** — the production consumer loop itself. Its
+    *pieces* are covered (`_discover_tenant_ids` and `consume_job` in
+    `test_prod_vault::test_e_loop_mechanics`, `reap_stalled` in the queue
+    tests), but the loop that composes them — fail-closed boot, the
+    signal handler, the per-tenant tick, the idle sleep, the
+    `died_reason=SIGTERM` exit line — is called by **no test**. It even
+    carries an `once=True` parameter documented as "the test/manual
+    entry" that no test uses. Exercised only by deploying the service.
+  - **Four `main()` CLI dispatchers with zero test references** —
+    `__main__.main`, `consume.main`, `evidence.main`, `vault.main` — plus
+    `__main__.run_probe` and `__main__._egress_ip`. Reachable only by a
+    human running the module.
+  - **`vault._prompt_secret`** — the interactive secret input: zero test
+    references. Note, against the obvious inference: the D-464 "never
+    argv" discipline is NOT unguarded — `tests/unit/
+    test_prod_vault_gate.py::test_cli_takes_no_secret_via_argv` checks it
+    structurally and runs in the unit gate. What is untested is the
+    prompt itself and the argv *dispatch*, not the secret-in-argv rule.
+  - **`vault.list_personas`** — zero test references; its only caller is
+    the vault CLI's own dispatcher.
+  - **`compare.load_job_bundle`** — self-described "DB-loading
+    convenience" for the manual compare CLI; **zero callers and zero test
+    references anywhere in the repo**. Three raw SQL statements against
+    `s4_ui_inspection_jobs`, `s4_ui_run_manifests` and
+    `s4_ui_inspection_results` that nothing exercises.
+  - Checked and NOT in this class: `session_is_lost` (executed via
+    `assert_session` in `tests/browser_worker/test_session.py::
+    test_session_lost_check`, ungated — though note that suite is not
+    collected by the `tests/unit` merge gate), and `rotate_key` (called
+    at `test_prod_vault.py:129`).
+  Remedy for the remainder: `run_loop(once=True)` against the scratch
+  database with a monkeypatched `scan_page` is a cheap, honest test and
+  the parameter already exists for it; the four CLIs want argv-level
+  dispatch tests. Sized as one slice, NOT taken here — this slice fixes
+  the production defect and its own branch, and widening it would hide
+  the fix inside a coverage sweep.
+
+- **Low, noted not fixed: `run_set=None` skips D-466's pin check while
+  attestation still holds.** `_decide_non_violation` gates
+  `rule_not_executed` on `run_set is not None`, so an observation whose
+  `run_set` is null loses the "was this rule inside the manifest pin?"
+  leg — PASS still requires a positive attestation (leg b.2), but the
+  rule need not have been pinned. This is **not reachable on the
+  production enqueue path**: `execution_engine/ui_manifest.enqueue_ui_run`
+  computes and pins `engine_run_set` unconditionally from the claim set's
+  catalogue release, and the only observations that carry a null run set
+  are pre-D-466 ones, which also lack `passes_ids` and therefore decide
+  `legacy_unattested`. It is reachable only by creating a manifest
+  directly through `browser_worker.manifest.create_manifest` (the manual
+  path). The `run_set=None` DEFAULT on both consume forks is deliberate
+  parity — `_run_surfaces` has carried it since D-466 and this slice
+  gives `_consume_authenticated` the same one; the residue predates this
+  slice and is unchanged by it. Remedy if it ever matters: have the
+  processor treat a null `run_set` on a POST-D-466 observation as its own
+  named reason rather than skipping the leg.
