@@ -169,18 +169,136 @@ def add_engine_binding(session, *, rule_id: str, version: int, engine: str,
     session.commit()
 
 
+_MAP_SET_STATES = ("DRAFT", "REVIEW", "APPROVED", "ACTIVE", "RETIRED")
+_MAP_SET_NEXT = {"DRAFT": {"REVIEW"}, "REVIEW": {"APPROVED", "DRAFT"},
+                 "APPROVED": {"ACTIVE"}, "ACTIVE": {"RETIRED"},
+                 "RETIRED": set()}
+
+
+def create_map_set(session, *, standard: str, standard_version: str,
+                   provenance: dict, notes: str, actor_user_id: int,
+                   actor_tenant_id: int, actor_role: str) -> int:
+    """A new DRAFT standard map set (LLD Phase 4 §b). The set — not the
+    rule version — is the authoring unit for projections, so a standard
+    can be added without falsely versioning unchanged rules."""
+    import json as _json
+
+    _require_superadmin(actor_role)
+    row = session.execute(text("""
+        INSERT INTO s5_standard_map_sets
+            (standard, standard_version, state, provenance, notes, created_by)
+        VALUES (:s, :v, 'DRAFT', CAST(:p AS JSONB), :n, :actor)
+        RETURNING id
+    """), {"s": standard, "v": standard_version,
+           "p": _json.dumps(provenance), "n": notes,
+           "actor": actor_user_id}).fetchone()
+    _audit(session, actor_tenant_id, actor_user_id, "s5.map_set.create",
+           standard, {"map_set_id": row[0], "standard": standard,
+                      "standard_version": standard_version})
+    session.commit()
+    return int(row[0])
+
+
+def _require_map_set_draft(session, map_set_id: int) -> None:
+    row = session.execute(text(
+        "SELECT state FROM s5_standard_map_sets WHERE id = :i"),
+        {"i": map_set_id}).fetchone()
+    if row is None:
+        raise LifecycleError(f"no such map set {map_set_id}")
+    if row[0] != "DRAFT":
+        raise LifecycleError(
+            f"map authoring requires the SET in DRAFT; map set "
+            f"{map_set_id} is {row[0]} — content is frozen from REVIEW "
+            "onward, exactly as for rule versions")
+
+
+def transition_map_set(session, *, map_set_id: int, to_state: str,
+                       actor_user_id: int, actor_tenant_id: int,
+                       actor_role: str) -> None:
+    """One legal step of the map-set machine. Activation atomically
+    retires the previously-ACTIVE set for the same standard; the DB's
+    single-ACTIVE partial unique index makes the swap atomic-or-refused.
+    APPROVED stamps the reviewer and freezes a content hash over the
+    set's recorded maps."""
+    import hashlib
+
+    _require_superadmin(actor_role)
+    row = session.execute(text(
+        "SELECT state, standard FROM s5_standard_map_sets WHERE id = :i "
+        "FOR UPDATE"), {"i": map_set_id}).fetchone()
+    if row is None:
+        raise LifecycleError(f"no such map set {map_set_id}")
+    state, standard = row
+    if to_state not in _MAP_SET_STATES:
+        raise LifecycleError(f"unknown map-set state {to_state!r}")
+    if to_state not in _MAP_SET_NEXT[state]:
+        raise LifecycleError(
+            f"illegal map-set transition {state} -> {to_state}")
+
+    if to_state == "APPROVED":
+        maps = session.execute(text("""
+            SELECT rule_id, rule_version, standard, criterion,
+                   COALESCE(level, '')
+            FROM s5_standard_maps WHERE map_set_id = :i
+            ORDER BY rule_id, criterion
+        """), {"i": map_set_id}).fetchall()
+        if not maps:
+            raise LifecycleError(
+                f"refusing to approve an EMPTY map set {map_set_id}")
+        digest = hashlib.sha256("\n".join(
+            "|".join(str(c) for c in m) for m in maps).encode()).hexdigest()
+        session.execute(text("""
+            UPDATE s5_standard_map_sets
+            SET state='APPROVED', reviewed_by=:actor, reviewed_at=NOW(),
+                content_hash=:h WHERE id=:i
+        """), {"actor": actor_user_id, "h": digest, "i": map_set_id})
+    elif to_state == "ACTIVE":
+        session.execute(text("""
+            UPDATE s5_standard_map_sets SET state='RETIRED'
+            WHERE standard=:s AND state='ACTIVE' AND id <> :i
+        """), {"s": standard, "i": map_set_id})
+        session.execute(text(
+            "UPDATE s5_standard_map_sets SET state='ACTIVE', "
+            "activated_at=NOW() WHERE id=:i"), {"i": map_set_id})
+    else:
+        session.execute(text(
+            "UPDATE s5_standard_map_sets SET state=:st WHERE id=:i"),
+            {"st": to_state, "i": map_set_id})
+    _audit(session, actor_tenant_id, actor_user_id, "s5.map_set.transition",
+           standard, {"map_set_id": map_set_id, "from": state,
+                      "to": to_state})
+    session.commit()
+
+
 def add_standard_map(session, *, rule_id: str, version: int, standard: str,
                      criterion: str, level: str | None,
                      actor_user_id: int, actor_tenant_id: int,
-                     actor_role: str) -> None:
+                     actor_role: str, map_set_id: int | None = None,
+                     provenance: dict | None = None) -> None:
+    """Assert that a rule VERSION projects onto a standard's criterion.
+
+    Two authoring gates, by construction:
+      - ``map_set_id`` given  -> the MAP SET must be DRAFT (Phase 4: a
+        projection is added without touching the rule's own version);
+      - ``map_set_id`` omitted -> the RULE VERSION must be DRAFT (the
+        original path, used while a rule is first authored).
+    Rule content freeze is untouched either way.
+    """
+    import json as _json
+
     _require_superadmin(actor_role)
-    _require_draft(session, rule_id, version)
+    if map_set_id is None:
+        _require_draft(session, rule_id, version)
+    else:
+        _require_map_set_draft(session, map_set_id)
     session.execute(text("""
         INSERT INTO s5_standard_maps
-            (rule_id, rule_version, standard, criterion, level)
-        VALUES (:rid, :v, :std, :c, :lvl)
+            (rule_id, rule_version, standard, criterion, level,
+             map_set_id, provenance)
+        VALUES (:rid, :v, :std, :c, :lvl, :ms, CAST(:prov AS JSONB))
     """), {"rid": rule_id, "v": version, "std": standard, "c": criterion,
-           "lvl": level})
+           "lvl": level, "ms": map_set_id,
+           "prov": _json.dumps(provenance or {})})
     _audit(session, actor_tenant_id, actor_user_id, "s5.rule.map_standard",
            rule_id, {"version": version, "standard": standard,
                      "criterion": criterion, "level": level})

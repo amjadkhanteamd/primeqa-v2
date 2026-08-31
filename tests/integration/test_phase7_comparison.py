@@ -161,7 +161,20 @@ def world():
             mid = bw_manifest.create_manifest(s, payload)
         return mid, enqueue_manifest_job(s, mid)
 
+    # Every bound engine id in the run, so a planted observation ATTESTS
+    # the rules it did not fail. Without this the D-465 fix (correctly)
+    # decides every non-violation as legacy_unattested -> NOT_DETERMINED,
+    # and the comparator then reads every pair as NOT_COMPARABLE
+    # (indeterminate_side) — which would test the verdict semantics
+    # rather than the comparator this suite exists to test.
+    all_engine_ids = sorted({r[0] for r in s.execute(text("""
+        SELECT b.engine_rule_id FROM s5_engine_bindings b
+        JOIN s5_rule_versions v ON v.rule_id=b.rule_id
+          AND v.version=b.rule_version AND v.state='ACTIVE'
+        WHERE b.engine='axe-core'""")).fetchall()})
+
     def plant(job_id, fingerprint, violations):
+        failing = {v["id"] for v in violations}
         s.execute(text("""
             INSERT INTO s4_ui_inspection_results
                 (job_id, surface_key, attempt, observation,
@@ -172,7 +185,11 @@ def world():
             "engine_observations": {
                 "violations": violations, "incomplete": [],
                 "violations_count": len(violations), "passes_count": 9,
-                "incomplete_count": 0}})})
+                "incomplete_count": 0,
+                "run_set": all_engine_ids,
+                "passes_ids": [e for e in all_engine_ids
+                               if e not in failing],
+                "inapplicable_ids": []}})})
         s.commit()
 
     jobs = {}
@@ -357,7 +374,9 @@ def test_cross_inventory_refused_and_idempotent_recompare(world):
                                 "violations": [], "incomplete": [],
                                 "violations_count": 0,
                                 "passes_count": 9,
-                                "incomplete_count": 0}})})
+                                "incomplete_count": 0,
+                                "run_set": [], "passes_ids": [],
+                                "inapplicable_ids": []}})})
     process_job(s, job_id=uuid.UUID(job2)); s.commit()
 
     out = compare_processing_runs(
