@@ -137,8 +137,23 @@ def world(eng):
             ],
             "violations_count": 3, "passes_count": 10,
             "incomplete_count": 2,
+            # D-465: a PASS needs positive attestation that the rule ran.
+            # Every bound engine id is in the run set; the ones not named
+            # in violations/incomplete are attested as passing, so this
+            # observation can still exercise all four verdict classes.
+            "run_set": None, "passes_ids": None, "inapplicable_ids": [],
         },
     }
+    _bound = sorted({r[0] for r in s.execute(text("""
+        SELECT b.engine_rule_id FROM s5_engine_bindings b
+        JOIN s5_rule_versions v ON v.rule_id=b.rule_id
+          AND v.version=b.rule_version AND v.state='ACTIVE'
+        WHERE b.engine='axe-core'""")).fetchall()})
+    _not_passing = ({v["id"] for v in obs_a["engine_observations"]["violations"]}
+                    | {i["id"] for i in obs_a["engine_observations"]["incomplete"]})
+    obs_a["engine_observations"]["run_set"] = _bound
+    obs_a["engine_observations"]["passes_ids"] = [
+        e for e in _bound if e not in _not_passing]
     for key, obs in [("proc.example.com|/a|proc|-|-", obs_a),
                      ("proc.example.com|/b|proc|-|-",
                       {"status": "NOT_REACHED", "error": "planted"})]:

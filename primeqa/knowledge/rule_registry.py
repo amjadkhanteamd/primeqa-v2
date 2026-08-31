@@ -37,8 +37,19 @@ class ArtifactRead:
 
 
 def active_rules_for_profile(session, standard: str) -> list[RuleRead]:
-    """S3 enumeration's feed (DE-05): every ACTIVE rule version mapped to the
-    given standard, with its criteria. Deterministic order by rule_id."""
+    """The PROJECTION read (LLD Phase 4 §a): every ACTIVE rule version
+    mapped to the given standard, with its criteria. Deterministic order
+    by rule_id.
+
+    *Corrected 2026-08-28.* This docstring previously described the
+    function as "S3 enumeration's feed (DE-05)". It never was: S3
+    enumeration is driven by the catalogue RELEASE's recorded membership
+    (``enumerate_claims`` iterates ``release["members"]``), and this
+    function had zero callers. That distinction is load-bearing — it is
+    precisely why adding a standard costs no re-enumeration and no
+    re-scan. Standards are a READ-TIME projection; the enumeration path
+    never reads ``s5_standard_maps``.
+    """
     rows = session.execute(text("""
         SELECT v.rule_id, v.version, v.name, v.description,
                v.automation_capability, v.human_review_required, v.state,

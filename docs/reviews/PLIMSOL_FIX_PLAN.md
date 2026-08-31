@@ -245,3 +245,35 @@
   (on ECR or elsewhere), the durable answer is a vendored or private
   base image published to a registry we own, so a deploy never depends
   on a third party's availability.
+
+## Added 2026-08-31 — from Phase 4 (multi-standard views)
+
+- **Medium: the standard-view NOT_COVERED denominator is an engine-census
+  lower bound.** `standard_view` derives each standard's criterion
+  denominator from the vendored engine's tag census — the criteria the
+  ENGINE knows about that fall inside the standard's bound WCAG version.
+  A criterion that no engine rule addresses is therefore absent from the
+  denominator and can never render NOT_COVERED. The view returns
+  `denominator_complete: false` with the limitation, and the honesty
+  header carries it, so nothing implies full-scope coverage — but a
+  report cannot yet state "N of M criteria in this standard". Remedy: a
+  ratified criterion catalogue (WCAG SC number, title, level, version
+  membership) seeded and lifecycle-managed like the rules, so the
+  denominator is the standard's true scope.
+- **Low: WCAG `level` on standard maps is rule-derived, not
+  per-criterion.** Migration 063 propagated each axe RULE's level tag to
+  every criterion of that rule, so a rule covering both an A and a AAA
+  criterion records both as A (e.g. `scrollable-region-focusable`
+  records 2.1.3 as A, where WCAG makes it AAA). Phase 4's A+AA scope
+  gate is applied against this data honestly, but some AAA criteria can
+  pass the gate. Remedy: correct per-criterion levels as a catalogue
+  content change with its own review — deliberately NOT done as a side
+  effect of Phase 4.
+- **Low: integration suites can silently encode superseded semantics.**
+  The Phase 7 and 3A-4 DB-real suites were red from the
+  verdict-semantics merge (`3ba0c9f`) until Phase 4, because their
+  planted observations predate attestation and the post-merge
+  verification ran only `test_prod_vault` plus the browser test. Fixed
+  in place (planted observations now carry attestation). Remedy for the
+  class: when a slice changes decision semantics, re-run EVERY DB-real
+  suite, not the ones the slice touched.
