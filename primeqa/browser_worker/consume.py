@@ -236,10 +236,18 @@ def _resolve_auth_credentials(session, auth: dict) -> Credentials:
 
 def _consume_authenticated(session, job_id, attempt, surfaces,
                            stabilisation, *, manifest_id=None,
-                           auth=None, should_stop=None) -> bool:
+                           auth=None, should_stop=None,
+                           run_set=None) -> bool:
     """One browser, one context, ONE login for the whole batch; every
     surface scanned in the authenticated context with the session-lost
-    check. Credentials live only in this frame."""
+    check. Credentials live only in this frame.
+
+    ``run_set`` is the manifest-pinned engine rule set (D-465 fix
+    slice §b.1), threaded through to the scan exactly as on the guest
+    path. It was MISSING from this signature between da8b907 and the
+    fix, while the caller already passed it — every authenticated job
+    raised TypeError and walled to failed_permanent. See
+    tests/unit/test_authenticated_consume_contract.py."""
     from playwright.sync_api import sync_playwright
 
     if not surfaces:
