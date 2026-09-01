@@ -184,6 +184,15 @@ ancestry, sibling combinators.
 | token sets | not a family | **RECLASSIFY** — it is the *value domain* of the membership predicates; versioned, pinned, size-capped |
 | **layout geometry** | absent | **ADMIT as the fifth family** (`getBoundingClientRect` w/h/x/y) |
 
+**Geometry constraint (TA ruling, 2026-09-01, verbatim):** *"geometry
+kept, measured only against the manifest-pinned viewport/runtime
+(geometry predicate ≠ pixel comparison)."* A geometry predicate compares
+one captured box dimension to one literal under the stabilised,
+manifest-pinned viewport and runtime — **no pixel comparison, no
+cross-run geometric diff**. A rule that would need to compare geometry
+across runs, or between elements, or against a rendered image, is
+outside the language.
+
 **Why geometry is admitted** despite the instinct to cut every style
 family: it is witnessed by a captured number; it needs no operator
 beyond `at_least`/`at_most`; it introduces no unpinned second engine
@@ -202,7 +211,7 @@ on an unfocused element. It becomes either Mode B (parked) or a later
 `CSS.forcePseudoState` capture — recorded as a named non-goal now rather
 than shipped as a rule that quietly tests the unfocused state.
 
-### e.4 The permitted eleven predicate forms
+### e.4 The permitted TEN predicate forms (v1 — TA-ratified 2026-09-01)
 
 | form | operand | one-line justification |
 |---|---|---|
@@ -212,11 +221,17 @@ than shipped as a rule that quietly tests the unfocused state.
 | `present` / `absent` | attribute, role | tests the node's OWN attribute, never the page's contents |
 | `at_least(n)` / `at_most(n)` | geometry only | numeric comparison against a literal; nothing else numeric is admitted |
 | `count_at_least(n)` / `count_at_most(n)` / `count_equals(n)` | the **match-set cardinality**, surface-scoped | a census attests a count *positively*; the only route to "exactly one h1". A rule FORM, not a combinator |
-| `idref_resolves_to_role(<role>)` | one attribute from the allowlist (`aria-describedby`, `aria-labelledby`, `aria-controls`) | **one hop, no transitive closure**; unlocks the most-written custom accessibility pattern (error wiring) |
 
-`idref_resolves_to_role` is the marginal admission: it reads a second
-element, but only that element's ROLE, never a value, depth-capped at
-one. **If the TA wants a smaller v1, this is the form to cut.**
+**Reserved first extension (TA ruling, 2026-09-01):
+`idref_resolves_to_role(<role>)`.** The TA cut it from v1 and reserved
+it by name: *"idref_resolves_to_role RESERVED as the named first
+extension, admitted only if the criterion catalogue shows a material
+WCAG-coverage gain."* Its shape when admitted stays as designed — one
+attribute from the allowlist (`aria-describedby`, `aria-labelledby`,
+`aria-controls`), one hop, no transitive closure, the referenced
+element's ROLE only, never a value. Until the catalogue demonstrates
+the coverage gain, no implementation, no grammar slot, no reserved
+keyword — an authoring draft using it is refused like any unknown form.
 
 **Negative forms rest on a positive census (amendment, 2026-08-31).**
 `absent`, `not_equals` and `not_member_of` are valid **only where the
@@ -270,13 +285,33 @@ test in applicability is refused precisely because
 `applies when colour ∉ palette` plus an always-false predicate is a
 negated rule with the negation hidden in the scope.
 
+**HARD INVARIANT (TA ruling, 2026-09-01): an applicability predicate may
+suppress a rule only when the census is complete and trustworthy.**
+"Complete and trustworthy" is not a judgment — it is the conjunction of
+these census-metadata conditions, every one recorded in the observation:
+
+1. the **node cap was not hit** (the census records when it is);
+2. the **shadow-DOM traversal mode is recorded** for the surface;
+3. the **census schema version ≥ the rule's declared requirement**;
+4. **capture errors are zero** for the census scope;
+5. the **surface status is OK** with **structural-quiet reached**.
+
+Any condition false → the gate **cannot suppress**: the rule's verdict
+is **NOT_DETERMINED (`census_incomplete`)**, never `rule_inapplicable`.
+An incomplete census cannot prove a surface lacks anything — it can
+only report that it did not finish looking. In particular,
+**`surface_lacks(X)` never means "X absent therefore pass"**: it is a
+scope gate over a complete census, and on an incomplete one it decides
+nothing. This is the D-466 posture applied to applicability: absence of
+evidence suppresses no obligation.
+
 ### e.7 The ceiling defence and the STOP RULE
 
 **Why this is not a general-purpose logic language:** it has no
 variables, no binding, no nesting, no user-defined abstraction, no
 control flow, and no arithmetic beyond comparing one captured number to
 one literal. Every rule is one sentence a reviewer can read aloud. The
-grammar is finite and enumerable — a reviewer can hold all eleven forms
+grammar is finite and enumerable — a reviewer can hold all ten forms
 in their head, which is the actual test of reviewability.
 
 **The stop rule for future requests** (four tests; a request must pass
@@ -300,6 +335,18 @@ token set), *split the rule* (two rules, grouped by guideline), or
 *file it against the public catalogue* (it is a standards matter, not a
 custom one). Extending the vocabulary itself remains, per FND-05, "a
 logged decision against principle P1, not a feature request."
+
+### e.8 Two ceilings, never merged (TA ruling, 2026-09-01)
+
+The **F8 vocabulary ceiling** (what a rule may SAY: ten forms, zero
+composition, one gate) and the **FND-05 orchestration ceiling** (what an
+execution may DO: the closed conditional ceiling on sequenced logic) are
+**separate boundaries that never merge**. Neither may be argued from
+the other: admitting a predicate form is never grounds for a new
+orchestration conditional, and an orchestration capability is never
+grounds for a richer rule grammar. A future request that spans both is
+TWO requests, each judged against its own ceiling, each a logged
+decision.
 
 ## f. AUTHORING PATH, and refusal as a feature
 
