@@ -7,16 +7,17 @@ closed conditional ceiling) and **F8** (the predicate-vocabulary fork
 the TA must rule on). Absorbs Phase 4's two residuals: the
 engine-census denominator and the rule-derived WCAG level.
 
-> **⚠ PREREQUISITE — a production defect gates this phase.** The
-> authenticated consume path is broken on main (`da8b907`, merged
-> `3ba0c9f`): `_consume_authenticated` does not accept the `run_set`
-> argument its caller passes, so every `vault`/`totp_env` job raises
-> `TypeError` and walls to `failed_permanent`. Guest scans are
-> unaffected and P-1 predates it. **Phase 5's custom rules target
-> authenticated portal surfaces, and the D-466 run-set pin has never
-> executed on the authenticated path — so this must be fixed, covered by
-> a test, and re-verified (D-468) before any Phase 5 capture work.**
-> Detail and the one-line fix: reported alongside this LLD.
+> **✅ PREREQUISITE RESOLVED (amendment, 2026-08-31).** The
+> authenticated-consume defect this banner originally gated on is
+> **fixed in `5770b8b` with coverage** — D-469: the `run_set` parameter
+> restored, an 8-test contract suite for the branch that had none, and
+> a package-wide call-site/signature sweep — and **proven in production
+> by B-1** — D-470: a vault-TOTP authenticated run under the D-466
+> run-set pin succeeded on attempt 1, 66 PASS attested, zero
+> `legacy_unattested`. The run-set pin has now executed on the
+> authenticated path against real portal surfaces. Phase 5 capture work
+> is ungated. (Original banner text preserved in git history at
+> `58c91e5`.)
 
 ---
 
@@ -217,6 +218,18 @@ than shipped as a rule that quietly tests the unfocused state.
 element, but only that element's ROLE, never a value, depth-capped at
 one. **If the TA wants a smaller v1, this is the form to cut.**
 
+**Negative forms rest on a positive census (amendment, 2026-08-31).**
+`absent`, `not_equals` and `not_member_of` are valid **only where the
+census records the fact positively** — the worker captured the node and
+recorded the attribute/value/role slot, and the slot's recorded content
+witnesses the negation. **Absence of data is `fact_not_captured`, never
+`absent`**: a node the census did not reach, a slot the capture schema
+does not record, or a capture that errored can satisfy no negative form
+— the claim decides NOT_DETERMINED(`fact_not_captured`), the same
+posture as D-466's refusal to let missing attestation acquit. A
+negative predicate is a statement about recorded content, never about
+the silence of the record.
+
 ### e.5 Composition operators — **none**, and why
 
 | operator | ruling | reason |
@@ -337,13 +350,15 @@ with a value check that looks equivalent and is not.
 - Custom rules live in the **tenant schema** (the AK directive: nothing
   per-tenant outside the tenant): `cust_rules`, `cust_rule_versions`,
   `cust_predicates`, `cust_token_sets`, `cust_authoring_ledger`.
-- **Namespace `PLM-CUST-nnnn`** — disjoint from `PLM-A11Y-nnn` (3A-1),
-  so a public rule id can never be shadowed and a claim's rule id alone
-  tells you which store resolves it.
-  **⚠ Decide the digit count NOW:** the public CHECK is
-  `rule_id ~ '^PLM-[A-Z0-9]+-[0-9]{3}$'` — inheriting that shape caps a
-  tenant at **999** custom rules, and widening a CHECK after ids are
-  minted is a migration nobody wants. **Lean: four digits.**
+- **Namespace `PLM-CUST-nnnnn` — five digits (RULED, amendment
+  2026-08-31).** Disjoint from `PLM-A11Y-nnn` (3A-1), so a public rule
+  id can never be shadowed and a claim's rule id alone tells you which
+  store resolves it. The public CHECK
+  (`rule_id ~ '^PLM-[A-Z0-9]+-[0-9]{3}$'`) **widens ONCE** — to admit
+  exactly `PLM-A11Y-` at three digits and `PLM-CUST-` at five — in the
+  migration that creates the tenant store, before any custom id is
+  minted. Five digits caps a tenant at 99,999 custom rules; no second
+  widening is ever needed, which is the point of ruling now.
 - **Joining the catalogue at enumeration and projection.** Enumeration
   reads a catalogue release's recorded membership; a tenant's release
   becomes the **union** of the platform release's members and the
