@@ -351,10 +351,133 @@ def _peak_rss_mb() -> float:
     return round(peak / divisor, 1)
 
 
+
+# The census (Phase 5 §h): a bounded property bag per semantic node.
+# CAPTURE ONLY — no rule is known here, nothing is judged here (D-460).
+# The config (allowlists, cap, schema version) arrives as manifest DATA.
+_CENSUS_JS = """
+(cfg) => {
+  const SKIP = new Set(['SCRIPT','STYLE','TEMPLATE','NOSCRIPT']);
+  const IMPLICIT = {
+    NAV:'navigation', MAIN:'main', HEADER:'banner', FOOTER:'contentinfo',
+    FORM:'form', IMG:'img', BUTTON:'button', SELECT:'combobox',
+    TEXTAREA:'textbox', LABEL:'label', DIALOG:'dialog', SECTION:'region',
+    ARTICLE:'article', ASIDE:'complementary', UL:'list', OL:'list',
+    LI:'listitem', TABLE:'table', TR:'row', TD:'cell', TH:'columnheader',
+    H1:'heading', H2:'heading', H3:'heading', H4:'heading',
+    H5:'heading', H6:'heading',
+  };
+  const INPUT_ROLES = {checkbox:'checkbox', radio:'radio', button:'button',
+    submit:'button', reset:'button', range:'slider', number:'spinbutton',
+    search:'searchbox'};
+  const HEADING_LEVEL = {H1:1, H2:2, H3:3, H4:4, H5:5, H6:6};
+  let errors = 0, pierced = 0, closedHosts = 0, capHit = false;
+  let syntheticAura = !!document.querySelector('[data-aura-rendered-by]');
+  let nativeOpen = false;
+  function roleOf(el) {
+    const explicit = el.getAttribute('role');
+    if (explicit) return explicit;
+    const tag = el.tagName;
+    if (tag === 'A') return el.hasAttribute('href') ? 'link' : null;
+    if (tag === 'INPUT') {
+      const t = (el.getAttribute('type') || 'text').toLowerCase();
+      if (t === 'hidden') return null;
+      return INPUT_ROLES[t] || 'textbox';
+    }
+    return IMPLICIT[tag] || null;
+  }
+  function accName(el) {
+    for (const attr of ['aria-label', 'alt', 'title', 'placeholder']) {
+      const v = el.getAttribute(attr);
+      if (v) return v.slice(0, 120);
+    }
+    const tag = el.tagName;
+    if (tag === 'INPUT' || tag === 'SELECT' || tag === 'TEXTAREA') {
+      if (el.id) {
+        const lab = document.querySelector(
+          'label[for="' + CSS.escape(el.id) + '"]');
+        if (lab) return lab.textContent.trim().slice(0, 120);
+      }
+      const anc = el.closest('label');
+      if (anc) return anc.textContent.trim().slice(0, 120);
+    }
+    if (el.tagName.startsWith('H') && HEADING_LEVEL[el.tagName])
+      return el.textContent.trim().slice(0, 120);
+    return '';
+  }
+  function headingLevel(el) {
+    const aria = el.getAttribute('aria-level');
+    if (aria && /^[1-9]$/.test(aria)) return parseInt(aria, 10);
+    return HEADING_LEVEL[el.tagName] || 0;
+  }
+  const nodes = [];
+  function record(el, anc) {
+    const role = roleOf(el);
+    const custom = el.tagName.includes('-') ? el.tagName.toLowerCase() : '';
+    if (role === null && !custom) return null;
+    try {
+      const attrs = {};
+      for (const a of cfg.attribute_allowlist) {
+        if (el.hasAttribute(a)) {
+          const v = el.getAttribute(a);
+          attrs[a] = v === '' ? true : String(v).slice(0, 200);
+        }
+      }
+      const style = {};
+      const cs = getComputedStyle(el);
+      for (const prop of cfg.property_allowlist)
+        style[prop] = cs.getPropertyValue(prop);
+      const b = el.getBoundingClientRect();
+      return {role: role || '', name: accName(el),
+              heading: role === 'heading' ? headingLevel(el) : 0,
+              tag: custom,
+              anc: anc.slice(-16),
+              attrs: attrs, style: style,
+              box: [Math.round(b.x * 100) / 100, Math.round(b.y * 100) / 100,
+                    Math.round(b.width * 100) / 100,
+                    Math.round(b.height * 100) / 100]};
+    } catch (e) { errors += 1; return null; }
+  }
+  function walk(root, anc) {
+    for (const child of root.children || []) {
+      if (capHit) return;
+      if (SKIP.has(child.tagName)) continue;
+      const rec = record(child, anc);
+      let nextAnc = anc;
+      if (rec !== null) {
+        if (nodes.length >= cfg.node_cap) { capHit = true; return; }
+        nodes.push(rec);
+        const marker = rec.tag || rec.role;
+        if (marker && anc[anc.length - 1] !== marker)
+          nextAnc = anc.concat([marker]);
+      }
+      if (child.shadowRoot) { nativeOpen = true; pierced += 1;
+                              walk(child.shadowRoot, nextAnc); }
+      else if (child.tagName.includes('-') && child.attachShadow &&
+               !child.shadowRoot && child.constructor !== HTMLElement) {
+        // a defined custom element without an OPEN root: closed or none
+        closedHosts += 1;
+      }
+      walk(child, nextAnc);
+    }
+  }
+  walk(document.body || document.documentElement, []);
+  return {schema_version: cfg.schema_version,
+          traversal_mode: syntheticAura ? 'synthetic_aura'
+                          : (nativeOpen ? 'native_open' : 'light_only'),
+          node_cap: cfg.node_cap, cap_hit: capHit,
+          capture_errors: errors, shadow_roots_pierced: pierced,
+          closed_shadow_hosts: closedHosts,
+          n: nodes.length, nodes: nodes};
+}
+"""
+
+
 def scan_page(url: str, *, viewport=(1440, 900), max_wait_s: int = 30,
               quiet_ms: int = _DOM_QUIET_MS, locale: str | None = None,
               context=None, landed_check=None,
-              run_set: list | None = None) -> dict:
+              run_set: list | None = None,
+              census: dict | None = None) -> dict:
     """Scan one page and return the engine observations.
 
     Phase timings are measured separately with time.monotonic(). The
@@ -383,7 +506,8 @@ def scan_page(url: str, *, viewport=(1440, 900), max_wait_s: int = 30,
         return _scan_in_context(
             context, context.browser.version, url, viewport=viewport,
             quiet_ms=quiet_ms, deadline=deadline, timings_ms=timings_ms,
-            locale=locale, landed_check=landed_check, run_set=run_set)
+            locale=locale, landed_check=landed_check, run_set=run_set,
+            census=census)
 
     with sync_playwright() as pw:
         # Phase a: launch
@@ -400,7 +524,8 @@ def scan_page(url: str, *, viewport=(1440, 900), max_wait_s: int = 30,
             return _scan_in_context(
                 own_context, browser_version, url, viewport=viewport,
                 quiet_ms=quiet_ms, deadline=deadline, timings_ms=timings_ms,
-                locale=locale, landed_check=landed_check, run_set=run_set)
+                locale=locale, landed_check=landed_check, run_set=run_set,
+                census=census)
         finally:
             own_context.close()
             browser.close()
@@ -409,7 +534,8 @@ def scan_page(url: str, *, viewport=(1440, 900), max_wait_s: int = 30,
 def _scan_in_context(context, browser_version: str, url: str, *, viewport,
                      quiet_ms: int, deadline: float, timings_ms: dict,
                      locale: str | None, landed_check,
-                     run_set: list | None = None) -> dict:
+                     run_set: list | None = None,
+                     census: dict | None = None) -> dict:
     def _remaining_ms() -> float:
         # Floor at 1 ms: playwright reads timeout=0 as "no timeout", which
         # would turn an exhausted budget into an unbounded wait.
@@ -486,6 +612,14 @@ def _scan_in_context(context, browser_version: str, url: str, *, viewport,
         tree = page.evaluate(_FINGERPRINT_JS)
         fingerprint = _fingerprint_from_tree(tree)
         timings_ms["fingerprint"] = round((time.monotonic() - t0) * 1000, 1)
+
+        # Phase g (Phase 5 §h): the census — captured only when the
+        # manifest pins a census config; pure observation, judged in S6.
+        census_out = None
+        if census:
+            t0 = time.monotonic()
+            census_out = page.evaluate(_CENSUS_JS, dict(census))
+            timings_ms["census"] = round((time.monotonic() - t0) * 1000, 1)
     finally:
         page.close()
 
@@ -514,5 +648,6 @@ def _scan_in_context(context, browser_version: str, url: str, *, viewport,
                 if p.get("id")),
             "run_set": sorted(run_set) if run_set else None,
         },
+        "census": census_out,
         **base,
     }

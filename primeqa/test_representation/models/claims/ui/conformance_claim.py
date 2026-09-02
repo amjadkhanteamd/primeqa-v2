@@ -21,7 +21,11 @@ from primeqa.test_representation.models.common import BodyBase
 from primeqa.test_representation.models.registry import register_body
 from primeqa.test_representation.models.surface import SurfaceNaturalKey
 
-_RULE_ID_SHAPE = r"^PLM-[A-Z0-9]+-[0-9]{3}$"
+# Phase 5 §g (RULED): exactly PLM-A11Y- at three digits and PLM-CUST-
+# at five — widened ONCE, mirroring the s5_rules CHECK (068). Shape
+# validation only; the identity hash covers the VALUE, so widening
+# the accepted pattern changes no existing hash.
+_RULE_ID_SHAPE = r"^(PLM-A11Y-[0-9]{3}|PLM-CUST-[0-9]{5})$"
 
 
 @register_body("conformance-claim", 1)
