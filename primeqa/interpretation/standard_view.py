@@ -133,24 +133,68 @@ def standard_view(session: Session, *, standard: str,
             {"rule_id": rule_id, "name": name, "capability": capability,
              "level": level, "map_provenance": prov})
 
-    denom = bound_criteria(standard)
-    # The denominator must be expressed in THIS STANDARD'S numbering: the
-    # census yields WCAG success-criterion numbers, while the map set
-    # stores the standard's own clauses (EN renumbers to 9.<SC>; WCAG22
-    # and 508 do not). Translating before the union is what stops one
-    # criterion appearing twice — once as 1.3.1 and once as 9.1.3.1.
-    census = {_clause_of(standard, c) for c in denom["criteria"]}
-    all_criteria = sorted(census | set(rules_by_criterion))
+    # THE DENOMINATOR (Phase 5 Part 1, LLD §c). A standard whose ACTIVE
+    # set carries a ratified criterion catalogue counts against THAT —
+    # the standard's true bound scope, "N of M" sayable, every criterion
+    # in scope with no rule rendered NOT_COVERED. A standard without one
+    # keeps the engine-census lower bound and keeps saying so. Per
+    # standard, never global.
+    from primeqa.knowledge.criterion_catalogue import catalogue_denominator
+
+    catalogue = catalogue_denominator(session, standard)
+    if catalogue is not None:
+        cat_by = {c["criterion"]: c for c in catalogue["criteria"]}
+        bound = set(cat_by)
+        denom_header = {
+            "denominator_provenance": catalogue["provenance"],
+            "denominator_complete": True,
+            "denominator_limitation": None,
+            "catalogue_set_id": catalogue["set_id"],
+            "catalogue_rows_hash": catalogue["catalogue_rows_hash"],
+            "catalogue_artifacts": catalogue["catalogue_artifacts"],
+        }
+    else:
+        denom = bound_criteria(standard)
+        cat_by = {}
+        # The census yields WCAG success-criterion numbers, while the map
+        # set stores the standard's own clauses (EN renumbers to 9.<SC>;
+        # WCAG22 and 508 do not). Translating before the union is what
+        # stops one criterion appearing twice — once as 1.3.1 and once as
+        # 9.1.3.1.
+        bound = {_clause_of(standard, c) for c in denom["criteria"]}
+        denom_header = {
+            "denominator_provenance": denom["provenance"],
+            "denominator_complete": denom["complete"],
+            "denominator_limitation": denom["limitation"],
+        }
+    all_criteria = sorted(bound | set(rules_by_criterion))
 
     rows = []
     for criterion in all_criteria:
         contributing = rules_by_criterion.get(criterion, [])
+        cat = cat_by.get(criterion)
+        # LEVEL is read from the catalogue, never from the map, wherever a
+        # catalogue exists (LLD §b). A map whose criterion the ratified
+        # catalogue does not know is an ORPHAN — surfaced, never dropped.
+        if cat is not None:
+            level, level_source, title = cat["level"], "catalogue", cat["title"]
+        elif contributing:
+            level, level_source, title = contributing[0]["level"], "map", None
+        else:
+            level, level_source, title = None, None, None
+        orphan = catalogue is not None and cat is None
+        # The sets are A+AA projections: a criterion the catalogue places
+        # at AAA is OUTSIDE the bound scope — it renders at its true level
+        # and is never counted in "N of M". Under the census fallback the
+        # scope tags already exclude AAA, so everything is in scope.
+        in_scope = (level in ("A", "AA")) if cat is not None else not orphan
         if not contributing:
-            rows.append({"criterion": criterion, "coverage": NOT_COVERED,
-                         "contributing_rules": [],
+            rows.append({"criterion": criterion, "title": title,
+                         "coverage": NOT_COVERED, "contributing_rules": [],
                          "contributing_verdicts": [],
-                         "criterion_verdict": None,
-                         "level": None})
+                         "criterion_verdict": None, "level": level,
+                         "level_source": level_source,
+                         "in_scope": in_scope, "orphan": orphan})
             continue
         caps = {c["capability"] for c in contributing}
         coverage = AUTOMATED if "AUTO" in caps else HUMAN_ONLY
@@ -163,7 +207,11 @@ def standard_view(session: Session, *, standard: str,
                        key=lambda v: _RANK.get(v, 0))
         rows.append({
             "criterion": criterion,
-            "level": contributing[0]["level"],
+            "title": title,
+            "level": level,
+            "level_source": level_source,
+            "in_scope": in_scope,
+            "orphan": orphan,
             "coverage": coverage,
             "contributing_rules": contributing,
             "contributing_verdicts": cv,
@@ -172,26 +220,51 @@ def standard_view(session: Session, *, standard: str,
 
     cov_counts: dict = {}
     verdict_counts: dict = {}
+    out_counts: dict = {}
     for r in rows:
-        cov_counts[r["coverage"]] = cov_counts.get(r["coverage"], 0) + 1
         k = r["criterion_verdict"] or "NO_VERDICT"
-        verdict_counts[k] = verdict_counts.get(k, 0) + 1
+        if r["in_scope"]:
+            cov_counts[r["coverage"]] = cov_counts.get(r["coverage"], 0) + 1
+            verdict_counts[k] = verdict_counts.get(k, 0) + 1
+        elif r["contributing_rules"]:
+            out_counts[k] = out_counts.get(k, 0) + 1
+    in_scope_rows = [r for r in rows if r["in_scope"]]
+    denominator = {
+        "size": len(in_scope_rows),                       # M
+        "covered": sum(1 for r in in_scope_rows
+                       if r["coverage"] != NOT_COVERED),  # N
+        "complete": denom_header["denominator_complete"],
+    }
 
     return {
         # the honesty header: any rendered report names the exact
-        # projection, rule set and engine run it was produced from
+        # projection, rule set, engine run AND criterion list it was
+        # produced from
         "header": {
             "standard": standard,
             "standard_version": ms["standard_version"],
             "map_set_id": ms["map_set_id"],
             "map_set_content_hash": ms["content_hash"],
-            "denominator_provenance": denom["provenance"],
-            "denominator_complete": denom["complete"],
-            "denominator_limitation": denom["limitation"],
+            **denom_header,
             **_run_header(session, claim_set_id, job_id),
         },
+        "denominator": denominator,
         "coverage_counts": cov_counts,
         "criterion_verdict_counts": verdict_counts,
+        "out_of_scope": {
+            # only rows with something to show: a rule mapped to a criterion
+            # the catalogue places outside the A+AA scope (or an orphan).
+            # The bare AAA remainder is a count, not 26 empty rows.
+            "criteria": [r for r in rows
+                         if not r["in_scope"] and r["contributing_rules"]],
+            "uncovered_count": sum(1 for r in rows
+                                   if not r["in_scope"]
+                                   and not r["contributing_rules"]),
+            "verdict_counts": out_counts,
+            "note": "criteria the catalogue places outside the set's A+AA "
+                    "bound scope (or unknown to it); rendered at their true "
+                    "level, never counted in the denominator",
+        },
         "criteria": rows,
     }
 

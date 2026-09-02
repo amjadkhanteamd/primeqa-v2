@@ -101,16 +101,21 @@ def test_e_acc05_closure_state(session):
         ).bindparams(p=pair)).fetchall())
     assert set(states.values()) == {"ACTIVE"}
     # mapped for EN + 508, and NEVER for WCAG22 (4.1.1 is gone in 2.2)
+    # counted on the ACTIVE set of each standard: since Phase 5 Part 1 a
+    # standard's maps exist per REVISION (revision 1 retired, 2 ACTIVE)
     by_std = dict(session.execute(text("""
-        SELECT x.s, x.n FROM (SELECT standard s, COUNT(*) n
-        FROM s5_standard_maps WHERE rule_id IN :p GROUP BY 1) x"""
+        SELECT x.s, x.n FROM (SELECT m.standard s, COUNT(*) n
+        FROM s5_standard_maps m
+        JOIN s5_standard_map_sets ms ON ms.id = m.map_set_id AND ms.state = 'ACTIVE'
+        WHERE m.rule_id IN :p GROUP BY 1) x"""
         ).bindparams(p=pair)).fetchall())
     assert by_std.get("WCAG22", 0) == 0
     assert by_std["EN301549"] == 2 and by_std["SECTION508"] == 2
     # the deprecation rationale rides the map provenance, verbatim
     prov = session.execute(text("""
-        SELECT provenance->>'deprecation_rationale' FROM s5_standard_maps
-        WHERE rule_id='PLM-A11Y-073' AND standard='EN301549'""")).scalar_one()
+        SELECT m.provenance->>'deprecation_rationale' FROM s5_standard_maps m
+        JOIN s5_standard_map_sets ms ON ms.id = m.map_set_id AND ms.state = 'ACTIVE'
+        WHERE m.rule_id='PLM-A11Y-073' AND m.standard='EN301549'""")).scalar_one()
     assert "the engine's lifecycle signal about its own rule" in prov
     assert "4.1.1 is live in WCAG 2.0/2.1" in prov
     # and release 3's run set names them, so they actually execute
@@ -132,7 +137,14 @@ def test_f_three_standards_over_p1_and_nothing_passes(session):
         # the honesty header names the exact projection + run
         h = v["header"]
         assert h["standard_version"] and h["map_set_id"]
-        assert h["denominator_complete"] is False
+        # Phase 4 asserted `is False` (engine-census lower bound). Phase 5
+        # Part 1 ratified a criterion catalogue per standard, so the
+        # denominator is now the standard's true scope — a corrected
+        # semantics, triaged under D-468 as a stale assertion, not a
+        # regression. The property that matters is unchanged: the header
+        # SAYS what it counted against.
+        assert h["denominator_complete"] is True
+        assert h["denominator_provenance"] == "ratified_catalogue"
         assert h["engine"] == "axe-core"
         assert h["catalogue_release_id"] == 2      # P-1 ran on release 2
         # covered-but-undetermined is the honest state after D-466
@@ -144,7 +156,7 @@ def test_f_three_standards_over_p1_and_nothing_passes(session):
     # the SAME underlying failure surfaces in every standard, under that
     # standard's own numbering — the phase's whole thesis
     fails = {s: sorted(c["criterion"] for c in v["criteria"]
-                       if c["criterion_verdict"] == "FAIL")
+                       if c["criterion_verdict"] == "FAIL" and c["in_scope"])
              for s, v in seen.items()}
     assert fails["WCAG22"] == ["1.3.1", "2.4.1"]
     assert fails["SECTION508"] == ["1.3.1", "2.4.1"]   # 508 does not renumber
