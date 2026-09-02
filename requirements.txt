@@ -15,3 +15,6 @@ numpy>=1.26
 PyYAML>=6.0
 alembic>=1.13
 httpx>=0.27,<1.0
+
+# Phase 5 Part 1: EN 301 549 PDF text extraction for the criterion-catalogue ingester (pinned — extraction determinism is part of ingest reproducibility)
+pypdf==6.16.2

@@ -124,9 +124,20 @@ def derive_candidates(session, standard: str,
         ORDER BY v.rule_id, m.criterion
     """), params).fetchall()
 
+    # Phase 5 Part 1 (LLD §b): where the WCAG22 ACTIVE set carries a
+    # ratified catalogue, the A/AA gate reads the CRITERION's level from
+    # it, never the map's rule-derived one. Without a catalogue the map
+    # level is all we hold, and the gate says so via level_source.
+    from primeqa.knowledge.criterion_catalogue import catalogue_denominator
+    _cat = catalogue_denominator(session, "WCAG22")
+    cat_levels = {c["criterion"]: c["level"]
+                  for c in (_cat or {}).get("criteria", [])}
+
     candidates, needs_authoring, out_of_scope, disagreements = [], [], [], []
     agreements = 0
-    for rule_id, version, criterion, level, engine_rule_id in rows:
+    for rule_id, version, criterion, map_level, engine_rule_id in rows:
+        level = cat_levels.get(criterion, map_level)
+        level_source = "catalogue" if criterion in cat_levels else "map"
         tags = tags_by_engine_rule.get(engine_rule_id or "", [])
         version_tags = {t for t in tags if t.startswith("wcag2")
                         and not re.fullmatch(r"wcag\d{3,4}", t)}
@@ -145,6 +156,7 @@ def derive_candidates(session, standard: str,
             out_of_scope.append({
                 "rule_id": rule_id, "criterion": criterion,
                 "level": level,
+                "level_source": level_source,
                 "reason": f"level {level!r} is outside {standard}'s bound "
                           "conformance level (A + AA only)"})
             continue
@@ -159,6 +171,7 @@ def derive_candidates(session, standard: str,
         clause = clause_for(standard, criterion)
         prov = {"origin": "derived",
                 "from": "WCAG22 map + engine version tag",
+                "level_source": level_source,
                 "engine_rule_id": engine_rule_id,
                 "engine_version_tags": sorted(version_tags),
                 "standard_version": _STANDARD_VERSION[standard]}

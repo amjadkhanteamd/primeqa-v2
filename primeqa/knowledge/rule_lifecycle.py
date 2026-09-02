@@ -177,7 +177,8 @@ _MAP_SET_NEXT = {"DRAFT": {"REVIEW"}, "REVIEW": {"APPROVED", "DRAFT"},
 
 def create_map_set(session, *, standard: str, standard_version: str,
                    provenance: dict, notes: str, actor_user_id: int,
-                   actor_tenant_id: int, actor_role: str) -> int:
+                   actor_tenant_id: int, actor_role: str,
+                   revision: int = 1) -> int:
     """A new DRAFT standard map set (LLD Phase 4 §b). The set — not the
     rule version — is the authoring unit for projections, so a standard
     can be added without falsely versioning unchanged rules."""
@@ -186,10 +187,11 @@ def create_map_set(session, *, standard: str, standard_version: str,
     _require_superadmin(actor_role)
     row = session.execute(text("""
         INSERT INTO s5_standard_map_sets
-            (standard, standard_version, state, provenance, notes, created_by)
-        VALUES (:s, :v, 'DRAFT', CAST(:p AS JSONB), :n, :actor)
+            (standard, standard_version, revision, state, provenance, notes,
+             created_by)
+        VALUES (:s, :v, :rev, 'DRAFT', CAST(:p AS JSONB), :n, :actor)
         RETURNING id
-    """), {"s": standard, "v": standard_version,
+    """), {"s": standard, "v": standard_version, "rev": revision,
            "p": _json.dumps(provenance), "n": notes,
            "actor": actor_user_id}).fetchone()
     _audit(session, actor_tenant_id, actor_user_id, "s5.map_set.create",
@@ -245,8 +247,21 @@ def transition_map_set(session, *, map_set_id: int, to_state: str,
         if not maps:
             raise LifecycleError(
                 f"refusing to approve an EMPTY map set {map_set_id}")
-        digest = hashlib.sha256("\n".join(
-            "|".join(str(c) for c in m) for m in maps).encode()).hexdigest()
+        # Phase 5 Part 1 (LLD §d): the set is catalogue + maps under ONE
+        # hash — ratifying it ratifies the denominator and the projection
+        # together. Sets without criteria (pre-catalogue) hash maps only,
+        # exactly as before, so their recorded hashes stay valid.
+        criteria = session.execute(text("""
+            SELECT criterion, title, COALESCE(level, ''), ordinal,
+                   COALESCE(binds_wcag_sc, '')
+            FROM s5_criteria WHERE set_id = :i
+            ORDER BY ordinal, criterion
+        """), {"i": map_set_id}).fetchall()
+        lines = ["|".join(str(c) for c in m) for m in maps]
+        if criteria:
+            lines += ["criterion|" + "|".join(str(c) for c in row)
+                      for row in criteria]
+        digest = hashlib.sha256("\n".join(lines).encode()).hexdigest()
         session.execute(text("""
             UPDATE s5_standard_map_sets
             SET state='APPROVED', reviewed_by=:actor, reviewed_at=NOW(),
@@ -302,6 +317,47 @@ def add_standard_map(session, *, rule_id: str, version: int, standard: str,
     _audit(session, actor_tenant_id, actor_user_id, "s5.rule.map_standard",
            rule_id, {"version": version, "standard": standard,
                      "criterion": criterion, "level": level})
+    session.commit()
+
+
+def remove_standard_map(session, *, map_set_id: int, rule_id: str,
+                        version: int, criterion: str, reason: str,
+                        actor_user_id: int, actor_tenant_id: int,
+                        actor_role: str) -> None:
+    """Withdraw one projection from a DRAFT set (Phase 5 Part 1: a map
+    whose criterion the ratified catalogue does not contain — a Void EN
+    clause, a criterion a standard does not incorporate — is an ORPHAN
+    and must not be ratified). DRAFT-gated exactly like add; the reason
+    is recorded on the set's provenance and in the audit row, so the
+    withdrawal is as reviewable as the assertion was."""
+    import json as _json
+
+    _require_superadmin(actor_role)
+    _require_map_set_draft(session, map_set_id)
+    row = session.execute(text("""
+        DELETE FROM s5_standard_maps
+        WHERE map_set_id=:ms AND rule_id=:rid AND rule_version=:v
+          AND criterion=:c
+        RETURNING standard, level, provenance
+    """), {"ms": map_set_id, "rid": rule_id, "v": version,
+           "c": criterion}).fetchone()
+    if row is None:
+        raise LifecycleError(
+            f"no map {rule_id} v{version} -> {criterion} in set {map_set_id}")
+    record = {"rule_id": rule_id, "version": version, "criterion": criterion,
+              "level": row[1], "reason": reason, "by": actor_user_id}
+    session.execute(text("""
+        UPDATE s5_standard_map_sets
+        SET provenance = jsonb_set(
+            provenance, '{withdrawn_maps}',
+            COALESCE(provenance->'withdrawn_maps', '[]'::jsonb)
+                || CAST(:rec AS JSONB), true)
+        WHERE id=:i
+    """), {"rec": _json.dumps([record]), "i": map_set_id})
+    _audit(session, actor_tenant_id, actor_user_id, "s5.rule.unmap_standard",
+           rule_id, {"version": version, "standard": row[0],
+                     "criterion": criterion, "map_set_id": map_set_id,
+                     "reason": reason})
     session.commit()
 
 
