@@ -288,11 +288,16 @@ def _refusals(session: Session) -> dict:
     if exists is None:
         return {"available": False, "rows": [], "count": 0,
                 "note": "no authoring ledger in this schema"}
+    # Display dedupe (report layer only — the ledger is append-only by
+    # design): a guideline re-authored with the same prose and class
+    # renders once, latest record wins.
     rows = session.execute(text("""
-        SELECT guideline_thread_id, prose, refusal_class, refusal_reason,
+        SELECT DISTINCT ON (guideline_thread_id, prose, refusal_class)
+               guideline_thread_id, prose, refusal_class, refusal_reason,
                nearest_expressible, created_at
         FROM cust_authoring_ledger WHERE outcome = 'refused'
-        ORDER BY created_at, id
+        ORDER BY guideline_thread_id, prose, refusal_class,
+                 created_at DESC, id DESC
     """)).fetchall()
     return {
         "available": True,

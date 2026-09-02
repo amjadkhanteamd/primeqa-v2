@@ -1,0 +1,89 @@
+{% extends "base.html" %}
+{% from 'components/breadcrumbs.html' import breadcrumbs %}
+{% from 'ui_report/_macros.html' import verdict_badge %}
+{% block title %}Release comparison — Plimsol{% endblock %}
+{% block content %}
+<div class="max-w-6xl space-y-4">
+  {{ breadcrumbs([('UI conformance', '/ui-report'), ('Release comparison', None)]) }}
+  <h1 class="text-xl font-semibold text-gray-900">Release comparison</h1>
+  <p class="text-sm text-gray-500">Baseline vs candidate over stored verdicts. This page reads recorded comparisons only — it computes nothing.</p>
+
+  <form method="GET" class="flex flex-wrap items-center gap-2 text-xs">
+    <label class="text-gray-500">Baseline</label>
+    <select name="baseline" class="rounded-md border border-gray-300 px-2 py-1">
+      <option value="">— pick —</option>
+      {% if runs.available %}{% for r in runs.runs %}
+      <option value="{{ r.job_id }}" {% if r.job_id == baseline %}selected{% endif %}>{{ r.processed_at.strftime('%m-%d %H:%M') if r.processed_at else '' }} · {{ r.job_id[:8] }}…</option>
+      {% endfor %}{% endif %}
+    </select>
+    <label class="text-gray-500">Candidate</label>
+    <select name="candidate" class="rounded-md border border-gray-300 px-2 py-1">
+      <option value="">— pick —</option>
+      {% if runs.available %}{% for r in runs.runs %}
+      <option value="{{ r.job_id }}" {% if r.job_id == candidate %}selected{% endif %}>{{ r.processed_at.strftime('%m-%d %H:%M') if r.processed_at else '' }} · {{ r.job_id[:8] }}…</option>
+      {% endfor %}{% endif %}
+    </select>
+    <button type="submit" class="rounded-md bg-indigo-600 px-3 py-1 text-white hover:bg-indigo-500">Show</button>
+  </form>
+
+  {% if data %}
+    {% if not data.available %}<p class="text-sm text-gray-500">The report store is unavailable right now.</p>
+    {% elif not data.found %}<p class="text-sm text-gray-500">{{ data.note }}</p>
+    {% else %}
+    {% if data.outcome == 'refused' %}
+    <div class="rounded-md border border-amber-200 bg-amber-50 px-3 py-2 text-sm text-amber-900">Comparison refused: {{ data.refusal_reason }}</div>
+    {% endif %}
+
+    {# Drift, shown SUBTRACTED with the moved dimensions named #}
+    {% if data.tool_drift %}
+    <div class="rounded-md border border-blue-200 bg-blue-50 px-3 py-2 text-xs text-blue-900">
+      <span class="font-medium">Tool dimension moved</span> — differences below are shown with drift subtracted; the regression headline never includes them.
+      <ul class="mt-1 list-disc pl-4">
+        {% for k, v in data.tool_drift.items() %}<li>{{ k }}: {{ v[0] }} &rarr; {{ v[1] }}</li>{% endfor %}
+      </ul>
+    </div>
+    {% endif %}
+    {% if data.env_delta %}
+    <div class="text-xs text-gray-500">Environment: {% if data.env_delta.get('not_captured') %}not captured on {{ 'both sides' if data.env_delta.not_captured.get('baseline') and data.env_delta.not_captured.get('candidate') else 'one side' }} — stated, never guessed{% else %}{{ data.env_delta | tojson | truncate(140) }}{% endif %}</div>
+    {% endif %}
+
+    <div class="flex flex-wrap gap-2 text-xs">
+      {% for t in data.taxonomy %}
+      <span class="rounded border border-gray-200 bg-white px-2 py-1">{{ t }} <span class="font-semibold">{{ data.transition_counts.get(t, 0) }}</span></span>
+      {% endfor %}
+    </div>
+
+    {% for t in data.taxonomy %}
+      {% set rows = data.groups.get(t) %}
+      {% if rows %}
+      <details class="rounded-lg border border-gray-200 bg-white" {% if t in ['NEW_FAIL','FIXED','STILL_FAILING'] %}open{% endif %}>
+        <summary class="cursor-pointer px-3 py-2 text-sm font-medium text-gray-800">{{ t }} ({{ rows | length }})</summary>
+        <table class="min-w-full border-t border-gray-100 text-sm">
+          <thead class="bg-gray-50 text-left text-xs uppercase tracking-wide text-gray-500">
+            <tr><th class="px-3 py-1.5">Rule</th><th class="px-3 py-1.5">Surface</th><th class="px-3 py-1.5">From &rarr; To</th><th class="px-3 py-1.5">{% if t == 'NOT_COMPARABLE' %}Reason (never hidden){% else %}Cause candidates{% endif %}</th></tr>
+          </thead>
+          <tbody class="divide-y divide-gray-100">
+            {% for r in rows %}
+            <tr class="align-top">
+              <td class="px-3 py-1.5"><div class="font-mono text-xs text-gray-500">{{ r.rule_id }}</div><div class="text-xs text-gray-700">{{ r.rule_title }}</div></td>
+              <td class="px-3 py-1.5 font-mono text-[11px] text-gray-500 break-all max-w-[14rem]">{{ r.surface_key }}</td>
+              <td class="px-3 py-1.5 text-xs whitespace-nowrap">{{ verdict_badge(r.from_verdict) }} &rarr; {{ verdict_badge(r.to_verdict) }}{% if r.drift %}<div class="text-[10px] text-blue-700 mt-0.5">drift-subtracted</div>{% endif %}</td>
+              <td class="px-3 py-1.5 text-xs text-gray-600">
+                {% if t == 'NOT_COMPARABLE' %}{{ r.not_comparable_reason or (r.causal.get('reason') if r.causal else '') or 'indeterminate side' }}
+                {% elif r.causal %}
+                  {% for c in (r.causal.get('candidates') or ([r.causal] if r.causal.get('dimension') else [])) %}
+                  <div>{{ c.dimension or c.get('primary') }} · confidence {{ c.confidence or r.causal.get('confidence', '—') }} <span class="text-gray-400">(scope: surface)</span></div>
+                  {% else %}<span class="text-gray-400">—</span>{% endfor %}
+                {% else %}<span class="text-gray-400">—</span>{% endif %}
+              </td>
+            </tr>
+            {% endfor %}
+          </tbody>
+        </table>
+      </details>
+      {% endif %}
+    {% endfor %}
+    {% endif %}
+  {% endif %}
+</div>
+{% endblock %}

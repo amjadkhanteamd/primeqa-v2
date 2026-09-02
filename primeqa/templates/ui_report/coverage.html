@@ -1,0 +1,49 @@
+{% extends "base.html" %}
+{% from 'components/breadcrumbs.html' import breadcrumbs %}
+{% from 'ui_report/_macros.html' import honesty_header, refusals_panel %}
+{% block title %}Coverage — Plimsol{% endblock %}
+{% block content %}
+<div class="max-w-5xl space-y-5">
+  {{ breadcrumbs([('UI conformance', '/ui-report'), ('Coverage', None)]) }}
+  <div class="flex items-start justify-between gap-3 flex-wrap">
+    <div>
+      <h1 class="text-xl font-semibold text-gray-900">Coverage — N of M, per standard</h1>
+      <p class="mt-1 text-sm text-gray-500">Against each standard&rsquo;s ratified criterion list, with what is NOT covered and what we refuse — beside each other, never silence.</p>
+    </div>
+    <form method="GET" class="text-xs">
+      <select name="job" onchange="this.form.submit()" class="rounded-md border border-gray-300 px-2 py-1">
+        {% if runs.available %}{% for r in runs.runs %}
+        <option value="{{ r.job_id }}" {% if r.job_id == job_id %}selected{% endif %}>{{ r.processed_at.strftime('%m-%d %H:%M') if r.processed_at else '' }} · {{ r.job_id[:8] }}…</option>
+        {% endfor %}{% endif %}
+      </select>
+    </form>
+  </div>
+
+  {% if not data.available %}<p class="text-sm text-gray-500">The report store is unavailable right now.</p>
+  {% else %}
+  {% for s0 in data.standards %}
+  <div class="space-y-2">
+    {% if s0.error %}
+    <div class="rounded-md border border-gray-200 bg-white px-3 py-2 text-sm text-gray-500">{{ s0.standard }}: {{ s0.error }}</div>
+    {% else %}
+    <div class="flex items-baseline justify-between">
+      <h2 class="text-base font-semibold text-gray-900">{{ s0.standard }}</h2>
+      {% if s0.denominator %}<span class="text-sm text-gray-600"><span class="font-semibold text-gray-900">{{ s0.denominator.covered }}</span> of <span class="font-semibold text-gray-900">{{ s0.denominator.size }}</span> criteria covered</span>{% endif %}
+    </div>
+    {{ honesty_header(s0.header, s0.denominator) }}
+    {% if s0.not_covered %}
+    <details class="rounded-lg border border-gray-200 bg-white">
+      <summary class="cursor-pointer px-3 py-2 text-sm text-gray-700">NOT_COVERED — {{ s0.not_covered | length }} criteria in bound scope with no rule</summary>
+      <ul class="grid grid-cols-1 gap-x-6 border-t border-gray-100 px-5 py-2 text-xs text-gray-600 sm:grid-cols-2">
+        {% for c in s0.not_covered %}<li class="py-0.5"><span class="font-mono">{{ c.criterion }}</span>{% if c.level %} <span class="text-gray-400">({{ c.level }})</span>{% endif %} {{ c.title or '' }}</li>{% endfor %}
+      </ul>
+    </details>
+    {% endif %}
+    {{ refusals_panel(s0.refusals) }}
+    {% if s0.orphan_rules %}<p class="text-xs text-amber-700">Orphan rules (heading not in the ratified profile): {% for o in s0.orphan_rules %}{{ o.rule_id }} ({{ o.heading }}){% if not loop.last %}, {% endif %}{% endfor %}</p>{% endif %}
+    {% endif %}
+  </div>
+  {% endfor %}
+  {% endif %}
+</div>
+{% endblock %}

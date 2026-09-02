@@ -1,0 +1,50 @@
+{# Report-slice shared macros. Verdict + honesty header render ONE way. #}
+{% macro verdict_badge(v) -%}
+  {%- set cls = {
+    'FAIL': 'bg-red-100 text-red-800',
+    'PASS': 'bg-green-100 text-green-800',
+    'NEEDS_HUMAN': 'bg-amber-100 text-amber-800',
+    'NOT_DETERMINED': 'bg-gray-100 text-gray-700'}.get(v, 'bg-gray-100 text-gray-500') -%}
+  <span class="inline-block rounded px-1.5 py-0.5 text-xs font-medium {{ cls }}">{{ v or '—' }}</span>
+{%- endmacro %}
+
+{% macro honesty_header(h, denominator=None) -%}
+{# The standard_view header VERBATIM — a report always names the exact
+   projection, rule set, engine run and criterion list it counts against. #}
+<div class="rounded-md border border-gray-200 bg-gray-50 px-3 py-2 text-xs text-gray-600 space-y-0.5">
+  <div><span class="font-medium text-gray-800">{{ h.standard }}</span> — {{ h.standard_version }}</div>
+  <div>engine {{ h.engine }} {{ h.engine_version }} · run set {{ h.engine_run_set_size if h.engine_run_set_size is not none else 'unpinned (legacy manifest)' }} · catalogue release {{ h.catalogue_release_id }}</div>
+  <div>
+    denominator: {{ h.denominator_provenance }} ·
+    {% if h.denominator_complete %}complete{% else %}incomplete — {{ h.denominator_limitation }}{% endif %}
+    {% if denominator %} · <span class="font-medium text-gray-800">{{ denominator.covered }} of {{ denominator.size }} criteria covered</span>{% endif %}
+  </div>
+  <div class="text-gray-400">
+    {% if h.map_set_id %}map set {{ h.map_set_id }}{% if h.map_set_content_hash %} · {{ h.map_set_content_hash[:12] }}…{% endif %}{% endif %}
+    {% if h.profile_set_id %}profile set {{ h.profile_set_id }}{% if h.profile_set_content_hash %} · {{ h.profile_set_content_hash[:12] }}…{% endif %}{% endif %}
+    {% if h.catalogue_rows_hash %} · catalogue rows {{ h.catalogue_rows_hash[:12] }}…{% endif %}
+    {% if h.engine_run_set_hash %} · run-set {{ h.engine_run_set_hash[:12] }}…{% endif %}
+  </div>
+</div>
+{%- endmacro %}
+
+{% macro refusals_panel(ref) -%}
+{% if ref and ref.available and ref.count %}
+<div class="rounded-md border border-amber-200 bg-amber-50 px-3 py-2">
+  <div class="text-xs font-medium text-amber-900">What we cannot test for you ({{ ref.count }}) — and why</div>
+  <ul class="mt-1 space-y-1.5">
+    {% for r in ref.rows %}
+    <li class="text-xs text-amber-900/90">
+      <span class="font-medium">{{ r.guideline_thread_id }}</span> —
+      &ldquo;{{ r.prose }}&rdquo;
+      <span class="ml-1 inline-block rounded bg-amber-100 px-1 py-0.5 text-[10px] font-medium">{{ r.refusal_class }}</span>
+      <div class="text-amber-800/80">{{ r.refusal_reason }}</div>
+      {% if r.nearest_expressible %}<div class="text-amber-700/70">nearest expressible partial: <code class="text-[10px]">{{ r.nearest_expressible | tojson | truncate(160) }}</code></div>{% endif %}
+    </li>
+    {% endfor %}
+  </ul>
+</div>
+{% elif ref and not ref.available %}
+<p class="text-xs text-gray-400">Refusal ledger unavailable in this schema.</p>
+{% endif %}
+{%- endmacro %}

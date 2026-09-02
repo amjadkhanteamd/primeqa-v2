@@ -1,0 +1,12 @@
+{# Minted on demand for THIS session; response-body only; never logged. #}
+<div class="text-xs">
+  {% if not data.available %}<span class="text-gray-400">evidence read unavailable</span>
+  {% elif not data.found %}<span class="text-gray-400">{{ data.note }}</span>
+  {% elif not data.links %}<span class="text-amber-700">{{ data.note }}</span>
+  {% else %}
+    {% for l in data.links %}
+      <a class="mr-2 text-indigo-600 hover:underline" href="{{ l.url }}" target="_blank" rel="noopener">{{ l.kind }}</a>
+    {% endfor %}
+    <span class="text-gray-400">({{ data.evidence_state }}; links expire)</span>
+  {% endif %}
+</div>
