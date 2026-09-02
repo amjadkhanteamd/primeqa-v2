@@ -16,7 +16,7 @@ logged scope (this revision — it was never a v2 phase).
 | 2 | Browser runtime spike | DONE | SPIKE_SCOREBOARD.md, Gate 2 |
 | 3A/3B | Substrate | DONE | PHASE3A_TA_ACCEPTANCE.md, D-463 |
 | 4 | Multi-standard views | DONE | D-467, VERIFICATION_PHASE4.md |
-| 5 | Criterion catalogue + customer authoring | Parts 1+2 MERGED + LIVE (D-472, D-473); Part 3 (profile view + refusal report) pushed for review @9f8bba1 (branch phase-5-part3), merge gated | VERIFICATION_PHASE5_PART1/2.md; PART3 doc on its branch |
+| 5 | Criterion catalogue + customer authoring | COMPLETE (D-472, D-473, D-475; Part 3 merged @4df366a) | VERIFICATION_PHASE5_PART1/2/3.md |
 | 7 | Release detection + attribution | DONE (early, TA-directed) | PHASE7_TA_ACCEPTANCE.md, D-464 |
 | P | Productionisation + P-1 | DONE; P-2 open (egress unstable, five observations) | D-465, D-470, VERIFICATION_P1/BASELINE_B1.md |
 | 6 | Persona comparison | PARKED (this revision) | see D-entry |
@@ -24,8 +24,7 @@ logged scope (this revision — it was never a v2 phase).
 | 9 | Mode B keyboard | PARKED (unchanged) | |
 
 ## Sequence from here (the single-persona pilot loop)
-1. Phase 5 Part 3 — merge (pushed for review; MIGRATE-FIRST = tenant
-   20260903_0010 only).
+1. Phase 5 Part 3 — DONE (merged @4df366a; tenant 20260903_0010 live).
 2. REPORT/UI SLICE (new logged scope): the verdict listing and the
    release-comparison view, read-only over existing data. The demo
    surface. Enters by this plan revision, not by drift.
