@@ -4701,6 +4701,87 @@ def test_cases_redirect(tc_id=None):
     return redirect("/claims")
 
 
+# --- The UI-conformance report slice (SDLC v3 item 2, D-474) -------------
+# Read-only pages over recorded substrate rows: runs, verdicts, stored
+# comparisons, coverage. MEMBER+ (the demo surface; no execution, no
+# writes beyond on-demand evidence-URL minting, which is response-body
+# only and never logged).
+
+@views_bp.route("/ui-report")
+@require_tier(Tier.MEMBER)
+def ui_report_index():
+    from primeqa.intelligence.ui_report_console import list_processing_runs
+    data = list_processing_runs(request.user["tenant_id"])
+    return render_template("ui_report/index.html", **ctx(
+        active_page="ui_report", data=data))
+
+
+@views_bp.route("/ui-report/runs/<job_id>")
+@require_tier(Tier.MEMBER)
+def ui_report_run(job_id):
+    from primeqa.intelligence.ui_report_console import run_report
+    standard = request.args.get("standard", "WCAG22")
+    data = run_report(
+        request.user["tenant_id"], job_id,
+        standard=standard,
+        verdict=request.args.get("verdict") or None,
+        surface=request.args.get("surface") or None,
+        page=request.args.get("page", 1, type=int))
+    return render_template("ui_report/run.html", **ctx(
+        active_page="ui_report", job_id=job_id, data=data,
+        standard=standard,
+        f_verdict=request.args.get("verdict", ""),
+        f_surface=request.args.get("surface", "")))
+
+
+@views_bp.route("/ui-report/evidence")
+@require_tier(Tier.MEMBER)
+def ui_report_evidence():
+    """Signed evidence links, minted on demand for THIS session's tenant
+    (the bearer rule): returned as an HTML fragment in the response body
+    only. The route path carries no signature and nothing here logs the
+    minted URL."""
+    from primeqa.intelligence.ui_report_console import evidence_links
+    job_id = request.args.get("job", "")
+    surface = request.args.get("surface", "")
+    if not job_id or not surface:
+        abort(400)
+    data = evidence_links(request.user["tenant_id"], job_id, surface)
+    return render_template("ui_report/_evidence_links.html", data=data)
+
+
+@views_bp.route("/ui-report/compare")
+@require_tier(Tier.MEMBER)
+def ui_report_compare():
+    from primeqa.intelligence.ui_report_console import (
+        comparison_report, list_processing_runs)
+    baseline = request.args.get("baseline") or None
+    candidate = request.args.get("candidate") or None
+    runs = list_processing_runs(request.user["tenant_id"])
+    data = None
+    if baseline and candidate:
+        data = comparison_report(request.user["tenant_id"],
+                                 baseline, candidate)
+    return render_template("ui_report/compare.html", **ctx(
+        active_page="ui_report", runs=runs, data=data,
+        baseline=baseline or "", candidate=candidate or ""))
+
+
+@views_bp.route("/ui-report/coverage")
+@require_tier(Tier.MEMBER)
+def ui_report_coverage():
+    from primeqa.intelligence.ui_report_console import (
+        coverage_report, list_processing_runs)
+    runs = list_processing_runs(request.user["tenant_id"])
+    job_id = request.args.get("job") or (
+        runs["runs"][0]["job_id"]
+        if runs.get("available") and runs.get("runs") else None)
+    data = coverage_report(request.user["tenant_id"], job_id) \
+        if job_id else {"available": False}
+    return render_template("ui_report/coverage.html", **ctx(
+        active_page="ui_report", runs=runs, data=data, job_id=job_id))
+
+
 @views_bp.route("/reviews")
 @login_required
 def reviews_redirect():

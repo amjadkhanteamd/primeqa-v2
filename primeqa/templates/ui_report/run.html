@@ -1,0 +1,73 @@
+{% extends "base.html" %}
+{% from 'components/breadcrumbs.html' import breadcrumbs %}
+{% from 'ui_report/_macros.html' import verdict_badge, honesty_header %}
+{% block title %}Run {{ job_id[:8] }} — Plimsol{% endblock %}
+{% block content %}
+<div class="max-w-6xl space-y-4">
+  {{ breadcrumbs([('UI conformance', '/ui-report'), ('Run ' ~ job_id[:8] ~ '…', None)]) }}
+  <h1 class="text-xl font-semibold text-gray-900">Verdict listing</h1>
+
+  {% if not data.available %}
+    <p class="text-sm text-gray-500">The report store is unavailable right now.</p>
+  {% else %}
+
+  {% if data.header %}{{ honesty_header(data.header, data.denominator) }}
+  {% elif data.header_error %}
+  <div class="rounded-md border border-amber-200 bg-amber-50 px-3 py-2 text-xs text-amber-900">{{ data.header_error }}</div>
+  {% endif %}
+
+  <form method="GET" class="flex flex-wrap items-center gap-2 text-xs">
+    <select name="standard" onchange="this.form.submit()" class="rounded-md border border-gray-300 px-2 py-1">
+      {% for s0 in data.standards %}<option value="{{ s0 }}" {% if s0 == standard %}selected{% endif %}>{{ s0 }}</option>{% endfor %}
+    </select>
+    <select name="verdict" onchange="this.form.submit()" class="rounded-md border border-gray-300 px-2 py-1">
+      <option value="">All verdicts</option>
+      {% for v0 in ['FAIL','PASS','NEEDS_HUMAN','NOT_DETERMINED'] %}
+      <option value="{{ v0 }}" {% if v0 == f_verdict %}selected{% endif %}>{{ v0 }}{% if data.verdict_counts.get(v0) %} ({{ data.verdict_counts[v0] }}){% endif %}</option>
+      {% endfor %}
+    </select>
+    <select name="surface" onchange="this.form.submit()" class="rounded-md border border-gray-300 px-2 py-1 max-w-xs">
+      <option value="">All surfaces</option>
+      {% for s0 in data.surfaces %}<option value="{{ s0 }}" {% if s0 == f_surface %}selected{% endif %}>{{ s0 }}</option>{% endfor %}
+    </select>
+    <span class="text-gray-400">{{ data.total }} row{{ '' if data.total == 1 else 's' }} in this projection</span>
+  </form>
+
+  <div class="overflow-x-auto rounded-lg border border-gray-200 bg-white">
+    <table class="min-w-full text-sm">
+      <thead class="bg-gray-50 text-left text-xs uppercase tracking-wide text-gray-500">
+        <tr><th class="px-3 py-2">Verdict</th><th class="px-3 py-2">Rule</th><th class="px-3 py-2">Surface</th><th class="px-3 py-2">Reason</th><th class="px-3 py-2">Ownership</th><th class="px-3 py-2">Evidence</th></tr>
+      </thead>
+      <tbody class="divide-y divide-gray-100">
+        {% for v in data.verdicts %}
+        <tr class="align-top hover:bg-gray-50">
+          <td class="px-3 py-2">{{ verdict_badge(v.verdict) }}</td>
+          <td class="px-3 py-2"><div class="font-mono text-xs text-gray-500">{{ v.rule_id }}</div><div class="text-gray-800">{{ v.rule_title }}</div></td>
+          <td class="px-3 py-2 font-mono text-[11px] text-gray-500 break-all max-w-[16rem]">{{ v.surface_key }}</td>
+          <td class="px-3 py-2 text-xs text-gray-600">{{ v.reason or '—' }}</td>
+          <td class="px-3 py-2 text-xs text-gray-600">{{ v.ownership or '—' }}{% if v.owner_bundle_ref %}<div class="text-gray-400">bundle {{ v.owner_bundle_ref }}</div>{% endif %}</td>
+          <td class="px-3 py-2 text-xs">
+            {% if v.has_evidence %}
+            <div hx-get="/ui-report/evidence?job={{ job_id }}&surface={{ v.surface_key | urlencode }}"
+                 hx-trigger="click" hx-swap="outerHTML">
+              <button type="button" class="text-indigo-600 hover:underline" data-no-loading>links ({{ v.evidence_state }})</button>
+            </div>
+            {% else %}<span class="text-gray-400">none</span>{% endif %}
+          </td>
+        </tr>
+        {% else %}
+        <tr><td colspan="6" class="px-3 py-6 text-center text-sm text-gray-400">No verdicts match these filters.</td></tr>
+        {% endfor %}
+      </tbody>
+    </table>
+  </div>
+  {% if data.total > data.per_page %}
+  <div class="flex gap-2 text-xs">
+    {% if data.page > 1 %}<a class="text-indigo-600 hover:underline" href="?standard={{ standard }}&verdict={{ f_verdict }}&surface={{ f_surface | urlencode }}&page={{ data.page - 1 }}">&larr; Prev</a>{% endif %}
+    <span class="text-gray-400">page {{ data.page }} of {{ ((data.total - 1) // data.per_page) + 1 }}</span>
+    {% if data.page * data.per_page < data.total %}<a class="text-indigo-600 hover:underline" href="?standard={{ standard }}&verdict={{ f_verdict }}&surface={{ f_surface | urlencode }}&page={{ data.page + 1 }}">Next &rarr;</a>{% endif %}
+  </div>
+  {% endif %}
+  {% endif %}
+</div>
+{% endblock %}
