@@ -398,3 +398,117 @@ def load_token_sets(session, pins: list) -> dict:
         if row is not None:
             out[(pin["token_set"], pin["version"])] = list(row[0])
     return out
+
+
+# ---------------------------------------------------------------------------
+# The customer profile set (Part 3 — §g lean, ratified): the tenant's own
+# guideline headings as a standard-like denominator, same lifecycle shape.
+# ---------------------------------------------------------------------------
+
+_PROFILE_TRANSITIONS = {
+    "DRAFT": "REVIEW",
+    "REVIEW": "APPROVED",
+    "APPROVED": "ACTIVE",
+    "ACTIVE": "RETIRED",
+}
+
+
+def create_profile_set(session, *, profile_key: str, revision: int = 1,
+                       notes: str = "", provenance: dict | None = None,
+                       actor_user_id: int, actor_tenant_id: int,
+                       actor_role: str) -> int:
+    _require_admin(actor_role)
+    row = session.execute(text("""
+        INSERT INTO cust_profile_sets
+            (profile_key, revision, state, notes, provenance, created_by)
+        VALUES (:k, :r, 'DRAFT', :n, CAST(:p AS JSONB), :u)
+        RETURNING id
+    """), {"k": profile_key, "r": revision, "n": notes,
+           "p": json.dumps(provenance or {}), "u": actor_user_id}).fetchone()
+    _audit(session, actor_tenant_id, actor_user_id,
+           "cust.profile_set.create", None,
+           {"profile_key": profile_key, "revision": revision,
+            "set_id": row[0]})
+    session.commit()
+    return int(row[0])
+
+
+def add_profile_criterion(session, *, set_id: int, criterion: str,
+                          title: str = "", actor_user_id: int,
+                          actor_tenant_id: int, actor_role: str) -> None:
+    """One guideline HEADING into a DRAFT set — content freeze from
+    REVIEW onward, exactly as everywhere else."""
+    _require_admin(actor_role)
+    st = session.execute(text(
+        "SELECT state, profile_key FROM cust_profile_sets WHERE id=:i"),
+        {"i": set_id}).fetchone()
+    if st is None:
+        raise AuthoringError(f"no such profile set {set_id}")
+    if st[0] != "DRAFT":
+        raise AuthoringError(
+            f"criterion authoring requires the SET in DRAFT; profile set "
+            f"{set_id} is {st[0]} — content is frozen from REVIEW onward")
+    nxt = session.execute(text(
+        "SELECT COALESCE(MAX(ordinal), 0) + 1 FROM cust_profile_criteria "
+        "WHERE set_id=:i"), {"i": set_id}).scalar_one()
+    session.execute(text("""
+        INSERT INTO cust_profile_criteria (set_id, criterion, title, ordinal)
+        VALUES (:i, :c, :t, :o)
+    """), {"i": set_id, "c": criterion, "t": title, "o": nxt})
+    _audit(session, actor_tenant_id, actor_user_id,
+           "cust.profile_set.add_criterion", None,
+           {"set_id": set_id, "profile_key": st[1], "criterion": criterion})
+    session.commit()
+
+
+def transition_profile_set(session, *, set_id: int, to_state: str,
+                           actor_user_id: int, actor_tenant_id: int,
+                           actor_role: str) -> None:
+    """APPROVED freezes a content hash over the ordered headings and
+    refuses an empty set; ACTIVE atomically retires the profile key's
+    previous ACTIVE revision (the single-ACTIVE index makes the swap
+    atomic-or-refused)."""
+    import hashlib as _hashlib
+
+    _require_admin(actor_role)
+    row = session.execute(text(
+        "SELECT state, profile_key FROM cust_profile_sets WHERE id=:i "
+        "FOR UPDATE"), {"i": set_id}).fetchone()
+    if row is None:
+        raise AuthoringError(f"no such profile set {set_id}")
+    state, key = row
+    if _PROFILE_TRANSITIONS.get(state) != to_state:
+        raise AuthoringError(
+            f"illegal profile-set transition {state} -> {to_state}")
+    if to_state == "APPROVED":
+        crit = session.execute(text("""
+            SELECT criterion, COALESCE(title, ''), ordinal
+            FROM cust_profile_criteria WHERE set_id=:i
+            ORDER BY ordinal, criterion"""), {"i": set_id}).fetchall()
+        if not crit:
+            raise AuthoringError(
+                f"refusing to approve an EMPTY profile set {set_id}")
+        digest = _hashlib.sha256("\n".join(
+            "|".join(str(c) for c in r) for r in crit).encode()).hexdigest()
+        session.execute(text("""
+            UPDATE cust_profile_sets
+            SET state='APPROVED', reviewed_by=:u, reviewed_at=NOW(),
+                content_hash=:h WHERE id=:i
+        """), {"u": actor_user_id, "h": digest, "i": set_id})
+    elif to_state == "ACTIVE":
+        session.execute(text("""
+            UPDATE cust_profile_sets SET state='RETIRED'
+            WHERE profile_key=:k AND state='ACTIVE' AND id <> :i
+        """), {"k": key, "i": set_id})
+        session.execute(text(
+            "UPDATE cust_profile_sets SET state='ACTIVE', activated_at=NOW() "
+            "WHERE id=:i"), {"i": set_id})
+    else:
+        session.execute(text(
+            "UPDATE cust_profile_sets SET state=:st WHERE id=:i"),
+            {"st": to_state, "i": set_id})
+    _audit(session, actor_tenant_id, actor_user_id,
+           "cust.profile_set.transition", None,
+           {"set_id": set_id, "profile_key": key, "from": state,
+            "to": to_state})
+    session.commit()

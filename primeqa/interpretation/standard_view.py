@@ -101,6 +101,14 @@ def standard_view(session: Session, *, standard: str,
     if (claim_set_id is None) == (job_id is None):
         raise StandardViewError(
             "pass exactly one of claim_set_id / job_id")
+    if standard.startswith("CUSTOM:"):
+        # Part 3 (§g lean, ratified): the tenant's own profile set,
+        # rendered through the same view surface. Its denominator is the
+        # profile's RATIFIED heading list; its maps are the ACTIVE custom
+        # rules' own ratified criterion.profile — two recorded objects
+        # joined at read time, nothing derived (D-281 posture).
+        return _profile_view(session, standard[len("CUSTOM:"):],
+                             claim_set_id, job_id)
     ms = active_map_set(session, standard)
 
     maps = session.execute(text("""
@@ -251,6 +259,7 @@ def standard_view(session: Session, *, standard: str,
         "denominator": denominator,
         "coverage_counts": cov_counts,
         "criterion_verdict_counts": verdict_counts,
+        "refusals": _refusals(session),
         "out_of_scope": {
             # only rows with something to show: a rule mapped to a criterion
             # the catalogue places outside the A+AA scope (or an orphan).
@@ -265,6 +274,134 @@ def standard_view(session: Session, *, standard: str,
                     "bound scope (or unknown to it); rendered at their true "
                     "level, never counted in the denominator",
         },
+        "criteria": rows,
+    }
+
+
+def _refusals(session: Session) -> dict:
+    """The ledgered refusal list — "what we cannot test for you, and
+    why, and the nearest expressible partial" — rendered beside the
+    uncovered criteria as first-class rows (LLD §f: a refusal is never
+    a dead end). Absent store (a pre-Part-2 schema) says so honestly."""
+    exists = session.execute(text(
+        "SELECT to_regclass('cust_authoring_ledger')")).scalar()
+    if exists is None:
+        return {"available": False, "rows": [], "count": 0,
+                "note": "no authoring ledger in this schema"}
+    rows = session.execute(text("""
+        SELECT guideline_thread_id, prose, refusal_class, refusal_reason,
+               nearest_expressible, created_at
+        FROM cust_authoring_ledger WHERE outcome = 'refused'
+        ORDER BY created_at, id
+    """)).fetchall()
+    return {
+        "available": True,
+        "count": len(rows),
+        "note": "guidelines the vocabulary cannot test, each with its "
+                "class, the reason in the customer's terms, and the "
+                "nearest expressible partial — surfaced beside "
+                "NOT_COVERED, never silence",
+        "rows": [{"guideline_thread_id": r[0], "prose": r[1],
+                  "refusal_class": r[2], "refusal_reason": r[3],
+                  "nearest_expressible": r[4],
+                  "recorded_at": str(r[5])} for r in rows],
+    }
+
+
+def _profile_view(session: Session, profile_key: str,
+                  claim_set_id, job_id) -> dict:
+    ps = session.execute(text("""
+        SELECT id, revision, content_hash, activated_at
+        FROM cust_profile_sets
+        WHERE profile_key = :k AND state = 'ACTIVE'
+    """), {"k": profile_key}).fetchone()
+    if ps is None:
+        raise StandardViewError(
+            f"no ACTIVE profile set for {profile_key!r} — a profile "
+            "renders only through a ratified set")
+    criteria = session.execute(text("""
+        SELECT criterion, title, ordinal FROM cust_profile_criteria
+        WHERE set_id = :i ORDER BY ordinal
+    """), {"i": ps[0]}).fetchall()
+
+    rules = session.execute(text("""
+        SELECT rule_id, name, definition->'criterion'->>'profile'
+        FROM cust_rule_versions WHERE state = 'ACTIVE'
+        ORDER BY rule_id
+    """)).fetchall()
+    by_heading: dict = {}
+    ratified = {c[0] for c in criteria}
+    orphan_rules = []
+    for rule_id, name, heading in rules:
+        if heading in ratified:
+            by_heading.setdefault(heading, []).append(
+                {"rule_id": rule_id, "name": name, "capability": "AUTO",
+                 "level": None, "map_provenance": {
+                     "origin": "rule_ratified_content"}})
+        else:
+            # an ACTIVE rule whose heading the ratified set does not
+            # carry — surfaced, never dropped (and never counted)
+            orphan_rules.append({"rule_id": rule_id, "heading": heading})
+
+    where = "v.claim_set_id = :k" if claim_set_id else "v.job_id = :k"
+    key = str(claim_set_id or job_id)
+    verdicts = session.execute(text(f"""
+        SELECT v.plimsol_rule_id, v.verdict, v.verdict_basis->>'reason',
+               v.surface_key, v.test_id, v.job_id, v.ownership
+        FROM s6_ui_verdicts v
+        WHERE {where} AND v.plimsol_rule_id LIKE 'PLM-CUST-%'
+        ORDER BY v.plimsol_rule_id, v.surface_key
+    """), {"k": key}).fetchall()
+    by_rule: dict = {}
+    for r in verdicts:
+        by_rule.setdefault(r[0], []).append(
+            {"verdict": r[1], "reason": r[2], "surface_key": r[3],
+             "test_id": str(r[4]), "job_id": str(r[5]), "ownership": r[6]})
+
+    rows = []
+    cov_counts: dict = {}
+    verdict_counts: dict = {}
+    for criterion, title, _ordinal in criteria:
+        contributing = by_heading.get(criterion, [])
+        cv = []
+        for c in contributing:
+            cv.extend(by_rule.get(c["rule_id"], []))
+        roll = None
+        if cv:
+            roll = max((x["verdict"] for x in cv),
+                       key=lambda v: _RANK.get(v, 0))
+        coverage = AUTOMATED if contributing else NOT_COVERED
+        rows.append({"criterion": criterion, "title": title,
+                     "level": None, "level_source": None,
+                     "in_scope": True, "orphan": False,
+                     "coverage": coverage,
+                     "contributing_rules": contributing,
+                     "contributing_verdicts": cv,
+                     "criterion_verdict": roll})
+        cov_counts[coverage] = cov_counts.get(coverage, 0) + 1
+        k = roll or "NO_VERDICT"
+        verdict_counts[k] = verdict_counts.get(k, 0) + 1
+
+    return {
+        "header": {
+            "standard": f"CUSTOM:{profile_key}",
+            "standard_version": f"profile revision {ps[1]}",
+            "profile_set_id": ps[0],
+            "profile_set_content_hash": (ps[2] or "").strip() or None,
+            "denominator_provenance": "ratified_profile",
+            "denominator_complete": True,
+            "denominator_limitation": None,
+            **_run_header(session, claim_set_id, job_id),
+        },
+        "denominator": {
+            "size": len(rows),
+            "covered": sum(1 for r in rows if r["coverage"] != NOT_COVERED),
+            "complete": True,
+        },
+        "coverage_counts": cov_counts,
+        "criterion_verdict_counts": verdict_counts,
+        "orphan_rules": orphan_rules,
+        "refusals": _refusals(session),
         "criteria": rows,
     }
 
