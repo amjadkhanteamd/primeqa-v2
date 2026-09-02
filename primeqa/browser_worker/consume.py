@@ -33,10 +33,13 @@ AUTH_MODE_VAULT = "vault"
 
 
 def _scan_kwargs(surface: dict, stabilisation: dict,
-                 run_set: list | None = None) -> dict:
+                 run_set: list | None = None,
+                 census: dict | None = None) -> dict:
     kw = {}
     if run_set:
         kw["run_set"] = run_set
+    if census:
+        kw["census"] = census
     if surface.get("viewport"):
         kw["viewport"] = (surface["viewport"]["width"],
                           surface["viewport"]["height"])
@@ -118,7 +121,7 @@ class _EvidenceSink:
 def _run_surfaces(session, job_id: str, attempt: int, surfaces: list,
                   stabilisation: dict, *, manifest_id: str | None = None,
                   context=None, landed_check=None,
-                  should_stop=None, run_set=None) -> bool:
+                  should_stop=None, run_set=None, census=None) -> bool:
     """Returns True when every surface ran; False when should_stop
     interrupted AFTER a finalized surface (the job stays leased for the
     reaper)."""
@@ -131,7 +134,7 @@ def _run_surfaces(session, job_id: str, attempt: int, surfaces: list,
         try:
             observation = scan_page(
                 url, context=context, landed_check=landed_check,
-                **_scan_kwargs(surface, stabilisation, run_set))
+                **_scan_kwargs(surface, stabilisation, run_set, census))
         except LoginError:
             raise                      # SESSION_LOST: fail the job here
         except Exception as exc:  # noqa: BLE001 — surface-level wall
@@ -172,6 +175,7 @@ def consume_job(session, job: dict, should_stop=None) -> None:
     auth = payload.get("auth") or {}
     auth_mode = auth.get("mode")
     run_set = payload.get("engine_run_set")
+    census = payload.get("census")
     print(f"job {job_id} attempt={attempt} surfaces={len(surfaces)} "
           f"auth={auth_mode or 'guest'}", flush=True)
     try:
@@ -179,12 +183,12 @@ def consume_job(session, job: dict, should_stop=None) -> None:
             completed = _consume_authenticated(
                 session, job_id, attempt, surfaces, stabilisation,
                 manifest_id=job.get("manifest_id"), auth=auth,
-                should_stop=should_stop, run_set=run_set)
+                should_stop=should_stop, run_set=run_set, census=census)
         else:
             completed = _run_surfaces(
                 session, job_id, attempt, surfaces, stabilisation,
                 manifest_id=job.get("manifest_id"),
-                should_stop=should_stop, run_set=run_set)
+                should_stop=should_stop, run_set=run_set, census=census)
         if not completed:
             print(f"job {job_id} interrupted after current surface; "
                   f"lease left for the reaper (died_reason=SIGTERM)",
@@ -237,7 +241,7 @@ def _resolve_auth_credentials(session, auth: dict) -> Credentials:
 def _consume_authenticated(session, job_id, attempt, surfaces,
                            stabilisation, *, manifest_id=None,
                            auth=None, should_stop=None,
-                           run_set=None) -> bool:
+                           run_set=None, census=None) -> bool:
     """One browser, one context, ONE login for the whole batch; every
     surface scanned in the authenticated context with the session-lost
     check. Credentials live only in this frame.
@@ -276,7 +280,8 @@ def _consume_authenticated(session, job_id, attempt, surfaces,
                                  context=context,
                                  landed_check=assert_session,
                                  should_stop=should_stop,
-                                 run_set=run_set)
+                                 run_set=run_set,
+            census=census)
         finally:
             context.close()
             browser.close()

@@ -253,6 +253,45 @@ def _bindings(session: Session, engine_version: str) -> tuple[dict, dict, str]:
     return fwd, {k: frozenset(v) for k, v in rev.items()}, snapshot
 
 
+_decide_engine_backed = decide_verdict     # the 3A-4 path, unchanged
+
+
+def _decide_custom(session: Session, rule_id: str, observation: dict,
+                   pins: dict):
+    """Resolve the tenant's ACTIVE content and evaluate it over the
+    census (cust_evaluation). Returns (verdict, basis) or
+    (None, {no_verdict_reason}) when the rule is not ACTIVE here."""
+    from primeqa.interpretation.cust_evaluation import evaluate_rule
+    from primeqa.knowledge.cust_authoring import (
+        load_active_content, load_token_sets)
+
+    content = load_active_content(session, rule_id)
+    if content is None:
+        return None, {"no_verdict_reason": "custom_rule_not_active"}
+    token_sets = load_token_sets(session, content.get("token_set_pins"))
+    census_pins = (pins or {}).get("census") or {}
+
+    def resolve_bundle_tag(tag: str):
+        # c-loan-card -> loanCard: the namespace prefix drops, kebab
+        # camel-cases. Exactly-one resolution or None — ambiguity is
+        # never a guessed owner (the classify_ownership law).
+        parts = tag.split("-")[1:]
+        if not parts:
+            return None
+        name = parts[0] + "".join(w.capitalize() for w in parts[1:])
+        rows = session.execute(text("""
+            SELECT sf_api_name FROM entities
+            WHERE entity_type = 'LightningComponentBundle'
+              AND sf_api_name = :n AND valid_to_seq IS NULL
+        """), {"n": name}).fetchall()
+        return rows[0][0] if len(rows) == 1 else None
+
+    return evaluate_rule(
+        content, observation, token_sets=token_sets,
+        resolve_bundle_tag=resolve_bundle_tag,
+        epsilon_px=float(census_pins.get("length_epsilon_px", 0.5)))
+
+
 def process_job(session: Session, *, job_id: UUID) -> dict:
     """Process one scan job's stored observations into verdicts.
 
@@ -329,18 +368,28 @@ def process_job(session: Session, *, job_id: UUID) -> dict:
             # A run that couldn't look is not a run that judged.
             no_verdict[m["test_id"]] = f"surface_status:{status}"
             continue
-        capability = caps.get(m["plimsol_rule_id"], "AUTO")
-        verdict, basis = decide_verdict(
-            applicability=m["applicability"], executable=m["executable"],
-            capability=capability,
-            rule_engine_ids=rev.get(m["plimsol_rule_id"], frozenset()),
-            observation=observation)
-        if verdict is None:
-            no_verdict[m["test_id"]] = basis["no_verdict_reason"]
-            continue
+        if m["plimsol_rule_id"].startswith("PLM-CUST-"):
+            # Phase 5 Part 2 (§h): a CUSTOM rule decides from the census,
+            # never from the engine. Same processor, same verdict table,
+            # same evidence law — a different attestation source.
+            verdict, basis = _decide_custom(
+                session, m["plimsol_rule_id"], observation, pins)
+            if verdict is None:
+                no_verdict[m["test_id"]] = basis["no_verdict_reason"]
+                continue
+        else:
+            capability = caps.get(m["plimsol_rule_id"], "AUTO")
+            verdict, basis = _decide_engine_backed(
+                applicability=m["applicability"], executable=m["executable"],
+                capability=capability,
+                rule_engine_ids=rev.get(m["plimsol_rule_id"], frozenset()),
+                observation=observation)
+            if verdict is None:
+                no_verdict[m["test_id"]] = basis["no_verdict_reason"]
+                continue
         ownership = None
         owner_bundle_ref = None
-        if verdict == FAIL:
+        if verdict == FAIL and not m["plimsol_rule_id"].startswith("PLM-CUST-"):
             ownership, owner_bundle_ref = classify_ownership(
                 basis["nodes"][0], resolve_bundle)
         session.execute(text("""

@@ -59,6 +59,9 @@ def enqueue_for_manifest(session: Session, manifest_id: str) -> str:
         # the run-set pin (D-465 fix slice) §b.1: the manifest-pinned engine run set
         # travels to the worker as DATA (the worker cannot read S5).
         "engine_run_set": (mp.get("pins") or {}).get("engine_run_set"),
+        # the census pin (Phase 5 §h): the capture config travels as DATA
+        # exactly like the run set — the worker never derives it.
+        "census": (mp.get("pins") or {}).get("census"),
     }
     auth = mp.get("auth")
     if auth is not None:

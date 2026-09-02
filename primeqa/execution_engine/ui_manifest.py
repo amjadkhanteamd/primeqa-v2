@@ -56,6 +56,11 @@ def _playwright_pin() -> str:
     return m.group(1)
 
 
+def _census_pins() -> dict:
+    from primeqa.knowledge.census_schema import census_pins
+    return census_pins()
+
+
 def _engine_pins(session: Session) -> dict:
     """The axe pins from the S5 artifact row, with the sha256 asserted
     against the vendored file (LLD §a: pins stop being hand-carried)."""
@@ -285,6 +290,9 @@ def build_manifest_for_claim_set(
             "engine_run_set": run_set,
             "engine_run_set_hash": hashlib.sha256(
                 "\n".join(run_set).encode()).hexdigest(),
+            # Phase 5 §h: the census capture config is pinned like the
+            # run set, so two runs agree on WHAT was captured.
+            "census": _census_pins(),
             "catalogue_content_hash": session.execute(text(
                 "SELECT content_hash FROM s5_catalogue_releases "
                 "WHERE id = :r"),

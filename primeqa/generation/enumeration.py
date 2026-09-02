@@ -126,6 +126,20 @@ def enumerate_claims(
                 current=(current.version if current else "none (RETIRED)")))
         rules.append(current)
 
+    # --- the tenant union (Phase 5 §g, D-281) ------------------------
+    # A tenant's release is the platform release's members PLUS the
+    # tenant's custom rules RECORDED for it at cut time. No record ->
+    # pure platform enumeration, unchanged. A stale recorded version
+    # refuses, exactly as the platform staleness law above does.
+    from collections import namedtuple
+
+    from primeqa.knowledge.cust_authoring import tenant_release_members
+    _CustRule = namedtuple("_CustRule",
+                           "rule_id version automation_capability")
+    for cm in tenant_release_members(session, catalogue_release_id):
+        rules.append(_CustRule(cm["rule_id"], cm["version"],
+                               cm["automation_capability"]))
+
     # --- pin 2: the inventory version -------------------------------
     members = claim_sets.inventory_members(session, inventory_version)
     surfaces = [m for m in members if m["persona_scope"] == persona_scope]
