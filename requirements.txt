@@ -18,3 +18,6 @@ httpx>=0.27,<1.0
 
 # Phase 5 Part 1: EN 301 549 PDF text extraction for the criterion-catalogue ingester (pinned — extraction determinism is part of ingest reproducibility)
 pypdf==6.16.2
+
+# Evidence-link minting on the web tier: ui_report's evidence fragment builds the same store client the browser-worker uses (same pin as requirements-browser.txt)
+boto3==1.43.78
