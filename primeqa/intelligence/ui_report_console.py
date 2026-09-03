@@ -37,6 +37,11 @@ def _best_effort(tenant_id: int, fn, label: str) -> dict:
     try:
         with _tenant_session(tenant_id) as conn:
             session = Session(bind=conn)
+            # The evidence store derives its tenant key prefix from the
+            # session, never from caller args (LLD_EVIDENCE_STORE, DE-19)
+            # — the same stamp the queue's session factory applies.
+            session.info["tenant_schema"] = f"tenant_{int(tenant_id)}"
+            session.info["tenant_id"] = int(tenant_id)
             try:
                 out = fn(session)
                 return {"available": True, **out}

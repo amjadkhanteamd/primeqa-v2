@@ -173,6 +173,31 @@ def test_f_evidence_links_degrade_honestly_without_the_store():
     assert missing["available"] and missing["found"] is False
 
 
+def test_f2_bridge_sessions_carry_the_de19_tenant_stamp():
+    """Regression (found live 2026-09-03): sign_url derives the tenant
+    key prefix from session.info['tenant_schema'] (DE-19) and REFUSES a
+    session without it. The bridge's sessions must carry the same stamp
+    the queue's session factory applies — without it, evidence links
+    could never mint on ANY tier once the store was configured (the
+    prod symptom: every mint died 'session carries no tenant_schema'
+    into the available:false catch)."""
+    from primeqa.browser_worker.evidence import key_prefix
+    from primeqa.intelligence.ui_report_console import _best_effort
+
+    seen = {}
+
+    def probe(session):
+        seen["info"] = dict(session.info)
+        seen["prefix"] = key_prefix(session)   # raises pre-fix
+        return {}
+
+    out = _best_effort(1, probe, "de19_stamp_probe")
+    assert out["available"] is True
+    assert seen["info"]["tenant_schema"] == "tenant_1"
+    assert seen["info"]["tenant_id"] == 1
+    assert seen["prefix"] == "tenant_1"
+
+
 def test_g_the_bridge_never_logs_a_minted_url():
     """Structural: no logging call in the bridge takes a URL argument —
     the bearer rule's 'never logged' leg, checkable."""
