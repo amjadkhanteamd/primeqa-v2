@@ -318,9 +318,14 @@ def run_s1_sync_enqueuer_tick(
     — with per-tenant isolation (a tenant whose scan raises records 0). Idempotent
     across ticks: an org with an active job is excluded, so a steady state enqueues
     nothing. Returns ``{tenant_id: enqueued_count}``."""
+    from primeqa.shared.stale_tenants import skip_unprovisioned
     enqueued: dict[int, int] = {}
     for tid in tenant_ids:
         try:
+            with get_tenant_connection(tid) as conn:
+                if skip_unprovisioned(conn, tid, "s1_sync_jobs", log):
+                    enqueued[tid] = 0
+                    continue
             enqueued[tid] = _enqueue_for_tenant(
                 tid, resync_interval_hours=resync_interval_hours)
         except Exception as exc:
@@ -351,10 +356,15 @@ def run_s1_sync_reaper_tick(
     Returns ``{tenant_id: jobs_reaped + runs_reaped}``."""
     from primeqa.sync import readiness
     from primeqa.sync.fk_assertion import ENTITY_ORDER
+    from primeqa.shared.stale_tenants import skip_unprovisioned
     reaped: dict[int, int] = {}
     for tid in tenant_ids:
         n = 0
         try:
+            with get_tenant_connection(tid) as conn:
+                if skip_unprovisioned(conn, tid, "s1_sync_jobs", log):
+                    reaped[tid] = 0
+                    continue
             n += SyncJobStore(tid).reap_stale_jobs(stale_minutes=stale_minutes)
         except Exception as exc:
             log.warning("s1_sync_reaper_tick: job reap for tenant %s failed: %s",

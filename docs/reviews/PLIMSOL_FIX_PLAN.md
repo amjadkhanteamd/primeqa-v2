@@ -404,3 +404,17 @@
   Sweep candidates while there: every per-tenant tick in
   `scheduler.py` (`s3_reaper_tick`, `s8_grounding_tick`, …) for the
   same missing-schema posture.
+  **RESOLVED 2026-09-03 — guard + full sweep.** The 0862c5e posture
+  generalised into `primeqa/shared/stale_tenants.skip_unprovisioned`
+  (loudly-once per (tenant, table) per process) and applied at every
+  per-tenant tick callee that lacked it: `triage_new_failures` +
+  `auto_apply_proposals` (the observed flood), `fire_due_schedules`
+  (s4 cron; same `public.tenants` exposure, probe on the real-store
+  path only so injected test stores stay DB-free), and the six
+  shared-registry runners (`run_s3_reaper_tick`, `run_s4_reaper_tick`,
+  `run_s4_cleanup_reaper_tick`, `run_s8_grounding_tick`,
+  `run_s1_sync_enqueuer_tick`, `run_s1_sync_reaper_tick`) — exposed
+  only if a `shared.tenants` row lags provisioning/migration, guarded
+  for uniform posture. `ui_schedules` keeps its inline original.
+  Regression: `tests/integration/test_scheduler_stale_tenants.py`
+  (the `test_a0` pattern, tenant 99) + `tests/unit/test_stale_tenants.py`.

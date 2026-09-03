@@ -188,9 +188,15 @@ def run_s4_reaper_tick(tenant_ids, *, stale_minutes: int = 10) -> dict[int, int]
     heartbeat timeout, per tenant, with per-tenant isolation (one tenant's failure
     never starves the others). Returns ``{tenant_id: reaped_count}`` (a tenant
     whose reap raises records 0)."""
+    from primeqa.semantic.connection import get_tenant_connection
+    from primeqa.shared.stale_tenants import skip_unprovisioned
     reaped: dict[int, int] = {}
     for tid in tenant_ids:
         try:
+            with get_tenant_connection(tid) as conn:
+                if skip_unprovisioned(conn, tid, "s4_execution_jobs", log):
+                    reaped[tid] = 0
+                    continue
             reaped[tid] = ExecutionJobStore(tid).reap_stale_jobs(stale_minutes=stale_minutes)
         except Exception as exc:
             log.warning("s4_reaper_tick: tenant %s failed: %s", tid, exc)
@@ -207,10 +213,16 @@ def run_s4_cleanup_reaper_tick(
     starves the others. Returns ``{tenant_id: reaped_count}``. Distinct from
     :func:`run_s4_reaper_tick` (which reaps stuck JOBS, not orphaned org records)."""
     from primeqa.execution_engine.stranded_cleanup import reap_stranded_records
+    from primeqa.semantic.connection import get_tenant_connection
+    from primeqa.shared.stale_tenants import skip_unprovisioned
 
     reaped: dict[int, int] = {}
     for tid in tenant_ids:
         try:
+            with get_tenant_connection(tid) as conn:
+                if skip_unprovisioned(conn, tid, "s4_created_records", log):
+                    reaped[tid] = 0
+                    continue
             reaped[tid] = reap_stranded_records(tid, stale_minutes=stale_minutes)
         except Exception as exc:
             log.warning("s4_cleanup_reaper_tick: tenant %s failed: %s", tid, exc)

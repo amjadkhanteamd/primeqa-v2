@@ -136,7 +136,14 @@ def fire_due_schedules(tenant_id: int, *, production_env_ids: set,
             enqueue_all_approved_claims,
         )
         enqueue = enqueue_all_approved_claims
-    store = store or RunScheduleStore(tenant_id)
+    if store is None:
+        # Probe only the real-store path — injected stores are DB-free fakes.
+        from primeqa.semantic.connection import get_tenant_connection
+        from primeqa.shared.stale_tenants import skip_unprovisioned
+        with get_tenant_connection(tenant_id) as conn:
+            if skip_unprovisioned(conn, tenant_id, "s4_run_schedules", log):
+                return {"fired": [], "enqueued": 0, "unprovisioned": True}
+        store = RunScheduleStore(tenant_id)
     fired, enqueued = [], 0
     for sched in store.list():
         if not sched.enabled:

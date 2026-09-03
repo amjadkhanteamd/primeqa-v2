@@ -186,9 +186,15 @@ def run_s8_grounding_tick(tenant_ids, *, cap: int = _DEFAULT_CAP) -> dict:
     """The scheduler fan-out (mirrors ``run_s3_reaper_tick``): recompute each
     tenant with per-tenant isolation (one tenant's failure never starves the
     others). Returns ``{tenant_id: grounded_count}``."""
+    from primeqa.semantic.connection import get_tenant_connection
+    from primeqa.shared.stale_tenants import skip_unprovisioned
     out: dict = {}
     for tid in tenant_ids:
         try:
+            with get_tenant_connection(tid) as conn:
+                if skip_unprovisioned(conn, tid, "s8_grounding_validity", log):
+                    out[tid] = 0
+                    continue
             out[tid] = recompute_tenant_grounding(tid, cap=cap)
         except Exception as exc:
             log.warning("s8_grounding_tick: tenant %s failed: %s", tid, exc)

@@ -267,8 +267,11 @@ def triage_new_failures(tenant_id: int, *, limit: int = 50,
     attempt cap (``max_fix_attempts_per_run``) stops fix-loops per claim."""
     try:
         from primeqa.semantic.connection import get_tenant_connection
+        from primeqa.shared.stale_tenants import skip_unprovisioned
         proposed = scanned = 0
         with get_tenant_connection(tenant_id) as conn:
+            if skip_unprovisioned(conn, tenant_id, "s6_interpretations", log):
+                return {"proposed": 0, "scanned": 0, "unprovisioned": True}
             rows = conn.execute(text(
                 "SELECT i.run_id, i.claim_test_id, i.outcome::text AS outcome, "
                 "       i.verdict, i.cause_kind, r.environment_id "
@@ -553,8 +556,11 @@ def auto_apply_proposals(tenant_id: int, *, limit: int = 20) -> dict:
         return {"applied": 0, "skipped": 0}              # dormant — the default
     try:
         from primeqa.semantic.connection import get_tenant_connection
+        from primeqa.shared.stale_tenants import skip_unprovisioned
         applied = skipped = 0
         with get_tenant_connection(tenant_id) as conn:
+            if skip_unprovisioned(conn, tenant_id, "repair_proposals", log):
+                return {"applied": 0, "skipped": 0, "unprovisioned": True}
             rows = conn.execute(text(
                 "SELECT id, run_id, claim_test_id, environment_id, proposal_kind, "
                 "       confidence FROM repair_proposals "

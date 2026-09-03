@@ -156,9 +156,15 @@ def run_s3_reaper_tick(tenant_ids, *, stale_minutes: int = 10) -> dict[int, int]
     jobs stuck past the heartbeat timeout, per tenant, with the same per-tenant
     isolation (one tenant's failure never starves the others). Returns
     ``{tenant_id: reaped_count}`` (a tenant whose reap raises records 0)."""
+    from primeqa.semantic.connection import get_tenant_connection
+    from primeqa.shared.stale_tenants import skip_unprovisioned
     reaped: dict[int, int] = {}
     for tid in tenant_ids:
         try:
+            with get_tenant_connection(tid) as conn:
+                if skip_unprovisioned(conn, tid, "s3_generation_jobs", log):
+                    reaped[tid] = 0
+                    continue
             reaped[tid] = GenerationJobStore(tid).reap_stale_jobs(stale_minutes=stale_minutes)
         except Exception as exc:
             log.warning("s3_reaper_tick: tenant %s failed: %s", tid, exc)
