@@ -81,6 +81,7 @@ def scheduler_tick(ctx):
         s4_reaper_tick,               # D-132 (substrate-4 execution queue)
         s4_cleanup_reaper_tick,       # D-230 (substrate-4 stranded-record cleanup)
         s4_schedule_tick,             # D-214 (scheduled substrate regression runs)
+        ui_schedule_tick,             # SDLC v3 item 3 (scheduled UI-conformance runs)
         repair_triage_tick,           # D-215.1 (repair-agent spine — proposal-only)
         s8_grounding_tick,            # D-143 (substrate-8 grounding recompute)
         s1_sync_enqueuer_tick,        # D-153 (substrate-1 sync cadence)
@@ -177,6 +178,30 @@ def s4_schedule_tick(ctx):
                               tenant.id)
     except Exception as e:
         log.warning("s4_schedule_tick failed: %s", e)
+
+
+def ui_schedule_tick(ctx):
+    """Fire due UI-conformance run schedules (SDLC v3 item 3 — the D-214
+    cadence pattern on the browser plane). Per-tenant isolation; every
+    outcome inside fire_due_ui_schedules is recorded + audited (overlap
+    skip, dead authority, enqueue failure) — never a silent tick."""
+    try:
+        from primeqa.core.models import Tenant
+        from primeqa.execution_engine.ui_schedules import (
+            fire_due_ui_schedules)
+        db = ctx["db"]
+        for tenant in db.query(Tenant).all():
+            try:
+                out = fire_due_ui_schedules(tenant.id)
+                if (out["fired"] or out["skipped_overlap"]
+                        or out["deactivated_dead_authority"]
+                        or out["failed"]):
+                    log.info("ui schedules tenant %s: %s", tenant.id, out)
+            except Exception:
+                log.exception("ui_schedule_tick failed for tenant %s; "
+                              "continuing", tenant.id)
+    except Exception as e:
+        log.warning("ui_schedule_tick failed: %s", e)
 
 
 def repair_triage_tick(ctx):
