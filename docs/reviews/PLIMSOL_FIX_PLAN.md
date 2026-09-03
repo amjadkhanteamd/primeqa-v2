@@ -385,3 +385,22 @@
   slice and is unchanged by it. Remedy if it ever matters: have the
   processor treat a null `run_set` on a POST-D-466 observation as its own
   named reason rather than skipping the leg.
+
+## Added 2026-09-03 — from the scheduling-slice deploy watch
+
+- **Medium: `repair_triage_tick` floods the scheduler log with
+  UndefinedTable stacks for unprovisioned tenants.** The tick (D-215.1,
+  landed 2026-06-11 @9b0ff49) iterates every `public.tenants` row and
+  queries `s6_interpretations` per tenant; the ~14 active-but-
+  unprovisioned tenant rows each raise `UndefinedTable` EVERY 60s tick —
+  ~14 stack traces/minute since June, enough to trip Railway's
+  500 logs/sec limit during bursts (observed: >1k dropped lines). It
+  has run this way unnoticed for ~12 weeks; the scheduling slice's
+  deploy watch was simply the first close look at this log. Remedy is
+  the exact fix just applied to `ui_schedule_tick` (@0862c5e): probe
+  `to_regclass` on the tenant connection and skip loudly-once per
+  process. One guard, one regression test; deliberately NOT folded into
+  the scheduling merge (pre-existing, different tick, its own slice).
+  Sweep candidates while there: every per-tenant tick in
+  `scheduler.py` (`s3_reaper_tick`, `s8_grounding_tick`, …) for the
+  same missing-schema posture.
