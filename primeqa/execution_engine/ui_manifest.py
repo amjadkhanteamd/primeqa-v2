@@ -240,6 +240,15 @@ def build_manifest_for_claim_set(
             f"claim_set {claim_set_id} is {data['status']!r} — manifests "
             "build only from APPROVED sets (D3/F10)")
     caps = _release_capabilities(session, data["catalogue_release_id"])
+    # Phase 5 §g: a tenant's release is the platform members PLUS the
+    # tenant's RECORDED union — a PLM-CUST member carries its own
+    # capability (AUTO by construction) and must not read as "not in
+    # release". Found by the scheduling slice's end-to-end leg: without
+    # this, no scheduled run of a union set could ever build a manifest.
+    from primeqa.knowledge.cust_authoring import tenant_release_members
+    for _cm in tenant_release_members(session,
+                                      data["catalogue_release_id"]):
+        caps.setdefault(_cm["rule_id"], _cm["automation_capability"])
 
     surfaces: dict[str, dict] = {}
     excluded_revoked = []
@@ -312,7 +321,8 @@ def enqueue_ui_run(session: Session, *, subject, claim_set_id: UUID,
                    stabilisation: Optional[dict] = None,
                    auth: Optional[dict] = None,
                    sf_client=None,
-                   org_env_snapshot_id: Optional[str] = None) -> dict:
+                   org_env_snapshot_id: Optional[str] = None,
+                   trigger: Optional[dict] = None) -> dict:
     """The enqueue boundary (LLD_PRODUCTIONISATION §c) — the D-245
     posture replicated for ui-inspection: authorize(subject, MEMBER)
     decides allowed (an AuthorizationError on deny — the route wrapper
@@ -329,7 +339,8 @@ def enqueue_ui_run(session: Session, *, subject, claim_set_id: UUID,
     manifest_id = build_manifest_for_claim_set(
         session, claim_set_id=claim_set_id, scheme=scheme,
         stabilisation=stabilisation, auth=auth, sf_client=sf_client,
-        org_env_snapshot_id=org_env_snapshot_id)
+        org_env_snapshot_id=org_env_snapshot_id,
+        execution_mode="scheduled" if trigger else "claim-set")
     job_id = enqueue_manifest_job(session, manifest_id)
     from primeqa.browser_worker.audit import record_event
     if isinstance(subject, dict):
@@ -338,10 +349,13 @@ def enqueue_ui_run(session: Session, *, subject, claim_set_id: UUID,
     else:
         user_id = getattr(subject, "user_id", None)
         subj_tenant = getattr(subject, "tenant_id", None)
-    record_event(session, action="ui.run_enqueued",
-                 details={"claim_set_id": str(claim_set_id),
-                          "manifest_id": manifest_id,
-                          "job_id": str(job_id)},
+    details = {"claim_set_id": str(claim_set_id),
+               "manifest_id": manifest_id, "job_id": str(job_id)}
+    if trigger:
+        # "scheduled by schedule <id>, authorised by user <id>" — the
+        # system-as-actor attribution rides the audit verbatim
+        details["trigger"] = trigger
+    record_event(session, action="ui.run_enqueued", details=details,
                  user_id=user_id, tenant_id=subj_tenant)
     return {"manifest_id": manifest_id, "job_id": str(job_id),
             "authorized": reason}
