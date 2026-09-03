@@ -40,6 +40,13 @@ log = logging.getLogger("primeqa.ui_schedules")
 
 _AUTH_MODES = ("vault", "totp_env")
 
+# The stale-tenant posture (the browser-worker precedent): a tenant row
+# without a provisioned schema/table is skipped LOUDLY-ONCE per process,
+# never a traceback per tick. Found live at the merge deploy watch: the
+# tick iterates every public.tenants row, and unprovisioned tenants were
+# flooding the scheduler log with UndefinedTable stacks every 60s.
+_WARNED_UNPROVISIONED: set = set()
+
 
 class UiScheduleError(ValueError):
     """A refused schedule operation — the message names the cause."""
@@ -174,6 +181,14 @@ def fire_due_ui_schedules(tenant_id: int, now: datetime | None = None,
            "deactivated_dead_authority": [], "failed": []}
     with _session(tenant_id) as conn:
         s = Session(bind=conn)
+        if s.execute(text(
+                "SELECT to_regclass('ui_run_schedules')")).scalar() is None:
+            if tenant_id not in _WARNED_UNPROVISIONED:
+                _WARNED_UNPROVISIONED.add(tenant_id)
+                log.warning("ui schedules: tenant %s has no "
+                            "ui_run_schedules table — skipped (warned "
+                            "once per process)", tenant_id)
+            return {**out, "unprovisioned": True}
         schedules = s.execute(text("""
             SELECT id, claim_set_id, cron_expr, auth, created_by,
                    created_at, last_enqueued_at, last_job_id

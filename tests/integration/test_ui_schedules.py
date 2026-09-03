@@ -105,6 +105,24 @@ def _mk(session, cleanup, claim_set_id, **over):
     return sid
 
 
+def test_a0_unprovisioned_tenant_skips_loudly_once(caplog):
+    """The deploy-watch incident as a regression: a tenant without the
+    table (or without a schema at all) skips loudly-once — no raise, no
+    per-tick traceback flood."""
+    import logging
+
+    from primeqa.execution_engine import ui_schedules as U
+    U._WARNED_UNPROVISIONED.discard(99)
+    with caplog.at_level(logging.WARNING, logger="primeqa.ui_schedules"):
+        out1 = U.fire_due_ui_schedules(99)
+        out2 = U.fire_due_ui_schedules(99)
+    assert out1.get("unprovisioned") and out2.get("unprovisioned")
+    assert out1["checked"] == 0 and not out1["failed"]
+    warns = [r for r in caplog.records if "no" in r.message
+             and "ui_run_schedules" in r.message]
+    assert len(warns) == 1                       # loudly-ONCE
+
+
 def test_a_creation_gates(session, cleanup, approved_set):
     from primeqa.core.authz import AuthorizationError
     from primeqa.execution_engine import ui_schedules as U
