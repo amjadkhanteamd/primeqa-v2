@@ -28,12 +28,20 @@ logged scope (this revision — it was never a v2 phase).
 2. REPORT/UI SLICE (new logged scope): the verdict listing and the
    release-comparison view, read-only over existing data. The demo
    surface. Enters by this plan revision, not by drift.
+   — DONE (D-476; merged @50d838c).
 3. SCHEDULING: per-release runs without manual invocation — what
    "per-release conformance testing" requires for the paying client.
+   — DONE (D-477; merged @26eab89, hotfix @0862c5e).
 4. INVENTORY GROWTH: a representative surface set on the real portal
    (inventory v2) so coverage numbers stop being two-page numbers.
+   — COMPLETE (D-478; merged @1216b8f; six AK-confirmed surfaces,
+   B-2 through the scheduled path, inventory refusal proven).
 5. Then, in client-driven order: phase 6 (unparked by a second-audience
    need), phase 8 routing, P-2/D9 (on an allowlisting client), Mode B.
+
+Sequence note (2026-09-03): the pilot loop is CLOSED — items 1–4
+delivered. The remaining items carry no fixed order; they proceed in
+client-driven order as item 5 states.
 
 ## Parking rationale (phase 6)
 A second persona widens a two-page demo; the pilot needs depth on one:
