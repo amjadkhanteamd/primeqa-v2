@@ -334,8 +334,10 @@ apply anywhere until AK has seen the counts. Superadmin-only on
 Order of acts, each read back before the next:
 
 1. Pre-flight classification + dump (§g).
-2. Public migration 069 → tenant migration 20260906_0010 → read-backs.
-3. Merge `--no-ff` → push → four services SUCCESS. From this moment:
+2. Public 069 (additive) → tenant migration 20260906_0010 → read-backs.
+3. Merge `--no-ff` → push → four services SUCCESS → public 070 (the
+   destructive drop, only now that no running ORM maps the columns) →
+   read-backs. From this moment:
    every new proposal carries a verdict; `NULL` verdict (pre-retro rows)
    is not applicable; the switch is OFF, so no apply path is reachable
    by anyone; the auto pass returns dormant; the panel shows verdicts
@@ -359,7 +361,8 @@ refuses `NULL` and non-DERIVED; the switch is OFF until step 6.
 | migration | content | class | policy |
 |---|---|---|---|
 | tenant alembic `20260906_0010_repair_gate.py` (head after `20260904_0010`) | `repair_proposals` + `gate_verdict TEXT NULL CHECK IN ('DERIVED','SPECULATIVE','SEMANTIC')` (named apart from the existing S6 `verdict` column), `grounding_source JSONB`, `classified_at TIMESTAMPTZ`, `classifier_version TEXT`; index `(status, gate_verdict)`; table comment updated (confidence non-decisional) | ADDITIVE | dumpless on its own (D-476) |
-| public `069_repair_gate_settings.sql` | `ADD COLUMN IF NOT EXISTS repair_gate_apply_enabled BOOLEAN NOT NULL DEFAULT false`; `DROP CONSTRAINT IF EXISTS trust_bands_sane`; `DROP COLUMN IF EXISTS trust_threshold_medium` (+ `trust_threshold_high` under D2); `ALTER TABLE ... DROP COLUMN` is idempotent per the 016+ convention | ADDITIVE + **DESTRUCTIVE** | **dump-first** (D-285 MIGRATE-FIRST, D-476) |
+| public `069_repair_gate_settings.sql` | `ADD COLUMN IF NOT EXISTS repair_gate_apply_enabled BOOLEAN NOT NULL DEFAULT false` — applied BEFORE the deploy (the old ORM does not map it; harmless) | ADDITIVE | dumpless on its own; the whole merge is dump-first because of 070 |
+| public `070_repair_gate_drop_thresholds.sql` | `DROP CONSTRAINT IF EXISTS trust_bands_sane`; `DROP COLUMN IF EXISTS trust_threshold_high, trust_threshold_medium` (D2) — applied ONLY AFTER every service runs the new code (the old ORM maps both columns and the LLM gateway loads that row per call; the new ORM does not map them) | **DESTRUCTIVE** | **dump-first** (D-285 MIGRATE-FIRST, D-476) |
 
 `gate_verdict` is nullable at migration time on purpose: a default verdict
 would be a lie about 132 existing rows. Retro-classification fills it;

@@ -190,15 +190,21 @@ needed, so no HOLD was raised.
 | migration | content | class |
 |---|---|---|
 | tenant `20260906_0010_repair_gate.py` | `repair_proposals` + `gate_verdict` (CHECK), `grounding_source`, `classified_at`, `classifier_version`, `revert_recipe_version_seq`, `reverted_at`; index `(status, gate_verdict)`; column comments | ADDITIVE |
-| public `069_repair_gate_settings.sql` | `+ repair_gate_apply_enabled DEFAULT false`; `DROP CONSTRAINT trust_bands_sane`; `DROP COLUMN trust_threshold_high, trust_threshold_medium` | ADDITIVE + **DESTRUCTIVE → dump-first** |
+| public `069_repair_gate_settings.sql` | `+ repair_gate_apply_enabled DEFAULT false` — before the deploy | ADDITIVE |
+| public `070_repair_gate_drop_thresholds.sql` | `DROP CONSTRAINT trust_bands_sane`; `DROP COLUMN trust_threshold_high, trust_threshold_medium` — after the deploy | **DESTRUCTIVE → dump-first** |
 
-MIGRATE-FIRST is mandatory here for a second reason: `repair_auto_apply`
-and the new switch are ORM-mapped now, so the web/worker/scheduler
-processes must not boot on the new code before 069 is applied.
+The split closes the ORM window in BOTH directions (found at the merge
+pre-flight, 2026-09-07): the old ORM maps the two thresholds and the LLM
+gateway (`limits.load_tenant_config`) loads the settings row per call,
+so dropping them under old code would fail every LLM call for the
+deploy's duration; the new ORM maps the switch, so booting new code
+before 069 would fail the same reads. Additive before, destructive after
+— no running process ever selects a column that is not there.
 
 ## l. Deploy-day sequence (unchanged from the LLD §f)
 
-dump → 069 → tenant 20260906_0010 → read-backs → merge → four services →
+dump → 069 (additive) → tenant 20260906_0010 → read-backs → merge → four
+services → 070 (the destructive drop) → read-backs →
 `python -m primeqa.intelligence.repair_gate retro --tenant-id 1` →
 `… revert --tenant-id 1 --user-id 1` (the D3 act; re-verify jobs
 enqueued; reds accepted as honest) → the counts table + the three
