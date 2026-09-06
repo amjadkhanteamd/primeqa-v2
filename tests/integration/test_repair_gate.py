@@ -92,13 +92,24 @@ def _write_claim_and_recipe(session, *, asserted_field: str,
         session, actor="s3", test_id=None, archetype="data_behavior",
         claim_kind="value-claim", asserted_truth=body,
         semantic_conditions=SemanticConditionsBody())
+    from primeqa.test_representation.models.primitives import AssertionPredicate
+    from primeqa.test_representation.models.recipes.data_recipe import (
+        AssertStep, ReadStep)
+    # the S4-executable positive shape (D-223): Create -> Read -> Assert
     recipe = DataRecipeBody(
         api_choice="rest", identity_context="system",
         execution_mechanism="direct_api",
         steps=[CreateStep(step_id="s1",
                           target_object=LogicalRef(entity_type="Object",
                                                    external_id=sobject),
-                          field_values=dict(staged))])
+                          field_values=dict(staged)),
+               ReadStep(step_id="s2",
+                        target=LogicalRef(entity_type="Object", external_id=sobject),
+                        fields_to_capture=[asserted_field]),
+               AssertStep(step_id="s3",
+                          predicate=AssertionPredicate(
+                              subject_ref=f"s2.{asserted_field}",
+                              predicate="equals", value="Tech"))])
     rr = coord.write_recipe(
         session, actor="s3", recipe_id=None, claim_test_id=cr.test_id,
         trigger_kind="data-mutation-trigger", recipe_kind="data-recipe",
@@ -530,26 +541,55 @@ def test_d2_derived_auto_applies_only_with_all_three_flags(world):
     pid = _plant_proposal(claim, run, verdict="DERIVED",
                           grounding={"rule": "R1", "s1_fact": "is_createable=false"},
                           field_changes={"Line_Total__c": "__REMOVE__"})
+    # the claim must be APPROVED for the apply to be applicable (Step A.1)
+    from sqlalchemy.orm import Session
+    from primeqa.test_representation.coordinator import SemanticTransactionCoordinator
+    with _conn() as conn:
+        s = Session(bind=conn)
+        try:
+            coord = SemanticTransactionCoordinator()
+            c = coord.get_latest_claim(s, claim)
+            if c.status != "approved":
+                coord.promote_claim_to_approved(s, actor="human", test_id=claim,
+                                                version_seq=c.version_seq)
+            s.commit()
+        finally:
+            s.close()
     # auto flag on, switch off → dormant
     _settings(repair_auto_apply=True, repair_gate_apply_enabled=False)
     try:
         assert auto_apply_proposals(TENANT) == {"applied": 0, "skipped": 0}
         _settings(repair_gate_apply_enabled=True)
+        # Step A.1 (ruling D5): the autonomous pass PRE-APPROVES — it writes
+        # no version (promotion is humans-only; an unapproved version never runs)
         out = auto_apply_proposals(TENANT)
         assert out["applied"] == 1
         with _conn() as conn:
             row = conn.execute(text(
                 "SELECT status, auto_applied, payload FROM repair_proposals WHERE id = :p"),
                 {"p": pid}).mappings().first()
+            n = conn.execute(text("SELECT COUNT(*) FROM test_recipes WHERE recipe_id = "
+                                  "CAST(:r AS uuid)"), {"r": str(recipe)}).scalar()
+        assert row["status"] == "approved" and row["auto_applied"] is False
+        assert row["payload"].get("auto_approved") is True and n == 1
+        # the human's one click writes, promotes and queues the re-verify
+        from primeqa.intelligence.repair_agent import decide_proposal
+        res = decide_proposal(TENANT, pid, approve=True, decided_by=1)
+        assert res["ok"] is True, res
+        with _conn() as conn:
+            row = conn.execute(text(
+                "SELECT status, payload, reverify_state FROM repair_proposals WHERE id = :p"),
+                {"p": pid}).mappings().first()
             versions = conn.execute(text(
-                "SELECT version_seq, observation_realization FROM test_recipes "
+                "SELECT version_seq, status, observation_realization FROM test_recipes "
                 "WHERE recipe_id = CAST(:r AS uuid) ORDER BY version_seq"),
                 {"r": str(recipe)}).all()
-        assert row["status"] == "applied" and row["auto_applied"] is True
+        assert row["status"] == "applied" and row["reverify_state"] == "queued"
         assert row["payload"]["new_version_seq"] == 2 and len(versions) == 2
-        staged = versions[1][1]["steps"][0]["field_values"]
+        assert versions[1][1] == "approved"                     # the approval act
+        staged = versions[1][2]["steps"][0]["field_values"]
         assert f"{SOBJECT}.Line_Total__c" not in staged      # the edit landed
-        assert f"{SOBJECT}.Line_Total__c" in versions[0][1]["steps"][0]["field_values"]
+        assert f"{SOBJECT}.Line_Total__c" in versions[0][2]["steps"][0]["field_values"]
         world["applied_pid"] = pid
     finally:
         _settings(repair_auto_apply=False, repair_gate_apply_enabled=False)

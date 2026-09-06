@@ -271,7 +271,7 @@
       <div class="flex items-center justify-between gap-3 flex-wrap">
         <div>
           <h3 class="text-sm font-semibold text-gray-900">
-            {% if gv == 'DERIVED' %}A derived fix is ready for this run{% elif gv == 'SPECULATIVE' %}The agent has a speculative suggestion for this run{% elif gv == 'SEMANTIC' %}The agent's suggestion is refused &mdash; it changes what the claim asserts{% else %}A proposal exists for this run (not yet classified){% endif %}
+            {% if repair_proposal.reverify %}{% if repair_proposal.reverify.state == 'queued' %}Applied &mdash; re-verify pending{% elif repair_proposal.reverify.state == 'ran' %}Applied &mdash; re-verify ran{% else %}Applied &mdash; re-verify {{ repair_proposal.reverify.state.replace('_', ' ') }}{% endif %}{% elif gv == 'DERIVED' %}A derived fix is ready for this run{% elif gv == 'SPECULATIVE' %}The agent has a speculative suggestion for this run{% elif gv == 'SEMANTIC' %}The agent's suggestion is refused &mdash; it changes what the claim asserts{% else %}A proposal exists for this run (not yet classified){% endif %}
             <span class="ml-2 inline-flex items-center px-2 py-0.5 rounded text-[10px] font-semibold {% if gv == 'DERIVED' %}bg-green-100 text-green-800{% elif gv == 'SPECULATIVE' %}bg-amber-100 text-amber-800{% elif gv == 'SEMANTIC' %}bg-red-100 text-red-800{% else %}bg-gray-100 text-gray-700{% endif %}">{{ gv or 'UNCLASSIFIED' }}</span>
           </h3>
           <p class="text-xs text-gray-700 mt-0.5">
@@ -293,7 +293,16 @@
           {% endif %}
         </div>
         <div class="flex items-center gap-2">
-          {% if gv == 'DERIVED' %}
+          {% if repair_proposal.reverify %}
+            {% set rv = repair_proposal.reverify %}
+            <span class="text-xs {% if rv.state == 'ran' %}text-gray-800{% elif rv.state == 'queued' %}text-indigo-700{% else %}text-red-700{% endif %}" data-testid="reverify-outcome">
+              {% if rv.state == 'queued' %}Applied &middot; re-verify pending (job {{ rv.job_id }})
+              {% elif rv.state == 'ran' %}Re-verify ran: <span class="font-medium">{{ rv.outcome }}</span>{% if rv.verdict %} &middot; {{ rv.verdict.replace('_', ' ') }}{% endif %}
+              {% else %}Re-verify {{ rv.state.replace('_', ' ') }}: <span class="font-mono">{{ rv.refusal }}</span>{% endif %}
+            </span>
+          {% elif gv == 'DERIVED' and repair_proposal.claim_status == 'deprecated' %}
+            <span class="text-xs text-gray-500" data-testid="claim-deprecated">Claim deprecated &mdash; not applicable</span>
+          {% elif gv == 'DERIVED' %}
             {% if repair_gate_apply_enabled %}
             <form method="POST" action="/runs/substrate/repairs/{{ repair_proposal.id }}" class="inline">
               {{ csrf_input | safe }}
@@ -311,11 +320,13 @@
           {% else %}
             <span class="text-xs text-gray-400">Not applicable</span>
           {% endif %}
+          {% if repair_proposal.status != 'applied' %}
           <form method="POST" action="/runs/substrate/repairs/{{ repair_proposal.id }}" class="inline">
             {{ csrf_input | safe }}
             <input type="hidden" name="action" value="reject">
             <button type="submit" class="text-xs text-gray-600 hover:underline">{{ 'Dismiss' if gv == 'SEMANTIC' else 'Reject' }}</button>
           </form>
+          {% endif %}
         </div>
       </div>
     </div>
