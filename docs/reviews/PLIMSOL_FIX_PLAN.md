@@ -418,3 +418,28 @@
   for uniform posture. `ui_schedules` keeps its inline original.
   Regression: `tests/integration/test_scheduler_stale_tenants.py`
   (the `test_a0` pattern, tenant 99) + `tests/unit/test_stale_tenants.py`.
+
+
+## Added 2026-09-07 — from the Step A revert (D-480)
+
+- **Medium: the D-236 "re-verify after apply" never executes the edited
+  recipe.** `_apply_recipe_edit` writes the new version through the
+  coordinator as actor `s8`, and the coordinator stamps every s8 write
+  `generated_unapproved` (`coordinator.py:945`). The executor's
+  `select_recipe_for_execution` returns `None` for an unapproved recipe
+  (or a deprecated claim), and the job completes as
+  `no_eligible_recipe` (`run.py:173`, `run.py:220`). Observed live: the
+  three Step A reverts (jobs 682–684) each completed in ~15 s with
+  `ran=False, outcome=no_eligible_recipe`; the July auto-applies'
+  own re-verifies produced ZERO runs at recipe version 2 for the same
+  reason (plus all three claims are deprecated). So "apply → re-verify"
+  has been a silent no-op since D-236: an applied edit is written but
+  never proven. Options, not folded into Step A: (a) the re-verify job
+  carries an explicit `recipe_version_seq` pin and the executor honours
+  it for the re-verify context only (the unapproved version runs ONCE,
+  as evidence, never as the approved recipe); (b) the proposal row
+  records the re-verify outcome (`no_eligible_recipe` included) so the
+  panel never implies a proof that did not happen; (c) refuse apply on
+  a deprecated claim at the gate (a DERIVED verdict on a deprecated
+  claim is applicable in name only). Lean: (b) immediately, (a)+(c) as
+  one small slice after switch-on.

@@ -108,7 +108,10 @@ A real "edited" recipe version written through the coordinator, an
 verdict, and a `DERIVED` one beside it:
 
 - the SPECULATIVE row → `reverted`: a NEW recipe version whose `steps`
-  equal the pre-edit version's byte-for-byte; the provenance event is
+  equal the pre-edit version's (byte-for-byte on scratch, where both
+  versions were written by the same schema; on production the create
+  step is byte-equal and the read step gains the current schema's
+  default `eventual: null` — content-identical, see §m); the provenance event is
   `recipe_s8_rewrite` with `event_data.provenance = "gate_retro_revert"`,
   `proposal_id`, `predicted_verdict = SPECULATIVE`,
   `reverts_version_seq` / `restores_version_seq`; the proposal row
@@ -224,3 +227,72 @@ reverts' re-verify outcomes to AK → HOLD → switch-on GO.
 - The llm-usage page needs tables scratch does not carry
   (`llm_usage_log`, `llm_models`), so its "no checkbox" assertion is on
   the template source.
+
+
+## m. Production transcript (2026-09-07, GO #1 + GO #2)
+
+| act | record |
+|---|---|
+| dump | `prod_pre_stepA_20260907_004151.dump`, 181 MB, 1,121 entries |
+| 069 (additive) | `repair_gate_apply_enabled` added, default false |
+| tenant `20260906_0010` | six gate columns + CHECK + index + comments; S6 `verdict` intact; head read back |
+| merge | `ebb354f` (parents `00f8e7d` + `f018a61`); four services SUCCESS; pre-merge deployments REMOVED |
+| scheduler leg | 0 errors before and ~75 s after 070; no new failures to triage (0 rows written, 0 unclassified) |
+| web tier | `/settings/agent` 200 (switch input present, no threshold text); `/runs/substrate` 200 (verdict-counts header, 50 UNCLASSIFIED rows in the window, **0 apply forms**, old header gone) |
+| 070 (destructive) | `trust_bands_sane` + both thresholds gone; settings row intact (agent on, auto-apply OFF, switch OFF, cap 2) |
+| retro | 132 scanned / 132 written; second pass 0 written, identical counts |
+| revert | 95189, 95195, 465221 reverted (all SEMANTIC); 347418 kept (DERIVED R1) |
+| hygiene | 0 secret-pattern hits over grounding, provenance, audit rows; 0 unclassified rows |
+| deltas | claims 838 → 838; recipes 1,006 → 1,009; s4 jobs 632 → 635; provenance 3,700 → 3,703 |
+
+**The counts (all 132 rows):**
+
+| status | kind | DERIVED | SPECULATIVE | SEMANTIC |
+|---|---|---|---|---|
+| applied | recipe_edit | 1 | 2 | 3 |
+| applied | regenerate_from_current_org | 1 | – | – |
+| applied | rerun | 47 | – | – |
+| proposed | recipe_edit | **0** | 15 | 6 |
+| proposed | regenerate_from_current_org | 3 | – | – |
+| proposed | rerun | 54 | – | – |
+
+Open recipe-edit reasons: 14 `no_platform_error`, 1
+`value_not_recorded_in_picklist` (the "Mortgage" specimen — the
+picklist records Home / Personal / Business), 6 `touches_asserted_field`.
+S1 read at sequence 249 (env-59's org) for 26 rows and 248 (env-78's)
+for 1. **Zero DERIVED among the open recipe edits**: switch-on makes no
+recipe edit applicable today; only reruns and regenerates would gain an
+apply action.
+
+**The six applied recipe edits:**
+
+| id | auto | verdict | grounding | remedy | disposition |
+|---|---|---|---|---|---|
+| 146 | human | SPECULATIVE | no_platform_error | `Status__c = Open` | stays (human-applied) |
+| 147 | human | SPECULATIVE | no_platform_error | `Status__c = Escalated` | stays (human-applied) |
+| 95189 | machine | SEMANTIC | touches asserted `loan_type__c` | drop `Loan_Type__c` | **reverted** → recipe v3 = v1, job 682 |
+| 95195 | machine | SEMANTIC | touches asserted `loan_type__c` | drop `Loan_Type__c` | **reverted** → v3 = v1, job 683 |
+| 347418 | machine | DERIVED | R1: S1 `is_createable=false` | drop `PLS_FB_Line_Total__c` | **kept** |
+| 465221 | machine | SEMANTIC | touches asserted `pls_bm_deal_value__c` | `PLS_BM_Deal_Value__c = 1000` | **reverted** → v3 = v1, job 684 |
+
+465221 classified SEMANTIC, sharper than the LLD's SPECULATIVE
+prediction: the chosen value lands on a field the claim asserts.
+
+**The reverts, verified:** each recipe now holds versions 1 (approved),
+2 (the machine edit, `generated_unapproved`), 3 (the restore, current).
+Version 3's create step equals version 1's byte-for-byte (the removed
+`Loan_Type__c` is back; the invented `1000` is gone); the read step
+differs only by the current schema's default `eventual: null`; the
+assert step is equal. Provenance: `recipe_s8_rewrite` with
+`gate_retro_revert`, the proposal id, the predicted verdict,
+`restores_version_seq = 1`. Three `repair.gate_retro_revert` audit rows.
+
+**The re-verify outcomes — a finding, reported plainly:** jobs 682–684
+completed within ~15 s each as `ran=False, outcome=no_eligible_recipe`.
+No run, no red, no green. Two recorded causes: all three claims are
+**deprecated**, and every s8-written recipe version is
+`generated_unapproved` (`coordinator.py:945`), which the executor never
+selects (`run.py:173`). The same is true of July: the four auto-applies'
+own re-verifies produced **zero** runs at version 2. The D-236
+"apply → re-verify" has been a silent no-op since it shipped. Ledgered
+in PLIMSOL_FIX_PLAN.md ("Added 2026-09-07"); not folded into Step A.
