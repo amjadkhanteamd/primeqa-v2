@@ -283,33 +283,61 @@
   </div>
   {% endif %}
 
-  {# D-215.1: the repair agent's proposal queue (admin+). Deterministic,
-     proposal-only — approving applies the repair immediately (rerun or
-     regenerate); real findings never appear here. #}
+  {# Step A (LLD_STEP_A_REPAIR_GATE): the repair agent's proposal queue
+     (admin+), rendered per the AK-approved mock — the gate VERDICT decides
+     the action; the LLM's confidence is never shown; a refusal names its
+     destination; the header carries the verdict counts. #}
   {% if repairs is not none %}
+  {% set gate_on = repair_gate_apply_enabled %}
   <div class="bg-white shadow rounded-lg">
-    <div class="px-4 py-3 border-b flex items-center justify-between">
+    <div class="px-4 py-3 border-b flex items-center justify-between flex-wrap gap-2">
       <h3 class="text-sm font-semibold text-gray-700">Repair proposals</h3>
-      <span class="text-xs text-gray-400">Stale or unevaluable tests the agent can fix &mdash; real defects never appear here.</span>
+      {% if repairs.available and repairs.verdict_counts %}
+      {% set vc = repairs.verdict_counts %}
+      <span class="text-xs text-gray-500" data-testid="repair-verdict-counts">
+        <span class="font-medium text-green-700">{{ vc.DERIVED }} derived</span>
+        &middot; <span class="font-medium text-amber-700">{{ vc.SPECULATIVE }} speculative</span>
+        &middot; <span class="font-medium text-red-700">{{ vc.SEMANTIC }} refused (semantic)</span>
+        {% if vc.UNCLASSIFIED %}&middot; <span class="font-medium text-gray-500">{{ vc.UNCLASSIFIED }} unclassified</span>{% endif %}
+        {% if not gate_on %}&middot; <span class="text-gray-400" title="Repair gate switch is off: no proposal can be applied by anyone. Settings › Agent.">apply actions dormant</span>{% endif %}
+      </span>
+      {% endif %}
     </div>
     {% if repairs.available and repairs.proposals %}
     <table class="min-w-full divide-y divide-gray-200 text-sm">
       <tbody class="divide-y divide-gray-100">
         {% for p in repairs.proposals %}
-        <tr>
-          <td class="px-4 py-2">
+        {% set gv = p.gate_verdict %}
+        {% set g = p.grounding or {} %}
+        <tr data-testid="repair-row" data-gate-verdict="{{ gv or 'UNCLASSIFIED' }}">
+          <td class="px-4 py-2 align-top whitespace-nowrap">
+            {% if gv == 'DERIVED' %}
+            <span class="inline-flex items-center px-2 py-0.5 rounded text-xs font-semibold bg-green-100 text-green-800">DERIVED</span>
+            {% elif gv == 'SPECULATIVE' %}
+            <span class="inline-flex items-center px-2 py-0.5 rounded text-xs font-semibold bg-amber-100 text-amber-800">SPECULATIVE</span>
+            {% elif gv == 'SEMANTIC' %}
+            <span class="inline-flex items-center px-2 py-0.5 rounded text-xs font-semibold bg-red-100 text-red-800">SEMANTIC</span>
+            {% else %}
+            <span class="inline-flex items-center px-2 py-0.5 rounded text-xs font-semibold bg-gray-100 text-gray-700">UNCLASSIFIED</span>
+            {% endif %}
+            <div class="text-[11px] text-gray-500 mt-1 max-w-xs whitespace-normal">
+              {% if g.rule %}{{ g.rule }}{% if g.s1_fact %} &middot; S1: {{ g.field }} {{ g.s1_fact }}{% if g.s1_seq %} @seq {{ g.s1_seq }}{% endif %}{% elif g.matched %} &middot; picklist {{ g.matched }} value{% elif g.no_recipe_mutation %} &middot; no recipe mutation{% endif %}{% if g.error_code %} &middot; {{ g.error_code }}{% endif %}
+              {% elif g.reason == 'touches_asserted_field' %}touches asserted {{ g.fields | join(', ') }}
+              {% elif g.reason %}{{ g.reason.replace('_', ' ') }}{% if g.error_code %} &middot; {{ g.error_code }}{% endif %}
+              {% else %}not classified{% endif %}
+            </div>
+          </td>
+          <td class="px-4 py-2 align-top">
             <a href="/claims/{{ p.claim_test_id }}" class="text-indigo-600 hover:underline font-mono text-xs">{{ p.claim_test_id[:8] }}</a>
             <div class="text-xs text-gray-400">run <a href="/runs/{{ p.run_id }}" class="hover:underline font-mono">{{ p.run_id[:8] }}</a></div>
           </td>
-          <td class="px-4 py-2 text-xs text-gray-600">
+          <td class="px-4 py-2 align-top text-xs text-gray-600">
             {{ p.verdict.replace('_', ' ') }}{% if p.cause_kind %} &middot; {{ p.cause_kind.replace('_', ' ') }}{% endif %}
           </td>
-          <td class="px-4 py-2">
+          <td class="px-4 py-2 align-top">
             {% if p.proposal_kind == 'recipe_edit' %}
-            {# D-236: the LLM-proposed recipe edit — confidence + rationale + the
-               concrete field changes (a drop or a set on the subject create). #}
             <span class="inline-flex items-center px-2 py-0.5 rounded text-xs font-medium bg-purple-100 text-purple-800"
-              title="The agent proposes an edit to the test recipe to fix this failure (a new version; the prior one is preserved).">Recipe edit{% if p.confidence is not none %} &middot; {{ (p.confidence * 100) | round | int }}% conf{% endif %}</span>
+              title="The agent proposes an edit to the test recipe (a new version; the prior one is preserved).">Recipe edit</span>
             {% if p.proposed_payload and p.proposed_payload.rationale %}
             <p class="text-xs text-gray-500 mt-1">{{ p.proposed_payload.rationale }}</p>
             {% endif %}
@@ -326,16 +354,32 @@
               {{ 'Re-run' if p.proposal_kind == 'rerun' else 'Regenerate from current org' }}</span>
             {% endif %}
           </td>
-          <td class="px-4 py-2 text-right whitespace-nowrap">
-            <form method="POST" action="/runs/substrate/repairs/{{ p.id }}" class="inline">
-              {{ csrf_input | safe }}
-              <input type="hidden" name="action" value="approve">
-              <button type="submit" class="rounded-md bg-indigo-600 px-2.5 py-1 text-xs font-semibold text-white hover:bg-indigo-500">Approve &amp; apply</button>
-            </form>
+          <td class="px-4 py-2 align-top text-right whitespace-nowrap" data-testid="repair-action">
+            {% if gv == 'DERIVED' %}
+              {% if gate_on %}
+              <form method="POST" action="/runs/substrate/repairs/{{ p.id }}" class="inline">
+                {{ csrf_input | safe }}
+                <input type="hidden" name="action" value="approve">
+                <button type="submit" class="rounded-md bg-indigo-600 px-2.5 py-1 text-xs font-semibold text-white hover:bg-indigo-500">Approve &amp; apply</button>
+              </form>
+              {% else %}
+              <span class="text-xs text-gray-400" title="Repair gate switch is off (Settings › Agent).">Apply dormant</span>
+              {% endif %}
+            {% elif gv == 'SPECULATIVE' %}
+              <a href="/claims/{{ p.claim_test_id }}" class="rounded-md bg-white px-2.5 py-1 text-xs font-semibold text-amber-800 ring-1 ring-amber-300 hover:bg-amber-50" title="Inference only, or a chosen value — the operator edits the recipe; nothing applies.">Open recipe</a>
+            {% elif gv == 'SEMANTIC' %}
+              <span class="block text-xs text-red-700 max-w-xs whitespace-normal text-right">Refused &mdash; this changes what the claim asserts.
+                {% if p.destination and p.destination.url %}Route to requirement <a href="{{ p.destination.url }}" class="font-medium underline">{{ p.destination.key }}</a>
+                {% elif p.destination and p.destination.key %}Requirement <span class="font-mono">{{ p.destination.key }}</span> <span class="text-gray-500">(no requirement record)</span>
+                {% else %}<span class="text-gray-500">No requirement link recorded.</span>{% endif %}
+              </span>
+            {% else %}
+              <span class="text-xs text-gray-400" title="Not yet classified by the gate — never applicable.">Not applicable</span>
+            {% endif %}
             <form method="POST" action="/runs/substrate/repairs/{{ p.id }}" class="inline ml-1">
               {{ csrf_input | safe }}
               <input type="hidden" name="action" value="reject">
-              <button type="submit" class="text-xs text-gray-500 hover:underline">Reject</button>
+              <button type="submit" class="text-xs text-gray-500 hover:underline">{{ 'Dismiss' if gv == 'SEMANTIC' else 'Reject' }}</button>
             </form>
           </td>
         </tr>

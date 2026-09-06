@@ -5,7 +5,7 @@
   <div class="mb-4">
     <h1 class="text-2xl font-bold text-gray-900">Agent autonomy</h1>
     <p class="mt-1 text-sm text-gray-500">
-      Controls how the fix-and-rerun agent behaves when test runs fail.
+      The ONE home for the repair agent's safety controls (Step A). Every change here is audited.
       Visible to Super Admin only.
     </p>
   </div>
@@ -16,49 +16,53 @@
       <label class="inline-flex items-center space-x-3">
         <input type="checkbox" name="agent_enabled" value="1" {% if settings.agent_enabled %}checked{% endif %}
                class="h-4 w-4 rounded border-gray-300 text-indigo-600 focus:ring-indigo-500">
-        <span class="text-sm font-medium text-gray-900">Enable the fix-and-rerun agent</span>
+        <span class="text-sm font-medium text-gray-900">Enable the repair agent</span>
       </label>
       <p class="mt-1 text-xs text-gray-500 ml-7">
-        When disabled, failed steps are recorded but the agent never triages or proposes fixes.
+        The master switch. When off, the agent creates <em>no</em> proposals (the triage tick skips this tenant, logged once) and applies nothing.
       </p>
     </div>
 
-    <div class="grid grid-cols-2 gap-4">
-      <div>
-        <label class="block text-sm font-medium text-gray-700">High confidence threshold</label>
-        <input type="number" step="0.01" min="0" max="1" name="trust_threshold_high"
-               value="{{ settings.trust_threshold_high }}"
-               class="mt-1 block w-full rounded-md border border-gray-300 px-3 py-2 text-sm">
-        <p class="mt-1 text-xs text-gray-500">
-          Fixes at or above this confidence auto-apply on <em>sandbox</em> environments.
-        </p>
-      </div>
-      <div>
-        <label class="block text-sm font-medium text-gray-700">Medium confidence threshold</label>
-        <input type="number" step="0.01" min="0" max="1" name="trust_threshold_medium"
-               value="{{ settings.trust_threshold_medium }}"
-               class="mt-1 block w-full rounded-md border border-gray-300 px-3 py-2 text-sm">
-        <p class="mt-1 text-xs text-gray-500">
-          Fixes below medium are labeled "Low confidence — do not apply."
-        </p>
-      </div>
+    <div>
+      <label class="inline-flex items-center space-x-3">
+        <input type="checkbox" name="repair_gate_apply_enabled" value="1" {% if settings.repair_gate_apply_enabled %}checked{% endif %}
+               class="h-4 w-4 rounded border-gray-300 text-rose-600 focus:ring-rose-500">
+        <span class="text-sm font-medium text-gray-900">Allow apply actions (repair gate switch)</span>
+      </label>
+      <p class="mt-1 text-xs text-gray-500 ml-7">
+        Dormant-first. While off, <strong>no</strong> proposal can be applied by anyone &mdash; the Repairs panel shows verdicts only and the apply route refuses.
+        When on, only a <span class="font-mono">DERIVED</span> proposal with a recorded grounding source can be applied, by a human click.
+      </p>
     </div>
 
     <div>
-      <label class="block text-sm font-medium text-gray-700">Max auto-fix attempts per run</label>
+      <label class="inline-flex items-center space-x-3">
+        <input type="checkbox" name="repair_auto_apply" value="1" {% if settings.repair_auto_apply %}checked{% endif %}
+               class="h-4 w-4 rounded border-gray-300 text-rose-600 focus:ring-rose-500">
+        <span class="text-sm font-medium text-gray-900">Autonomous apply on sandbox environments</span>
+      </label>
+      <p class="mt-1 text-xs text-gray-500 ml-7">
+        Lets the scheduler apply a <span class="font-mono">DERIVED</span> recipe edit without a human click &mdash; sandbox environments only, and only while the apply switch above is on.
+        The LLM's self-reported confidence is never consulted. Production environments are always human-gated.
+      </p>
+    </div>
+
+    <div>
+      <label class="block text-sm font-medium text-gray-700">Max auto-fix attempts per claim</label>
       <input type="number" min="0" max="10" name="max_fix_attempts_per_run"
              value="{{ settings.max_fix_attempts_per_run }}"
              class="mt-1 block w-32 rounded-md border border-gray-300 px-3 py-2 text-sm">
       <p class="mt-1 text-xs text-gray-500">
-        Cap on agent-initiated reruns per parent run. Reaches cap → escalate to human review.
+        Cap on recipe-edit proposals per claim. Reaching it stops the fix loop; a human decides.
       </p>
     </div>
 
     <div class="rounded-md bg-purple-50 border border-purple-200 p-3 text-xs text-purple-800">
       <p><strong>Policies that are not configurable (and shouldn't be):</strong></p>
       <ul class="list-disc ml-5 mt-1 space-y-0.5">
-        <li>Production environments: agent never auto-applies; fixes become review tasks.</li>
-        <li>Revert restores the full before-state snapshot captured at fix time.</li>
+        <li>Every proposal carries a gate verdict at creation: <span class="font-mono">DERIVED</span> / <span class="font-mono">SPECULATIVE</span> / <span class="font-mono">SEMANTIC</span>. Only DERIVED can ever apply.</li>
+        <li>Production environments: the agent never auto-applies; fixes become review tasks.</li>
+        <li>An applied recipe edit is a new version &mdash; the prior version is preserved and restorable.</li>
         <li>Cost and raw LLM prompts are visible only to Super Admin.</li>
       </ul>
     </div>
@@ -68,9 +72,5 @@
       <button type="submit" class="rounded-md bg-indigo-600 px-3 py-2 text-sm font-semibold text-white hover:bg-indigo-500">Save</button>
     </div>
   </form>
-
-  <p class="mt-4 text-xs text-gray-500">
-    {% if settings.updated_at %}Last updated {{ settings.updated_at[:19] }} by user #{{ settings.updated_by }}.{% endif %}
-  </p>
 </div>
 {% endblock %}

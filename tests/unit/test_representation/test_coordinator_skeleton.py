@@ -164,9 +164,11 @@ class TestCoordinatorSignatures:
         added one optional kwarg (``claim_version_seq``) per SPEC
         §6.4 for the recipe-to-claim version-pinning case; D-228
         added ``priority`` so S3 can mint fallback secondaries
-        below the primary. The prior-pinned parameters MUST remain
-        in the same positions — new optional kwargs append to the
-        end."""
+        below the primary; Step A (the repair gate) added
+        ``event_context`` so a retro-revert names the proposal it
+        reverts in the provenance event. The prior-pinned parameters
+        MUST remain in the same positions — new optional kwargs append
+        to the end."""
         sig = inspect.signature(
             SemanticTransactionCoordinator.write_recipe,
         )
@@ -180,6 +182,9 @@ class TestCoordinatorSignatures:
             "execution_environment",
             "claim_version_seq",  # added in D-β.3
             "priority",           # added in D-228
+            "event_context",      # added in Step A (repair gate): optional
+                                  # attribution folded into the provenance
+                                  # event, mirroring the claim-side kwarg
         ]
 
     def test_write_recipe_keyword_only_after_session(self) -> None:

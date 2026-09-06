@@ -164,8 +164,14 @@ class TenantAgentSettings(Base):
     tenant_id = Column(Integer, ForeignKey("tenants.id", ondelete="CASCADE"),
                        primary_key=True)
     agent_enabled = Column(Boolean, nullable=False, server_default="true")
-    trust_threshold_high = Column(String(10), nullable=False, server_default="0.85")
-    trust_threshold_medium = Column(String(10), nullable=False, server_default="0.60")
+    # Step A (migration 069, LLD_STEP_A_REPAIR_GATE ruling D2): the two
+    # trust thresholds are DROPPED — the apply paths read the proposal's
+    # gate_verdict, never the LLM's self-reported confidence, so both were
+    # dead safety controls. repair_auto_apply (054) is now MAPPED (the
+    # migration is applied everywhere under MIGRATE-FIRST) beside the new
+    # dormant-first switch.
+    repair_auto_apply = Column(Boolean, nullable=False, server_default="false")
+    repair_gate_apply_enabled = Column(Boolean, nullable=False, server_default="false")
     max_fix_attempts_per_run = Column(Integer, nullable=False, server_default="3")
     updated_by = Column(Integer, ForeignKey("users.id"))
     updated_at = Column(DateTime(timezone=True), nullable=False, server_default=func.now())
@@ -209,14 +215,11 @@ class TenantAgentSettings(Base):
     # unmapped column would cost a second query; deploy is migrate-first.
     llm_model_override = Column(String(64))
 
-    # Migration 054 (D-236): the auto-fix agent's AUTONOMOUS-apply switch is on
-    # this table (`repair_auto_apply BOOLEAN DEFAULT false`) but is DELIBERATELY
-    # NOT mapped here — adding an unmigrated column to the ORM would break every
-    # full-entity load of tenant_agent_settings (the gateway reads it per LLM
-    # call) until the migration is applied. It is read/written best-effort via
-    # raw SQL (repair_agent._repair_settings + the superadmin save handler), so
-    # the code deploys before the migration (the D-230 ordering); a missing
-    # column reads as False (the feature stays dormant).
+    # Migration 054 (D-236) added repair_auto_apply UNMAPPED (deploy-ordering
+    # safety: the code shipped before the migration). Step A (migration 069)
+    # maps it above, together with repair_gate_apply_enabled, under the
+    # MIGRATE-FIRST discipline (D-285): the migration is applied everywhere
+    # before this model deploys. The raw-SQL best-effort reads are gone.
 
     # (cutover_read_s1 — the per-tenant metadata read-path switch, migration 051 /
     # D-158 — was unmapped in D-195.3 when Step 5a retired the flag. S1 is the sole

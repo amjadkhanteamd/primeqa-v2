@@ -261,25 +261,30 @@
       </div>
     </div>
 
-    {# D-231: close the failure→repair drill — the actionable fix for THIS run
-       (admin+), reusing the Repairs-queue decide POST; approving applies it
-       immediately (rerun or regenerate). The descriptive suggestions above name the
-       owner; this is the one-click action. #}
+    {# D-231 + Step A: the actionable fix for THIS run (admin+), reusing the
+       Repairs-queue decide POST. The gate VERDICT decides the action; the
+       LLM's confidence is never shown; a refusal names its destination. #}
     {% if repair_proposal %}
-    <div class="rounded-md bg-indigo-50 border border-indigo-100 p-4">
+    {% set gv = repair_proposal.gate_verdict %}
+    {% set g = repair_proposal.grounding or {} %}
+    <div class="rounded-md {% if gv == 'SEMANTIC' %}bg-red-50 border border-red-100{% elif gv == 'SPECULATIVE' %}bg-amber-50 border border-amber-100{% else %}bg-indigo-50 border border-indigo-100{% endif %} p-4" data-testid="run-repair-card" data-gate-verdict="{{ gv or 'UNCLASSIFIED' }}">
       <div class="flex items-center justify-between gap-3 flex-wrap">
         <div>
-          <h3 class="text-sm font-semibold text-indigo-900">A fix is ready for this run</h3>
-          <p class="text-xs text-indigo-700 mt-0.5">
+          <h3 class="text-sm font-semibold text-gray-900">
+            {% if gv == 'DERIVED' %}A derived fix is ready for this run{% elif gv == 'SPECULATIVE' %}The agent has a speculative suggestion for this run{% elif gv == 'SEMANTIC' %}The agent's suggestion is refused &mdash; it changes what the claim asserts{% else %}A proposal exists for this run (not yet classified){% endif %}
+            <span class="ml-2 inline-flex items-center px-2 py-0.5 rounded text-[10px] font-semibold {% if gv == 'DERIVED' %}bg-green-100 text-green-800{% elif gv == 'SPECULATIVE' %}bg-amber-100 text-amber-800{% elif gv == 'SEMANTIC' %}bg-red-100 text-red-800{% else %}bg-gray-100 text-gray-700{% endif %}">{{ gv or 'UNCLASSIFIED' }}</span>
+          </h3>
+          <p class="text-xs text-gray-700 mt-0.5">
             {% if repair_proposal.proposal_kind == 'rerun' %}Re-run the test &mdash; the failure looks like infrastructure, not the org.
-            {% elif repair_proposal.proposal_kind == 'recipe_edit' %}The agent proposes editing the test recipe to fix this failure &mdash; a new version (the prior one is preserved).{% if repair_proposal.confidence is not none %} <span class="font-medium">{{ (repair_proposal.confidence * 100) | round | int }}% confidence.</span>{% endif %}
+            {% elif repair_proposal.proposal_kind == 'recipe_edit' %}The agent proposes editing the test recipe &mdash; a new version (the prior one is preserved).
             {% else %}Regenerate the test against the org as it is today &mdash; the test predates an org change.{% endif %}
+            {% if g.rule %}<span class="text-gray-500">Grounding: {{ g.rule }}{% if g.s1_fact %} &middot; S1: {{ g.field }} {{ g.s1_fact }}{% endif %}{% if g.matched %} &middot; picklist {{ g.matched }} value{% endif %}{% if g.error_code %} &middot; {{ g.error_code }}{% endif %}</span>
+            {% elif g.reason %}<span class="text-gray-500">{{ g.reason.replace('_', ' ') }}{% if g.fields %}: {{ g.fields | join(', ') }}{% endif %}</span>{% endif %}
           </p>
-          {# D-236: the proposed recipe edit (rationale + concrete field changes). #}
           {% if repair_proposal.proposal_kind == 'recipe_edit' and repair_proposal.proposed_payload %}
-          {% if repair_proposal.proposed_payload.rationale %}<p class="text-xs text-indigo-800 mt-1 italic">{{ repair_proposal.proposed_payload.rationale }}</p>{% endif %}
+          {% if repair_proposal.proposed_payload.rationale %}<p class="text-xs text-gray-700 mt-1 italic">{{ repair_proposal.proposed_payload.rationale }}</p>{% endif %}
           {% if repair_proposal.proposed_payload.field_changes %}
-          <div class="text-xs font-mono text-indigo-900 mt-1">
+          <div class="text-xs font-mono text-gray-800 mt-1">
             {% for f, v in repair_proposal.proposed_payload.field_changes.items() %}
             <div>{% if v == '__REMOVE__' %}<span class="text-red-600">&minus; drop {{ f }}</span>{% else %}<span class="text-green-700">{{ f }} = {{ v }}</span>{% endif %}</div>
             {% endfor %}
@@ -288,15 +293,28 @@
           {% endif %}
         </div>
         <div class="flex items-center gap-2">
-          <form method="POST" action="/runs/substrate/repairs/{{ repair_proposal.id }}" class="inline">
-            {{ csrf_input | safe }}
-            <input type="hidden" name="action" value="approve">
-            <button type="submit" class="rounded-md bg-indigo-600 px-3 py-1.5 text-xs font-semibold text-white hover:bg-indigo-500">Approve &amp; apply</button>
-          </form>
+          {% if gv == 'DERIVED' %}
+            {% if repair_gate_apply_enabled %}
+            <form method="POST" action="/runs/substrate/repairs/{{ repair_proposal.id }}" class="inline">
+              {{ csrf_input | safe }}
+              <input type="hidden" name="action" value="approve">
+              <button type="submit" class="rounded-md bg-indigo-600 px-3 py-1.5 text-xs font-semibold text-white hover:bg-indigo-500">Approve &amp; apply</button>
+            </form>
+            {% else %}
+            <span class="text-xs text-gray-400" title="Repair gate switch is off (Settings › Agent).">Apply dormant</span>
+            {% endif %}
+          {% elif gv == 'SPECULATIVE' %}
+            <a href="/claims/{{ repair_proposal.claim_test_id or '' }}" class="rounded-md bg-white px-3 py-1.5 text-xs font-semibold text-amber-800 ring-1 ring-amber-300 hover:bg-amber-50">Open recipe</a>
+          {% elif gv == 'SEMANTIC' %}
+            {% set d = repair_proposal.destination %}
+            <span class="text-xs text-red-700">{% if d and d.url %}Route to requirement <a href="{{ d.url }}" class="font-medium underline">{{ d.key }}</a>{% elif d and d.key %}Requirement <span class="font-mono">{{ d.key }}</span> (no record){% else %}No requirement link recorded.{% endif %}</span>
+          {% else %}
+            <span class="text-xs text-gray-400">Not applicable</span>
+          {% endif %}
           <form method="POST" action="/runs/substrate/repairs/{{ repair_proposal.id }}" class="inline">
             {{ csrf_input | safe }}
             <input type="hidden" name="action" value="reject">
-            <button type="submit" class="text-xs text-indigo-700 hover:underline">Reject</button>
+            <button type="submit" class="text-xs text-gray-600 hover:underline">{{ 'Dismiss' if gv == 'SEMANTIC' else 'Reject' }}</button>
           </form>
         </div>
       </div>

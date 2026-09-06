@@ -58,7 +58,7 @@ def test_repair_auto_apply_guard_when_flag_on(monkeypatch, caplog):
     ST._WARNED_UNPROVISIONED.discard((99, "repair_proposals"))
     monkeypatch.setattr(RA, "_repair_settings", lambda tid: {
         "auto_apply": True, "agent_enabled": True,
-        "threshold_high": 0.85, "max_attempts": 3})
+        "gate_apply_enabled": True, "max_attempts": 3})   # Step A: the switch too
     with caplog.at_level(logging.WARNING):
         out1 = RA.auto_apply_proposals(99)
         out2 = RA.auto_apply_proposals(99)
