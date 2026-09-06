@@ -686,8 +686,15 @@ class SemanticTransactionCoordinator:
         execution_environment: BodyBase,
         claim_version_seq: Optional[int] = None,
         priority: int = 0,
+        event_context: Optional[dict] = None,
     ) -> WriteRecipeResult:
         """Write a new recipe version per SPEC §4.7.6.
+
+        ``event_context`` (Step A, mirroring the 3A-3 claim-side
+        parameter): optional attribution folded into the provenance
+        event's ``event_data`` — e.g. the gate's retro-revert names the
+        proposal it reverts and the predicted verdict. ``None`` keeps
+        every existing caller byte-identical.
 
         Per SPEC §4.7.6 — same 11-step canonical order as
         :meth:`write_claim`, with three steps marked N/A for
@@ -989,6 +996,7 @@ class SemanticTransactionCoordinator:
             "new_status": new_status,
             "claim_test_id": str(claim_test_id),
             "claim_version_seq": claim_version_seq,
+            **(event_context or {}),
         }
         session.add(TestProvenance(
             id=_uuid_mod.uuid4(),

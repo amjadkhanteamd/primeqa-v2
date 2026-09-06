@@ -2006,16 +2006,8 @@ def settings_llm_usage():
             story_by_id = {r[0]: bool(r[2]) for r in tier_rows}
             packs_by_id = {r[0]: bool(r[3]) for r in tier_rows}
             model_by_id = {r[0]: r[4] for r in tier_rows}
-            # D-236: repair_auto_apply is NOT ORM-mapped (deploy-safety) — read it
-            # best-effort via raw SQL; a missing column (pre-054) → all False.
-            repair_by_id = {}
-            try:
-                rr = db.execute(_sql(
-                    "SELECT tenant_id, repair_auto_apply FROM tenant_agent_settings "
-                    "WHERE tenant_id = ANY(:t)"), {"t": list(tids)}).all()
-                repair_by_id = {r[0]: bool(r[1]) for r in rr}
-            except Exception:
-                db.rollback()
+            # Step A: repair_auto_apply moved to /settings/agent (one home
+            # for the repair agent's safety controls) — no read here.
 
             # D-238 (drop-readiness): the per-tenant correction rate counted v1
             # ``test_cases`` (AI-generated TCs) — that table retires with migration
@@ -2029,7 +2021,6 @@ def settings_llm_usage():
                 row["tier"] = tier_by_id.get(row["key"], _tiers.TIER_STARTER)
                 row["llm_enable_story_enrichment"] = story_by_id.get(row["key"], False)
                 row["llm_enable_domain_packs"] = packs_by_id.get(row["key"], False)
-                row["repair_auto_apply"] = repair_by_id.get(row["key"], False)
                 row["llm_model_override"] = model_by_id.get(row["key"])
                 corrected, total = rate_by_id.get(row["key"], (0, 0))
                 row["correction_total"] = int(total)
@@ -2198,7 +2189,6 @@ def settings_change_tenant_tier(tenant_id):
     # Checkbox semantics: HTML only submits the field when checked.
     new_story_flag = bool(request.form.get("llm_enable_story_enrichment"))
     new_packs_flag = bool(request.form.get("llm_enable_domain_packs"))
-    new_repair_flag = bool(request.form.get("repair_auto_apply"))  # D-236
 
     db = next(get_db())
     try:
@@ -2278,27 +2268,7 @@ def settings_change_tenant_tier(tenant_id):
                     details={"old": old_packs, "new": new_packs_flag},
                 ))
         db.commit()
-        # D-236: persist repair_auto_apply SEPARATELY + best-effort — the column
-        # (migration 054) is not ORM-mapped and may not be applied yet, so a
-        # missing column must never break the tier/story/packs save (D-230
-        # ordering). Own try/except + rollback so it can't poison the request.
-        try:
-            from sqlalchemy import text as _t
-            cur = db.execute(_t(
-                "SELECT repair_auto_apply FROM tenant_agent_settings "
-                "WHERE tenant_id = :t"), {"t": tenant_id}).scalar()
-            if bool(cur) != new_repair_flag:
-                db.execute(_t(
-                    "UPDATE tenant_agent_settings SET repair_auto_apply = :v "
-                    "WHERE tenant_id = :t"), {"v": new_repair_flag, "t": tenant_id})
-                db.add(ActivityLog(
-                    tenant_id=tenant_id, user_id=request.user["id"],
-                    action="update", entity_type="tenant_repair_auto_apply",
-                    entity_id=tenant_id,
-                    details={"old": bool(cur), "new": new_repair_flag}))
-                db.commit()
-        except Exception:
-            db.rollback()
+        # Step A: repair_auto_apply is edited on /settings/agent only.
         flash(
             f"Tenant #{tenant_id}: tier={new_tier}, "
             f"model={new_model or 'tier default'}, "
@@ -2406,19 +2376,34 @@ def settings_agent_post():
     db = next(get_db())
     try:
         from primeqa.core.agent_settings import AgentSettingsRepository
+        from primeqa.core.models import ActivityLog
         repo = AgentSettingsRepository(db)
-        agent_enabled = bool(request.form.get("agent_enabled"))
+        tenant_id = request.user["tenant_id"]
         try:
+            # Step A (LLD_STEP_A_REPAIR_GATE §c): ONE home for the repair
+            # agent's safety controls. Checkbox semantics: absent = false.
             repo.update(
-                request.user["tenant_id"],
+                tenant_id,
                 updated_by=request.user["id"],
-                agent_enabled=agent_enabled,
-                trust_threshold_high=float(request.form.get("trust_threshold_high") or 0.85),
-                trust_threshold_medium=float(request.form.get("trust_threshold_medium") or 0.60),
-                max_fix_attempts_per_run=int(request.form.get("max_fix_attempts_per_run") or 3),
+                agent_enabled=bool(request.form.get("agent_enabled")),
+                repair_auto_apply=bool(request.form.get("repair_auto_apply")),
+                repair_gate_apply_enabled=bool(
+                    request.form.get("repair_gate_apply_enabled")),
+                max_fix_attempts_per_run=int(
+                    request.form.get("max_fix_attempts_per_run") or 3),
             )
+            # Every flag change is an audited act — a safety control never
+            # flips silently.
+            for flag, (old, new) in (repo.last_flag_changes or {}).items():
+                db.add(ActivityLog(
+                    tenant_id=tenant_id, user_id=request.user["id"],
+                    action="update", entity_type=f"tenant_{flag}",
+                    entity_id=tenant_id,
+                    details={"old": old, "new": new, "surface": "/settings/agent"}))
+            db.commit()
             flash("Agent settings saved", "success")
         except ValueError as e:
+            db.rollback()
             flash(str(e), "error")
         return redirect("/settings/agent")
     finally:
@@ -3667,14 +3652,20 @@ def s4_runs_list():
     # D-215.1: open repair proposals (admin+) — proposal-only spine; the
     # decision (approve = apply immediately / reject) happens here.
     repairs = None
+    gate_on = False
     if request.user["role"] in ("admin", "superadmin"):
-        from primeqa.intelligence.repair_agent import list_proposals
+        from primeqa.intelligence.repair_agent import (
+            _repair_settings, list_proposals)
         repairs = list_proposals(tid)
+        # Step A: the dormant-first switch decides whether ANY apply action
+        # renders — the route refuses regardless (the refusal is the control).
+        gate_on = bool(_repair_settings(tid).get("gate_apply_enabled"))
     return render_template("runs/s4_list.html", **ctx(
         active_page="test_library", group=group, overview=overview, data=data,
         active_filters=active_filters, env_names=env_names,
         envs_for_picker=envs_for_picker, schedules=schedules,
-        sched_envs=sched_envs, repairs=repairs))
+        sched_envs=sched_envs, repairs=repairs,
+        repair_gate_apply_enabled=gate_on))
 
 
 @views_bp.route("/runs/substrate/repairs/<int:proposal_id>", methods=["POST"])
@@ -3867,9 +3858,13 @@ def s4_run_detail(run_id):
     # proposal for THIS run inline (admin+), reusing the queue's decide POST, so the
     # drill ends at an action instead of read-only suggestion text.
     repair_proposal = None
+    repair_gate_on = False
     if request.user["role"] in ("admin", "superadmin"):
-        from primeqa.intelligence.repair_agent import open_proposal_for_run
+        from primeqa.intelligence.repair_agent import (
+            _repair_settings, open_proposal_for_run)
         repair_proposal = open_proposal_for_run(request.user["tenant_id"], run_id)
+        repair_gate_on = bool(_repair_settings(
+            request.user["tenant_id"]).get("gate_apply_enabled"))
     # Walk-the-plan strip: this run's claim positioned in its requirement's
     # live plan (prev/next link to the SIBLING TEST pages, not sibling runs).
     plan_nav = (_plan_nav_for(request.user["tenant_id"],
@@ -3878,6 +3873,7 @@ def s4_run_detail(run_id):
                 if _run.get("claim_test_id") else None)
     return render_template("runs/s4_detail.html", **ctx(
         active_page="test_library", detail=detail, repair_proposal=repair_proposal,
+        repair_gate_apply_enabled=repair_gate_on,
         environment=environment, requirement=requirement,
         readable_run_phrasing=readable_run_phrasing, plan_nav=plan_nav))
 

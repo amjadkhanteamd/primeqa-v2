@@ -67,16 +67,34 @@ def test_apply_does_not_mutate_input():
 def test_auto_apply_is_dormant_when_flag_off():
     with mock.patch.object(RA, "_repair_settings", return_value={
             "auto_apply": False, "agent_enabled": True,
-            "threshold_high": 0.85, "max_attempts": 3}), \
+            "gate_apply_enabled": True, "max_attempts": 3}), \
          mock.patch("primeqa.semantic.connection.get_tenant_connection") as gc:
         out = RA.auto_apply_proposals(7)
     assert out == {"applied": 0, "skipped": 0}
     gc.assert_not_called()                            # never even opened a connection
 
 
-def _decide_row():
+def test_auto_apply_is_dormant_while_the_gate_switch_is_off():
+    # Step A: the dormant-first switch gates the AUTONOMOUS path too — both
+    # D-236 flags on, switch off → nothing, not even a connection.
+    with mock.patch.object(RA, "_repair_settings", return_value={
+            "auto_apply": True, "agent_enabled": True,
+            "gate_apply_enabled": False, "max_attempts": 3}), \
+         mock.patch("primeqa.semantic.connection.get_tenant_connection") as gc:
+        out = RA.auto_apply_proposals(7)
+    assert out == {"applied": 0, "skipped": 0}
+    gc.assert_not_called()
+
+
+def _decide_row(gate_verdict="DERIVED", grounding=None):
     return {"id": 9, "run_id": "r", "claim_test_id": "c", "environment_id": 59,
-            "proposal_kind": "recipe_edit", "status": "proposed"}
+            "proposal_kind": "recipe_edit", "status": "proposed",
+            "gate_verdict": gate_verdict,
+            "grounding_source": ({"rule": "R1"} if grounding is None else grounding)}
+
+
+_GATE_ON = {"auto_apply": False, "agent_enabled": True,
+            "gate_apply_enabled": True, "max_attempts": 3}
 
 
 def _conn_returning_row(row):
@@ -91,6 +109,7 @@ def test_decide_does_not_stamp_applied_on_apply_error():
     # D-236 review fix: a failed apply must NOT be mis-stamped 'applied'.
     with mock.patch("primeqa.semantic.connection.get_tenant_connection",
                     return_value=_conn_returning_row(_decide_row())), \
+         mock.patch.object(RA, "_repair_settings", return_value=_GATE_ON), \
          mock.patch.object(RA, "_apply",
                            return_value={"action": "recipe_edit",
                                          "error": "no subject create"}), \
@@ -103,6 +122,7 @@ def test_decide_does_not_stamp_applied_on_apply_error():
 def test_decide_stamps_applied_on_apply_success():
     with mock.patch("primeqa.semantic.connection.get_tenant_connection",
                     return_value=_conn_returning_row(_decide_row())), \
+         mock.patch.object(RA, "_repair_settings", return_value=_GATE_ON), \
          mock.patch.object(RA, "_apply",
                            return_value={"action": "recipe_edit", "s4_job_id": 3}), \
          mock.patch.object(RA, "_stamp") as stamp:
@@ -119,8 +139,80 @@ def test_auto_apply_runs_when_flag_on():
     cm.__enter__.return_value = fake_conn
     with mock.patch.object(RA, "_repair_settings", return_value={
             "auto_apply": True, "agent_enabled": True,
-            "threshold_high": 0.85, "max_attempts": 3}), \
+            "gate_apply_enabled": True, "max_attempts": 3}), \
          mock.patch("primeqa.semantic.connection.get_tenant_connection",
                     return_value=cm):
         out = RA.auto_apply_proposals(7)
     assert out == {"applied": 0, "skipped": 0}
+
+
+# ---- Step A: the apply refusals (the refusal is the control) --------------
+
+def test_decide_refuses_a_speculative_row_even_with_the_switch_on():
+    with mock.patch("primeqa.semantic.connection.get_tenant_connection",
+                    return_value=_conn_returning_row(_decide_row("SPECULATIVE"))), \
+         mock.patch.object(RA, "_repair_settings", return_value=_GATE_ON), \
+         mock.patch.object(RA, "_apply") as apply, \
+         mock.patch.object(RA, "_stamp") as stamp:
+        res = RA.decide_proposal(7, 9, approve=True)
+    assert res["ok"] is False and res["refused"] is True
+    assert res["gate_verdict"] == "SPECULATIVE"
+    apply.assert_not_called()
+    stamp.assert_not_called()
+
+
+def test_decide_refuses_a_derived_row_without_a_grounding_source():
+    with mock.patch("primeqa.semantic.connection.get_tenant_connection",
+                    return_value=_conn_returning_row(_decide_row("DERIVED", {}))), \
+         mock.patch.object(RA, "_repair_settings", return_value=_GATE_ON), \
+         mock.patch.object(RA, "_apply") as apply:
+        res = RA.decide_proposal(7, 9, approve=True)
+    assert res["ok"] is False and "grounding" in res["error"]
+    apply.assert_not_called()
+
+
+def test_decide_refuses_everything_while_the_switch_is_off():
+    off = {**_GATE_ON, "gate_apply_enabled": False}
+    with mock.patch("primeqa.semantic.connection.get_tenant_connection",
+                    return_value=_conn_returning_row(_decide_row())), \
+         mock.patch.object(RA, "_repair_settings", return_value=off), \
+         mock.patch.object(RA, "_apply") as apply:
+        res = RA.decide_proposal(7, 9, approve=True)
+    assert res["ok"] is False and "dormant" in res["error"]
+    apply.assert_not_called()
+
+
+def test_reject_needs_no_switch():
+    off = {**_GATE_ON, "gate_apply_enabled": False}
+    with mock.patch("primeqa.semantic.connection.get_tenant_connection",
+                    return_value=_conn_returning_row(_decide_row("SEMANTIC"))), \
+         mock.patch.object(RA, "_repair_settings", return_value=off), \
+         mock.patch.object(RA, "_stamp") as stamp:
+        res = RA.decide_proposal(7, 9, approve=False)
+    assert res == {"ok": True, "status": "rejected"}
+    stamp.assert_called_once()
+
+
+def test_auto_pass_never_reads_confidence():
+    """A planted 0.99 on a SPECULATIVE row, both flags + the switch ON,
+    sandbox env → skipped; the SELECT does not even fetch confidence."""
+    row = {"id": 1, "run_id": "r", "claim_test_id": "c", "environment_id": 59,
+           "proposal_kind": "recipe_edit", "gate_verdict": "SPECULATIVE",
+           "grounding_source": {"reason": "no_platform_error"},
+           "confidence": 0.99}
+    fake_conn = mock.MagicMock()
+    fake_conn.execute.return_value.mappings.return_value.all.return_value = [row]
+    cm = mock.MagicMock(); cm.__enter__.return_value = fake_conn
+    with mock.patch.object(RA, "_repair_settings", return_value={
+            "auto_apply": True, "agent_enabled": True,
+            "gate_apply_enabled": True, "max_attempts": 3}), \
+         mock.patch("primeqa.semantic.connection.get_tenant_connection",
+                    return_value=cm), \
+         mock.patch.object(RA, "_apply") as apply:
+        out = RA.auto_apply_proposals(7)
+    assert out == {"applied": 0, "skipped": 1}
+    apply.assert_not_called()
+    sqls = [str(c.args[0]) for c in fake_conn.execute.call_args_list]
+    sel = [q for q in sqls if "FROM repair_proposals" in q]
+    assert sel, sqls
+    assert "confidence" not in sel[0] and "gate_verdict" in sel[0]

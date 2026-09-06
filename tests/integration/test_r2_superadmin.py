@@ -62,15 +62,18 @@ def run_tests():
         assert r.status_code == 200
         body = r.data.decode()
         assert "Agent autonomy" in body
-        assert "trust_threshold_high" in body
+        # Step A: the ONE home for the repair agent's safety controls
+        assert "repair_gate_apply_enabled" in body
+        assert "repair_auto_apply" in body
+        assert "trust_threshold" not in body
     results.append(_run("R2-2. /settings/agent renders for superadmin", t_agent_settings_get))
 
     def t_agent_settings_update():
         client.set_cookie("access_token", admin_token)
         payload = {
             "agent_enabled": "1",
-            "trust_threshold_high": "0.90",
-            "trust_threshold_medium": "0.55",
+            # repair_auto_apply absent => false; the gate switch on
+            "repair_gate_apply_enabled": "1",
             "max_fix_attempts_per_run": "2",
         }
         # CSRF enforcement is correct: a state-changing POST with NO token is
@@ -90,28 +93,31 @@ def run_tests():
         db = SessionLocal()
         try:
             s = AgentSettingsRepository(db).get(TENANT_ID)
-            assert abs(s.trust_threshold_high - 0.90) < 0.001
-            assert abs(s.trust_threshold_medium - 0.55) < 0.001
+            assert s.agent_enabled is True
+            assert s.repair_gate_apply_enabled is True
+            assert s.repair_auto_apply is False
             assert s.max_fix_attempts_per_run == 2
+            # restore the dormant default so the tenant is left as found
+            AgentSettingsRepository(db).update(
+                TENANT_ID, updated_by=1, repair_gate_apply_enabled=False)
         finally:
             db.close()
-    results.append(_run("R2-3. Superadmin updates agent trust bands + attempts", t_agent_settings_update))
+    results.append(_run("R2-3. Superadmin updates agent flags + attempts", t_agent_settings_update))
 
-    def t_agent_settings_bad_bands_rejected():
+    def t_agent_settings_bad_attempts_rejected():
         from primeqa.db import SessionLocal
         from primeqa.core.agent_settings import AgentSettingsRepository
         db = SessionLocal()
         try:
             repo = AgentSettingsRepository(db)
             try:
-                repo.update(TENANT_ID, updated_by=1,
-                            trust_threshold_high=0.5, trust_threshold_medium=0.7)
-                raise AssertionError("expected ValueError for inverted thresholds")
+                repo.update(TENANT_ID, updated_by=1, max_fix_attempts_per_run=11)
+                raise AssertionError("expected ValueError for an out-of-range cap")
             except ValueError:
                 db.rollback()
         finally:
             db.close()
-    results.append(_run("R2-4. Inverted thresholds rejected", t_agent_settings_bad_bands_rejected))
+    results.append(_run("R2-4. Out-of-range attempt cap rejected", t_agent_settings_bad_attempts_rejected))
 
     def t_cost_forecast_executor_only():
         from primeqa.runs.cost import estimate_run_cost

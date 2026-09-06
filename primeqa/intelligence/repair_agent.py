@@ -111,11 +111,14 @@ def apply_field_changes(field_values: dict, sobject: str,
 
 def _repair_settings(tenant_id: int) -> dict:
     """Best-effort read of the per-tenant repair policy from the PUBLIC
-    ``tenant_agent_settings`` (D-236 reuses the v1 agent columns). Returns
-    ``{auto_apply, threshold_high, max_attempts, agent_enabled}`` with safe
-    defaults on any error."""
-    out = {"auto_apply": False, "threshold_high": 0.85, "max_attempts": 3,
-           "agent_enabled": True}
+    ``tenant_agent_settings`` (all four fields ORM-mapped since migration
+    069, Step A). Returns ``{auto_apply, agent_enabled, gate_apply_enabled,
+    max_attempts}`` — the DORMANT defaults on any error (no apply path
+    opens because a settings read failed). No threshold is read: the
+    apply paths decide on the proposal's gate_verdict, never on the LLM's
+    self-reported confidence."""
+    out = {"auto_apply": False, "agent_enabled": True,
+           "gate_apply_enabled": False, "max_attempts": 3}
     try:
         from primeqa.core.models import TenantAgentSettings
         from primeqa.db import get_db
@@ -126,30 +129,22 @@ def _repair_settings(tenant_id: int) -> dict:
             db.close()
         if s is not None:
             out["agent_enabled"] = bool(getattr(s, "agent_enabled", True))
-            try:
-                out["threshold_high"] = float(s.trust_threshold_high)
-            except (TypeError, ValueError):
-                pass
+            out["auto_apply"] = bool(getattr(s, "repair_auto_apply", False))
+            out["gate_apply_enabled"] = bool(
+                getattr(s, "repair_gate_apply_enabled", False))
             try:
                 out["max_attempts"] = int(s.max_fix_attempts_per_run)
             except (TypeError, ValueError):
                 pass
-        # repair_auto_apply is on the table but DELIBERATELY NOT ORM-mapped
-        # (deploy-safety, D-236) — read it best-effort; a missing column
-        # (pre-migration-054) reads as False (the feature stays dormant).
-        db2 = next(get_db())
-        try:
-            v = db2.execute(text(
-                "SELECT repair_auto_apply FROM tenant_agent_settings "
-                "WHERE tenant_id = :t"), {"t": tenant_id}).scalar()
-            out["auto_apply"] = bool(v)
-        except Exception:
-            pass
-        finally:
-            db2.close()
     except Exception as exc:                              # pragma: no cover
         log.warning("repair settings unavailable for tenant %s: %s", tenant_id, exc)
     return out
+
+
+# Step A: agent_enabled=false now gates CREATION. The skip is logged once
+# per tenant per process (the ui_schedules / stale_tenants loudly-once
+# posture) — visible, never a flood.
+_WARNED_DISABLED: set = set()
 
 
 def _recipe_id_for_run(conn, run_id):
@@ -266,9 +261,18 @@ def triage_new_failures(tenant_id: int, *, limit: int = 50,
     no usable edit (or no key) the run is SKIPPED (a later tick retries). The
     attempt cap (``max_fix_attempts_per_run``) stops fix-loops per claim."""
     try:
+        from primeqa.intelligence import repair_gate
         from primeqa.semantic.connection import get_tenant_connection
         from primeqa.shared.stale_tenants import skip_unprovisioned
         proposed = scanned = 0
+        settings = _repair_settings(tenant_id)
+        if not settings["agent_enabled"]:
+            if tenant_id not in _WARNED_DISABLED:
+                _WARNED_DISABLED.add(tenant_id)
+                log.warning("repair triage: agent_enabled=false for tenant %s "
+                            "— no proposals are created (warned once per "
+                            "process)", tenant_id)
+            return {"proposed": 0, "scanned": 0, "disabled": True}
         with get_tenant_connection(tenant_id) as conn:
             if skip_unprovisioned(conn, tenant_id, "s6_interpretations", log):
                 return {"proposed": 0, "scanned": 0, "unprovisioned": True}
@@ -282,7 +286,6 @@ def triage_new_failures(tenant_id: int, *, limit: int = 50,
                 "                  WHERE p.run_id = i.run_id) "
                 "ORDER BY r.finished_at DESC LIMIT :lim"),
                 {"lim": limit}).mappings().all()
-            settings = _repair_settings(tenant_id)
             for row in rows:
                 scanned += 1
                 kind = proposal_for(row["verdict"], row["cause_kind"],
@@ -316,19 +319,30 @@ def triage_new_failures(tenant_id: int, *, limit: int = 50,
                     confidence = edit["confidence"]
                     proposed_payload = {"field_changes": edit["field_changes"],
                                         "rationale": edit["rationale"]}
+                # Step A: the gate runs BEFORE the write — no proposal row
+                # exists without a verdict and its grounding source.
+                gate = repair_gate.classify_row(
+                    conn, tenant_id, {**dict(row), "proposal_kind": kind},
+                    proposed_payload.get("field_changes"))
                 n = conn.execute(text(
                     "INSERT INTO repair_proposals "
                     "(run_id, claim_test_id, environment_id, verdict, "
                     " cause_kind, proposal_kind, payload, confidence, "
-                    " proposed_payload) "
+                    " proposed_payload, gate_verdict, grounding_source, "
+                    " classified_at, classifier_version) "
                     "VALUES (:rid, :tid, :eid, :v, :c, :k, CAST(:p AS jsonb), "
-                    "        :conf, CAST(:pp AS jsonb)) "
+                    "        :conf, CAST(:pp AS jsonb), :gv, CAST(:gs AS jsonb), "
+                    "        :at, :cv) "
                     "ON CONFLICT DO NOTHING"),
                     {"rid": str(row["run_id"]), "tid": str(row["claim_test_id"]),
                      "eid": row["environment_id"], "v": row["verdict"],
                      "c": row["cause_kind"], "k": kind,
                      "p": json.dumps({}), "conf": confidence,
-                     "pp": json.dumps(proposed_payload)}).rowcount
+                     "pp": json.dumps(proposed_payload),
+                     "gv": gate.verdict,
+                     "gs": json.dumps(gate.grounding, default=str),
+                     "at": datetime.now(timezone.utc),
+                     "cv": repair_gate.CLASSIFIER_VERSION}).rowcount
                 proposed += n
         return {"proposed": proposed, "scanned": scanned}
     except Exception as exc:
@@ -344,21 +358,33 @@ def list_proposals(tenant_id: int, *, statuses=("proposed", "approved"),
         with get_tenant_connection(tenant_id) as conn:
             rows = conn.execute(text(
                 "SELECT id, run_id, claim_test_id, environment_id, verdict, "
-                "       cause_kind, proposal_kind, status, payload, confidence, "
-                "       proposed_payload, created_at "
+                "       cause_kind, proposal_kind, status, payload, "
+                "       proposed_payload, created_at, gate_verdict, "
+                "       grounding_source "
                 "FROM repair_proposals WHERE status = ANY(:st) "
                 "ORDER BY created_at DESC LIMIT :lim"),
                 {"st": list(statuses), "lim": limit}).mappings().all()
-        return {"available": True, "proposals": [{
+            # Step A header: verdict counts over the OPEN proposals — one
+            # GROUP BY, computed here, never in the template.
+            counts = {"DERIVED": 0, "SPECULATIVE": 0, "SEMANTIC": 0,
+                      "UNCLASSIFIED": 0}
+            for v, n in conn.execute(text(
+                    "SELECT COALESCE(gate_verdict, 'UNCLASSIFIED'), COUNT(*) "
+                    "FROM repair_proposals WHERE status = 'proposed' "
+                    "GROUP BY 1")).all():
+                counts[v] = int(n)
+        return {"available": True, "verdict_counts": counts, "proposals": [{
             "id": r["id"], "run_id": str(r["run_id"]),
             "claim_test_id": str(r["claim_test_id"]),
             "environment_id": r["environment_id"],
             "verdict": r["verdict"], "cause_kind": r["cause_kind"],
             "proposal_kind": r["proposal_kind"], "status": r["status"],
             "payload": r["payload"],
-            # D-236: the LLM proposal's surface (None for the deterministic kinds)
-            "confidence": (float(r["confidence"])
-                           if r["confidence"] is not None else None),
+            # Step A: the gate verdict decides the action; the LLM's
+            # confidence is NOT read here — it is audit-only.
+            "gate_verdict": r["gate_verdict"],
+            "grounding": r["grounding_source"] or {},
+            "destination": (r["grounding_source"] or {}).get("destination"),
             "proposed_payload": r["proposed_payload"] or {},
             "created_at": r["created_at"].isoformat(),
         } for r in rows]}
@@ -375,7 +401,8 @@ def open_proposal_for_run(tenant_id: int, run_id) -> Optional[dict]:
         from primeqa.semantic.connection import get_tenant_connection
         with get_tenant_connection(tenant_id) as conn:
             row = conn.execute(text(
-                "SELECT id, proposal_kind, confidence, proposed_payload "
+                "SELECT id, proposal_kind, proposed_payload, gate_verdict, "
+                "       grounding_source, claim_test_id "
                 "FROM repair_proposals "
                 "WHERE run_id = CAST(:rid AS uuid) AND status = 'proposed' "
                 "ORDER BY created_at DESC LIMIT 1"),
@@ -383,8 +410,10 @@ def open_proposal_for_run(tenant_id: int, run_id) -> Optional[dict]:
         if row is None:
             return None
         return {"id": row["id"], "proposal_kind": row["proposal_kind"],
-                "confidence": (float(row["confidence"])
-                               if row["confidence"] is not None else None),
+                "claim_test_id": str(row["claim_test_id"]),
+                "gate_verdict": row["gate_verdict"],
+                "grounding": row["grounding_source"] or {},
+                "destination": (row["grounding_source"] or {}).get("destination"),
                 "proposed_payload": row["proposed_payload"] or {}}
     except Exception as exc:
         log.warning("open_proposal_for_run failed for tenant %s run %s: %s",
@@ -404,7 +433,8 @@ def decide_proposal(tenant_id: int, proposal_id: int, *, approve: bool,
         with get_tenant_connection(tenant_id) as conn:
             row = conn.execute(text(
                 "SELECT id, run_id, claim_test_id, environment_id, "
-                "       proposal_kind, status FROM repair_proposals "
+                "       proposal_kind, status, gate_verdict, grounding_source "
+                "FROM repair_proposals "
                 "WHERE id = :pid"), {"pid": proposal_id}).mappings().first()
         if row is None or row["status"] not in ("proposed", "approved"):
             return {"ok": False, "error": "proposal not found or already decided"}
@@ -412,6 +442,15 @@ def decide_proposal(tenant_id: int, proposal_id: int, *, approve: bool,
         if not approve:
             _stamp(tenant_id, proposal_id, "rejected", decided_by, {})
             return {"ok": True, "status": "rejected"}
+
+        # Step A: the refusal is the control (hiding the button is only
+        # presentation). Apply requires the dormant-first switch ON, a
+        # DERIVED verdict and a recorded grounding source — never the
+        # LLM's confidence.
+        refusal = _apply_refusal(_repair_settings(tenant_id), row)
+        if refusal:
+            return {"ok": False, "status": row["status"], "refused": True,
+                    "gate_verdict": row["gate_verdict"], "error": refusal}
 
         outcome = _apply(tenant_id, row)
         # D-236 review fix: a genuine apply failure (recipe_edit with no subject
@@ -428,6 +467,21 @@ def decide_proposal(tenant_id: int, proposal_id: int, *, approve: bool,
         log.warning("decide_proposal failed for tenant %s proposal %s: %s",
                     tenant_id, proposal_id, exc)
         return {"ok": False, "error": str(exc)}
+
+
+def _apply_refusal(settings: dict, row) -> Optional[str]:
+    """Why this proposal may NOT be applied right now — ``None`` when it may.
+    Pure over the settings + the row's gate columns."""
+    if not settings.get("gate_apply_enabled"):
+        return ("apply actions are dormant — the repair gate switch is off "
+                "(Settings › Agent)")
+    gv = row.get("gate_verdict")
+    if gv != "DERIVED":
+        return (f"{gv or 'UNCLASSIFIED'}: not applicable — only a DERIVED "
+                "proposal with a recorded grounding source can be applied")
+    if not (row.get("grounding_source") or {}):
+        return "DERIVED without a recorded grounding source — refused"
+    return None
 
 
 def _apply_recipe_edit(tenant_id: int, row) -> dict:
@@ -545,14 +599,18 @@ def _env_is_production(tenant_id: int, env_id) -> bool:
 
 
 def auto_apply_proposals(tenant_id: int, *, limit: int = 20) -> dict:
-    """D-236: the FLAG-GATED autonomous-apply pass. DORMANT unless the tenant's
-    ``repair_auto_apply`` flag is ON. For each fresh ``proposed`` recipe_edit on a
-    SANDBOX env at confidence ≥ ``trust_threshold_high`` (and under the attempt
-    cap), apply it + stamp applied / auto_applied. A PRODUCTION env is NEVER
+    """D-236 + Step A: the FLAG-GATED autonomous-apply pass. DORMANT unless
+    the tenant's ``repair_auto_apply`` AND ``agent_enabled`` AND the
+    dormant-first ``repair_gate_apply_enabled`` switch are ALL on. For each
+    fresh ``proposed`` recipe_edit whose gate_verdict is DERIVED with a
+    recorded grounding source, on a SANDBOX env, under the attempt cap:
+    apply it + stamp applied / auto_applied. ``confidence`` is NEVER read
+    (the guesser's own score is not a gate). A PRODUCTION env is NEVER
     auto-applied (always human). Best-effort; never raises. Returns
     ``{applied, skipped}``."""
     settings = _repair_settings(tenant_id)
-    if not (settings["auto_apply"] and settings["agent_enabled"]):
+    if not (settings["auto_apply"] and settings["agent_enabled"]
+            and settings["gate_apply_enabled"]):
         return {"applied": 0, "skipped": 0}              # dormant — the default
     try:
         from primeqa.semantic.connection import get_tenant_connection
@@ -563,15 +621,13 @@ def auto_apply_proposals(tenant_id: int, *, limit: int = 20) -> dict:
                 return {"applied": 0, "skipped": 0, "unprovisioned": True}
             rows = conn.execute(text(
                 "SELECT id, run_id, claim_test_id, environment_id, proposal_kind, "
-                "       confidence FROM repair_proposals "
+                "       gate_verdict, grounding_source FROM repair_proposals "
                 "WHERE status = 'proposed' AND proposal_kind = 'recipe_edit' "
                 "ORDER BY created_at ASC LIMIT :lim"),
                 {"lim": limit}).mappings().all()
         for row in rows:
-            conf = (float(row["confidence"])
-                    if row["confidence"] is not None else 0.0)
-            if conf < settings["threshold_high"]:
-                skipped += 1
+            if _apply_refusal(settings, row):
+                skipped += 1                             # not DERIVED / no grounding
                 continue
             if _env_is_production(tenant_id, row["environment_id"]):
                 skipped += 1                             # prod is always human-gated
