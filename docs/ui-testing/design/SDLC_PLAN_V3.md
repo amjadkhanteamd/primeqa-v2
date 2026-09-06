@@ -36,12 +36,7 @@ logged scope (this revision — it was never a v2 phase).
    (inventory v2) so coverage numbers stop being two-page numbers.
    — COMPLETE (D-478; merged @1216b8f; six AK-confirmed surfaces,
    B-2 through the scheduled path, inventory refusal proven).
-5. Then, in client-driven order: phase 6 (unparked by a second-audience
-   need), phase 8 routing, P-2/D9 (on an allowlisting client), Mode B.
-
-Sequence note (2026-09-03): the pilot loop is CLOSED — items 1–4
-delivered. The remaining items carry no fixed order; they proceed in
-client-driven order as item 5 states.
+5. The governing sequence from here is UI_PROGRAMME_UNIFIED_SEQUENCE.md (D-479).
 
 ## Parking rationale (phase 6)
 A second persona widens a two-page demo; the pilot needs depth on one:
