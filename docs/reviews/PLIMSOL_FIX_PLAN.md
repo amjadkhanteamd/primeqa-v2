@@ -443,3 +443,17 @@
   a deprecated claim at the gate (a DERIVED verdict on a deprecated
   claim is applicable in name only). Lean: (b) immediately, (a)+(c) as
   one small slice after switch-on.
+  **RESOLVED 2026-09-07 — Step A.1 (branch step-a1-reverify).** Root
+  cause: no legitimate state ever made an applied edit executable — the
+  s8 write is `generated_unapproved` by SPEC §7.4, the selector runs
+  `active`/`approved` versions only, the job completes either way, and
+  nothing recorded it. Fix at root: the human apply IS the approval act
+  (`promote_recipe_to_approved` in the same transaction, `recipe_approved`
+  provenance `gate_apply_approval` naming proposal/verdict/rule/human;
+  never for non-DERIVED; the D-223 executability gate runs before the
+  commit); the autonomous pass PRE-APPROVES instead of writing (D-ε-1 /
+  D-064); `claim_deprecated` and `recipe_moved` refuse loudly at the
+  boundary; the re-verify outcome is recorded on the proposal
+  (`reverify_state` queued → ran / no_run / refused, settled by the
+  repair tick via the D-317 job→run resolution); `reexamine` records the
+  July four. Transcript: docs/ui-testing/VERIFICATION_STEP_A1.md.

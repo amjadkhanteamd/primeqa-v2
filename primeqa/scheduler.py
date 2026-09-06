@@ -231,7 +231,7 @@ def repair_triage_tick(ctx):
     try:
         from primeqa.core.models import Tenant
         from primeqa.intelligence.repair_agent import (
-            auto_apply_proposals, triage_new_failures,
+            auto_apply_proposals, settle_reverifies, triage_new_failures,
         )
         for tenant in ctx["db"].query(Tenant).all():
             out = triage_new_failures(tenant.id, api_key_resolver=_api_key)
@@ -240,8 +240,13 @@ def repair_triage_tick(ctx):
                          out["proposed"], tenant.id)
             aa = auto_apply_proposals(tenant.id)
             if aa["applied"]:
-                log.info("repair auto-applied %d recipe edit(s) for tenant %s",
-                         aa["applied"], tenant.id)
+                log.info("repair auto-approved %d recipe edit(s) for tenant %s "
+                         "(awaiting the human apply)", aa["applied"], tenant.id)
+            # Step A.1: apply is not done until the re-verify has spoken.
+            st = settle_reverifies(tenant.id)
+            if st.get("settled"):
+                log.info("repair re-verify settled %d proposal(s) for tenant %s",
+                         st["settled"], tenant.id)
     except Exception as e:
         log.warning("repair_triage_tick failed: %s", e)
 

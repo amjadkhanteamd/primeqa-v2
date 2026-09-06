@@ -357,22 +357,39 @@ def list_proposals(tenant_id: int, *, statuses=("proposed", "approved"),
         from primeqa.semantic.connection import get_tenant_connection
         with get_tenant_connection(tenant_id) as conn:
             rows = conn.execute(text(
-                "SELECT id, run_id, claim_test_id, environment_id, verdict, "
-                "       cause_kind, proposal_kind, status, payload, "
-                "       proposed_payload, created_at, gate_verdict, "
-                "       grounding_source "
-                "FROM repair_proposals WHERE status = ANY(:st) "
-                "ORDER BY created_at DESC LIMIT :lim"),
+                "SELECT p.id, p.run_id, p.claim_test_id, p.environment_id, "
+                "       p.verdict, p.cause_kind, p.proposal_kind, p.status, "
+                "       p.payload, p.proposed_payload, p.created_at, "
+                "       p.gate_verdict, p.grounding_source, "
+                "       p.reverify_state, p.reverify_job_id, p.reverify_outcome, "
+                "       p.reverify_verdict, p.reverify_refusal, "
+                "       p.applied_recipe_version_seq, c.status AS claim_status, "
+                "       (r.recipe_version_seq IS NOT NULL AND cur.version_seq IS NOT NULL "
+                "        AND cur.version_seq <> r.recipe_version_seq) AS recipe_moved "
+                "FROM repair_proposals p "
+                "LEFT JOIN test_claims c ON c.test_id = p.claim_test_id "
+                "     AND c.valid_to IS NULL "
+                "LEFT JOIN s4_execution_runs r ON r.run_id = p.run_id "
+                "LEFT JOIN test_recipes cur ON cur.recipe_id = r.recipe_id "
+                "     AND cur.valid_to IS NULL "
+                "WHERE p.status = ANY(:st) "
+                "   OR (p.status = 'applied' AND p.reverify_state = 'queued') "
+                "ORDER BY p.created_at DESC LIMIT :lim"),
                 {"st": list(statuses), "lim": limit}).mappings().all()
             # Step A header: verdict counts over the OPEN proposals — one
-            # GROUP BY, computed here, never in the template.
+            # GROUP BY, computed here, never in the template. Step A.1 adds
+            # the applied-but-unsettled count (open work until the
+            # re-verify has spoken).
             counts = {"DERIVED": 0, "SPECULATIVE": 0, "SEMANTIC": 0,
-                      "UNCLASSIFIED": 0}
+                      "UNCLASSIFIED": 0, "REVERIFY_PENDING": 0}
             for v, n in conn.execute(text(
                     "SELECT COALESCE(gate_verdict, 'UNCLASSIFIED'), COUNT(*) "
                     "FROM repair_proposals WHERE status = 'proposed' "
                     "GROUP BY 1")).all():
                 counts[v] = int(n)
+            counts["REVERIFY_PENDING"] = int(conn.execute(text(
+                "SELECT COUNT(*) FROM repair_proposals "
+                "WHERE reverify_state = 'queued'")).scalar() or 0)
         return {"available": True, "verdict_counts": counts, "proposals": [{
             "id": r["id"], "run_id": str(r["run_id"]),
             "claim_test_id": str(r["claim_test_id"]),
@@ -387,6 +404,16 @@ def list_proposals(tenant_id: int, *, statuses=("proposed", "approved"),
             "destination": (r["grounding_source"] or {}).get("destination"),
             "proposed_payload": r["proposed_payload"] or {},
             "created_at": r["created_at"].isoformat(),
+            # Step A.1: applicability facts + the re-verify outcome
+            "claim_status": r["claim_status"],
+            "recipe_moved": bool(r["recipe_moved"]),
+            "reverify": ({"state": r["reverify_state"],
+                          "job_id": r["reverify_job_id"],
+                          "outcome": r["reverify_outcome"],
+                          "verdict": r["reverify_verdict"],
+                          "refusal": r["reverify_refusal"],
+                          "applied_version_seq": r["applied_recipe_version_seq"]}
+                         if r["reverify_state"] else None),
         } for r in rows]}
     except Exception as exc:
         log.warning("list_proposals failed for tenant %s: %s", tenant_id, exc)
@@ -401,16 +428,29 @@ def open_proposal_for_run(tenant_id: int, run_id) -> Optional[dict]:
         from primeqa.semantic.connection import get_tenant_connection
         with get_tenant_connection(tenant_id) as conn:
             row = conn.execute(text(
-                "SELECT id, proposal_kind, proposed_payload, gate_verdict, "
-                "       grounding_source, claim_test_id "
-                "FROM repair_proposals "
-                "WHERE run_id = CAST(:rid AS uuid) AND status = 'proposed' "
-                "ORDER BY created_at DESC LIMIT 1"),
+                "SELECT p.id, p.proposal_kind, p.proposed_payload, p.gate_verdict, "
+                "       p.grounding_source, p.claim_test_id, p.status, "
+                "       p.reverify_state, p.reverify_outcome, p.reverify_verdict, "
+                "       p.reverify_refusal, p.reverify_job_id, "
+                "       c.status AS claim_status "
+                "FROM repair_proposals p "
+                "LEFT JOIN test_claims c ON c.test_id = p.claim_test_id "
+                "     AND c.valid_to IS NULL "
+                "WHERE p.run_id = CAST(:rid AS uuid) "
+                "  AND (p.status = 'proposed' OR p.reverify_state IS NOT NULL) "
+                "ORDER BY p.created_at DESC LIMIT 1"),
                 {"rid": str(run_id)}).mappings().first()
         if row is None:
             return None
         return {"id": row["id"], "proposal_kind": row["proposal_kind"],
                 "claim_test_id": str(row["claim_test_id"]),
+                "status": row["status"], "claim_status": row["claim_status"],
+                "reverify": ({"state": row["reverify_state"],
+                              "job_id": row["reverify_job_id"],
+                              "outcome": row["reverify_outcome"],
+                              "verdict": row["reverify_verdict"],
+                              "refusal": row["reverify_refusal"]}
+                             if row["reverify_state"] else None),
                 "gate_verdict": row["gate_verdict"],
                 "grounding": row["grounding_source"] or {},
                 "destination": (row["grounding_source"] or {}).get("destination"),
@@ -446,13 +486,18 @@ def decide_proposal(tenant_id: int, proposal_id: int, *, approve: bool,
         # Step A: the refusal is the control (hiding the button is only
         # presentation). Apply requires the dormant-first switch ON, a
         # DERIVED verdict and a recorded grounding source — never the
-        # LLM's confidence.
-        refusal = _apply_refusal(_repair_settings(tenant_id), row)
+        # LLM's confidence. Step A.1: and a LIVE claim (a deprecated claim
+        # is a withdrawn test) and an UNMOVED recipe (the verdict describes
+        # the version the run pinned).
+        with get_tenant_connection(tenant_id) as conn:
+            appl = _applicability(conn, row)
+        refusal = _apply_refusal(_repair_settings(tenant_id), row, **appl)
         if refusal:
             return {"ok": False, "status": row["status"], "refused": True,
-                    "gate_verdict": row["gate_verdict"], "error": refusal}
+                    "gate_verdict": row["gate_verdict"], "error": refusal,
+                    "claim_status": appl.get("claim_status")}
 
-        outcome = _apply(tenant_id, row)
+        outcome = _apply(tenant_id, row, decided_by=decided_by)
         # D-236 review fix: a genuine apply failure (recipe_edit with no subject
         # create / no recipe; regenerate with no link) must NOT be mis-stamped
         # 'applied' — that would vanish the proposal from the panel as a false
@@ -469,9 +514,13 @@ def decide_proposal(tenant_id: int, proposal_id: int, *, approve: bool,
         return {"ok": False, "error": str(exc)}
 
 
-def _apply_refusal(settings: dict, row) -> Optional[str]:
+def _apply_refusal(settings: dict, row, *, claim_status: Optional[str] = None,
+                   recipe_moved: bool = False, **_ignored) -> Optional[str]:
     """Why this proposal may NOT be applied right now — ``None`` when it may.
-    Pure over the settings + the row's gate columns."""
+    Pure over the settings + the row's gate columns + the applicability
+    facts (Step A.1: ``claim_status`` of the claim's CURRENT version;
+    ``recipe_moved`` when the current recipe version is not the one the
+    run pinned and the gate classified)."""
     if not settings.get("gate_apply_enabled"):
         return ("apply actions are dormant — the repair gate switch is off "
                 "(Settings › Agent)")
@@ -481,14 +530,64 @@ def _apply_refusal(settings: dict, row) -> Optional[str]:
                 "proposal with a recorded grounding source can be applied")
     if not (row.get("grounding_source") or {}):
         return "DERIVED without a recorded grounding source — refused"
+    if claim_status == "deprecated":
+        return ("claim_deprecated: the claim's current version is deprecated "
+                "— a withdrawn test is not repaired, re-run or regenerated")
+    if recipe_moved and row.get("proposal_kind") == "recipe_edit":
+        return ("recipe_moved: the recipe has a newer version than the one "
+                "this run pinned — the verdict no longer describes the recipe "
+                "that would be edited; re-triage on a fresh run")
     return None
 
 
-def _apply_recipe_edit(tenant_id: int, row) -> dict:
-    """Apply a recipe_edit (D-236): write a NEW recipe version with the LLM's
-    field_changes on the subject create (actor 's8' → recipe_s8_rewrite
-    provenance; the prior version is preserved → reversible), then enqueue a
-    re-verify run. Best-effort: returns ``{action, error}`` on any failure."""
+def _applicability(conn, row) -> dict:
+    """The recorded facts the refusal needs beyond the row itself: the
+    claim's CURRENT status and whether the recipe moved since the run.
+    Read-only; never raises (unknown → not refused on that ground, and the
+    reader names what it could not read)."""
+    out = {"claim_status": None, "recipe_moved": False,
+           "pinned_recipe_seq": None, "current_recipe_seq": None}
+    try:
+        from sqlalchemy.orm import Session
+        from uuid import UUID as _UUID
+
+        from primeqa.test_representation.coordinator import (
+            SemanticTransactionCoordinator,
+        )
+        coord = SemanticTransactionCoordinator()
+        session = Session(bind=conn)
+        try:
+            claim = coord.get_latest_claim(session, _UUID(str(row["claim_test_id"])))
+            out["claim_status"] = claim.status if claim is not None else None
+            run = conn.execute(text(
+                "SELECT recipe_id, recipe_version_seq FROM s4_execution_runs "
+                "WHERE run_id = CAST(:r AS uuid)"),
+                {"r": str(row["run_id"])}).mappings().first()
+            if run is not None and run["recipe_id"] is not None:
+                cur = coord.get_recipe_latest(session, run["recipe_id"])
+                out["pinned_recipe_seq"] = run["recipe_version_seq"]
+                out["current_recipe_seq"] = cur.version_seq if cur else None
+                out["recipe_moved"] = (
+                    cur is not None and run["recipe_version_seq"] is not None
+                    and int(cur.version_seq) != int(run["recipe_version_seq"]))
+        finally:
+            session.close()
+    except Exception as exc:  # noqa: BLE001 — best-effort read, named
+        log.warning("repair applicability read failed for proposal %s: %s",
+                    row.get("id"), exc)
+    return out
+
+
+def _apply_recipe_edit(tenant_id: int, row, *, decided_by: Optional[int] = None) -> dict:
+    """Apply a recipe_edit (D-236 + Step A.1): write a NEW recipe version
+    with the LLM's field_changes on the subject create (actor 's8' →
+    recipe_s8_rewrite provenance, attributed to the proposal; the prior
+    version is preserved → reversible), then — the human's approve IS the
+    approval act (ruling D5) — promote THAT version to ``approved`` with
+    ``recipe_approved`` provenance naming the proposal, the verdict and the
+    grounding rule, so the S2 selector can find it; then enqueue the
+    re-verify run and report the job. Best-effort: returns
+    ``{action, error}`` on any failure (nothing is stamped then)."""
     from sqlalchemy.orm import Session
 
     from primeqa.execution_engine.intake import enqueue_s4_execution
@@ -496,6 +595,12 @@ def _apply_recipe_edit(tenant_id: int, row) -> dict:
     from primeqa.test_representation.coordinator import (
         SemanticTransactionCoordinator,
     )
+    apply_started = datetime.now(timezone.utc)
+    grounding = row.get("grounding_source") or {}
+    attribution = {"proposal_id": row["id"],
+                   "gate_verdict": row.get("gate_verdict"),
+                   "grounding_rule": grounding.get("rule"),
+                   "decided_by": decided_by}
     try:
         with get_tenant_connection(tenant_id) as conn:
             pp = conn.execute(text(
@@ -519,38 +624,69 @@ def _apply_recipe_edit(tenant_id: int, row) -> dict:
                 new_steps[idx] = body.steps[idx].model_copy(
                     update={"field_values": new_fv})
                 new_body = body.model_copy(update={"steps": new_steps})
-                res = SemanticTransactionCoordinator().write_recipe(
+                coord = SemanticTransactionCoordinator()
+                res = coord.write_recipe(
                     session, actor="s8", recipe_id=recipe_id,
                     claim_test_id=rr.claim_test_id,
                     trigger_kind=rr.trigger_kind, recipe_kind=rr.recipe_kind,
                     causal_initiation=rr.causal_initiation,
                     observation_realization=new_body,
                     execution_environment=rr.execution_environment,
-                    claim_version_seq=rr.claim_version_seq, priority=rr.priority)
+                    claim_version_seq=rr.claim_version_seq, priority=rr.priority,
+                    event_context={"provenance": "gate_apply", **attribution})
+                # Ruling D5: the SAME human act approves the version it wrote
+                # — never silently (the event names proposal, verdict, rule,
+                # human), never for a non-DERIVED row (refused upstream).
+                coord.promote_recipe_to_approved(
+                    session, actor="human", recipe_id=recipe_id,
+                    version_seq=res.version_seq,
+                    event_context={"provenance": "gate_apply_approval",
+                                   **attribution})
+                # The D-223 executability gate judges the version we just
+                # promoted — BEFORE it commits. An edit that yields an
+                # unexecutable recipe is refused whole: no version, no
+                # approval, no job (never an approved shape that cannot run).
+                from uuid import UUID as _UUID
+
+                from primeqa.execution_engine.errors import UnexecutableClaimError
+                from primeqa.execution_engine.executability import gate_enqueue
+                try:
+                    gate_enqueue(session, _UUID(str(row["claim_test_id"])))
+                except UnexecutableClaimError as exc:
+                    session.rollback()
+                    return {"action": "recipe_edit",
+                            "error": f"unexecutable_shape: {exc}"}
                 session.commit()
             finally:
                 session.close()
         job = enqueue_s4_execution(
             tenant_id=tenant_id, test_id=row["claim_test_id"],
-            environment_id=row["environment_id"])
+            environment_id=row["environment_id"], created_by=decided_by)
+        reused = bool(job.created_at and job.created_at < apply_started)
         return {"action": "recipe_edit", "recipe_id": str(recipe_id),
-                "new_version_seq": res.version_seq, "s4_job_id": job.id}
+                "new_version_seq": res.version_seq,
+                "applied_recipe_version_seq": res.version_seq,
+                "s4_job_id": job.id, "reverify_job_id": job.id,
+                "reverify_job_reused": reused or None}
     except Exception as exc:
         log.warning("recipe_edit apply failed for tenant %s proposal %s: %s",
                     tenant_id, row.get("id"), exc)
         return {"action": "recipe_edit", "error": str(exc)}
 
 
-def _apply(tenant_id: int, row) -> dict:
+def _apply(tenant_id: int, row, *, decided_by: Optional[int] = None) -> dict:
     """Execute one approved proposal. Returns the payload to stamp."""
     if row["proposal_kind"] == "recipe_edit":
-        return _apply_recipe_edit(tenant_id, row)
+        return _apply_recipe_edit(tenant_id, row, decided_by=decided_by)
     if row["proposal_kind"] == "rerun":
         from primeqa.execution_engine.intake import enqueue_s4_execution
+        started = datetime.now(timezone.utc)
         job = enqueue_s4_execution(
             tenant_id=tenant_id, test_id=row["claim_test_id"],
-            environment_id=row["environment_id"])
-        return {"action": "rerun", "s4_job_id": job.id}
+            environment_id=row["environment_id"], created_by=decided_by)
+        reused = bool(job.created_at and job.created_at < started)
+        return {"action": "rerun", "s4_job_id": job.id,
+                "reverify_job_id": job.id, "reverify_job_reused": reused or None}
 
     # regenerate_from_current_org: resolve the claim's requirement key, then
     # enqueue a fresh S3 generation (the D-205.1 re-version path; idempotent
@@ -626,8 +762,10 @@ def auto_apply_proposals(tenant_id: int, *, limit: int = 20) -> dict:
                 "ORDER BY created_at ASC LIMIT :lim"),
                 {"lim": limit}).mappings().all()
         for row in rows:
-            if _apply_refusal(settings, row):
-                skipped += 1                             # not DERIVED / no grounding
+            with get_tenant_connection(tenant_id) as conn:
+                appl = _applicability(conn, row)
+            if _apply_refusal(settings, row, **appl):
+                skipped += 1                # not DERIVED / no grounding / dead claim
                 continue
             if _env_is_production(tenant_id, row["environment_id"]):
                 skipped += 1                             # prod is always human-gated
@@ -637,19 +775,24 @@ def auto_apply_proposals(tenant_id: int, *, limit: int = 20) -> dict:
                         settings["max_attempts"]:
                     skipped += 1
                     continue
-            outcome = _apply(tenant_id, row)
-            if outcome.get("error"):
-                skipped += 1
-                continue
-            with get_tenant_connection(tenant_id) as conn:
+                # Step A.1 (ruling D5): autonomy PRE-APPROVES, it never
+                # mutates. The version is written, promoted and re-verified
+                # by the human's one click — promotion is humans-only
+                # (D-ε-1) and an unapproved version can never run (D-064),
+                # so writing it here would recreate the D-236 no-op.
                 conn.execute(text(
-                    "UPDATE repair_proposals SET status = 'applied', "
-                    "auto_applied = true, decided_at = :at, "
+                    "UPDATE repair_proposals SET status = 'approved', "
+                    "decided_at = :at, "
                     "payload = payload || CAST(:p AS jsonb) WHERE id = :pid"),
                     {"at": datetime.now(timezone.utc),
-                     "p": json.dumps({k: v for k, v in outcome.items()
-                                      if v is not None}),
+                     "p": json.dumps({"auto_approved": True}),
                      "pid": row["id"]})
+                _audit(conn, "ui.repair_auto_approved",
+                       {"proposal_id": row["id"], "gate_verdict": row["gate_verdict"],
+                        "disposition": "pre-approved by the autonomous pass — "
+                                       "awaiting the human apply (which writes, "
+                                       "promotes and re-verifies)"},
+                       None, tenant_id)
             applied += 1
         return {"applied": applied, "skipped": skipped}
     except Exception as exc:
@@ -657,15 +800,110 @@ def auto_apply_proposals(tenant_id: int, *, limit: int = 20) -> dict:
         return {"applied": 0, "skipped": 0}
 
 
+def _audit(conn, action: str, details: dict, user_id, tenant_id: int) -> None:
+    from sqlalchemy.orm import Session
+
+    from primeqa.browser_worker.audit import record_event
+    s = Session(bind=conn)
+    try:
+        s.info["tenant_schema"] = f"tenant_{int(tenant_id)}"
+        s.info["tenant_id"] = int(tenant_id)
+        record_event(s, action=action, details=details, user_id=user_id,
+                     tenant_id=tenant_id, mandatory_log=True)
+        s.flush()
+    finally:
+        s.close()
+
+
+def settle_transition(job_status: Optional[str], job_error_code: Optional[str],
+                      run: Optional[dict]) -> Optional[dict]:
+    """Pure: the settle table (Step A.1 §c). ``None`` = still waiting.
+    A completed job with a run → ran; a completed job with NO run → the
+    silence made loud (no_run / no_eligible_recipe); a failed or cancelled
+    job → no_run with the job's error code."""
+    if job_status in (None, "queued", "claimed", "running"):
+        return None
+    if job_status == "completed":
+        if run:
+            return {"reverify_state": "ran", "reverify_run_id": run.get("run_id"),
+                    "reverify_outcome": run.get("outcome"),
+                    "reverify_verdict": run.get("verdict"), "reverify_refusal": None}
+        return {"reverify_state": "no_run", "reverify_run_id": None,
+                "reverify_outcome": None, "reverify_verdict": None,
+                "reverify_refusal": "no_eligible_recipe"}
+    return {"reverify_state": "no_run", "reverify_run_id": None,
+            "reverify_outcome": None, "reverify_verdict": None,
+            "reverify_refusal": job_error_code or job_status}
+
+
+def settle_reverifies(tenant_id: int, *, limit: int = 50) -> dict:
+    """Step A.1 §c: for every proposal whose re-verify is ``queued``, read
+    the job; once terminal, record the run (D-317 resolution: the claim's
+    newest run on the env started at/after the job's creation) or the
+    loud absence. Idempotent — a settled row never re-settles. Best-effort;
+    never raises. Returns ``{checked, settled}``."""
+    checked = settled = 0
+    try:
+        from primeqa.execution_engine.jobs import ExecutionJobStore
+        from primeqa.intelligence.s4_execution_console import read_latest_run_for
+        from primeqa.semantic.connection import get_tenant_connection
+        from primeqa.shared.stale_tenants import skip_unprovisioned
+        with get_tenant_connection(tenant_id) as conn:
+            if skip_unprovisioned(conn, tenant_id, "repair_proposals", log):
+                return {"checked": 0, "settled": 0, "unprovisioned": True}
+            rows = conn.execute(text(
+                "SELECT id, claim_test_id, environment_id, reverify_job_id "
+                "FROM repair_proposals WHERE reverify_state = 'queued' "
+                "ORDER BY id LIMIT :lim"), {"lim": limit}).mappings().all()
+        store = ExecutionJobStore(tenant_id)
+        for r in rows:
+            checked += 1
+            job = store.get_job(int(r["reverify_job_id"])) if r["reverify_job_id"] else None
+            run = None
+            if job is not None and job.status == "completed":
+                run = read_latest_run_for(tenant_id, r["claim_test_id"],
+                                          r["environment_id"],
+                                          since=job.created_at).get("run")
+            tr = settle_transition(job.status if job else "cancelled",
+                                   job.error_code if job else "job_missing", run)
+            if tr is None:
+                continue
+            with get_tenant_connection(tenant_id) as conn:
+                conn.execute(text(
+                    "UPDATE repair_proposals SET reverify_state = :s, "
+                    "reverify_run_id = CAST(:rid AS uuid), reverify_outcome = :o, "
+                    "reverify_verdict = :v, reverify_refusal = :ref, "
+                    "reverify_settled_at = :at "
+                    "WHERE id = :pid AND reverify_state = 'queued'"),
+                    {"s": tr["reverify_state"],
+                     "rid": (str(tr["reverify_run_id"]) if tr["reverify_run_id"] else None),
+                     "o": tr["reverify_outcome"], "v": tr["reverify_verdict"],
+                     "ref": tr["reverify_refusal"],
+                     "at": datetime.now(timezone.utc), "pid": r["id"]})
+            settled += 1
+        return {"checked": checked, "settled": settled}
+    except Exception as exc:  # noqa: BLE001 — recorded, never silent
+        log.warning("settle_reverifies failed for tenant %s: %s", tenant_id, exc)
+        return {"checked": checked, "settled": settled}
+
+
 def _stamp(tenant_id: int, proposal_id: int, status: str,
            decided_by: Optional[int], payload: dict) -> None:
+    """Stamp the decision. Step A.1: when the outcome carries a re-verify
+    job, the row enters ``reverify_state = 'queued'`` — apply is not done
+    until the settle pass has recorded what the job did."""
     from primeqa.semantic.connection import get_tenant_connection
+    clean = {k: v for k, v in payload.items() if v is not None}
     with get_tenant_connection(tenant_id) as conn:
         conn.execute(text(
             "UPDATE repair_proposals SET status = :st, decided_by = :by, "
-            "decided_at = :at, payload = payload || CAST(:p AS jsonb) "
+            "decided_at = :at, payload = payload || CAST(:p AS jsonb), "
+            "applied_recipe_version_seq = COALESCE(:av, applied_recipe_version_seq), "
+            "reverify_job_id = COALESCE(:rj, reverify_job_id), "
+            "reverify_state = CASE WHEN :rj IS NULL THEN reverify_state "
+            "                      ELSE 'queued' END "
             "WHERE id = :pid"),
             {"st": status, "by": decided_by,
-             "at": datetime.now(timezone.utc),
-             "p": json.dumps({k: v for k, v in payload.items() if v is not None}),
-             "pid": proposal_id})
+             "at": datetime.now(timezone.utc), "p": json.dumps(clean),
+             "av": clean.get("applied_recipe_version_seq"),
+             "rj": clean.get("reverify_job_id"), "pid": proposal_id})

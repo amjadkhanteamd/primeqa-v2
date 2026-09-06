@@ -299,6 +299,7 @@
         &middot; <span class="font-medium text-amber-700">{{ vc.SPECULATIVE }} speculative</span>
         &middot; <span class="font-medium text-red-700">{{ vc.SEMANTIC }} refused (semantic)</span>
         {% if vc.UNCLASSIFIED %}&middot; <span class="font-medium text-gray-500">{{ vc.UNCLASSIFIED }} unclassified</span>{% endif %}
+        {% if vc.REVERIFY_PENDING %}&middot; <span class="font-medium text-indigo-700" title="Applied, re-verify not yet settled — apply is not done until the re-verify has spoken.">{{ vc.REVERIFY_PENDING }} re-verify pending</span>{% endif %}
         {% if not gate_on %}&middot; <span class="text-gray-400" title="Repair gate switch is off: no proposal can be applied by anyone. Settings › Agent.">apply actions dormant</span>{% endif %}
       </span>
       {% endif %}
@@ -309,7 +310,7 @@
         {% for p in repairs.proposals %}
         {% set gv = p.gate_verdict %}
         {% set g = p.grounding or {} %}
-        <tr data-testid="repair-row" data-gate-verdict="{{ gv or 'UNCLASSIFIED' }}">
+        <tr data-testid="repair-row" data-gate-verdict="{{ gv or 'UNCLASSIFIED' }}" data-status="{{ p.status }}" data-claim-status="{{ p.claim_status or '' }}">
           <td class="px-4 py-2 align-top whitespace-nowrap">
             {% if gv == 'DERIVED' %}
             <span class="inline-flex items-center px-2 py-0.5 rounded text-xs font-semibold bg-green-100 text-green-800">DERIVED</span>
@@ -355,7 +356,13 @@
             {% endif %}
           </td>
           <td class="px-4 py-2 align-top text-right whitespace-nowrap" data-testid="repair-action">
-            {% if gv == 'DERIVED' %}
+            {% if p.status == 'applied' and p.reverify and p.reverify.state == 'queued' %}
+              <span class="text-xs text-indigo-700" data-testid="reverify-pending" title="Applied — the re-verify job has not spoken yet. Apply is not done until it does.">Applied &middot; re-verify pending (job {{ p.reverify.job_id }})</span>
+            {% elif gv == 'DERIVED' and p.claim_status == 'deprecated' %}
+              <span class="text-xs text-gray-500" data-testid="claim-deprecated" title="The claim's current version is deprecated: a withdrawn test is not repaired, re-run or regenerated.">Claim deprecated &mdash; not applicable</span>
+            {% elif gv == 'DERIVED' and p.proposal_kind == 'recipe_edit' and p.recipe_moved %}
+              <span class="text-xs text-gray-500" data-testid="recipe-moved" title="The recipe has a newer version than the one this run pinned; the verdict no longer describes the recipe that would be edited.">Recipe moved &mdash; re-triage on a fresh run</span>
+            {% elif gv == 'DERIVED' %}
               {% if gate_on %}
               <form method="POST" action="/runs/substrate/repairs/{{ p.id }}" class="inline">
                 {{ csrf_input | safe }}
@@ -376,11 +383,13 @@
             {% else %}
               <span class="text-xs text-gray-400" title="Not yet classified by the gate — never applicable.">Not applicable</span>
             {% endif %}
+            {% if p.status != 'applied' %}
             <form method="POST" action="/runs/substrate/repairs/{{ p.id }}" class="inline ml-1">
               {{ csrf_input | safe }}
               <input type="hidden" name="action" value="reject">
               <button type="submit" class="text-xs text-gray-500 hover:underline">{{ 'Dismiss' if gv == 'SEMANTIC' else 'Reject' }}</button>
             </form>
+            {% endif %}
           </td>
         </tr>
         {% endfor %}

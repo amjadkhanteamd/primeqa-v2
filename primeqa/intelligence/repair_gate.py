@@ -610,6 +610,109 @@ def revert_refused_auto_applies(tenant_id: int, *, actor_user_id: Optional[int] 
 
 
 # ---------------------------------------------------------------------------
+# Step A.1 §d — the one-time re-examination of already-applied edits
+# ---------------------------------------------------------------------------
+
+def reexamine_applied(tenant_id: int, *, actor_user_id: Optional[int] = None) -> list:
+    """For every APPLIED recipe edit never examined (``reverify_state IS
+    NULL`` — the pre-A.1 shape): a deprecated claim → recorded refusal
+    (``claim_deprecated``; no write, no job); a DERIVED verdict on a live
+    claim → the applied version is promoted with ``gate_retro_approval``
+    provenance (the named human owns that act) and a re-verify is queued;
+    anything else → recorded refusal (``not_derived``). Idempotent on
+    ``reverify_state``. Returns one record per candidate."""
+    from sqlalchemy.orm import Session
+
+    from primeqa.execution_engine.intake import enqueue_s4_execution
+    from primeqa.semantic.connection import get_tenant_connection
+    from primeqa.test_representation.coordinator import (
+        SemanticTransactionCoordinator,
+    )
+    out: list = []
+    with get_tenant_connection(tenant_id) as conn:
+        rows = conn.execute(text(
+            "SELECT p.id, p.claim_test_id, p.environment_id, p.gate_verdict, "
+            "       p.payload, p.revert_recipe_version_seq, c.status AS claim_status "
+            "FROM repair_proposals p "
+            "LEFT JOIN test_claims c ON c.test_id = p.claim_test_id "
+            "     AND c.valid_to IS NULL "
+            "WHERE p.status = 'applied' AND p.proposal_kind = 'recipe_edit' "
+            "  AND p.reverify_state IS NULL ORDER BY p.id")).mappings().all()
+    now = datetime.now(timezone.utc)
+    for r in rows:
+        rec = {"proposal_id": r["id"], "gate_verdict": r["gate_verdict"],
+               "claim_status": r["claim_status"]}
+        refusal = None
+        if r["claim_status"] == "deprecated":
+            refusal = "claim_deprecated"
+        elif r["gate_verdict"] != DERIVED:
+            refusal = "not_derived"
+        elif r["revert_recipe_version_seq"] is not None:
+            refusal = "reverted"                       # the edit no longer stands
+        if refusal:
+            with get_tenant_connection(tenant_id) as conn:
+                conn.execute(text(
+                    "UPDATE repair_proposals SET reverify_state = 'refused', "
+                    "reverify_refusal = :ref, reverify_settled_at = :at "
+                    "WHERE id = :pid AND reverify_state IS NULL"),
+                    {"ref": refusal, "at": now, "pid": r["id"]})
+            rec.update(action="refused", refusal=refusal)
+            out.append(rec)
+            continue
+        payload = r["payload"] or {}
+        recipe_id, seq = payload.get("recipe_id"), payload.get("new_version_seq")
+        if not recipe_id or not seq:
+            rec.update(action="error", error="apply payload lacks recipe_id/new_version_seq")
+            out.append(rec)
+            continue
+        try:
+            with get_tenant_connection(tenant_id) as conn:
+                session = Session(bind=conn)
+                try:
+                    coord = SemanticTransactionCoordinator()
+                    cur = coord.get_recipe_latest(session, UUID(str(recipe_id)))
+                    if cur is None or int(cur.version_seq) != int(seq):
+                        raise RuntimeError(
+                            f"applied version {seq} of recipe {recipe_id} is not "
+                            f"the current version ({cur.version_seq if cur else None})")
+                    coord.promote_recipe_to_approved(
+                        session, actor="human", recipe_id=UUID(str(recipe_id)),
+                        version_seq=int(seq),
+                        event_context={"provenance": "gate_retro_approval",
+                                       "proposal_id": r["id"],
+                                       "gate_verdict": r["gate_verdict"],
+                                       "decided_by": actor_user_id})
+                    session.commit()
+                finally:
+                    session.close()
+            job = enqueue_s4_execution(
+                tenant_id=tenant_id, test_id=r["claim_test_id"],
+                environment_id=r["environment_id"], created_by=actor_user_id)
+            with get_tenant_connection(tenant_id) as conn:
+                conn.execute(text(
+                    "UPDATE repair_proposals SET applied_recipe_version_seq = :v, "
+                    "reverify_job_id = :j, reverify_state = 'queued' "
+                    "WHERE id = :pid AND reverify_state IS NULL"),
+                    {"v": int(seq), "j": job.id, "pid": r["id"]})
+                conn.execute(text(
+                    "INSERT INTO public.activity_log "
+                    "(tenant_id, user_id, action, entity_type, entity_id, details) "
+                    "VALUES (:t, :u, 'repair.gate_retro_approval', "
+                    "'repair_proposal', :pid, CAST(:d AS JSONB))"),
+                    {"t": tenant_id, "u": actor_user_id, "pid": r["id"],
+                     "d": json.dumps({"recipe_id": str(recipe_id),
+                                      "version_seq": int(seq), "s4_job_id": job.id})})
+            rec.update(action="promoted_and_queued", recipe_id=str(recipe_id),
+                       version_seq=int(seq), s4_job_id=job.id)
+        except Exception as exc:  # noqa: BLE001 — recorded per row, never silent
+            log.warning("gate reexamine failed for tenant %s proposal %s: %s",
+                        tenant_id, r["id"], exc)
+            rec.update(action="error", error=str(exc)[:300])
+        out.append(rec)
+    return out
+
+
+# ---------------------------------------------------------------------------
 # CLI — non-secret argv only
 # ---------------------------------------------------------------------------
 
@@ -627,12 +730,18 @@ def main(argv=None) -> int:
     v.add_argument("--user-id", type=int, default=None)
     c = sub.add_parser("report", help="counts by status/kind/verdict")
     c.add_argument("--tenant-id", type=int, required=True)
+    x = sub.add_parser("reexamine", help="A.1 §d: examine applied edits never re-verified")
+    x.add_argument("--tenant-id", type=int, required=True)
+    x.add_argument("--user-id", type=int, default=None)
     args = parser.parse_args(argv)
     if args.cmd == "retro":
         print(json.dumps(retro_classify(args.tenant_id, force=args.force),
                          indent=2, default=str))
     elif args.cmd == "revert":
         print(json.dumps(revert_refused_auto_applies(
+            args.tenant_id, actor_user_id=args.user_id), indent=2, default=str))
+    elif args.cmd == "reexamine":
+        print(json.dumps(reexamine_applied(
             args.tenant_id, actor_user_id=args.user_id), indent=2, default=str))
     else:
         print(json.dumps(report_counts(args.tenant_id), indent=2))
