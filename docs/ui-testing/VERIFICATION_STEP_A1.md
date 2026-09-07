@@ -161,3 +161,28 @@ refusals → report.
 - `promote_recipe_to_approved` would un-deprecate a deprecated recipe if
   asked (D-226 is caller-side); A.1 only ever promotes the version it
   just wrote or the version an applied row names.
+
+## h. Production transcript (2026-09-07, merge GO)
+
+Mock approved by AK; merged under the standard runbook, dumpless per
+D-476 (classified at pre-flight: one ADDITIVE alembic file, zero public
+migrations, `core/models.py` untouched → no ORM window).
+
+| act | record |
+|---|---|
+| pre-flight | tree clean; main unmoved at `a0f7484`; tenant head `20260906_0010`; 0 `reverify_*` columns; settings `agent_enabled=t / repair_auto_apply=f / repair_gate_apply_enabled=t`; 132 proposals, 6 applied recipe edits |
+| tenant `20260907_0010` | applied before deploy; head read back `20260907_0010`; eight columns present; CHECK `repair_proposals_reverify_state_known`; partial index `idx_repair_proposals_reverify_queued`; 132 rows all `reverify_state IS NULL`; recipes 1,009 / provenance 3,703 unchanged |
+| merge | `aa19033` (parents `a0f7484` + `76504b8`), author AK, 0 trailers; pushed `a0f7484..aa19033` |
+| deploy | web, worker, scheduler, browser-worker all SUCCESS at `aa19033` (built 23:46Z); pre-merge deployments REMOVED |
+| service logs since boot | scheduler: 57 lines = 1 start + 56 loudly-once skips (14 unprovisioned tenants × 4 tables), 0 `repair_triage_tick failed`, 0 tracebacks; worker / web / browser-worker: 0 tracebacks, 0 errors |
+| web tier | `/api/_internal/health` 200 (0.43 s); `/login` 200 |
+| `reexamine --tenant-id 1 --user-id 1` | six candidates (146, 147 SPECULATIVE; 95189, 95195, 465221 SEMANTIC reverted; 347418 DERIVED) → **six `refused / claim_deprecated`**, one settled timestamp `2026-09-07 03:56:23Z`; `reverify_job_id` and `applied_recipe_version_seq` NULL on all six |
+| second run | `[]` — 0 candidates, state unchanged (6 refused / 126 null) |
+| deltas | recipes 1,009 → 1,009; provenance 3,703 → 3,703; s4 jobs 635 (max id 684) → 635; `repair.gate_retro_approval` audit rows 0 → 0 |
+| settings after | unchanged `t / f / t`, cap 2; switch-on audit row 1139 stands |
+
+**What turned red: nothing.** Every applied recipe edit sits on a
+deprecated claim, so no legitimate run exists for any of them; the
+refusal is now the recorded answer on each row instead of a silent
+`no_eligible_recipe` job. Suites are the §f numbers (the merge tree is
+byte-identical to `76504b8`; main had not moved since the branch cut).
