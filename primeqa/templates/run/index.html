@@ -41,6 +41,14 @@
       {% endif %}
     </div>
 
+    {% if hidden_count and not show_hidden and not origin_filter %}
+    <div class="mb-4 rounded-md bg-gray-50 border border-gray-200 px-4 py-2 text-sm text-gray-600 flex items-center justify-between"
+         data-testid="hidden-strip" data-hidden-count="{{ hidden_count }}">
+      <span>{{ hidden_count }} fixture/probe requirement{{ '' if hidden_count == 1 else 's' }} hidden from this list</span>
+      <a href="?show_hidden=1" class="font-medium text-indigo-600 hover:text-indigo-800">show</a>
+    </div>
+    {% endif %}
+
     <div class="bg-white shadow rounded-lg overflow-hidden">
       <div class="px-4 py-3 border-b flex items-center justify-between gap-3 flex-wrap">
         <h3 class="text-sm font-semibold text-gray-700">Requirements with approved tests</h3>
@@ -60,8 +68,12 @@
               <input type="checkbox" name="requirement_keys" value="{{ r.key }}"
                      class="req-check rounded border-gray-300">
             </td>
-            <td class="px-4 py-2 font-mono text-xs text-gray-500 whitespace-nowrap">{% if r.key.startswith('req-') %}#{{ r.key[4:] }}{% else %}{{ r.key }}{% endif %}</td>
-            <td class="px-4 py-2 text-gray-700">{% if r.summary %}{{ r.summary }}{% else %}<span class="text-gray-400 italic">Untitled{% if not r.key.startswith('req-') %} &mdash; re-sync from Jira{% endif %}</span>{% endif %}</td>
+            {# Step 1: the IDENTITY, verbatim — the '#N' display form is gone. #}
+            <td class="px-4 py-2 font-mono text-xs text-gray-500 whitespace-nowrap" data-identity="{{ r.key }}">{{ r.key }}
+              {% if r.origin and r.origin != 'jira' and r.origin != 'manual' %}<span class="ml-1 inline-flex items-center px-1.5 py-0.5 rounded text-[10px] font-sans
+                {% if r.origin == 'fixture' %}bg-amber-100 text-amber-800{% elif r.origin == 'probe' %}bg-violet-100 text-violet-800{% else %}bg-slate-200 text-slate-700{% endif %}"
+                data-origin="{{ r.origin }}">{% if r.origin == 'CANNOT_CLASSIFY' %}?{% else %}{{ r.origin }}{% endif %}</span>{% endif %}</td>
+            <td class="px-4 py-2 text-gray-700">{% if r.summary %}{{ r.summary }}{% else %}<span class="text-gray-400 italic" data-testid="no-record">no requirement record</span>{% endif %}</td>
             <td class="px-4 py-2 whitespace-nowrap">
               {% set h = r.health %}
               {% if h and h.failed %}
@@ -93,8 +105,15 @@
         Run selected</button>
       <button type="submit" name="run_all" value="1" {% if not environments %}disabled{% endif %}
               class="rounded-md bg-white px-3 py-2 text-sm font-semibold text-gray-700 ring-1 ring-gray-300 hover:bg-gray-50 disabled:opacity-50"
-              data-confirm="Queue a run of EVERY approved test{% if total_tests %} ({{ total_tests }}){% endif %} on the selected environment?">
+              data-confirm="Queue a run of EVERY approved test{% if total_tests %} ({{ total_tests }}){% endif %} on the selected environment?{% if hidden_count and not show_hidden %} This includes the {{ hidden_count }} fixture/probe requirement{{ '' if hidden_count == 1 else 's' }} hidden from the list below.{% endif %}">
         Run all approved{% if total_tests %} &middot; {{ total_tests }} test{{ '' if total_tests == 1 else 's' }}{% endif %}</button>
+      {% if hidden_count and not show_hidden %}
+      {# Step 1 honesty: "Run all" enqueues every approved claim in the
+         tenant, including the identities hidden from the list. The count
+         above is that true total; say so rather than let the list imply
+         a smaller scope. #}
+      <p class="mt-1 text-xs text-gray-500" data-testid="run-all-scope">Includes {{ hidden_count }} hidden fixture/probe requirement{{ '' if hidden_count == 1 else 's' }}.</p>
+      {% endif %}
       <a href="/runs/substrate" class="text-sm text-gray-500 hover:underline ml-auto">View runs &rarr;</a>
     </div>
   </form>

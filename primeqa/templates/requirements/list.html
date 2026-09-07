@@ -7,7 +7,21 @@
 {{ breadcrumbs([('Requirements', None)]) }}
 
 {% set qs %}{% if search %}&q={{ search | urlencode }}{% endif %}{% if show_deleted %}&deleted=1{% endif %}{% if section_filter %}&section_id={{ section_filter }}{% endif %}{% if source_filter %}&source={{ source_filter }}{% endif %}{% if stale_filter %}&stale=1{% endif %}{% if coverage_filter %}&coverage={{ coverage_filter }}{% endif %}{% if meta.per_page and meta.per_page != 20 %}&per_page={{ meta.per_page }}{% endif %}{% endset %}
-{% set has_filters = search or section_filter or source_filter or stale_filter or coverage_filter %}
+{% set has_filters = search or section_filter or origin_filter or stale_filter or coverage_filter or show_hidden %}
+{# Step 1: one origin chip macro — the identity's provenance, never the row's. #}
+{% macro origin_chip(origin) %}
+{% if origin %}
+<span class="inline-flex items-center px-2 py-0.5 rounded text-xs font-medium
+  {% if origin == 'jira' %}bg-blue-50 text-blue-700
+  {% elif origin == 'manual' %}bg-gray-100 text-gray-700
+  {% elif origin == 'fixture' %}bg-amber-100 text-amber-800
+  {% elif origin == 'probe' %}bg-violet-100 text-violet-800
+  {% else %}bg-slate-200 text-slate-700{% endif %}"
+  data-origin="{{ origin }}"
+  title="Origin: {{ origin }}{% if origin == 'CANNOT_CLASSIFY' %} — no evidence places this identity{% endif %}">
+  {% if origin == 'CANNOT_CLASSIFY' %}? unclassified{% else %}{{ origin }}{% endif %}</span>
+{% endif %}
+{% endmacro %}
 
 {# D-165 (UI Area 2): the list is browse + S2 claim counts. Generation +
    execution moved to the requirement detail (S3 generate / S2 claims); the v1
@@ -55,10 +69,11 @@
           <option value="{{ s.id }}" {% if section_filter == s.id %}selected{% endif %}>{{ s.name }}</option>
           {% endfor %}
         </select>
-        <select name="source" class="rounded-md border border-gray-300 px-2 py-1.5 text-sm focus:border-indigo-500 focus:ring-indigo-500">
-          <option value="">Any source</option>
-          <option value="jira" {% if source_filter == 'jira' %}selected{% endif %}>jira</option>
-          <option value="manual" {% if source_filter == 'manual' %}selected{% endif %}>manual</option>
+        <select name="origin" class="rounded-md border border-gray-300 px-2 py-1.5 text-sm focus:border-indigo-500 focus:ring-indigo-500">
+          <option value="">Any origin</option>
+          {% for o in origins %}
+          <option value="{{ o }}" {% if origin_filter == o %}selected{% endif %}>{{ o }}</option>
+          {% endfor %}
         </select>
         <select name="coverage" class="rounded-md border border-gray-300 px-2 py-1.5 text-sm focus:border-indigo-500 focus:ring-indigo-500">
           <option value="">Any coverage</option>
@@ -85,6 +100,45 @@
 
     {% if requirements %}
     {% set can_write = user.role in ['admin', 'tester', 'superadmin'] and not show_deleted %}
+    {# Step 1 (§d): what is hidden is COUNTED and one click away — never
+       hidden in silence. Gaps are never part of the hidden set. #}
+    {% if identities.available and identities.hidden_count and not show_hidden and not origin_filter %}
+    <div class="mb-4 rounded-md bg-gray-50 border border-gray-200 px-4 py-2 text-sm text-gray-600 flex items-center justify-between"
+         data-testid="hidden-strip" data-hidden-count="{{ identities.hidden_count }}">
+      <span>{% for o in ['fixture', 'probe'] %}{% if identities.counts.get(o) %}{{ identities.counts[o] }} {{ o }}{% if identities.counts.get('probe') and o == 'fixture' %} &middot; {% endif %}{% endif %}{% endfor %}
+        requirement{{ '' if identities.hidden_count == 1 else 's' }} hidden from this view</span>
+      <a href="?show_hidden=1" class="font-medium text-indigo-600 hover:text-indigo-800">show</a>
+    </div>
+    {% endif %}
+
+    {# Referential gaps (§c): an identity with tests and no requirement
+       record. NEVER hidden — a gap is a defect to see. #}
+    {% if gaps %}
+    <div class="mb-4 bg-white shadow rounded-lg overflow-hidden border-l-4 border-slate-400" data-testid="gaps-block">
+      <div class="px-6 py-3 border-b border-gray-100">
+        <h2 class="text-sm font-medium text-gray-900">Referential gaps ({{ gaps|length }})</h2>
+        <p class="text-xs text-gray-500 mt-0.5">These identities have tests but no requirement record. The tests are real; the record is missing.</p>
+      </div>
+      <ul class="divide-y divide-gray-100">
+        {% for g in gaps %}
+        <li class="px-6 py-3 flex items-center justify-between" data-testid="gap-row" data-identity="{{ g.key }}">
+          <div class="flex items-center space-x-2 flex-wrap">
+            <span class="inline-flex items-center px-2 py-0.5 rounded text-xs font-mono bg-blue-50 text-blue-700">{{ g.key }}</span>
+            {{ origin_chip(g.origin) }}
+            <span class="text-sm text-gray-500 italic">no requirement record</span>
+            <span class="text-xs text-gray-400">{{ g.claims }} test{{ '' if g.claims == 1 else 's' }}{% if g.approved_claims %} &middot; {{ g.approved_claims }} approved{% endif %}</span>
+          </div>
+          {% if can_write %}
+          <button type="button"
+                  class="text-xs font-medium text-indigo-600 hover:text-indigo-800 decorate-btn"
+                  data-key="{{ g.key }}">Create requirement record</button>
+          {% endif %}
+        </li>
+        {% endfor %}
+      </ul>
+    </div>
+    {% endif %}
+
     <div class="bg-white shadow rounded-lg overflow-hidden">
         <ul class="divide-y divide-gray-200">
             {% for req in requirements %}
@@ -92,8 +146,10 @@
                 <div class="flex justify-between items-center">
                     <a href="/requirements/{{ req.id }}" class="flex-1 min-w-0 block">
                         <div class="flex items-center space-x-2 flex-wrap">
-                            {% if req.jira_key %}<span class="inline-flex items-center px-2 py-0.5 rounded text-xs font-mono bg-blue-50 text-blue-700">{{ req.jira_key }}</span>{% endif %}
-                            <span class="text-sm font-medium text-gray-900 truncate hover:text-indigo-600 hover:underline">{{ req.jira_summary or 'Requirement #' ~ req.id }}</span>
+                            {# Step 1: the IDENTITY, verbatim — one format on every surface. #}
+                            <span class="inline-flex items-center px-2 py-0.5 rounded text-xs font-mono bg-blue-50 text-blue-700" data-identity="{{ req.external_key }}">{{ req.external_key }}</span>
+                            {{ origin_chip(req.origin) }}
+                            <span class="text-sm font-medium text-gray-900 truncate hover:text-indigo-600 hover:underline">{{ req.jira_summary or 'no title recorded' }}</span>
                             {% if req.is_stale %}<span class="inline-flex items-center px-2 py-0.5 rounded text-xs bg-yellow-100 text-yellow-800">Stale</span>{% endif %}
                             {% if req.claim_count %}
                             {# Per-status rollup — same palette as the detail badges, so a
@@ -151,6 +207,52 @@
 <script src="/static/js/requirements_list.js" defer></script>
 
 <!-- New Requirement Modal (manual create) -->
+{# Step 1 (§c): DECORATE an existing identity — never mint a key. The key
+   is fixed and shown read-only; the form only supplies the record. #}
+<div id="decorate-modal" class="hidden fixed inset-0 z-50 overflow-y-auto" role="dialog" aria-modal="true" aria-labelledby="decorate-modal-title">
+  <div class="flex items-center justify-center min-h-screen px-4">
+    <div class="fixed inset-0 bg-gray-500 bg-opacity-50" onclick="document.getElementById('decorate-modal').classList.add('hidden')"></div>
+    <div class="relative bg-white rounded-lg max-w-lg w-full p-6 shadow-xl">
+      <h3 id="decorate-modal-title" class="text-lg font-medium text-gray-900">Create a requirement record</h3>
+      <p class="mt-1 text-sm text-gray-500">This decorates the existing identity <span id="decorate-key-label" class="font-mono text-gray-700"></span>. Its key does not change and its tests stay linked.</p>
+      <form method="POST" action="/requirements/decorate" class="mt-4 space-y-3">
+        {{ csrf_input | safe }}
+        <input type="hidden" name="external_key" id="decorate-key">
+        <div>
+          <label class="block text-sm font-medium text-gray-700">Section</label>
+          <select name="section_id" required class="mt-1 block w-full rounded-md border-gray-300 shadow-sm text-sm">
+            {% for s in sections %}<option value="{{ s.id }}">{{ s.name }}</option>{% endfor %}
+          </select>
+        </div>
+        <div>
+          <label class="block text-sm font-medium text-gray-700">Title</label>
+          <input name="summary" maxlength="500" class="mt-1 block w-full rounded-md border-gray-300 shadow-sm text-sm">
+        </div>
+        <div>
+          <label class="block text-sm font-medium text-gray-700">Origin <span class="text-gray-400 font-normal">(optional — recorded as your decision)</span></label>
+          <select name="origin" class="mt-1 block w-full rounded-md border-gray-300 shadow-sm text-sm">
+            <option value="">leave as recorded</option>
+            {% for o in origins %}<option value="{{ o }}">{{ o }}</option>{% endfor %}
+          </select>
+        </div>
+        <div class="flex justify-end space-x-2 pt-2">
+          <button type="button" onclick="document.getElementById('decorate-modal').classList.add('hidden')" class="rounded-md bg-white ring-1 ring-gray-300 px-3 py-2 text-sm">Cancel</button>
+          <button type="submit" class="rounded-md bg-indigo-600 px-3 py-2 text-sm font-semibold text-white hover:bg-indigo-500">Create record</button>
+        </div>
+      </form>
+    </div>
+  </div>
+</div>
+<script>
+  document.querySelectorAll('.decorate-btn').forEach(function (b) {
+    b.addEventListener('click', function () {
+      document.getElementById('decorate-key').value = b.dataset.key;
+      document.getElementById('decorate-key-label').textContent = b.dataset.key;
+      document.getElementById('decorate-modal').classList.remove('hidden');
+    });
+  });
+</script>
+
 <div id="new-req-modal" class="hidden fixed inset-0 z-50 overflow-y-auto" role="dialog" aria-modal="true" aria-labelledby="new-req-modal-title">
     <div class="flex min-h-full items-center justify-center p-4">
         <div class="fixed inset-0 bg-gray-500 bg-opacity-50" onclick="document.getElementById('new-req-modal').classList.add('hidden')"></div>

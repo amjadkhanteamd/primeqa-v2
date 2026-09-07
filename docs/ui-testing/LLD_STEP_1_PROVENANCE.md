@@ -1,6 +1,6 @@
 # LLD Step 1 — provenance + identity (Fork 1 ratified)
 
-Status: RULED 2026-09-07 (AK GO) — build follows on this branch.
+Status: BUILT 2026-09-07 on the AK GO (design bb557ee; build commit follows); pushed for review; merge gated. Transcript: VERIFICATION_STEP_1.md.
 Rulings: **R-probe** (the probe identity lands `probe` by an EXPLICIT
 recorded override, reason + cited entry in the backfill data — never by
 prose); **R-jira-gap** (`SQ-206` / `SQ-211` stay `CANNOT_CLASSIFY` until a
@@ -219,8 +219,16 @@ it becomes a gap, honestly).
 
 ## c. REFERENTIAL GAPS — rendered as gaps, never as missing identities
 
-A gap = an identity with ≥1 claim and no live decorating row. It renders
-on `/requirements` as a gap row (the approved mock): the key verbatim,
+A gap = an identity with ≥1 claim and no live decorating row. **The
+console reports every gap; the view shows the ones that are defects.** A
+fixture's missing record is its NORMAL state — fixtures never had rows,
+which is why Fork 1 chose lean B — so a gap whose origin is hidden by
+default (`fixture` / `probe`) rides with its origin behind the toggle;
+showing 27 of them by default would be exactly the noise this step
+removes. A gap on any SHOWN origin is never hidden. On production that
+makes the default view's gap block precisely the four the brief names
+(`req-280`, `req-282`, `SQ-206`, `SQ-211`), all `CANNOT_CLASSIFY`. A gap
+renders on `/requirements` as a gap row (the approved mock): the key verbatim,
 the origin chip (`CANNOT_CLASSIFY` slate "?" for the four; `fixture`
 amber for the 27 — but fixtures sit behind the hidden toggle, §d), the
 claim counts the identity already has, the text "no requirement record",
@@ -241,8 +249,8 @@ about claims, not rows).
 
 - `/requirements`: the list stays row-paginated for DECORATED
   identities (the existing repository + filters), with two additions
-  rendered from ONE identity read per request: a **gaps block** (never
-  hidden — a gap is a defect to see, not noise) and a **hidden-count
+  rendered from ONE identity read per request: a **gaps block** (a gap on
+  a shown origin is never hidden — it is a defect to see) and a **hidden-count
   strip**: "27 fixture · 1 probe hidden — show". `?origin=fixture` /
   `?origin=probe` / `?show_hidden=1` reveal them as identity rows (key,
   chip, claim counts, no row actions). The `source` filter

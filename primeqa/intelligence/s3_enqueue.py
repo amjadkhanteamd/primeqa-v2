@@ -15,12 +15,15 @@ from typing import Any, Optional
 def _requirement_to_ref(requirement: Any) -> dict:
     """Map a v1 ``Requirement`` to the substrate's caller-supplied ``{key, text}``.
 
-    - ``key`` = ``jira_key`` for Jira-imported reqs, else ``"req-<id>"`` (manual
-      reqs carry a NULL ``jira_key``, so they're keyed by their int id).
+    - ``key`` = the row's ``external_key`` (Step 1: the IDENTITY it
+      decorates); for a row that predates migration 072 the pre-Step-1
+      derivation — ``jira_key``, else ``"req-<id>"`` — which is
+      byte-identical to what 072 backfilled, so no key changes.
     - ``text`` = the ``jira_summary`` / ``jira_description`` /
       ``acceptance_criteria`` fields, trimmed and newline-joined (empties
       dropped). Pure — no DB access (testable with a fake requirement)."""
-    key = requirement.jira_key or f"req-{requirement.id}"
+    from primeqa.test_representation.identity import key_for_requirement_row
+    key = key_for_requirement_row(requirement)
     parts = [requirement.jira_summary, requirement.jira_description,
              requirement.acceptance_criteria]
     text = "\n\n".join(p.strip() for p in parts if p and p.strip())

@@ -166,6 +166,18 @@ class LedgerPersister:
                 external_system="jira", external_key=req_key,
                 link_kind="generated_from",
             )
+            # Step 1: a link is the first sighting of an identity — establish
+            # it (insert-or-leave-alone) in the SAME transaction, so no key
+            # can exist without a recorded origin. A caller-DECLARED origin
+            # (fixture / probe campaigns) is honoured and recorded as
+            # declared; otherwise the evidence rules decide, and an
+            # unplaceable key lands CANNOT_CLASSIFY loudly.
+            from primeqa.test_representation.identity import establish_for_key
+            establish_for_key(
+                session.connection(), req_key,
+                requirement_row=(outcome.requirement_ref or {}).get("row"),
+                declared_origin=(outcome.requirement_ref or {}).get("origin"),
+                established_by="s3")
 
         if cr.was_noop:
             # Same-hash regeneration (SPEC §7.7): the equivalent test already

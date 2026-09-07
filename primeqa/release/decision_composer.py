@@ -25,17 +25,16 @@ _SEVERITY = {"no_go": 0, "conditional_go": 1, "go": 2}
 
 
 def external_keys_for_requirements(requirements) -> list:
-    """The shared requirement→external-key convention (``jira_key`` or
-    ``req-<id>``) — one builder for the views panel + the composer so the two
-    call sites can't drift. Accepts ORM rows or dicts."""
+    """The requirement→IDENTITY key convention — one builder for the views
+    panel + the composer so the two call sites can't drift. Step 1: the
+    row's ``external_key`` (the identity it decorates), falling back to the
+    byte-identical pre-072 derivation. Accepts ORM rows or dicts."""
+    from primeqa.test_representation.identity import key_for_requirement_row
     keys = []
     for r in requirements or []:
-        if isinstance(r, dict):
-            rid, jira = r.get("id"), r.get("jira_key")
-        else:
-            rid, jira = getattr(r, "id", None), getattr(r, "jira_key", None)
+        rid = r.get("id") if isinstance(r, dict) else getattr(r, "id", None)
         if rid:
-            keys.append(jira or f"req-{rid}")
+            keys.append(key_for_requirement_row(r))
     return keys
 
 

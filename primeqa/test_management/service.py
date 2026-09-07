@@ -58,6 +58,36 @@ class TestManagementService:
         except Exception as e:
             log.warning("activity log write failed: %s", e)
 
+    def _establish_identity(self, tenant_id, req, established_by):
+        """Step 1: record the identity this row decorates, with an
+        evidence-classified origin. Best-effort by design — a tenant with no
+        substrate schema has no identity table, and a requirement row is
+        still a legitimate row there. Never raises into the caller."""
+        try:
+            from primeqa.semantic.connection import get_tenant_connection
+            from primeqa.test_representation.identity import (
+                establish_for_key, key_for_requirement_row,
+            )
+            with get_tenant_connection(tenant_id) as conn:
+                establish_for_key(conn, key_for_requirement_row(req),
+                                  requirement_row=req,
+                                  established_by=established_by)
+        except Exception as e:                        # pragma: no cover
+            log.warning("requirement identity not established for tenant %s "
+                        "requirement %s: %s", tenant_id, getattr(req, "id", "?"), e)
+
+    def _refuse_key_collision(self, tenant_id, external_key):
+        """TA invariant 2 — unique within tenant scope. The partial UNIQUE
+        index is the enforcement; this is the friendly refusal before it, so
+        the caller sees a validation error rather than an IntegrityError."""
+        if not external_key:
+            return
+        clash = self.requirement_repo.find_by_external_key(tenant_id, external_key)
+        if clash is not None:
+            raise ValidationError(
+                f"{external_key} is already the identity of requirement "
+                f"#{clash.id} in this tenant")
+
     # ---- Multi-TC plan generation ----------------------------------------
     # "One click \u2192 one test case" hid coverage gaps. generate_test_plan
     # asks the model for an array of independent TCs covering positive /
@@ -124,10 +154,16 @@ class TestManagementService:
     # ---- Requirements --------------------------------------------------------
 
     def create_requirement(self, tenant_id, section_id, source, created_by, **kwargs):
+        # Step 1: a typed key must not collide with a live row's identity —
+        # the hole the Jira-import path checked and this one never did.
+        self._refuse_key_collision(
+            tenant_id, kwargs.get("external_key") or kwargs.get("jira_key"))
         r = self.requirement_repo.create_requirement(
             tenant_id, section_id, source, created_by, **kwargs,
         )
-        self._log(tenant_id, created_by, "create", "requirement", r.id, {"source": source})
+        self._log(tenant_id, created_by, "create", "requirement", r.id,
+                  {"source": source, "external_key": r.external_key})
+        self._establish_identity(tenant_id, r, f"human:{created_by}")
         return self._req_dict(r)
 
     def import_jira_requirement(self, tenant_id, section_id, jira_base_url,
@@ -152,6 +188,12 @@ class TestManagementService:
         })
         self._log(tenant_id, created_by, "import_jira", "requirement", req.id,
                   {"jira_key": jira_key})
+        # Step 1: an import DECORATES the identity — including a Jira-shaped
+        # key that was CANNOT_CLASSIFY because its row had been purged
+        # (ruling R-jira-gap). establish_for_key leaves an established
+        # identity alone; the origin is corrected by the operator, never
+        # silently behind them.
+        self._establish_identity(tenant_id, req, f"human:{created_by}")
         return self._req_dict(req)
 
     def sync_jira_requirement(self, requirement_id, tenant_id, jira_base_url, jira_auth=None):
@@ -276,6 +318,7 @@ class TestManagementService:
         return {
             "id": r.id, "tenant_id": r.tenant_id, "section_id": r.section_id,
             "source": r.source, "jira_key": r.jira_key,
+            "external_key": getattr(r, "external_key", None),
             "jira_summary": r.jira_summary, "jira_description": r.jira_description,
             "acceptance_criteria": r.acceptance_criteria,
             "jira_version": r.jira_version, "is_stale": r.is_stale,
