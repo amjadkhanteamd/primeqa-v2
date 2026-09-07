@@ -181,3 +181,26 @@ releases stay on the 2+ env branch whose numbers are unchanged.
   until Step 2.
 - The two FIX PLAN entries (absent grounding HIGH; eight logical-version
   rows, hygiene) stand open.
+
+## h. Production transcript (2026-09-07, GO #1 + GO #2)
+
+| act | record |
+|---|---|
+| pre-flight | trees clean; main unmoved at `ddef3f9`; branch 2 commits over it; deployed `ddef3f9` on all four services with `_current_s1_seq` at :228 / reader :322; ledger CHECK three values on both columns; 1 decision row (`go`); baseline re-measured: 59 → 249, 78 → 248, org-less 4 (max 241); env-78 grounding 837/837 below the tenant MAX, 0 below its own; 23 releases / 10 with requirements, all `[59, 78]` |
+| 071 classified | the only migration / alembic / ORM-model file in the diff; DROP CONSTRAINT IF EXISTS + ADD CONSTRAINT + COMMENT; zero data-write statements → ADDITIVE, dumpless (D-476), BEFORE deploy |
+| the window | safe in ONE direction only: old code writes only the three values the wider CHECK still accepts; new code writing `cannot_determine` against the old CHECK would 500 the evaluate route. 071 goes first, always |
+| finding 1 (ruled) | the ORM declared the three-value CHECK (`release/models.py:120`, table-creation only, zero runtime effect) → widened on the branch, `9e08ca8`; unit gate 5,014 |
+| finding 2 (corrected) | the four "orphan" version rows (37, 60, 61, 62) belong to ENV-LESS TEST-FIXTURE orgs whose `connected_orgs` rows exist (`_test_sync_object_phase_*`, `_scen3_multi_org_*`); the first probe joined to `environments` and hid the parents — wording corrected in the LLD and the FIX PLAN, marked as a correction |
+| 071 on production | applied; read-back: `recommendation` CHECK four values, `final_decision` three (F1a), column comment set, the one decision row untouched, three CHECKs remain; second apply clean on scratch earlier (idempotent) |
+| post-apply | web health 200; 0 web error lines; 0 scheduler failure lines (old code still deployed, unaffected) |
+| merge | `c485ce6` (parents `ddef3f9` + `9e08ca8`), author AK, 0 trailers; pushed |
+| deploy | web, worker, scheduler, browser-worker all SUCCESS at `c485ce6` |
+| service logs since boot | web 0 / worker 0 / scheduler 0 / browser-worker 0 tracebacks or failures (scheduler: 56 loudly-once skips only) |
+| web tier, read-only | `/api/_internal/health` 200; unauthenticated decision tab → 302 `/login`; MEMBER session: release 16 → 200, 2 verdict cards + 1 roll-up (`conditional_go` × 1, `no_go` × 2), release 229 → 200, 2 cards + 1 roll-up (all `no_go`); "CANNOT DETERMINE" text 0, resolver block 0, inline signatures 0 on both |
+| data act | none — evaluating a release is a human act; no decision row was written by this merge |
+
+**What changed for production today: nothing visible.** Every live
+release is on the two-env branch, whose number is each org's own and
+whose render is unchanged. The next `Evaluate GO/NO-GO` on a release
+with evidence in one env, or none, records `cannot_determine` where it
+would have graded against a tenant-wide sequence.

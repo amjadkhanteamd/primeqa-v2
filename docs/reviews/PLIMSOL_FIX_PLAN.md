@@ -484,13 +484,20 @@
   (manual_checkpoint, "3A-5 declared Surface entities" — minted by
   `semantic/surface_entities.py:59-64` on each inventory cut that declares
   a new Surface, with no org by design: portal surfaces are not org
-  metadata). Four ORPHAN org-bound rows — seq 37, 60, 61, 62 — whose
-  `connected_orgs` rows were deleted. After Step B none of them can be a
+  metadata). Four org-bound rows — seq 37, 60, 61, 62 — of ENV-LESS
+  TEST-FIXTURE orgs from May/June (`connected_orgs` labels
+  `_test_sync_object_phase_317c97a9`, `_test_sync_object_phase_ed200ebe`,
+  `_scen3_multi_org_a_7fd9f30d`, `_scen3_multi_org_b_4189df99`; all
+  `environment_id NULL`, one version each). CORRECTION 2026-09-07 (merge
+  pre-flight): first ledgered as "orphans whose connected_orgs rows were
+  deleted" — wrong; the probe joined to `environments` and hid the
+  parent rows. After Step B none of them can be a
   decision's current sequence (the resolver binds an org uuid), so they
   are inert for grading; they still inflate the tenant MAX that
   `SemanticOrgModel(conn).current_version_seq()` returns to any remaining
   org-blind reader (the advisory metadata picker, the eval harness). The
-  cleanup ruling is AK's: delete the orphans; either delete the two smoke
+  cleanup ruling is AK's: delete the four test-fixture orgs with their
+  versions; either delete the two smoke
   rows or leave them as history; and decide whether declared-surface
   checkpoints should keep minting into `logical_versions` at all (an S1
   ruling, not Step B).

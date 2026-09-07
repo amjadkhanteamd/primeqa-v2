@@ -51,8 +51,13 @@ adds.
 **Production (read-only, 2026-09-07).** tenant 1 `logical_versions`: org
 902850e3 (env-59) MAX 249; org 6af2fa4b (env-78) MAX 248; FOUR org-less
 rows (1 genesis "Phase 0 smoke", 2 "derivation smoke", 228 and 241
-"3A-5 declared Surface entities"); FOUR orphan org-bound rows (seq 37,
-60, 61, 62) whose `connected_orgs` rows no longer exist. `releases` has
+"3A-5 declared Surface entities"); FOUR org-bound rows (seq 37, 60, 61,
+62) belonging to ENV-LESS TEST-FIXTURE orgs from May/June
+(`_test_sync_object_phase_*`, `_scen3_multi_org_*`; their `connected_orgs`
+rows exist with `environment_id NULL`) — CORRECTION 2026-09-07 at merge
+pre-flight: first written here as "orphans whose org rows no longer
+exist", a description manufactured by a probe that joined to
+`environments` and so hid the parents. `releases` has
 NO environment column and no ORM binding (schema + `release/models.py`
 verified); the only environment a release has is the one its claims'
 runs carry (`_environments_with_evidence`). Every one of the 10
@@ -152,8 +157,9 @@ checkpoints (228, 241) minted by `surface_entities.py:59-64` because
 declared portal Surfaces are not org metadata and the writer gives them
 no org. They are legitimate S1 rows for their own purpose and illegitimate
 as ANY org's currency; the resolver makes them inert for decisions.
-Ledgered as data hygiene in §f together with the four orphan rows of
-departed orgs (37, 60, 61, 62) — neither is touched by Step B.
+Ledgered as data hygiene in §f together with the four rows of the
+env-less test-fixture orgs (37, 60, 61, 62) — neither is touched by
+Step B.
 
 ## b. The engine consumes the resolver on EVERY branch
 
@@ -337,7 +343,8 @@ them.
 ## f. Residual, stated plainly (→ PLIMSOL_FIX_PLAN.md at build)
 
 - **Data hygiene**: four org-less `logical_versions` rows (1, 2, 228,
-  241) and four orphan org-bound rows (37, 60, 61, 62; departed orgs)
+  241) and four org-bound rows of env-less test-fixture orgs (37, 60,
+  61, 62; corrected from "orphan", see §0)
   on tenant 1. Inert for decisions after Step B; a cleanup ruling is
   AK's (delete, or re-key the surface checkpoints to a non-org
   namespace). `surface_entities.py` keeps minting org-less checkpoints
