@@ -1,6 +1,6 @@
 # LLD Step 1 — provenance + identity (Fork 1 ratified)
 
-Status: BUILT 2026-09-07 on the AK GO (design bb557ee; build commit follows); pushed for review; merge gated. Transcript: VERIFICATION_STEP_1.md.
+Status: DELIVERED 2026-09-08 — merge 4e9648c, 072 + tenant 20260908_0010 on production (dump-first), backfill applied (42 identities, 0 re-keyed), D-483. Transcript: VERIFICATION_STEP_1.md §h.
 Rulings: **R-probe** (the probe identity lands `probe` by an EXPLICIT
 recorded override, reason + cited entry in the backfill data — never by
 prose); **R-jira-gap** (`SQ-206` / `SQ-211` stay `CANNOT_CLASSIFY` until a

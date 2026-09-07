@@ -216,3 +216,28 @@ above, reviewed) → read-back.
 - Origin is established once and only a human override changes it; a
   fixture campaign that starts declaring its origin will be honoured
   from its first link.
+
+## h. Production transcript (2026-09-08, GO #1 + GO #2)
+
+| act | record |
+|---|---|
+| pre-flight | trees clean; main unmoved at `771793b`; branch 2 commits over it; prod: no `external_key` column, no identity table, tenant head `20260907_0010`; picker 34 / identity population 42 re-measured; 408 link rows; 25 requirement rows, 0 deleted; the collision dry-run re-run across all 15 tenants: 0 live duplicates, 0 namespace violations, 25-of-25 rows with a derivable key; the four gaps resolvable |
+| classification | 072 = ADD COLUMN + a 25-row UPDATE + a rejecting UNIQUE index + a rejecting CHECK → potentially destructive → **dump-first (ruled)**; tenant `20260908_0010` = CREATE TABLE/INDEX/FUNCTION/TRIGGER, nothing existing touched → ADDITIVE |
+| reader risk | verified against the deployed tree `771793b`: zero reads of `requirements.external_key` as a column, zero mentions of `requirement_identities` (the `external_key` hits are the function name `external_keys_for_requirements` and link-key parameters); the column is nullable, the table is read only by new code → safe in BOTH directions |
+| dump | `prod_pre_step1_20260907_135610.dump` (`~/plimsol-backups`), 192 MB, 1,112 entries; `requirements` and `test_requirement_links` both present |
+| 072 + tenant migration | applied in that order; read-backs: 25-of-25 `external_key` equal to the derived key, 0 NULL; `uq_requirements_tenant_external_key` on `(tenant_id, external_key) WHERE deleted_at IS NULL`; CHECK `requirements_external_key_namespace`; tenant head `20260908_0010`; `requirement_identities` present with 0 rows and the `requirement_identities_immutable` trigger; the four gaps (`req-280` 1 link, `req-282` 2, `SQ-206` 1, `SQ-211` 1) still resolve through the new column; 408 links / 42 distinct keys / 0 deleted rows unchanged |
+| post-apply, old code | health 200; unauthenticated `/requirements` → 302 `/login`; 0 error lines on web / scheduler / worker with `771793b` still deployed |
+| merge | `4e9648c` (parents `771793b` + `cdc49e8`), author AK, 0 trailers; pushed |
+| deploy | web, worker, scheduler, browser-worker all SUCCESS at `4e9648c`; logs since boot: 0 tracebacks, 0 failures on all four (scheduler: the 56 loudly-once skips only); health 200 |
+| backfill | fresh dry-run = the reviewed counts exactly (fixture 27 / jira 5 / manual 5 / probe 1 / CANNOT_CLASSIFY 4; 42 identities, `would_insert` 42, 31 gaps) → `--apply --user-id 1`: inserted 42, rows after 42, same counts; second `--apply`: inserted 0, same counts; `activity_log` rows 1141 (inserted 42) and 1142 (inserted 0) |
+| read-backs | origins from the table: CANNOT_CLASSIFY 4 / fixture 27 / jira 5 / manual 5 / probe 1; `req-322` = `probe` with `{"rule": "override", "cited": "D-457", "reason": …}`; the four gaps = `{"rule": "none"}`; every row `established_by = backfill@v1`, `classifier_version = origin@v1`, four distinct rules; **key-set equality**: tenant keys 42, identity keys 42, dropped 0, invented 0; links 408 / requirement rows 25 unchanged |
+| web tier, read-only (MEMBER session) | `/requirements` 200: hidden strip **28** (27 fixture + 1 probe), gap block **4** (`SQ-206`, `SQ-211`, `req-280`, `req-282`), 14 identities on the page (10 decorated rows — the probe row 322 is hidden — + 4 gaps), origins manual 5 / jira 5 / CANNOT_CLASSIFY 4, **0 `#N` forms**, 0 signatures. `?show_hidden=1` 200: 42 identities, all five origins, 31 gap rows (27 fixture + 4). `/run` 200: hidden strip **22** (21 fixture + the probe), 12 visible keys = the picker's 34 − 22, keys verbatim (`req-282`, not `#282`), the two `CANNOT_CLASSIFY` chips on the two gaps with approved claims (`SQ-206`, `req-282`), "Run all approved … Includes 22 hidden fixture/probe requirements.", 0 signatures |
+| data act | the backfill only — 42 identity rows and 2 audit rows; no requirement row, link row or claim was written or changed |
+
+**What changed for production today.** The four keys the interface used
+to call "Untitled — re-sync from Jira" now read as what they are: four
+referential gaps, each with a "Create requirement record" affordance
+that decorates the existing key. The 27 fixture identities and the one
+probe are out of the default views and one click away, counted. Every
+surface shows the key itself. Nothing was re-keyed: 42 in, 42 out,
+0 dropped, 0 invented.
