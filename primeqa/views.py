@@ -736,10 +736,35 @@ def run_page():
             # per-requirement last-run health (the picker's decide signal) +
             # the total approved-test count for the "Run all" button.
             health = requirement_run_health(tid, keys)
+            # Step 1 (§d): hide fixture / probe identities by default; the
+            # count is visible and one click away.
+            from primeqa.intelligence.requirement_identity_console import (
+                identity_overview,
+            )
+            from primeqa.test_representation.identity import (
+                HIDDEN_BY_DEFAULT, ORIGINS,
+            )
+            _identities = identity_overview(tid, keys=keys)
+            _origin = request.args.get("origin")
+            if _origin not in ORIGINS:
+                _origin = None
+            _show_hidden = request.args.get("show_hidden", "").lower() in ("1", "true", "yes")
             for r in rows:
                 r["health"] = health.get(r["key"])
             total_tests = sum(r.get("approved_claims") or 0 for r in rows)
+            for _r in rows:
+                _r["origin"] = _identities["origins"].get(_r["key"])
+            _hidden_here = sum(1 for _r in rows
+                               if _r["origin"] in HIDDEN_BY_DEFAULT)
+            if _identities["available"]:
+                if _origin:
+                    rows = [_r for _r in rows if _r["origin"] == _origin]
+                elif not _show_hidden:
+                    rows = [_r for _r in rows
+                            if _r["origin"] not in HIDDEN_BY_DEFAULT]
             return render_template("run/index.html", **ctx(
+                origin_filter=_origin, show_hidden=_show_hidden,
+                hidden_count=_hidden_here, origins=list(ORIGINS),
                 active_page="run_tests", environments=[
                     {"id": e.id, "name": e.name} for e in envs],
                 requirements=rows, available=runnable["available"],
@@ -2476,8 +2501,15 @@ def requirements_list():
         filters = {}
         if request.args.get("section_id", type=int):
             filters["section_id"] = request.args.get("section_id", type=int)
-        if request.args.get("source") in ("jira", "manual"):
-            filters["source"] = request.args.get("source")
+        # Step 1: the `source` filter is REPLACED by `origin` (the identity's
+        # provenance). `source` remains a row field on the detail page.
+        from primeqa.test_representation.identity import (
+            HIDDEN_BY_DEFAULT, ORIGINS,
+        )
+        origin_filter = request.args.get("origin")
+        if origin_filter not in ORIGINS:
+            origin_filter = None
+        show_hidden = request.args.get("show_hidden", "").lower() in ("1", "true", "yes")
         if request.args.get("stale", "").lower() in ("1", "true", "yes"):
             filters["is_stale"] = True
 
@@ -2543,6 +2575,28 @@ def requirements_list():
             "status_counts": claim_counts.get(req_keys[r.id], {}),
             "releases": req_releases.get(r.id, []),
         } for r in reqs]
+        # Step 1 (§d): the identity read — origin per row, the tenant-wide
+        # hidden count, and the referential gaps. Best-effort: a tenant with
+        # no substrate schema renders the list exactly as before.
+        from primeqa.intelligence.requirement_identity_console import (
+            identity_overview,
+        )
+        identities = identity_overview(tid)
+        for r in reqs_data:
+            r["external_key"] = req_keys.get(r["id"]) or r.get("jira_key")
+            r["origin"] = identities["origins"].get(r["external_key"])
+        # Fixture / probe identities are hidden from the DEFAULT view; the
+        # count is visible and one click away. Gaps are NEVER hidden.
+        if identities["available"]:
+            if origin_filter:
+                reqs_data = [r for r in reqs_data if r["origin"] == origin_filter]
+            elif not show_hidden:
+                reqs_data = [r for r in reqs_data
+                             if r["origin"] not in HIDDEN_BY_DEFAULT]
+        gaps = identities["gaps"]
+        if not show_hidden and not origin_filter:
+            gaps = [g for g in gaps if g["origin"] not in HIDDEN_BY_DEFAULT]
+
         # Envs with their readiness for AI generation (needs LLM + metadata)
         envs_data = [{
             "id": e.id, "name": e.name,
@@ -2559,12 +2613,52 @@ def requirements_list():
             meta=meta, search=q, sort=sort, order=order,
             show_deleted=show_deleted, query_error=query_error,
             section_filter=filters.get("section_id"),
-            source_filter=filters.get("source"),
+            origin_filter=origin_filter, show_hidden=show_hidden,
+            identities=identities, gaps=gaps, origins=list(ORIGINS),
             stale_filter=bool(filters.get("is_stale")),
             coverage_filter=coverage, coverage_notice=coverage_notice,
         ))
     finally:
         db.close()
+
+
+@views_bp.route("/requirements/decorate", methods=["POST"])
+@require_tier(Tier.MEMBER)
+@login_required
+def requirements_decorate():
+    """Step 1 (§c): create the requirement record that DECORATES an existing
+    identity — the affordance on a referential-gap row.
+
+    It never mints a key: the new row carries the identity's own
+    ``external_key``, so the claims already linked to that key resolve to it
+    immediately. The identity row itself is untouched unless the operator
+    also sets an origin, which is recorded as a human override."""
+    from flask import flash
+
+    from primeqa.intelligence.requirement_identity_console import (
+        decorate_identity,
+    )
+    key = (request.form.get("external_key") or "").strip()
+    section_id = request.form.get("section_id", type=int)
+    summary = (request.form.get("summary") or "").strip()
+    origin = (request.form.get("origin") or "").strip() or None
+    if not key or not section_id:
+        flash("An identity key and a section are required.", "error")
+        return redirect("/requirements")
+    db = next(get_db())
+    try:
+        res = decorate_identity(
+            db, request.user["tenant_id"], key, section_id=section_id,
+            summary=summary, created_by=request.user["id"],
+            acceptance_criteria=(request.form.get("acceptance_criteria") or "").strip(),
+            origin=origin)
+    finally:
+        db.close()
+    if not res.get("ok"):
+        flash(res.get("error") or "Could not create the record.", "error")
+        return redirect("/requirements")
+    flash(f"{key} now has a requirement record.", "success")
+    return redirect(f"/requirements/{res['requirement_id']}")
 
 
 @views_bp.route("/requirements/<int:req_id>")
@@ -3001,7 +3095,7 @@ def requirements_generation_run_detail(req_id, request_id):
         flash("Generation run not found for this requirement.", "error")
         return redirect(f"/requirements/{req_id}")
     return render_template("requirements/generation_run.html", **ctx(
-        active_page="requirements", req=req_data,
+        active_page="requirements", req=req_data, req_key=req_key,
         run=detail["run"], outcome=detail.get("outcome"),
         llm_calls=detail.get("llm_calls") or [],
         progress_msg=detail.get("progress_msg"),

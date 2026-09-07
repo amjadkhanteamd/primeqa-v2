@@ -160,15 +160,24 @@ class RequirementRepository:
         self.db = db
 
     def create_requirement(self, tenant_id, section_id, source, created_by, **kwargs):
+        """Step 1: the row records the IDENTITY it decorates. An explicit
+        ``external_key`` (the decorate affordance — an identity that already
+        exists) wins; else the Jira key; else ``req-<id>``, assigned after
+        the INSERT because it is derived from the row id. The partial UNIQUE
+        index refuses a key a live row already holds."""
         req = Requirement(
             tenant_id=tenant_id, section_id=section_id, source=source,
             created_by=created_by,
             jira_key=kwargs.get("jira_key"),
+            external_key=kwargs.get("external_key") or kwargs.get("jira_key"),
             jira_summary=kwargs.get("jira_summary"),
             jira_description=kwargs.get("jira_description"),
             acceptance_criteria=kwargs.get("acceptance_criteria"),
         )
         self.db.add(req)
+        self.db.flush()
+        if not req.external_key:
+            req.external_key = f"req-{req.id}"
         self.db.commit()
         self.db.refresh(req)
         return req
@@ -255,6 +264,17 @@ class RequirementRepository:
         self.db.commit()
         self.db.refresh(req)
         return req, "ok"
+
+    def find_by_external_key(self, tenant_id, external_key):
+        """Step 1: the LIVE row decorating this identity, or None. The
+        partial UNIQUE index guarantees at most one."""
+        if not external_key:
+            return None
+        return self.db.query(Requirement).filter(
+            Requirement.tenant_id == tenant_id,
+            Requirement.external_key == external_key,
+            Requirement.deleted_at.is_(None),
+        ).first()
 
     def find_by_jira_key(self, tenant_id, jira_key):
         return self.db.query(Requirement).filter(

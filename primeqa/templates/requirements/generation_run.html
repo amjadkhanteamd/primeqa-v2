@@ -1,11 +1,11 @@
 {% extends "base.html" %}
 {% from 'components/breadcrumbs.html' import breadcrumbs %}
-{% block title %}Generation run — {{ req.jira_key or '#' ~ req.id }} - Plimsol{% endblock %}
+{% block title %}Generation run — {{ req_key }} - Plimsol{% endblock %}
 {% block content %}
 
 {{ breadcrumbs([
   ('Requirements', '/requirements'),
-  (req.jira_key or ('Requirement #' ~ req.id), '/requirements/' ~ req.id),
+  (req_key, '/requirements/' ~ req.id),
   ('Generation run', None),
 ]) }}
 
@@ -24,7 +24,7 @@
       </div>
       <h1 class="mt-2 text-2xl font-bold text-gray-900">Generation run detail</h1>
       <p class="mt-1 text-sm text-gray-500">
-        {{ req.jira_summary or ('Requirement #' ~ req.id) }} ·
+        {{ req.jira_summary or 'no title recorded' }} ·
         attempt {{ run.attempt_no }} · S1 v{{ run.s1_version_seq }}
       </p>
     </div>

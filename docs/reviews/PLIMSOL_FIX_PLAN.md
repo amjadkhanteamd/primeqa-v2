@@ -501,3 +501,31 @@
   rows or leave them as history; and decide whether declared-surface
   checkpoints should keep minting into `logical_versions` at all (an S1
   ruling, not Step B).
+
+## Added 2026-09-07 — from Step 1 (provenance + identity)
+
+- **Medium: "Run all approved" runs more than the picker shows.** The
+  button posts `run_all=1`, which calls `enqueue_all_approved_claims`
+  over every approved claim in the tenant — including the fixture/probe
+  identities Step 1 hides from the list. Step 1 made the label honest
+  (the count is the true total and the button now names the hidden
+  requirements it includes) rather than changing what it runs: altering
+  the scope is an execution-semantics decision, not a rendering one.
+  The real answer is the Run Planner (D-479 step 4), which renders what
+  WILL run before it runs; until then the honest label stands. Options
+  when that step arrives: (a) "Run all" means all VISIBLE identities and
+  a separate affordance runs the hidden ones; (b) it keeps tenant-wide
+  scope and the planner shows the full list including fixtures.
+- **Low: the `external_system` enum has one value, `jira`, and every
+  key rides it** — `req-N` keys, the 27 fixture keys and the Jira keys
+  alike (`alembic/.../20260518_1014`, enum `external_system`). After
+  Step 1 the origin field carries the truth, so the enum is a misnomer
+  rather than a wrong answer, but it reads as a claim the data does not
+  support. Renaming an enum that every one of the 408 link rows and the
+  identity table reference is its own slice; not folded into Step 1.
+- **Low: the release detail still derives `req-N` for its requirement
+  list** (`releases/detail.html:312`). Every row there is decorated, so
+  the derived value equals `external_key` and the output is identical
+  today; the read should move to the identity when Step 3/5 touches that
+  surface. The release LIST's own fixture noise (surface plan §6 item 4)
+  is likewise untouched.

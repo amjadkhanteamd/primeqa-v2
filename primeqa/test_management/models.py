@@ -47,6 +47,10 @@ class Requirement(Base):
     section_id = Column(Integer, ForeignKey("sections.id"), nullable=False)
     source = Column(String(20), nullable=False)
     jira_key = Column(String(50))
+    # Step 1 (migration 072): the IDENTITY this row decorates — the link key,
+    # verbatim. `id` is a row id and is never displayed; `jira_key` is Jira's
+    # own reference for re-sync, no longer an identity. Never updated.
+    external_key = Column(String(255))
     jira_summary = Column(String(500))
     jira_description = Column(Text)
     acceptance_criteria = Column(Text)
