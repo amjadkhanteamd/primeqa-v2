@@ -457,3 +457,40 @@
   (`reverify_state` queued → ran / no_run / refused, settled by the
   repair tick via the D-317 job→run resolution); `reexamine` records the
   July four. Transcript: docs/ui-testing/VERIFICATION_STEP_A1.md.
+
+## Added 2026-09-07 — from Step B (the staleness pin; LLD_STEP_B_STALENESS_PIN §f)
+
+- **HIGH: ABSENT GROUNDING IS GRADED AS FINE on every decision branch —
+  the vacuous-green class at the decision layer.** `_assemble_claim_evidence`
+  sets `grounding = None` when S8 holds no verdict row for the claim (for
+  the org, now that the read is org-exact), and `compute_substrate_decision`
+  counts `broken` / `drifted` / `stale` only over rows that HAVE a grounding
+  — a claim with none contributes to no check and the `grounding_integrity`
+  line reads "All claim groundings intact and current"
+  (`substrate_decision.py`, the `broken` / `drifted` / `stale` comprehensions
+  and the `else` branch that follows). Observed in the Step B fixture
+  (`docs/ui-testing/step-b-fixtures/decision_card_cannot_determine.png`):
+  one approved claim, zero grounding rows, "✓ grounding integrity — All
+  claim groundings intact and current", and the evidence panel beneath it
+  says "No claims at risk — all grounded claims are intact" over "1 not
+  computed". Not a sequence question, so not folded into Step B. ASSIGNED
+  to Step 2 / Step 5 of the D-479 sequence: a claim whose grounding was
+  never computed is NEVER_RUN-class readiness and must block GO (the
+  Release Quality Policy refuses on never-run scope by name).
+- **Medium (data hygiene): eight `logical_versions` rows on tenant 1 that
+  belong to no live org.** Four ORG-LESS rows — seq 1 (genesis, "Phase 0
+  smoke test — D-024 Step 7", 2026-04-27), seq 2 (manual_checkpoint,
+  "derivation smoke Phase 7 supersession test"), seq 228 and 241
+  (manual_checkpoint, "3A-5 declared Surface entities" — minted by
+  `semantic/surface_entities.py:59-64` on each inventory cut that declares
+  a new Surface, with no org by design: portal surfaces are not org
+  metadata). Four ORPHAN org-bound rows — seq 37, 60, 61, 62 — whose
+  `connected_orgs` rows were deleted. After Step B none of them can be a
+  decision's current sequence (the resolver binds an org uuid), so they
+  are inert for grading; they still inflate the tenant MAX that
+  `SemanticOrgModel(conn).current_version_seq()` returns to any remaining
+  org-blind reader (the advisory metadata picker, the eval harness). The
+  cleanup ruling is AK's: delete the orphans; either delete the two smoke
+  rows or leave them as history; and decide whether declared-surface
+  checkpoints should keep minting into `logical_versions` at all (an S1
+  ruling, not Step B).

@@ -1,6 +1,6 @@
 # LLD Step B — the decision-engine staleness pin, resolved once, org-required
 
-Status: RULED 2026-09-07 (AK GO) — build follows on this branch.
+Status: BUILT 2026-09-07 on the AK GO (design commit 284864c; build commit follows); pushed for review; merge gated. Transcript: VERIFICATION_STEP_B.md.
 Rulings: **F1a** (`cannot_determine` is the fourth recommendation value;
 public migration 071 widens the ledger CHECK — additive, before deploy,
 dumpless); **D9** (NO GO stands over an ungraded org; an ungraded org

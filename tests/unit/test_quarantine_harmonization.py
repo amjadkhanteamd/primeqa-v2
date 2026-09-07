@@ -16,7 +16,9 @@ def _claim(test_id, outcome, *, flaky=False, manual=None):
                            "finished_at": "2026-06-14T00:00:00+00:00",
                            "version_unknown": False},
             "superseded_newer_run": False, "never_run": False,
-            "flaky": flaky, "recent_outcomes": [outcome], "manual_quarantine": manual}
+            "flaky": flaky, "recent_outcomes": [outcome], "manual_quarantine": manual,
+            "sequence": {"state": "CURRENT", "current_seq": 1, "source": "org_current",
+                         "axis": "org_sequence", "reason": None}}   # Step B
 
 
 def test_claim_quarantined_precedence():

@@ -31,6 +31,7 @@ _STATE_BY_RECOMMENDATION = {
     "go": "GO",
     "conditional_go": "CONDITIONAL GO",
     "no_go": "NO-GO",
+    "cannot_determine": "CANNOT DETERMINE",     # Step B: the ungraded state
 }
 
 # Verdicts that grade a passing negative test (the org rejected correctly) —

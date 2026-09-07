@@ -478,3 +478,78 @@ def count_enrichment_progress(session, connected_org_id) -> dict:
     """), {"id": str(connected_org_id)}).fetchone()
     return {"done": int(row[0] or 0), "total": int(row[1] or 0)} if row \
         else {"done": 0, "total": 0}
+
+
+# ---------------------------------------------------------------------
+# Step B (D-479 B / LLD_STEP_B_STALENESS_PIN §a) — the ONE decision-facing
+# "current sequence" resolver. Org-REQUIRED: there is no org-less mode.
+# ---------------------------------------------------------------------
+
+from dataclasses import dataclass  # noqa: E402  (section-local import)
+from datetime import datetime  # noqa: E402
+
+SEQ_CURRENT = "CURRENT"
+SEQ_CANNOT_DETERMINE = "CANNOT_DETERMINE"
+SEQ_SOURCE_ORG_CURRENT = "org_current"
+SEQ_SOURCE_RUN_STAMP = "run_stamp"          # RESERVED — Step 2 adds the stamp
+SEQ_AXIS = "org_sequence"                    # never the claim-version axis
+REASON_ORG_UNBOUND = "org_unbound"
+REASON_ORG_NEVER_SYNCED = "org_never_synced"
+
+
+@dataclass(frozen=True)
+class SequenceResolution:
+    """What the decision layer may know about an org's current S1 sequence.
+
+    ``axis`` is always ``org_sequence`` — the org changed under the claim
+    (→ ``grounding.stale``). Claim-version drift (the claim or recipe
+    changed under the run) is NOT this object's business: it lives on the
+    evidence row (``approved_seq``, ``latest_run.version_unknown``,
+    ``superseded_newer_run``) and is graded by ``version_currency``.
+    ``source`` is ``org_current`` today; ``run_stamp`` is reserved for
+    Step 2 (the org sequence persisted on each run)."""
+    state: str
+    current_seq: Optional[int]
+    as_of: Optional[datetime]
+    source: str
+    axis: str = SEQ_AXIS
+    connected_org_id: Optional[str] = None
+    reason: Optional[str] = None
+
+    def as_dict(self) -> dict:
+        return {"state": self.state, "current_seq": self.current_seq,
+                "as_of": self.as_of.isoformat() if self.as_of else None,
+                "source": self.source, "axis": self.axis,
+                "connected_org_id": self.connected_org_id,
+                "reason": self.reason}
+
+
+def resolve_current_sequence(session, *, connected_org_id) -> SequenceResolution:
+    """The ONLY place a decision-facing current S1 sequence is computed.
+
+    ``connected_org_id`` is keyword-only and required by the signature; a
+    caller that resolved env→org and got ``None`` passes ``None`` and
+    receives the recorded refusal (``CANNOT_DETERMINE / org_unbound``) —
+    never a tenant-wide number. Bound → ONE read over the org's OWN rows
+    (org-less ``logical_versions`` rows can never match the uuid WHERE, so
+    they are excluded by construction); no row → ``CANNOT_DETERMINE /
+    org_never_synced``. Never raises on a refusal path; a DB error
+    propagates to the caller's best-effort wrapper."""
+    if connected_org_id is None:
+        return SequenceResolution(
+            state=SEQ_CANNOT_DETERMINE, current_seq=None, as_of=None,
+            source=SEQ_SOURCE_ORG_CURRENT, reason=REASON_ORG_UNBOUND)
+    row = session.execute(text(
+        "SELECT version_seq, created_at FROM logical_versions "
+        "WHERE connected_org_id = CAST(:org AS uuid) "
+        "ORDER BY version_seq DESC LIMIT 1"),
+        {"org": str(connected_org_id)}).first()
+    if row is None:
+        return SequenceResolution(
+            state=SEQ_CANNOT_DETERMINE, current_seq=None, as_of=None,
+            source=SEQ_SOURCE_ORG_CURRENT,
+            connected_org_id=str(connected_org_id),
+            reason=REASON_ORG_NEVER_SYNCED)
+    return SequenceResolution(
+        state=SEQ_CURRENT, current_seq=int(row[0]), as_of=row[1],
+        source=SEQ_SOURCE_ORG_CURRENT, connected_org_id=str(connected_org_id))

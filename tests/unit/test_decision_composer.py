@@ -97,3 +97,19 @@ def test_external_keys_builder_accepts_dicts_and_orm_rows():
     keys = external_keys_for_requirements(
         [{"id": 3, "jira_key": "SQ-1"}, _Row()])
     assert keys == ["SQ-1", "req-5"]
+
+
+def test_cannot_determine_is_recorded_verbatim_never_mapped(stub):
+    # Step B (ruling F1a): the engine's refusal to grade is the fourth
+    # recommendation value — recorded as itself (migration 071 admits it),
+    # never rewritten to no_go (a verdict rendered for an absence).
+    stub["substrate"] = {**_substrate("cannot_determine", 0.0),
+                         "reasoning": [{"check": "org_sequence", "status": "fail",
+                                        "detail": "Cannot determine staleness: …"}],
+                         "criteria_met": {"org_sequence": False}}
+    repo = _Repo()
+    env = evaluate_and_record(None, _Release(), 1, release_repo=repo)
+    assert env["recommendation"] == "cannot_determine"
+    assert env["confidence"] == 0.0
+    assert repo.decisions[0]["recommendation"] == "cannot_determine"
+    assert env["reasoning"][0]["check"] == "org_sequence"

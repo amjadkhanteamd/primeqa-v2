@@ -102,7 +102,19 @@ def test_single_matches_live_latest_run_rule():
     with get_tenant_connection(1) as conn:
         s = Session(bind=conn)
         try:
-            ev = _assemble_claim_evidence(s, ["SQ-205", "SQ-212"], tenant_id=1)
+            from primeqa.sync.credentials import get_connected_org_for_environment
+            from primeqa.intelligence.substrate_decision import (
+                _claim_test_ids, _environments_with_evidence)
+            # Step B: the assembler is org-required — the claims' own evidence
+            # environment (the binding) → its org through the ONE seam; an
+            # unprovisioned env records the refusal and still attaches `verified`.
+            _tids, _ = _claim_test_ids(s, ["SQ-205", "SQ-212"])
+            _envs = _environments_with_evidence(s, _tids)
+            _env = _envs[0] if _envs else None
+            ev = _assemble_claim_evidence(
+                s, ["SQ-205", "SQ-212"], tenant_id=1, environment_id=_env,
+                connected_org_id=(get_connected_org_for_environment(conn, _env)
+                                  if _env is not None else None))
         finally:
             s.close()
 
