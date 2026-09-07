@@ -117,7 +117,9 @@ class ReleaseDecision(Base):
     release = relationship("Release", back_populates="decisions")
 
     __table_args__ = (
-        CheckConstraint("recommendation IN ('go', 'conditional_go', 'no_go')"),
+        # Step B (migration 071): the engine's recorded refusal to grade is the
+        # fourth value; final_decision — the HUMAN's — stays three-valued.
+        CheckConstraint("recommendation IN ('go', 'conditional_go', 'no_go', 'cannot_determine')"),
         CheckConstraint("recommended_by IN ('ai', 'human')"),
         CheckConstraint("final_decision IS NULL OR final_decision IN ('go', 'conditional_go', 'no_go')"),
     )

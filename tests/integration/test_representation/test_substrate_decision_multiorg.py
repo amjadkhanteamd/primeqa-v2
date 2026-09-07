@@ -73,26 +73,52 @@ def test_env_scoped_assembly_counts_only_that_envs_runs(session):
     assert row1_b["recent_outcomes"] == ["failed"]
 
 
-def test_env_none_assembly_is_the_identity(session):
+def test_org_unbound_assembly_is_the_refusal_never_a_number(session):
+    """Step B: env=None / org=None is NOT an identity mode any more — the
+    assembler records the resolver's refusal on every row and the pure
+    compute refuses the grade. (Replaces the pre-B "env=None is the
+    identity" contract, which pinned the tenant-wide read.)"""
     _two_env_release(session)
-    before_shape = _assemble_claim_evidence(session, ["MO-1"])
-    explicit = _assemble_claim_evidence(session, ["MO-1"], environment_id=None,
-                                        connected_org_id=None, manual_q=None)
-    assert before_shape == explicit
-    # the unscoped read still counts the tenant-wide latest (env B's failure)
-    outcomes = {r["latest_run"]["outcome"] for r in before_shape}
+    rows = _assemble_claim_evidence(session, ["MO-1"])
+    assert rows and all(r["sequence"]["state"] == "CANNOT_DETERMINE"
+                        and r["sequence"]["reason"] == "org_unbound" for r in rows)
+    # the unscoped run window still counts the tenant-wide latest (env B's
+    # failure) — facts stay facts; only the grade refuses
+    outcomes = {r["latest_run"]["outcome"] for r in rows}
     assert "failed" in outcomes
+    out = compute_substrate_decision(rows)
+    assert out["recommendation"] == "cannot_determine"
+    assert out["reasoning"][0]["check"] == "org_sequence"
+
+
+def _provision(session, env, label):
+    """A connected org for ``env`` with one synced version — the shape the
+    resolver requires. Returns the org id (text)."""
+    org = session.execute(text(
+        "INSERT INTO connected_orgs (org_type, sf_instance_url, label, "
+        "environment_id) VALUES ('sandbox', :u, :l, :e) "
+        "RETURNING CAST(id AS text)"),
+        {"u": f"https://{label}.example", "l": label, "e": env}).scalar()
+    session.execute(text(
+        "INSERT INTO logical_versions (version_name, version_type, "
+        "connected_org_id) VALUES (:n, 'genesis', CAST(:o AS uuid))"),
+        {"n": f"mo-{label}", "o": org})
+    return org
 
 
 def test_per_env_compute_and_rollup_worst_of(session):
     _two_env_release(session)
+    session.execute(text("SELECT set_config('app.tenant_id', '1', false)"))
+    orgs = {ENV_A: _provision(session, ENV_A, "A"),
+            ENV_B: _provision(session, ENV_B, "B")}
     env_decisions = []
     for env in (ENV_A, ENV_B):
         evidence = _assemble_claim_evidence(session, ["MO-1"],
-                                            environment_id=env)
+                                            environment_id=env,
+                                            connected_org_id=orgs[env])
         d = compute_substrate_decision(evidence)
         env_decisions.append({"environment_id": env,
-                              "connected_org_id": None, **d})
+                              "connected_org_id": orgs[env], **d})
 
     d_a = next(d for d in env_decisions if d["environment_id"] == ENV_A)
     d_b = next(d for d in env_decisions if d["environment_id"] == ENV_B)
@@ -154,9 +180,15 @@ def test_org_bound_staleness_uses_the_orgs_own_seq(session):
               claim_version_seq=cr.version_seq, environment_id=ENV_A)
     session.flush()
 
-    # org-blind read: anchored to tenant MAX (org B's seq) → falsely stale
+    # Step B: the org-blind read no longer exists — it is the recorded
+    # refusal (stale None WITH the reason), never the tenant MAX. The old
+    # arithmetic is shown beside it: the tenant-wide pin IS org B's seq.
+    from primeqa.semantic.query import SemanticOrgModel
+    tenant_max = SemanticOrgModel(session.connection()).current_version_seq()
+    assert tenant_max > seq_a                         # the old pin would read stale
     [blind] = _assemble_claim_evidence(session, ["MO-2"])
-    assert blind["grounding"]["stale"] is True
+    assert blind["grounding"]["stale"] is None
+    assert blind["sequence"]["reason"] == "org_unbound"
     # org-bound read: anchored to org A's own latest → current
     [bound] = _assemble_claim_evidence(session, ["MO-2"],
                                        environment_id=ENV_A,

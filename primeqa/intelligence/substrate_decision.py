@@ -13,10 +13,14 @@ version → grounding + latest run) hardened with the three correctness rules a
 2. **NULL-seq tolerance** — ``claim_version_seq`` is legitimately Optional
    through the plan chain; a NULL-seq run **counts** (strict exclusion would
    zero out real evidence) but carries ``version_unknown=True``.
-3. **Grounding staleness** — grounding evaluated at an S1 version older than the
-   tenant's current one is flagged ``stale`` (the org may have moved under it);
-   ``stale=None`` when either side is unknowable (no S1 version yet — tolerant,
-   never raises).
+3. **Grounding staleness** — grounding evaluated at an S1 version older than
+   the release's ORG current sequence is flagged ``stale`` (the org moved
+   under it). Step B (D-479 B): the current sequence is NEVER computed here —
+   ``primeqa.sync.readiness.resolve_current_sequence`` is the one resolver,
+   org-REQUIRED; a caller without an org gets ``CANNOT_DETERMINE`` recorded
+   on every evidence row (``row["sequence"]``) and the pure compute refuses
+   to grade (``cannot_determine``), never a tenant-wide number, never a
+   silent ``stale=None``.
 
 Read-only over the caller's tenant-scoped session. The pure compute over this
 evidence (risk rollup + GO/NO-GO) is slice 2; the v1 ``DecisionEngine`` is
@@ -225,20 +229,10 @@ _NEWER_SUPERSEDED_BULK_SQL = (
     "AND r.finished_at > COALESCE(t.cutoff, '-infinity')")
 
 
-def _current_s1_seq(session, connected_org_id=None):
-    """The current S1 version_seq — the given org's latest when
-    ``connected_org_id`` is set, else the tenant-wide MAX (the single-org
-    read). ``None`` when no version exists yet (tolerant — staleness is then
-    unknowable, not an error). On a multi-org tenant the org-bound read is the
-    only correct staleness anchor: org A's grounding must not read stale just
-    because org B synced later."""
-    from primeqa.semantic.query import SemanticOrgModel, VersionNotFoundError
-    try:
-        return SemanticOrgModel(
-            session.connection(),
-            connected_org_id=connected_org_id).current_version_seq()
-    except VersionNotFoundError:
-        return None
+# Step B: the engine computes NO current sequence of its own — the former
+# ``_current_s1_seq`` (an org-less ``SemanticOrgModel`` → tenant-wide MAX on
+# the 0-1 env branch) is gone; ``_assemble_claim_evidence`` reads
+# ``primeqa.sync.readiness.resolve_current_sequence`` (LLD_STEP_B §a/§b).
 
 
 def _claim_test_ids(session, external_keys):
@@ -319,7 +313,13 @@ def _assemble_claim_evidence(session, external_keys, *, tenant_id=None,
     )
     coord = SemanticTransactionCoordinator()
 
-    current_seq = _current_s1_seq(session, connected_org_id)
+    # Step B: the ONE org-required resolver; ``None`` org → the recorded
+    # refusal on every row (never a tenant-wide number).
+    from primeqa.sync.readiness import SEQ_CURRENT, resolve_current_sequence
+    resolution = resolve_current_sequence(session, connected_org_id=connected_org_id)
+    sequence = resolution.as_dict()
+    current_seq = (resolution.current_seq
+                   if resolution.state == SEQ_CURRENT else None)
     # D-232: the persisted MANUAL quarantine overrides (own connection — never
     # poisons this session; empty without a tenant_id or before the migration).
     if manual_q is None:
@@ -366,6 +366,8 @@ def _assemble_claim_evidence(session, external_keys, *, tenant_id=None,
         gv = gv_by_tid.get(tid)
         grounding = None
         if gv is not None:
+            # ``None`` only under a recorded CANNOT_DETERMINE (row["sequence"]
+            # carries the reason) — never a silent unknowable.
             stale = (gv.evaluated_at_version_seq < current_seq
                      if current_seq is not None else None)
             grounding = {"overall": gv.overall, "stale": stale,
@@ -424,6 +426,7 @@ def _assemble_claim_evidence(session, external_keys, *, tenant_id=None,
             "flaky": flaky,
             "recent_outcomes": recent_outcomes,
             "manual_quarantine": manual_q.get(sid),        # D-232: pinned|lifted|None
+            "sequence": sequence,                          # Step B: the resolution
         })
 
     if sup_tids:
@@ -487,6 +490,20 @@ def compute_substrate_decision(claim_evidence, criteria=None, *, now=None) -> di
 
     reasoning, criteria_met = [], {}
     blockers = warnings = 0
+
+    # Step B — org_sequence, evaluated FIRST. The resolution rides on every
+    # row (``sequence``); a CANNOT_DETERMINE (or a row that carries no
+    # resolution at all — fail closed) means the engine cannot grade
+    # staleness and refuses the grade. Every other check still runs and its
+    # metrics still fill: facts stay facts; only the grade refuses.
+    sequence = _sequence_of(claim_evidence)
+    ungraded = sequence.get("state") != _SEQ_CURRENT
+    if ungraded:
+        reasoning.append({"check": "org_sequence", "status": "fail",
+                          "detail": _sequence_refusal_sentence(sequence)})
+        criteria_met["org_sequence"] = False
+    else:
+        criteria_met["org_sequence"] = True
 
     counted = [c for c in claim_evidence if c["latest_run"] is not None]
     never_run = [c for c in claim_evidence if c["never_run"]]
@@ -598,7 +615,9 @@ def compute_substrate_decision(claim_evidence, criteria=None, *, now=None) -> di
                                         f"(window {max_age_hours}h)"})
             warnings += 1
 
-    if blockers == 0 and warnings == 0:
+    if ungraded:
+        recommendation, confidence = "cannot_determine", 0.0
+    elif blockers == 0 and warnings == 0:
         recommendation, confidence = "go", 0.95
     elif blockers == 0:
         recommendation, confidence = "conditional_go", 0.75
@@ -666,13 +685,47 @@ def compute_substrate_decision(claim_evidence, criteria=None, *, now=None) -> di
             "blockers": blockers, "warnings": warnings,
         },
         "risk": {"score": score, "level": _risk_level(score)},
+        "sequence": sequence,                    # Step B: the resolution graded against
     }
 
 
-# Verdict severity for the multi-env roll-up: worst wins (mirrors the
-# composer's ordering — no_go < conditional_go < go).
-_ENV_SEVERITY = {"no_go": 0, "conditional_go": 1, "go": 2}
-_ENV_CONFIDENCE = {"no_go": 0.90, "conditional_go": 0.75, "go": 0.95}
+_SEQ_CURRENT = "CURRENT"
+_SEQ_REFUSAL_SENTENCES = {
+    "org_unbound": ("Cannot determine staleness: no connected org is bound to "
+                    "this release's evidence, so the engine will not grade "
+                    "grounding against a tenant-wide sequence."),
+    "org_never_synced": ("Cannot determine staleness: the bound org has never "
+                         "synced, so no current sequence exists."),
+    "sequence_unresolved": ("Cannot determine staleness: the evidence carries "
+                            "no sequence resolution."),
+}
+
+
+def _sequence_of(claim_evidence) -> dict:
+    """The resolution the evidence was assembled against (one per assembly,
+    stamped on every row). A row set that carries none is treated as
+    unresolved — fail closed, never graded as current."""
+    for c in claim_evidence:
+        seq = c.get("sequence")
+        if seq:
+            return seq
+    return {"state": "CANNOT_DETERMINE", "current_seq": None, "as_of": None,
+            "source": "org_current", "axis": "org_sequence",
+            "connected_org_id": None, "reason": "sequence_unresolved"}
+
+
+def _sequence_refusal_sentence(sequence: dict) -> str:
+    reason = sequence.get("reason") or "sequence_unresolved"
+    return _SEQ_REFUSAL_SENTENCES.get(
+        reason, f"Cannot determine staleness: {reason}.")
+
+
+# Verdict severity for the multi-env roll-up: worst wins. Ruling D9 (Step B):
+# a definite NO GO stands over an ungraded org (the evidence says stop); an
+# ungraded org blocks GO and CONDITIONAL GO.
+_ENV_SEVERITY = {"no_go": 0, "cannot_determine": 1, "conditional_go": 2, "go": 3}
+_ENV_CONFIDENCE = {"no_go": 0.90, "cannot_determine": 0.0,
+                   "conditional_go": 0.75, "go": 0.95}
 
 
 def _rollup_env_decisions(env_decisions) -> dict:
@@ -695,7 +748,8 @@ def _rollup_env_decisions(env_decisions) -> dict:
     worst = min(env_decisions,
                 key=lambda d: _ENV_SEVERITY.get(d["recommendation"], 0))
     recommendation = worst["recommendation"]
-    _status = {"no_go": "fail", "conditional_go": "warn", "go": "pass"}
+    _status = {"no_go": "fail", "cannot_determine": "fail",
+               "conditional_go": "warn", "go": "pass"}
     reasoning = []
     for d in env_decisions:
         m = d["metrics"]
@@ -738,19 +792,71 @@ def _rollup_env_decisions(env_decisions) -> dict:
     }
 
 
+def _decide_for_session(session, conn, keys, criteria, *, tenant_id) -> dict:
+    """The decision over one tenant-scoped ``session`` (+ its ``conn`` for
+    the env→org seam) — the testable body of
+    :func:`get_release_substrate_decision`. Step B: EVERY branch consumes the
+    org-required resolver through ``_assemble_claim_evidence``; the engine
+    never computes a current sequence.
+
+    - **0 envs**: nothing binds — releases carry no environment; the
+      evidence IS the binding — so the assembly runs with no org and every
+      row records ``CANNOT_DETERMINE / org_unbound``: the release is
+      ungraded (``cannot_determine``), never GO.
+    - **1 env**: the evidence's environment; its org via the ONE seam
+      (``get_connected_org_for_environment``); the assembly is env- and
+      org-scoped (the run window is unchanged in effect — only that env
+      holds evidence — and the grounding read becomes org-exact). An env
+      with no ``connected_orgs`` row → the same recorded refusal.
+    - **2+ envs**: one decision per env (unchanged in number for a
+      provisioned org — byte-identical to before), rolled up worst-of under
+      ruling D9."""
+    from primeqa.sync.credentials import get_connected_org_for_environment
+    test_ids, _ = _claim_test_ids(session, keys)
+    envs = _environments_with_evidence(session, test_ids)
+    if len(envs) <= 1:
+        env = envs[0] if envs else None
+        org = get_connected_org_for_environment(conn, env) if env is not None else None
+        evidence = _assemble_claim_evidence(
+            session, keys, tenant_id=tenant_id,
+            environment_id=env, connected_org_id=org)
+        out = compute_substrate_decision(evidence, criteria)
+        out["available"] = True
+        if out.get("applicable"):
+            out["environments"] = ([{"environment_id": env,
+                                     "connected_org_id": org,
+                                     **{k: v for k, v in out.items()
+                                        if k != "environments"}}]
+                                   if env is not None else [])
+        return out
+    from primeqa.intelligence import quarantine as _q
+    manual_q = _q.manual_states(tenant_id) if tenant_id is not None else {}
+    env_decisions = []
+    for env in envs:
+        org = get_connected_org_for_environment(conn, env)
+        evidence = _assemble_claim_evidence(
+            session, keys, tenant_id=tenant_id,
+            environment_id=env, connected_org_id=org,
+            manual_q=manual_q)
+        d = compute_substrate_decision(evidence, criteria)
+        if not d.get("applicable"):
+            continue        # e.g. every claim deprecated
+        env_decisions.append({"environment_id": env,
+                              "connected_org_id": org, **d})
+    if not env_decisions:
+        return {"available": True, "applicable": False, "claim_count": 0}
+    out = _rollup_env_decisions(env_decisions)
+    out["available"] = True
+    return out
+
+
 def get_release_substrate_decision(tenant_id: int, external_keys,
                                    criteria=None) -> dict:
     """Best-effort: assemble + compute in one tenant connection. Never raises —
     ``{available: False}`` on any read error; zero claims → ``{available: True,
     applicable: False}`` (the composer skips cleanly). The release_substrate_console
-    wrapper discipline.
-
-    Multi-org (3e): when the release's claims have run evidence in >= 2
-    environments, the decision is computed ONCE PER ENV (evidence + staleness
-    scoped to that env's org) and rolled up worst-of; the per-env dicts ride
-    under ``environments``. With 0-1 envs the single tenant-wide compute runs
-    exactly as before — ``environments`` is then the one-element echo (or
-    empty), so the template has a stable key either way."""
+    wrapper discipline. The branch logic lives in :func:`_decide_for_session`
+    (Step B: every branch reads the org-required resolver)."""
     keys = [k for k in (external_keys or []) if k]
     if not keys:
         return {"available": True, "applicable": False, "claim_count": 0}
@@ -758,43 +864,11 @@ def get_release_substrate_decision(tenant_id: int, external_keys,
         from sqlalchemy.orm import Session
 
         from primeqa.semantic.connection import get_tenant_connection
-        from primeqa.sync.credentials import get_connected_org_for_environment
         with get_tenant_connection(tenant_id) as conn:
             session = Session(bind=conn)
             try:
-                test_ids, _ = _claim_test_ids(session, keys)
-                envs = _environments_with_evidence(session, test_ids)
-                if len(envs) <= 1:
-                    evidence = _assemble_claim_evidence(session, keys,
-                                                        tenant_id=tenant_id)
-                    out = compute_substrate_decision(evidence, criteria)
-                    out["available"] = True
-                    if out.get("applicable"):
-                        out["environments"] = ([{"environment_id": envs[0],
-                                                 **{k: v for k, v in out.items()
-                                                    if k != "environments"}}]
-                                               if envs else [])
-                    return out
-                from primeqa.intelligence import quarantine as _q
-                manual_q = _q.manual_states(tenant_id)
-                env_decisions = []
-                for env in envs:
-                    org = get_connected_org_for_environment(conn, env)
-                    evidence = _assemble_claim_evidence(
-                        session, keys, tenant_id=tenant_id,
-                        environment_id=env, connected_org_id=org,
-                        manual_q=manual_q)
-                    d = compute_substrate_decision(evidence, criteria)
-                    if not d.get("applicable"):
-                        continue        # e.g. every claim deprecated
-                    env_decisions.append({"environment_id": env,
-                                          "connected_org_id": org, **d})
-                if not env_decisions:
-                    return {"available": True, "applicable": False,
-                            "claim_count": 0}
-                out = _rollup_env_decisions(env_decisions)
-                out["available"] = True
-                return out
+                return _decide_for_session(session, conn, keys, criteria,
+                                           tenant_id=tenant_id)
             finally:
                 session.close()
     except Exception as exc:

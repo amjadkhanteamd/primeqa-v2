@@ -35,7 +35,17 @@ def _claim(outcome="passed", *, overall="intact", stale=False, never=False,
         "never_run": never,
         "flaky": flaky,
         "recent_outcomes": recent or ([] if never else [outcome]),
+        "sequence": _CURRENT_SEQ,                        # Step B: resolved
     }
+
+
+# Step B: every assembled row carries the resolution it was graded against.
+_CURRENT_SEQ = {"state": "CURRENT", "current_seq": 9, "as_of": None,
+                "source": "org_current", "axis": "org_sequence",
+                "connected_org_id": "org-a", "reason": None}
+_UNBOUND_SEQ = {"state": "CANNOT_DETERMINE", "current_seq": None, "as_of": None,
+                "source": "org_current", "axis": "org_sequence",
+                "connected_org_id": None, "reason": "org_unbound"}
 
 
 def _checks(out):
@@ -211,6 +221,7 @@ def _bclaim(outcome, *, keys=(), cause=None, verdict=None, flaky=False,
         "latest_run": {"run_id": "r", "outcome": outcome, "verdict": verdict,
                        "finished_at": finished_at, "version_unknown": False,
                        "cause": cause},
+        "sequence": _CURRENT_SEQ,
         "superseded_newer_run": False,
         "never_run": False,
         "flaky": flaky,
@@ -418,7 +429,19 @@ def test_assembled_verified_matches_live_passed_rule():
     with get_tenant_connection(1) as conn:
         s = Session(bind=conn)
         try:
-            ev = _assemble_claim_evidence(s, ["SQ-205", "SQ-212"], tenant_id=1)
+            from primeqa.sync.credentials import get_connected_org_for_environment
+            from primeqa.intelligence.substrate_decision import (
+                _claim_test_ids, _environments_with_evidence)
+            # Step B: the assembler is org-required — the claims' own evidence
+            # environment (the binding) → its org through the ONE seam; an
+            # unprovisioned env records the refusal and still attaches `verified`.
+            _tids, _ = _claim_test_ids(s, ["SQ-205", "SQ-212"])
+            _envs = _environments_with_evidence(s, _tids)
+            _env = _envs[0] if _envs else None
+            ev = _assemble_claim_evidence(
+                s, ["SQ-205", "SQ-212"], tenant_id=1, environment_id=_env,
+                connected_org_id=(get_connected_org_for_environment(conn, _env)
+                                  if _env is not None else None))
         finally:
             s.close()
     for c in ev:
@@ -648,3 +671,66 @@ def test_collapse_caps_at_the_flake_window():
         _FLAKE_WINDOW, _collapse_batches)
     rows = [_row("passed") for _ in range(12)]
     assert len(_collapse_batches(rows)) == _FLAKE_WINDOW
+
+
+# === Step B (LLD_STEP_B_STALENESS_PIN §b): the org_sequence check ==============
+
+def test_missing_resolution_fails_closed_to_cannot_determine():
+    # A row set that carries no resolution is unresolved — never graded current.
+    row = {k: v for k, v in _claim().items() if k != "sequence"}
+    out = compute_substrate_decision([row], now=_NOW)
+    assert out["recommendation"] == "cannot_determine" and out["confidence"] == 0.0
+    assert out["reasoning"][0]["check"] == "org_sequence"          # evaluated FIRST
+    assert out["criteria_met"]["org_sequence"] is False
+    assert out["sequence"]["reason"] == "sequence_unresolved"
+
+
+def test_org_unbound_refuses_the_grade_but_keeps_the_facts():
+    ev = [_claim(), _claim("failed")]
+    for c in ev:
+        c["sequence"] = _UNBOUND_SEQ
+        c["grounding"]["stale"] = None
+    out = compute_substrate_decision(ev, now=_NOW)
+    assert out["recommendation"] == "cannot_determine"
+    assert "no connected org is bound" in out["reasoning"][0]["detail"]
+    # the other checks still ran and the metrics are real facts
+    assert out["metrics"]["counted_runs"] == 2 and out["metrics"]["pass_rate"] == 50.0
+    assert _checks(out)["pass_rate"] == "fail"
+    assert out["sequence"] == _UNBOUND_SEQ
+    assert out["blocking"], "the failed claim is still named"
+
+
+def test_a_current_resolution_grades_exactly_as_before():
+    out = compute_substrate_decision([_claim(), _claim()], now=_NOW)
+    assert out["recommendation"] == "go"
+    # a CURRENT resolution adds NO reasoning line — every graded card renders
+    # exactly as before Step B (the standing UI rule); only criteria_met records it
+    assert "org_sequence" not in _checks(out)
+    assert out["criteria_met"]["org_sequence"] is True
+    assert out["sequence"] == _CURRENT_SEQ
+
+
+def test_never_synced_sentence():
+    ev = [_claim()]
+    ev[0]["sequence"] = {**_UNBOUND_SEQ, "connected_org_id": "org-b",
+                         "reason": "org_never_synced"}
+    out = compute_substrate_decision(ev, now=_NOW)
+    assert out["recommendation"] == "cannot_determine"
+    assert "has never synced" in out["reasoning"][0]["detail"]
+
+
+def test_rollup_d9_an_ungraded_org_blocks_go_but_a_no_go_stands():
+    from primeqa.intelligence.substrate_decision import _rollup_env_decisions
+    go = {"environment_id": 1, **compute_substrate_decision([_claim()], now=_NOW)}
+    ev = [_claim()]; ev[0]["sequence"] = _UNBOUND_SEQ
+    cd = {"environment_id": 2, **compute_substrate_decision(ev, now=_NOW)}
+    ng = {"environment_id": 3, **compute_substrate_decision([_claim("failed")], now=_NOW)}
+    assert _rollup_env_decisions([go, cd])["recommendation"] == "cannot_determine"
+    assert _rollup_env_decisions([go, cd])["confidence"] == 0.0
+    cg = {"environment_id": 4, **compute_substrate_decision([_claim(stale=True)], now=_NOW)}
+    assert cg["recommendation"] == "conditional_go"
+    assert _rollup_env_decisions([cg, cd])["recommendation"] == "cannot_determine"
+    assert _rollup_env_decisions([ng, cd])["recommendation"] == "no_go"
+    lines = [r for r in _rollup_env_decisions([go, cd])["reasoning"]
+             if r["check"] == "environment"]
+    assert any(r["status"] == "fail" and "CANNOT DETERMINE" in r["detail"] for r in lines)

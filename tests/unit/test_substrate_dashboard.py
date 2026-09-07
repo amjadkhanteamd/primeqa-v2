@@ -14,7 +14,8 @@ def _row(outcome=None):
 
 def test_state_map_covers_all_recommendations():
     assert _STATE_BY_RECOMMENDATION == {
-        "go": "GO", "conditional_go": "CONDITIONAL GO", "no_go": "NO-GO"}
+        "go": "GO", "conditional_go": "CONDITIONAL GO", "no_go": "NO-GO",
+        "cannot_determine": "CANNOT DETERMINE"}          # Step B: the ungraded state
 
 
 def test_grid_status_failed_dominates():
