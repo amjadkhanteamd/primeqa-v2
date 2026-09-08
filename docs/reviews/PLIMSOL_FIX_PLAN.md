@@ -476,7 +476,15 @@
   computed". Not a sequence question, so not folded into Step B. ASSIGNED
   to Step 2 / Step 5 of the D-479 sequence: a claim whose grounding was
   never computed is NEVER_RUN-class readiness and must block GO (the
-  Release Quality Policy refuses on never-run scope by name).
+  Release Quality Policy refuses on never-run scope by name). **CLOSED by
+  Step 2 (D-484, merge 0fe6848, 2026-09-08)**: a claim with a run but no
+  grounding verdict for the org is an UNGRADED input on the grounding axis
+  (`ungrounded` on the row; `grounding_integrity` names the count, never
+  "all intact" over an unknown), and ungraded inputs block GO and
+  CONDITIONAL GO per D9; a never-run claim is NEVER_RUN readiness and
+  blocks the same way; Evaluate refuses non-current scope by name before
+  the engine is asked. Production count at merge pre-flight: zero in both
+  orgs (0 of 159 / 0 of 32 approved-current claims with a run).
 - **Medium (data hygiene): eight `logical_versions` rows on tenant 1 that
   belong to no live org.** Four ORG-LESS rows — seq 1 (genesis, "Phase 0
   smoke test — D-024 Step 7", 2026-04-27), seq 2 (manual_checkpoint,
