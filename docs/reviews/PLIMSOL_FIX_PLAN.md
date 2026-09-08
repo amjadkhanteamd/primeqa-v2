@@ -540,6 +540,26 @@
 
 ## Added 2026-09-08 — from Step 2 (contemporaneity)
 
+- **Medium: the release scope's ENVIRONMENTS are evidence-derived with no
+  active filter — an inactive read-only production environment can hold
+  a release's Evaluate in refusal.** `release_scope_readiness` takes its
+  environment set from `_environments_with_evidence` (every environment
+  holding a run for any scope claim). Observed on production 2026-09-08
+  (VERIFICATION_STEP_2.md §k.1): release 16 "Parity Window 1" carries
+  env 78 "Prod1" (`is_active=False`, `is_production=True`,
+  `execution_policy=read_only`) only because 15 of its 19 claims have
+  legacy runs there; after AK's env-59 scope run the 19 env-59 items
+  read CURRENT and the 19 env-78 items stay CANNOT_DETERMINE / NEVER_RUN,
+  so Evaluate still refuses — and the only exit is a run on a read-only
+  production org that `_authorize_dispatch` rejects for non-inspection
+  recipes. The requirement page derives its environment columns from the
+  ACTIVE environment list (env 59 only) — two surfaces disagree. Options:
+  (a) scope environments = the release's declared target environment(s)
+  (pairs with the Step 1 item "release-detail derivation"); (b)
+  evidence-derived, filtered to active environments; (c) as built. Lean
+  (a), (b) as the interim. Not folded into Step 2 — a scope-definition
+  ruling, AK's call.
+
 - **Medium: the Substrate-evidence panel on the decision tab still says
   "No claims at risk — all grounded claims are intact" over "N not
   computed".** The decision CARD now names ungrounded claims (R-ungrounded,
