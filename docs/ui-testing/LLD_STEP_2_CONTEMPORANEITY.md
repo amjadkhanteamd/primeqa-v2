@@ -1,6 +1,6 @@
 # LLD Step 2 — contemporaneity (Fork 2: the run stamp owns staleness; Fork 3: legacy runs render CANNOT_DETERMINE)
 
-Status: RULED 2026-09-08 (AK GO) — build follows on this branch.
+Status: BUILT 2026-09-08 on the AK GO (design 8eed097; build commit follows); pushed for review; merge gated. Transcript: VERIFICATION_STEP_2.md.
 Rulings: **R-ground** (one targeted predicate governs BOTH stamps — a
 grounding is stale only when a covered read changed after its verdict;
 the mint fix in §d lands only with it); **R-ungrounded** (a current run
@@ -215,7 +215,13 @@ checkpoint that touches no covered read moves nothing.
 `materialize_surface_entities(session, *, inventory_version,
 connected_org_id)` — the org is a REQUIRED keyword (a `None` refuses with
 `ValueError`); the checkpoint is written `logical_versions(…,
-connected_org_id)` and the Surface entities carry the org. Which org: the
+connected_org_id)`. **Found at build (a precision, not a change of
+intent):** the Surface ENTITIES stay org-less — S1's own CHECK
+`entities_org_only_for_sync` (`20260622_0020`: "an org may be present only
+on sync-origin rows; a non-sync 'manual_curation' entity is legitimately
+org-less") refuses an org on them, and a portal Surface is not org
+metadata. The defect was the tenant-wide checkpoint at MAX+1, and that is
+what binds; the entities anchor at the bound checkpoint's sequence. Which org: the
 operator names the environment whose portal the inventory is cut for
 (the conformance schedule's environment) and the D-286 seam resolves it —
 the cut script gains `--environment-id`. No in-repo caller changes

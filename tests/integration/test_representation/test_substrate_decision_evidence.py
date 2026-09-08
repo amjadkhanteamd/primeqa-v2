@@ -28,17 +28,21 @@ def _gv(*, overall, claim_verdict="intact"):
 
 
 def _seed_run(session, *, claim_test_id, outcome, finished_at,
-              claim_version_seq=None, environment_id=7):
+              claim_version_seq=None, environment_id=7,
+              connected_org_id=None, org_version_seq=None):
+    """A run row. Step 2: ``connected_org_id`` + ``org_version_seq`` STAMP it
+    (the executor's value); left None the run is UNSTAMPED — the legacy
+    shape, which reads CANNOT_DETERMINE."""
     session.execute(text(
         "INSERT INTO s4_execution_runs (run_id, recipe_id, recipe_version_seq, "
         "claim_test_id, claim_version_seq, environment_id, outcome, started_at, "
-        "finished_at, evidence) "
+        "finished_at, evidence, connected_org_id, org_version_seq) "
         "VALUES (CAST(:r AS uuid), CAST(:rec AS uuid), 1, CAST(:t AS uuid), :cvs, :env, "
         "CAST(:o AS run_outcome), CAST(:f AS timestamptz), CAST(:f AS timestamptz), "
-        "CAST('{}' AS jsonb))"),
+        "CAST('{}' AS jsonb), CAST(:org AS uuid), :seq)"),
         {"r": str(uuid4()), "rec": str(uuid4()), "t": str(claim_test_id),
          "cvs": claim_version_seq, "o": outcome, "f": finished_at,
-         "env": environment_id})
+         "env": environment_id, "org": connected_org_id, "seq": org_version_seq})
 
 
 def _seed_s1_version(session, version_seq, connected_org_id=None):
@@ -117,7 +121,9 @@ def test_only_superseded_runs_means_never_run(session, grounding_org):
     assert row["superseded_newer_run"] is True             # the warning still fires
 
 
-def test_grounding_staleness_vs_current_s1_version(session, grounding_org):
+def test_grounding_staleness_is_targeted_through_what_the_claim_reads(session, grounding_org):
+    """Step 2, ruling R-ground: a grounding is stale only when a COVERED read
+    changed after its verdict — never "the org moved → stale"."""
     coord = SemanticTransactionCoordinator()
     cr = _approved_claim(session, coord, key="DEC-4")
     persist_grounding_validity(
@@ -126,10 +132,38 @@ def test_grounding_staleness_vs_current_s1_version(session, grounding_org):
     _seed_s1_version(session, 10, grounding_org)                          # current S1 = 10 > 5
     session.flush()
 
+    # the org moved (5 → 10) but nothing the claim reads changed → NOT stale
     [row] = _assemble_claim_evidence(session, ["DEC-4"], connected_org_id=grounding_org)
     assert row["grounding"]["overall"] == "intact"
-    assert row["grounding"]["stale"] is True
+    assert row["grounding"]["stale"] is False
     assert row["grounding"]["evaluated_at_version_seq"] == 5
+
+    # close a COVERED read after the verdict (SCD Type 2) → stale, named
+    covered = session.execute(text(
+        "SELECT entity_id, entity_type FROM test_claim_coverage "
+        "WHERE claim_test_id = CAST(:t AS uuid)"),
+        {"t": str(cr.test_id)}).all()
+    assert covered, "the fixture claim records what it reads"
+    # the fixture's reads may have no entities ROW in this test DB (production
+    # resolves 922/922) — materialise each covered read as an org-bound row
+    # that was CLOSED at seq 8, i.e. superseded after the verdict at 5
+    session.execute(text("SELECT set_config('app.tenant_id', '1', false)"))
+    for seq in (1, 8):                      # the row's [from, to) are FKs to versions
+        _seed_s1_version(session, seq, grounding_org)
+    for eid, etype in covered:
+        session.execute(text(
+            "INSERT INTO entities (id, entity_type, sf_api_name, display_name, "
+            "attributes, valid_from_seq, valid_to_seq, tenant_id, connected_org_id, "
+            "created_at, last_synced_at) "
+            "VALUES (CAST(:i AS uuid), :t, :n, :n, '{}'::jsonb, 1, 8, 1, CAST(:o AS uuid), "
+            "now(), now()) "
+            "ON CONFLICT (id) DO UPDATE SET valid_to_seq = 8, "
+            "connected_org_id = CAST(:o AS uuid)"),
+            {"i": str(eid), "t": etype, "n": f"read-{str(eid)[:8]}", "o": grounding_org})
+    session.flush()
+    [row] = _assemble_claim_evidence(session, ["DEC-4"], connected_org_id=grounding_org)
+    assert row["grounding"]["stale"] is True
+    assert row["grounding"]["changed_reads"]
 
 
 def test_grounding_fresh_when_evaluated_at_current(session, grounding_org):
@@ -207,18 +241,22 @@ def test_e2e_clean_evidence_yields_go(session, grounding_org):
         evaluated_at_version_seq=4, validity=_gv(overall="intact"))
     _seed_run(session, claim_test_id=cr.test_id, outcome="passed",
               finished_at="2026-06-10T09:00:00+00:00",
-              claim_version_seq=cr.version_seq)
+              claim_version_seq=cr.version_seq,
+              connected_org_id=grounding_org, org_version_seq=4)   # stamped
     session.flush()
 
     from datetime import datetime, timezone
     out = compute_substrate_decision(
-        _assemble_claim_evidence(session, ["E2E-GO"], connected_org_id=grounding_org),
+        _assemble_claim_evidence(session, ["E2E-GO"], environment_id=7,
+                                 connected_org_id=grounding_org),
         now=datetime(2026, 6, 10, 12, 0, tzinfo=timezone.utc))
     assert out["recommendation"] == "go"
     assert out["metrics"] == {
         "claim_count": 1, "counted_runs": 1, "passed": 1, "failed": 0,
         "errored": 0, "never_run": 0, "quarantined": 0, "pass_rate": 100.0,
         "grounding": {"broken": 0, "drifted": 0, "stale": 0},
+        "readiness": {"never_run": 0, "stale": 0, "current": 1,
+                      "cannot_determine": 0, "ungrounded": 0, "ungraded": 0},
         "blockers": 0, "warnings": 0}
     assert out["risk"]["level"] == "low"
 
@@ -234,12 +272,14 @@ def test_e2e_broken_grounding_and_failed_run_yields_no_go(session, grounding_org
         validity=_gv(overall="broken", claim_verdict="broken"))
     _seed_run(session, claim_test_id=cr.test_id, outcome="failed",
               finished_at="2026-06-10T09:00:00+00:00",
-              claim_version_seq=cr.version_seq)
+              claim_version_seq=cr.version_seq,
+              connected_org_id=grounding_org, org_version_seq=4)   # stamped
     session.flush()
 
     from datetime import datetime, timezone
     out = compute_substrate_decision(
-        _assemble_claim_evidence(session, ["E2E-NOGO"], connected_org_id=grounding_org),
+        _assemble_claim_evidence(session, ["E2E-NOGO"], environment_id=7,
+                                 connected_org_id=grounding_org),
         now=datetime(2026, 6, 10, 12, 0, tzinfo=timezone.utc))
     assert out["recommendation"] == "no_go"
     checks = {r["check"]: r["status"] for r in out["reasoning"]}

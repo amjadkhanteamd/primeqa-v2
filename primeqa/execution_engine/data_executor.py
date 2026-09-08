@@ -303,7 +303,7 @@ def _world_for(create, *, s1, client, tracker, at_seq, world_plans,
 
 
 def plan_data_recipe_world(plan: DataRecipePlan, s1,
-                           null_asserted_fields=None) -> dict:
+                           null_asserted_fields=None, at_seq=None) -> dict:
     """Pre-resolve every ordinary create's operational world (D-230.2) into a
     detached ``{step_id: WorldPlan}`` map, reading S1 once (``at_seq`` pinned) under
     the caller's connection — the async SELECT bracket — so the execute bracket holds
@@ -314,7 +314,10 @@ def plan_data_recipe_world(plan: DataRecipePlan, s1,
     ``null_asserted_fields`` (D-338): the claim's ``is_null``-conditioned field
     external_ids — honored HERE (the async k16/R1 guard is baked into the
     detached plans; the execute bracket cannot re-derive it, no DB)."""
-    at_seq = s1.current_version_seq()
+    # Step 2: the select bracket may SUPPLY the pin (the run stamp) so the
+    # world and the stamp are one value by construction; a direct caller
+    # without one reads it exactly as before.
+    at_seq = at_seq if at_seq is not None else s1.current_version_seq()
     plans: dict = {}
     for step in plan.steps:
         if (isinstance(step, PlannedCreate)

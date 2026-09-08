@@ -1,0 +1,16 @@
+{# Step 2 (LLD_STEP_2 §e): the READINESS pill — outcome and readiness are two
+   facts, never one. States: CURRENT / STALE / NEVER RUN / CANNOT DETERMINE;
+   the grey sentence rides the title (and inline when `sentence=true`). #}
+{% macro readiness_pill(r, sentence=false, size='xs') %}
+{% if r %}
+{% set st = r.state %}
+<span class="inline-flex items-center px-2 py-0.5 rounded-full text-{{ size }} font-medium
+  {% if st == 'CURRENT' %}bg-green-100 text-green-800
+  {% elif st == 'STALE' %}bg-amber-100 text-amber-800
+  {% elif st == 'NEVER_RUN' %}bg-gray-100 text-gray-600
+  {% else %}bg-slate-200 text-slate-700{% endif %}"
+  data-readiness="{{ st }}"{% if r.reason %} data-readiness-reason="{{ r.reason }}"{% endif %}
+  title="{{ r.sentence }}">{{ st | replace('_', ' ') }}</span>
+{% if sentence %}<span class="text-xs text-gray-500 italic" data-testid="readiness-sentence">{{ r.sentence }}</span>{% endif %}
+{% endif %}
+{% endmacro %}

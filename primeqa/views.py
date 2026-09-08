@@ -2693,7 +2693,10 @@ def requirements_detail(req_id):
                     record_view(db, request.user["id"], active_env.id,
                                 req.jira_key, req.jira_summary)
         except Exception:
-            pass  # tracking is best-effort
+            # tracking is best-effort — but a failed statement leaves the
+            # session's transaction ABORTED, and every later query on this
+            # page would then fail; reset it so "best-effort" is true.
+            db.rollback()
 
         section = None
         if req.section_id:
@@ -2714,6 +2717,7 @@ def requirements_detail(req_id):
             read_requirement_ac_coverage)
         req_key = _requirement_to_ref(req)["key"]
         s2 = read_requirement_claims(tid, req_key)
+
         # Per-test last-run chip: one batched S4 read (latest run per test),
         # each chip linking to the run's evidence page (/runs/<run_id>). On a
         # multi-org tenant the chip carries the run's env name — a sandbox pass
@@ -2770,6 +2774,26 @@ def requirements_detail(req_id):
             "ready": bool(e.llm_connection_id and e.current_meta_version_id),
             "is_production": bool(e.is_production),
         } for e in envs]
+        # Step 2 (§e): readiness per claim for every environment that holds a
+        # run for this requirement's claims (columns that are all NEVER_RUN are
+        # dropped — the column would say nothing).
+        readiness_envs = []
+        try:
+            from primeqa.intelligence.substrate_decision import readiness_for_pairs
+            _claim_ids = [c["test_id"] for c in (s2.get("claims") or [])]
+            _env_ids = [e.id for e in envs]
+            _rmap = readiness_for_pairs(
+                tid, [(t, e) for t in _claim_ids for e in _env_ids])["map"]
+            for e in envs:
+                if any(_rmap.get((t, e.id), {}).get("state") not in (None, "NEVER_RUN")
+                       for t in _claim_ids):
+                    readiness_envs.append({"id": e.id, "name": e.name})
+            for c in (s2.get("claims") or []):
+                c["readiness"] = {e["id"]: _rmap.get((c["test_id"], e["id"]))
+                                  for e in readiness_envs}
+        except Exception as _exc:                          # never breaks the page
+            logging.getLogger(__name__).warning("requirement readiness unavailable: %s", _exc)
+            readiness_envs = []
         # Env name on each last-run chip — rendered only on multi-org tenants
         # (the template gates on multi_env), with a numeric fallback for runs
         # in an env outside the caller's accessible set.
@@ -2815,7 +2839,7 @@ def requirements_detail(req_id):
             approved_count=approved_count, gen_total_cost=gen_total_cost,
             quarantined_count=quarantined_count,
             runs_in_flight=bool(active_runs),
-            ac_coverage=ac_coverage,
+            ac_coverage=ac_coverage, readiness_envs=readiness_envs,
         ))
     finally:
         db.close()
@@ -3754,6 +3778,13 @@ def s4_runs_list():
         # Step A: the dormant-first switch decides whether ANY apply action
         # renders — the route refuses regardless (the refusal is the control).
         gate_on = bool(_repair_settings(tid).get("gate_apply_enabled"))
+    # Step 2 (§e): readiness (org axis) beside outcome on every row.
+    from primeqa.intelligence.substrate_decision import readiness_for_pairs
+    _runs = (data or {}).get("runs") or []           # data is None on the other groups
+    _ready = readiness_for_pairs(
+        tid, [(r.get("claim_test_id"), r.get("environment_id")) for r in _runs])["map"]
+    for r in _runs:
+        r["readiness"] = _ready.get((str(r.get("claim_test_id")), r.get("environment_id")))
     return render_template("runs/s4_list.html", **ctx(
         active_page="test_library", group=group, overview=overview, data=data,
         active_filters=active_filters, env_names=env_names,
@@ -3965,8 +3996,17 @@ def s4_run_detail(run_id):
                               _run.get("requirement_key"),
                               _run.get("claim_test_id"))
                 if _run.get("claim_test_id") else None)
+    # Step 2 (§e): the readiness pill + sentence under the outcome chip.
+    from primeqa.intelligence.substrate_decision import readiness_for_pairs
+    readiness = None
+    if _run.get("claim_test_id") and _run.get("environment_id") is not None:
+        readiness = readiness_for_pairs(
+            request.user["tenant_id"],
+            [(_run["claim_test_id"], _run["environment_id"])])["map"].get(
+            (str(_run["claim_test_id"]), int(_run["environment_id"])))
     return render_template("runs/s4_detail.html", **ctx(
         active_page="test_library", detail=detail, repair_proposal=repair_proposal,
+        readiness=readiness,
         repair_gate_apply_enabled=repair_gate_on,
         environment=environment, requirement=requirement,
         readable_run_phrasing=readable_run_phrasing, plan_nav=plan_nav))
@@ -4667,6 +4707,14 @@ def releases_evaluate_decision(release_id):
             return redirect("/releases")
         result = evaluate_and_record(
             db, release, request.user["tenant_id"], release_repo=repo)
+        if result.get("refused"):
+            # Step 2: a non-current scope refuses the act; the decision tab
+            # renders the items and "Run the scope" — nothing was recorded.
+            names = ", ".join(sorted({(i["external_keys"] or [i["test_id"][:8]])[0]
+                                      for i in result["items"]}))
+            flash(f"Evaluate refused — {len(result['items'])} item(s) in scope are "
+                  f"not current ({names}). Run the scope, then evaluate.", "error")
+            return redirect(f"/releases/{release_id}?tab=decision")
         rec = result["recommendation"].upper().replace("_", " ")
         suffix = ""
         if result.get("recommendation_source") == "substrate_gate":
@@ -4717,6 +4765,7 @@ def releases_detail(release_id):
         # substrate path is via requirements only (jira_key or req-<id>).
         substrate = None
         substrate_decision = None
+        scope_readiness = None
         if tab == "decision":
             from primeqa.intelligence.release_substrate_console import get_release_substrate
             from primeqa.intelligence.substrate_decision import (
@@ -4731,6 +4780,10 @@ def releases_detail(release_id):
             # latest_decision.reasoning.substrate.
             substrate_decision = get_release_substrate_decision(
                 tid, external_keys, release.get("decision_criteria") or {})
+            # Step 2 (§c/§e): the scope's readiness — the refusal block names
+            # every non-current item, with "Run the scope" beside Evaluate.
+            from primeqa.intelligence.substrate_decision import release_scope_readiness
+            scope_readiness = release_scope_readiness(tid, external_keys)
 
         # Multi-org (3e): env names for the per-environment verdict cards.
         # Direct Environment query, NOT the access-scoped repo list — the
@@ -4756,7 +4809,7 @@ def releases_detail(release_id):
             all_requirements=all_requirements,
             environments=envs_data, substrate=substrate,
             substrate_decision=substrate_decision, parity=parity,
-            env_names=env_names,
+            env_names=env_names, scope_readiness=scope_readiness,
         ))
     finally:
         db.close()

@@ -553,3 +553,214 @@ def resolve_current_sequence(session, *, connected_org_id) -> SequenceResolution
     return SequenceResolution(
         state=SEQ_CURRENT, current_seq=int(row[0]), as_of=row[1],
         source=SEQ_SOURCE_ORG_CURRENT, connected_org_id=str(connected_org_id))
+
+
+# ---------------------------------------------------------------------
+# Step 2 (D-479 step 2 / LLD_STEP_2_CONTEMPORANEITY §b) — readiness for
+# (claim, environment) from the RUN STAMP, targeted through what the
+# claim reads. ``source = run_stamp``: the source Step B reserved.
+# ---------------------------------------------------------------------
+
+READY_NEVER_RUN = "NEVER_RUN"
+READY_STALE = "STALE"
+READY_CURRENT = "CURRENT"
+READY_CANNOT_DETERMINE = "CANNOT_DETERMINE"
+READINESS_STATES = (READY_NEVER_RUN, READY_STALE, READY_CURRENT,
+                    READY_CANNOT_DETERMINE)
+REASON_UNSTAMPED = "unstamped"
+REASON_NO_COVERAGE = "no_coverage"
+
+#: The TA's Fork-3 sentence, verbatim — it carries the action.
+SENTENCE_UNSTAMPED = ("Freshness unknown — this run predates run-level "
+                      "environment stamping. Run again to establish current "
+                      "readiness.")
+SENTENCE_NO_COVERAGE = ("This test's reads are not recorded, so its currency "
+                        "cannot be determined.")
+SENTENCE_NEVER_RUN = "No run in this environment."
+
+
+@dataclass(frozen=True)
+class ReadinessResolution:
+    """Readiness of ONE (claim, environment) on the ORG axis — never the
+    claim-version axis, which stays a separate fact on the evidence row."""
+    state: str
+    source: str = SEQ_SOURCE_RUN_STAMP
+    axis: str = SEQ_AXIS
+    run_id: Optional[str] = None
+    stamp_seq: Optional[int] = None
+    current_seq: Optional[int] = None
+    connected_org_id: Optional[str] = None
+    changed_reads: tuple = ()
+    reason: Optional[str] = None
+
+    @property
+    def sentence(self) -> str:
+        if self.state == READY_NEVER_RUN:
+            return SENTENCE_NEVER_RUN
+        if self.state == READY_CANNOT_DETERMINE:
+            if self.reason == REASON_UNSTAMPED:
+                return SENTENCE_UNSTAMPED
+            if self.reason == REASON_NO_COVERAGE:
+                return SENTENCE_NO_COVERAGE
+            return ("Freshness unknown — the org's current sequence could not "
+                    f"be resolved ({self.reason}).")
+        if self.state == READY_STALE:
+            names = ", ".join(f"{t} {n}" for t, n, _ in self.changed_reads[:5])
+            more = (f" (+{len(self.changed_reads) - 5} more)"
+                    if len(self.changed_reads) > 5 else "")
+            return (f"{len(self.changed_reads)} thing(s) this test reads changed "
+                    f"after this run (org seq {self.stamp_seq} → "
+                    f"{self.current_seq}): {names}{more}")
+        return f"Current against org seq {self.current_seq}."
+
+    def as_dict(self) -> dict:
+        return {"state": self.state, "source": self.source, "axis": self.axis,
+                "run_id": self.run_id, "stamp_seq": self.stamp_seq,
+                "current_seq": self.current_seq,
+                "connected_org_id": self.connected_org_id,
+                "changed_reads": [list(c) for c in self.changed_reads],
+                "reason": self.reason, "sentence": self.sentence}
+
+
+_CHANGED_READS_SQL = """
+    WITH cov AS (
+        SELECT c.claim_test_id, c.entity_type, c.entity_id
+        FROM test_claim_coverage c
+        WHERE c.claim_test_id = CAST(:claim AS uuid)
+    )
+    SELECT cov.entity_type, e.sf_api_name, 'entity_closed' AS what
+    FROM cov JOIN entities e ON e.id = cov.entity_id
+    WHERE e.connected_org_id = CAST(:org AS uuid)
+      AND e.valid_to_seq IS NOT NULL AND e.valid_to_seq > :since
+    UNION ALL
+    SELECT cov.entity_type, e.sf_api_name,
+           CASE WHEN g.valid_to_seq IS NOT NULL AND g.valid_to_seq > :since
+                THEN 'edge_closed' ELSE 'edge_opened' END AS what
+    FROM cov JOIN entities e ON e.id = cov.entity_id
+    JOIN edges g ON (g.source_entity_id = cov.entity_id
+                     OR g.target_entity_id = cov.entity_id)
+    WHERE g.connected_org_id = CAST(:org AS uuid)
+      AND ((g.valid_to_seq IS NOT NULL AND g.valid_to_seq > :since)
+           OR g.valid_from_seq > :since)
+"""
+
+
+def covered_reads_changed(session, *, claim_test_id, connected_org_id,
+                          since_seq: int) -> tuple:
+    """The claim's covered reads that changed in ``connected_org_id`` AFTER
+    ``since_seq``: a covered entity row closed after it (SCD Type 2: the read
+    was superseded), or an edge on a covered entity closed or appeared after
+    it. Returns ``((entity_type, sf_api_name, what), …)``; empty = nothing the
+    claim reads moved. An org change touching none of the claim's reads is
+    invisible here — never "org moved → all stale"."""
+    rows = session.execute(text(_CHANGED_READS_SQL), {
+        "claim": str(claim_test_id), "org": str(connected_org_id),
+        "since": int(since_seq)}).all()
+    seen, out = set(), []
+    for et, name, what in rows:
+        key = (et, name, what)
+        if key not in seen:
+            seen.add(key); out.append(key)
+    return tuple(out)
+
+
+def _has_coverage(session, claim_test_id) -> bool:
+    return bool(session.execute(text(
+        "SELECT 1 FROM test_claim_coverage WHERE claim_test_id = CAST(:c AS uuid) "
+        "LIMIT 1"), {"c": str(claim_test_id)}).scalar())
+
+
+def _latest_run(session, claim_test_id, environment_id):
+    return session.execute(text(
+        "SELECT CAST(run_id AS text) AS run_id, org_version_seq, "
+        "       CAST(connected_org_id AS text) AS connected_org_id "
+        "FROM s4_execution_runs "
+        "WHERE claim_test_id = CAST(:c AS uuid) AND environment_id = :e "
+        "ORDER BY finished_at DESC LIMIT 1"),
+        {"c": str(claim_test_id), "e": int(environment_id)}).mappings().first()
+
+
+def resolve_run_readiness(session, *, claim_test_id, environment_id,
+                          connected_org_id=None) -> ReadinessResolution:
+    """Readiness for ONE (claim, environment), the rules in order (§b):
+
+    1. no run in this environment → NEVER_RUN;
+    2. the latest run carries no stamp → CANNOT_DETERMINE / unstamped;
+    3. the org's current sequence (the Step B resolver) refuses →
+       CANNOT_DETERMINE with its reason;
+    4. the claim has no recorded reads → CANNOT_DETERMINE / no_coverage
+       (never CURRENT by absence);
+    5. a covered read changed after the stamp → STALE, the reads named;
+       else CURRENT.
+
+    ``connected_org_id`` may be supplied by a caller that already resolved
+    the environment's org; otherwise the run's own stamp names it."""
+    run = _latest_run(session, claim_test_id, environment_id)
+    if run is None:
+        return ReadinessResolution(state=READY_NEVER_RUN)
+    if run["org_version_seq"] is None or run["connected_org_id"] is None:
+        return ReadinessResolution(state=READY_CANNOT_DETERMINE,
+                                   run_id=run["run_id"], reason=REASON_UNSTAMPED)
+    org = connected_org_id or run["connected_org_id"]
+    cur = resolve_current_sequence(session, connected_org_id=org)
+    if cur.state != SEQ_CURRENT:
+        return ReadinessResolution(state=READY_CANNOT_DETERMINE,
+                                   run_id=run["run_id"],
+                                   stamp_seq=int(run["org_version_seq"]),
+                                   connected_org_id=str(org), reason=cur.reason)
+    if not _has_coverage(session, claim_test_id):
+        return ReadinessResolution(state=READY_CANNOT_DETERMINE,
+                                   run_id=run["run_id"],
+                                   stamp_seq=int(run["org_version_seq"]),
+                                   current_seq=cur.current_seq,
+                                   connected_org_id=str(org),
+                                   reason=REASON_NO_COVERAGE)
+    changed = covered_reads_changed(session, claim_test_id=claim_test_id,
+                                    connected_org_id=org,
+                                    since_seq=int(run["org_version_seq"]))
+    return ReadinessResolution(
+        state=READY_STALE if changed else READY_CURRENT,
+        run_id=run["run_id"], stamp_seq=int(run["org_version_seq"]),
+        current_seq=cur.current_seq, connected_org_id=str(org),
+        changed_reads=changed)
+
+
+def resolve_run_readiness_bulk(session, pairs) -> dict:
+    """``{(claim_test_id_str, environment_id): ReadinessResolution}`` for many
+    pairs. Per-pair reads today (the pair sets on every page are small —
+    a release's claims × its environments); the org's current sequence is
+    resolved once per org."""
+    out = {}
+    org_cache: dict = {}
+    for claim_test_id, environment_id in pairs:
+        run = _latest_run(session, claim_test_id, environment_id)
+        key = (str(claim_test_id), int(environment_id))
+        if run is None:
+            out[key] = ReadinessResolution(state=READY_NEVER_RUN); continue
+        if run["org_version_seq"] is None or run["connected_org_id"] is None:
+            out[key] = ReadinessResolution(state=READY_CANNOT_DETERMINE,
+                                           run_id=run["run_id"],
+                                           reason=REASON_UNSTAMPED); continue
+        org = run["connected_org_id"]
+        if org not in org_cache:
+            org_cache[org] = resolve_current_sequence(session, connected_org_id=org)
+        cur = org_cache[org]
+        stamp = int(run["org_version_seq"])
+        if cur.state != SEQ_CURRENT:
+            out[key] = ReadinessResolution(state=READY_CANNOT_DETERMINE,
+                                           run_id=run["run_id"], stamp_seq=stamp,
+                                           connected_org_id=str(org),
+                                           reason=cur.reason); continue
+        if not _has_coverage(session, claim_test_id):
+            out[key] = ReadinessResolution(state=READY_CANNOT_DETERMINE,
+                                           run_id=run["run_id"], stamp_seq=stamp,
+                                           current_seq=cur.current_seq,
+                                           connected_org_id=str(org),
+                                           reason=REASON_NO_COVERAGE); continue
+        changed = covered_reads_changed(session, claim_test_id=claim_test_id,
+                                        connected_org_id=org, since_seq=stamp)
+        out[key] = ReadinessResolution(
+            state=READY_STALE if changed else READY_CURRENT,
+            run_id=run["run_id"], stamp_seq=stamp, current_seq=cur.current_seq,
+            connected_org_id=str(org), changed_reads=changed)
+    return out

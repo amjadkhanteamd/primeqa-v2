@@ -1,4 +1,5 @@
 {% extends "base.html" %}
+{% from 'components/_readiness.html' import readiness_pill %}
 {% from 'components/breadcrumbs.html' import breadcrumbs %}
 {% from 'components/_empty_state.html' import empty_state %}
 {% from 'components/_buttons.html' import btn_success %}
@@ -70,8 +71,18 @@
             {% elif r.outcome == 'failed' %}bg-red-100 text-red-800
             {% elif r.outcome == 'errored' %}bg-amber-100 text-amber-800
             {% else %}bg-gray-100 text-gray-700{% endif %}">{{ r.outcome }}</span>
+          {# Step 2: readiness beside outcome — two facts #}
+          {{ readiness_pill(readiness) }}
           {% if r.verdict_plain %}<span class="text-sm text-gray-700">{{ r.verdict_plain }}</span>{% endif %}
         </div>
+        {% if readiness %}
+        <p class="mt-1 text-xs text-gray-500 italic" data-testid="readiness-sentence">{{ readiness.sentence }}</p>
+        {% if readiness.state == 'STALE' and readiness.changed_reads %}
+        <ul class="mt-1 text-xs text-amber-700 list-disc ml-5" data-testid="changed-reads">
+          {% for c in readiness.changed_reads %}<li>{{ c[0] }} {{ c[1] }} — {{ c[2] | replace('_', ' ') }}</li>{% endfor %}
+        </ul>
+        {% endif %}
+        {% endif %}
         <h1 class="mt-2 text-xl font-semibold text-gray-900">
           {{ r.title or (r.claim_kind.replace('-', ' ') if r.claim_kind else 'Run ' ~ r.run_id[:8]) }}
         </h1>

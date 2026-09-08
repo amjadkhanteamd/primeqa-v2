@@ -27,6 +27,7 @@ from __future__ import annotations
 
 import logging
 from contextlib import contextmanager
+import dataclasses
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, Optional
 from uuid import UUID, uuid4
@@ -260,6 +261,47 @@ def _run_as_username_of(recipe):
     return next(iter(names), None)
 
 
+@dataclass(frozen=True)
+class OrgStamp:
+    """Step 2 (LLD_STEP_2 §a): the run stamp — the org the run executes against
+    and that org's logical sequence, captured ONCE in the select bracket. The
+    world's pin and this number are one value by construction: the bracket
+    hands it to ``plan_data_recipe_world`` and to the evidence; there is no
+    second read, so the stamp cannot drift from the pin."""
+    connected_org_id: str
+    org_version_seq: int
+
+
+def _org_stamp_of(session, environment_id: int):
+    """The stamp for this environment, or ``None`` when the org is unbound or
+    has never synced (the Step B resolver refuses) — the run is then written
+    UNSTAMPED and reads CANNOT_DETERMINE, honestly. Never raises on a refusal;
+    the env→org read is the D-286 seam."""
+    from primeqa.sync.credentials import get_connected_org_for_environment
+    from primeqa.sync.readiness import SEQ_CURRENT, resolve_current_sequence
+    try:
+        org = get_connected_org_for_environment(session.connection(), environment_id)
+        if org is None:
+            return None
+        cur = resolve_current_sequence(session, connected_org_id=org)
+    except Exception as exc:                  # noqa: BLE001 — a stamp failure must
+        # never fail the run: the run is written UNSTAMPED and says so.
+        _log.warning("run stamp unavailable for environment %s: %s", environment_id, exc)
+        return None
+    if cur.state != SEQ_CURRENT or cur.current_seq is None:
+        return None
+    return OrgStamp(connected_org_id=str(org), org_version_seq=int(cur.current_seq))
+
+
+def _stamp_evidence(evidence, stamp):
+    """Carry the stamp onto the (frozen) evidence — the one place every path
+    (metadata, data, run-all, the synthesized errored probe) is stamped."""
+    if stamp is None or evidence is None:
+        return evidence
+    return dataclasses.replace(evidence, connected_org_id=stamp.connected_org_id,
+                               org_version_seq=stamp.org_version_seq)
+
+
 def _resolve_run_org(session, environment_id: int) -> str:
     """The run's ``connected_org_id`` (str), FAIL-LOUD if unresolved (per-org
     Slice 3a, D-257). A run reads S1 *scoped to the org it executes against* — an
@@ -279,7 +321,7 @@ def _execute_for_kind(recipe, session, environment_id: int, client,
                       record_sink=None, world_plans=None, field_overrides=None,
                       *, env_gate=None, caller_tier=None,
                       null_asserted_fields=None, coordinator=None,
-                      teardown_client=None):
+                      teardown_client=None, org_stamp=None):
     """Dispatch on ``recipe.recipe_kind`` → the matching bridge + executor.
 
     The inspection path (``metadata-recipe``) is unchanged from D-108.4; the
@@ -300,12 +342,16 @@ def _execute_for_kind(recipe, session, environment_id: int, client,
                        else _resolve_env_gate(session, environment_id))
     _authorize_dispatch(recipe, execution_policy=policy,
                         is_production=is_prod, caller_tier=caller_tier)
+    # Step 2: the SYNC path captures the stamp here, in its own bracket; the
+    # ASYNC path receives the one its select bracket captured (never re-read).
+    if org_stamp is None and session is not None:
+        org_stamp = _org_stamp_of(session, environment_id)
 
     if recipe.recipe_kind == _METADATA_RECIPE_KIND:
         plan = build_metadata_inspection_plan(recipe)
         tooling = client or resolve_tooling_client(session, environment_id)
-        return execute_metadata_inspection(
-            plan, client=tooling, environment_id=environment_id)
+        return _stamp_evidence(execute_metadata_inspection(
+            plan, client=tooling, environment_id=environment_id), org_stamp)
 
     if recipe.recipe_kind == _DATA_RECIPE_KIND:
         plan = build_data_recipe_plan(recipe)
@@ -350,12 +396,12 @@ def _execute_for_kind(recipe, session, environment_id: int, client,
             # per-org Slice 3a: scope the world-build S1 read to the run's org.
             org_id = _resolve_run_org(session, environment_id)
             s1 = SemanticOrgModel(session.connection(), connected_org_id=org_id)
-        return execute_data_recipe(
+        return _stamp_evidence(execute_data_recipe(
             plan, client=data_client, environment_id=environment_id, s1=s1,
             world_plans=world_plans, record_sink=record_sink,
             field_overrides=field_overrides,
             null_asserted_fields=null_asserted_fields,
-            executing_identity=run_as, teardown_client=teardown_client)
+            executing_identity=run_as, teardown_client=teardown_client), org_stamp)
 
     raise PlanTranslationError(
         f"run path has no executor for recipe_kind={recipe.recipe_kind!r} "
@@ -622,7 +668,7 @@ def run_recipe_execution_async(
         env_gate = _resolve_env_gate(session, environment_id)
     if recipe is None:
         return RunPathResult(ran=False, reason="no_eligible_recipe")
-    resolved_client, world_plans, null_asserted, td_client = prep
+    resolved_client, world_plans, null_asserted, td_client, org_stamp = prep
 
     # 2. execute — NO DB connection held across the live read (the invariant). The
     #    write-ahead durability sink (D-230) writes in its own per-call transactions,
@@ -632,7 +678,8 @@ def run_recipe_execution_async(
         recipe, None, environment_id, resolved_client,
         record_sink=sink, world_plans=world_plans,
         env_gate=env_gate, caller_tier=caller_tier,
-        null_asserted_fields=null_asserted, teardown_client=td_client)
+        null_asserted_fields=null_asserted, teardown_client=td_client,
+        org_stamp=org_stamp)
 
     # 3. persist + posture + interpret — a fresh brief transaction.
     with scope(tenant_id) as session:
@@ -661,9 +708,12 @@ def _prepare_async_execute(recipe, session, environment_id: int, client,
     into the WorldPlans and returned for the executor's k16 grading/strip. An
     injected ``client`` is honored; a missing one is resolved by kind. An unknown kind
     fails loud (same surface as the sync :func:`_execute_for_kind`)."""
+    # Step 2 (§a): the stamp is captured HERE, once, for every kind, and the
+    # data-recipe world below is planned at exactly this sequence.
+    org_stamp = _org_stamp_of(session, environment_id)
     if recipe.recipe_kind == _METADATA_RECIPE_KIND:
         return (client or resolve_tooling_client(session, environment_id), None,
-                frozenset(), None)
+                frozenset(), None, org_stamp)
     if recipe.recipe_kind == _DATA_RECIPE_KIND:
         # D-421: bracket-1 resolves BOTH clients for an identity-scoped recipe
         # (the execute bracket holds no connection): the run client AS the
@@ -682,12 +732,13 @@ def _prepare_async_execute(recipe, session, environment_id: int, client,
             org_id = _resolve_run_org(session, environment_id)
             world_plans = plan_data_recipe_world(
                 plan, SemanticOrgModel(session.connection(), connected_org_id=org_id),
-                null_asserted_fields=null_asserted)
+                null_asserted_fields=null_asserted,
+                at_seq=(org_stamp.org_version_seq if org_stamp else None))
         else:
             # 1-step create-rejected — no world, no staged create, and so no
             # consumer for the asserted-blank set; still async-prepared.
             world_plans, null_asserted = {}, frozenset()
-        return (data_client, world_plans, null_asserted, td_client)
+        return (data_client, world_plans, null_asserted, td_client, org_stamp)
     raise PlanTranslationError(
         f"run path has no executor for recipe_kind={recipe.recipe_kind!r} "
         f"(only metadata-recipe + data-recipe are wired)",
@@ -1006,16 +1057,18 @@ def run_all_recipes_execution_async(
         if isinstance(prep, _PrepError):
             evidence = _synthesize_errored_evidence(recipe, environment_id, prep.exc)
         else:
-            resolved_client, world_plans, null_asserted, td_client = prep
+            resolved_client, world_plans, null_asserted, td_client, org_stamp = prep
             try:
                 evidence = execute(
                     recipe, None, environment_id, resolved_client,
                     record_sink=sink, world_plans=world_plans,
                     env_gate=env_gate, caller_tier=caller_tier,
                     null_asserted_fields=null_asserted,
-                    teardown_client=td_client)
+                    teardown_client=td_client, org_stamp=org_stamp)
             except Exception as exc:
-                evidence = _synthesize_errored_evidence(recipe, environment_id, exc)
+                evidence = _stamp_evidence(
+                    _synthesize_errored_evidence(recipe, environment_id, exc),
+                    org_stamp)
         # 3. persist + posture + interpret — a FRESH brief TX per probe, so a
         #    persist failure rolls back only THIS probe's scope (the others, each
         #    in their own scope, are untouched). A failed persist leaves no row →

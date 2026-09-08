@@ -1,4 +1,5 @@
 {% extends "base.html" %}
+{% from 'components/_readiness.html' import readiness_pill %}
 {% from 'components/breadcrumbs.html' import breadcrumbs %}
 {% from 'components/_buttons.html' import btn_secondary, btn_success %}
 {% from 'components/_drawer.html' import drawer_shell %}
@@ -391,6 +392,10 @@
                  with the live-chips poll fragment (D-317 slice 6); the macro
                  carries the multi-org env label when last_run has env_name. #}
               {{ run_chip(c.test_id, c.status, c.last_run, c.active_status) }}
+              {# Step 2: readiness per environment that holds a run for this requirement #}
+              {% if readiness_envs %}{% for e in readiness_envs %}{% set rr = (c.readiness or {}).get(e.id) %}{% if rr %}
+              <span class="inline-flex items-center gap-1 text-[11px] text-gray-500" data-readiness-env="{{ e.id }}">{{ e.name }}: {{ readiness_pill(rr, size='[11px]') }}</span>
+              {% endif %}{% endfor %}{% endif %}
               {% if c.quarantined %}
               <span class="inline-flex items-center px-2 py-0.5 rounded-full text-xs font-medium bg-rose-100 text-rose-800"
                     title="Quarantined (flaky) — excluded from the release pass-rate. Manage from the test case page.">quarantined</span>

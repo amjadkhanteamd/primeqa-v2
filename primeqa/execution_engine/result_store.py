@@ -77,6 +77,11 @@ class S4ExecutionRun(Base):
     # D-419/D-421: the Salesforce username the run executed as (JWT sub).
     # NULL = not identity-scoped (NOT "ran as admin" — absence stays absence).
     executing_identity = Column(String, nullable=True)
+    # Step 2: the run stamp (LLD_STEP_2 §a). NULL = unstamped (legacy / resolver
+    # refused) — never backfilled. Omitted from the INSERT when absent, the
+    # executing_identity discipline, so a stampless run never references them.
+    connected_org_id = Column(UUID(as_uuid=True), nullable=True)
+    org_version_seq = Column(Integer, nullable=True)
 
 
 class S4CreatedRecord(Base):
@@ -152,6 +157,11 @@ def persist_run_evidence(session, evidence: RunEvidence, *,
     # non-identity run must not even reference the column.
     if evidence.executing_identity is not None:
         batch_cols["executing_identity"] = evidence.executing_identity
+    # Step 2: the run stamp rides the evidence; written only when the select
+    # bracket established it (both halves, or neither).
+    if evidence.org_version_seq is not None and evidence.connected_org_id is not None:
+        batch_cols["connected_org_id"] = uuid.UUID(str(evidence.connected_org_id))
+        batch_cols["org_version_seq"] = int(evidence.org_version_seq)
     row = S4ExecutionRun(
         run_id=evidence.run_id,
         recipe_id=evidence.recipe_id,

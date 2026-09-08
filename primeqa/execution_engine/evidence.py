@@ -339,6 +339,13 @@ class RunEvidence:
     # (F6.1, D-196). Empty for read-only / rejected-create runs. ``CreatedRecord``s
     # from ``provisioning.CreatedRecordTracker``; persisted to s4_created_records.
     created_records: tuple = ()
+    # Step 2 (D-479 B): the RUN STAMP — the org this run executed against and
+    # that org's logical sequence AT EXECUTION, the executor's own value from
+    # the select bracket (the world's pin and this number are one value by
+    # construction). Both None = unstamped: the run predates stamping, or the
+    # resolver refused. Absence stays absence — never inferred later.
+    connected_org_id: Optional[str] = None
+    org_version_seq: Optional[int] = None
 
 
 def failure_signature(evidence: RunEvidence) -> tuple[Optional[str], Optional[str]]:

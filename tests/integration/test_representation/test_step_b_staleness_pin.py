@@ -100,7 +100,8 @@ def test_1a_false_stale_old_pin_is_b_new_resolver_is_a(session):
         validity=_gv(overall="intact"))                # current for A
     _seed_run(session, claim_test_id=cr.test_id, outcome="passed",
               finished_at="2026-09-06T10:00:00+00:00",
-              claim_version_seq=cr.version_seq, environment_id=ENV_A)
+              claim_version_seq=cr.version_seq, environment_id=ENV_A,
+              connected_org_id=org_a, org_version_seq=seq_a)     # Step 2: stamped
     session.flush()
 
     # OLD (observed): the org-less model's pin is the tenant MAX = B's seq,
@@ -146,8 +147,10 @@ def test_1b_never_synced_org_is_cannot_determine_not_a_silent_go(session):
         pass
     rows = _assemble_claim_evidence(session, ["SB-1B"], environment_id=ENV_A,
                                     connected_org_id=org_a)
+    _ready = {"state": "CURRENT", "source": "run_stamp", "axis": "org_sequence"}
     as_if_current = [{**r, "sequence": {**r["sequence"], "state": "CURRENT",
-                                        "current_seq": 5, "reason": None}}
+                                        "current_seq": 5, "reason": None},
+                      "readiness": _ready}                       # the pre-Step-2 grade
                      for r in rows]
     assert compute_substrate_decision(as_if_current)["recommendation"] == "go"
 
@@ -185,7 +188,8 @@ def test_1c_the_real_wrong_go_cross_org_latest_verdict_uuid_tiebreak(session):
         validity=_gv(overall="broken", claim_verdict="broken"))
     _seed_run(session, claim_test_id=cr.test_id, outcome="passed",
               finished_at="2026-09-06T10:00:00+00:00",
-              claim_version_seq=cr.version_seq, environment_id=ENV_B)
+              claim_version_seq=cr.version_seq, environment_id=ENV_B,
+              connected_org_id=org_low, org_version_seq=1)       # Step 2: stamped
     session.flush()
 
     # OLD (observed): the org-less unpinned read returns org A's row for a
@@ -196,7 +200,9 @@ def test_1c_the_real_wrong_go_cross_org_latest_verdict_uuid_tiebreak(session):
     old_rows = [{**r, "grounding": {"overall": "intact", "stale": False,
                                     "evaluated_at_version_seq": 1},
                  "sequence": {**r["sequence"], "state": "CURRENT", "current_seq": 1,
-                              "reason": None}}
+                              "reason": None},
+                 "readiness": {"state": "CURRENT", "source": "run_stamp",
+                               "axis": "org_sequence"}}          # the pre-Step-2 grade
                 for r in _assemble_claim_evidence(session, ["SB-1C"], environment_id=ENV_B,
                                                   connected_org_id=org_low)]
     assert compute_substrate_decision(old_rows)["recommendation"] == "go"   # the wrong GO
@@ -257,12 +263,18 @@ def test_3_org_unbound_is_cannot_determine_never_go_never_no_go(session):
 
     # (iii) a roll-up: one provisioned green org + one unprovisioned env (D9)
     org_a = _org(session, ENV_A, "A")
-    _version(session, org_a)
+    seq_a3 = _version(session, org_a)
     c2 = _approved_claim(session, coord, key="SB-3-TWO")
+    persist_grounding_validity(                      # Step 2 R-ungrounded: graded on A
+        session, connected_org_id=org_a, test_id=c2.test_id,
+        version_seq=c2.version_seq, evaluated_at_version_seq=seq_a3,
+        validity=_gv(overall="intact"))
     for env in (ENV_A, 9002):
         _seed_run(session, claim_test_id=c2.test_id, outcome="passed",
                   finished_at="2026-09-06T10:00:00+00:00",
-                  claim_version_seq=c2.version_seq, environment_id=env)
+                  claim_version_seq=c2.version_seq, environment_id=env,
+                  connected_org_id=(org_a if env == ENV_A else None),
+                  org_version_seq=(seq_a3 if env == ENV_A else None))
     session.flush()
     out2 = _decide(session, ["SB-3-TWO"])
     assert out2["recommendation"] == "cannot_determine"

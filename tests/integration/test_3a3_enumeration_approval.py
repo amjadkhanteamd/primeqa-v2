@@ -15,6 +15,19 @@ import pytest
 from sqlalchemy import text
 
 DB = os.environ.get("S3A3_TEST_DATABASE_URL")
+def _s2_org(session):
+    """Step 2 (§d): an inventory cut binds its S1 checkpoint to an org — this
+    suite plants one (the operator names the environment in production)."""
+    import uuid as _u
+    from sqlalchemy import text as _t
+    oid = str(_u.uuid4())
+    session.execute(_t(
+        "INSERT INTO connected_orgs (id, org_type, sf_instance_url, label) "
+        "VALUES (CAST(:i AS uuid), 'sandbox', 'https://s2.example', :l)"),
+        {"i": oid, "l": f"s2-{oid[:8]}"})
+    return oid
+
+
 pytestmark = [
     pytest.mark.integration,
     pytest.mark.skipif(not DB, reason="set S3A3_TEST_DATABASE_URL "
@@ -46,7 +59,7 @@ def _seed_inventory(session):
     # per-run unique site: the scratch DB accumulates COMMITTED claims
     # from transcript scripts; fixed names would make "created" read 0.
     site = f"p-{uuid.uuid4().hex[:8]}.example.com"
-    return create_inventory_version(session, members=[
+    return create_inventory_version(session, connected_org_id=_s2_org(session), members=[
         {"site": site, "path": "/s/home",
          "persona_scope": "customer", "display_name": "Portal home"},
         {"site": site, "path": "/s/cases",
