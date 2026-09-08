@@ -55,9 +55,26 @@ def evaluate_and_record(db, release, tenant_id, *, release_repo) -> dict:
     criteria = release.decision_criteria or {}
     from primeqa.intelligence.substrate_decision import (
         get_release_substrate_decision,
+        release_scope_readiness,
     )
     keys = external_keys_for_requirements(
         release_repo.list_requirements(release.id, tenant_id=tenant_id))
+    # Step 2 (§c): the Evaluate ACT refuses a non-current scope — a readiness
+    # FACT, named item by item, with no decision row written. (The policy
+    # object that will make this configurable is Step 5.)
+    scope = release_scope_readiness(tenant_id, keys)
+    if scope.get("available") and scope.get("non_current"):
+        items = [i for i in scope["items"] if i["state"] != "CURRENT"]
+        return {
+            "refused": True, "reason": "scope_not_current",
+            "recommendation": None, "confidence": None,
+            "reasoning": [{"check": "readiness", "status": "fail",
+                           "detail": f"{len(items)} item(s) in scope are not "
+                                     "current — evaluate refused"}],
+            "criteria_met": {"readiness": False}, "metrics": None,
+            "mode": "substrate", "recommendation_source": "substrate",
+            "v1": None, "substrate": None, "scope": scope, "items": items,
+        }
     substrate = get_release_substrate_decision(tenant_id, keys, criteria)
 
     if substrate.get("available") and substrate.get("applicable"):

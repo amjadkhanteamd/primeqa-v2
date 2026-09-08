@@ -1,4 +1,5 @@
 {% extends "base.html" %}
+{% from 'components/_readiness.html' import readiness_pill %}
 {% from 'components/breadcrumbs.html' import breadcrumbs %}
 {% from 'components/_buttons.html' import btn_edit %}
 {% block title %}{{ release.name }} - Plimsol{% endblock %}
@@ -28,8 +29,22 @@
         <div class="flex space-x-3">
             <form method="POST" action="/releases/{{ release.id }}/evaluate-decision">
             {{ csrf_input | safe }}
-                <button type="submit" class="rounded-md bg-purple-600 px-3 py-2 text-sm font-semibold text-white hover:bg-purple-500">Evaluate GO/NO-GO</button>
+                <button type="submit" class="rounded-md bg-purple-600 px-3 py-2 text-sm font-semibold text-white hover:bg-purple-500"
+                        {% if scope_readiness and scope_readiness.available and scope_readiness.non_current %}title="Refuses: {{ scope_readiness.non_current }} item(s) in scope are not current"{% endif %}>Evaluate GO/NO-GO</button>
             </form>
+            {# Step 2 (§c): "Run the scope" — the release's approved recipes through
+               the existing release-run path, beside Evaluate. #}
+            {% if tab == 'decision' %}
+            <form method="POST" action="/releases/{{ release.id }}/run" class="flex items-center gap-2" data-testid="run-the-scope">
+            {{ csrf_input | safe }}
+                <select name="environment_id" required class="rounded-md border border-gray-300 px-2 py-2 text-sm">
+                  <option value="">Environment…</option>
+                  {% for e in environments %}<option value="{{ e.id }}">{{ e.name }}</option>{% endfor %}
+                </select>
+                <input type="hidden" name="priority" value="normal">
+                <button type="submit" class="rounded-md bg-green-600 px-3 py-2 text-sm font-semibold text-white hover:bg-green-500">Run the scope</button>
+            </form>
+            {% endif %}
             {{ btn_edit('Edit', href='/releases/' ~ release.id ~ '/edit') }}
         </div>
         {% endif %}
@@ -75,6 +90,25 @@
 
     <!-- Tab Content -->
     {% if tab == 'decision' %}
+    {# Step 2 (§c/§e): the REFUSAL block — every item in scope that is not
+       CURRENT, named (key · environment · pill · sentence). A readiness fact:
+       Evaluate refuses while this list is non-empty. #}
+    {% if scope_readiness and scope_readiness.available and scope_readiness.non_current %}
+    <div class="bg-white shadow rounded-lg p-6 mb-6 border-l-4 border-slate-400" data-testid="scope-refusal" data-non-current="{{ scope_readiness.non_current }}">
+      <h3 class="text-sm font-medium text-gray-900">Evaluate will refuse — {{ scope_readiness.non_current }} item{{ '' if scope_readiness.non_current == 1 else 's' }} in scope {{ 'is' if scope_readiness.non_current == 1 else 'are' }} not current</h3>
+      <p class="text-xs text-gray-500 mt-0.5">A release is graded over its scope's readiness, not its wishes. Run the scope, then evaluate.</p>
+      <ul class="mt-3 divide-y divide-gray-100">
+        {% for i in scope_readiness['items'] if i.state != 'CURRENT' %}
+        <li class="py-2 flex items-center gap-3 text-sm" data-testid="scope-item" data-readiness="{{ i.state }}">
+          <span class="font-mono text-xs text-blue-700">{{ i.external_keys | join(', ') if i.external_keys else i.test_id[:8] }}</span>
+          <span class="text-xs text-gray-500">{{ (env_names or {}).get(i.environment_id) or ('Environment ' ~ i.environment_id if i.environment_id is not none else 'no environment') }}</span>
+          {{ readiness_pill(i) }}
+          <span class="text-xs text-gray-500 italic">{{ i.sentence }}</span>
+        </li>
+        {% endfor %}
+      </ul>
+    </div>
+    {% endif %}
     {# D-172 (5a): substrate evidence — the release's claims (via its requirements)
        grounding-drift + latest verdict. Signal the human weighs next to the v1
        recommendation above; the substrate does NOT produce the verdict. #}

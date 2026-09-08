@@ -529,3 +529,30 @@
   today; the read should move to the identity when Step 3/5 touches that
   surface. The release LIST's own fixture noise (surface plan §6 item 4)
   is likewise untouched.
+
+## Added 2026-09-08 — from Step 2 (contemporaneity)
+
+- **Medium: the Substrate-evidence panel on the decision tab still says
+  "No claims at risk — all grounded claims are intact" over "N not
+  computed".** The decision CARD now names ungrounded claims (R-ungrounded,
+  D-484) but the panel beneath it is the S6/S8 evidence console's own
+  line (`release_substrate_console`), which grades absence as intact. The
+  second surface of the HIGH item Step 2 closed at the decision layer.
+  Fix: the console counts "not computed" as its own class and never
+  prints "all intact" while it is non-zero.
+- **Low: the `/runs/substrate` requirement and cause lenses carry no
+  readiness.** The runs lens has the pill + sentence; the grouped lenses
+  (the default, "requirement") summarise outcomes only. Readiness per
+  requirement is a roll-up question (worst-of? any non-current?) that
+  belongs with the Run Planner's per-requirement view (Step 4).
+- **Low: "Run the scope" does not enqueue grounding evaluation.** Ruled
+  not material today (0 of 659 approved claims lack a verdict; the S8
+  tick keeps it so). If a tick backlog ever exceeds its cap, the refusal
+  block's "awaiting grounding evaluation" items need an exit beside "Run
+  the scope" — a per-release grounding enqueue.
+- **Resolved, recorded: the three `.env`-loading live-parity unit tests
+  read PRODUCTION** (`test_substrate_decision_compute.py:434-443`,
+  `test_strategy.py`, `test_run_router.py`) and go red on any branch
+  whose migration production does not yet have. Deselected on the branch,
+  re-run at merge. A unit test that reads production is a convention
+  worth revisiting when the next such migration lands.

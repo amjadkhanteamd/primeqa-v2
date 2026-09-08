@@ -53,9 +53,16 @@ def create_inventory_version(
     members: list[dict],
     created_by: int,
     notes: str = "",
+    connected_org_id: str,
 ) -> int:
     """Record a NEW inventory version with its full membership in one
     transaction (flushed here; the caller commits — D-β posture).
+
+    Step 2 (LLD_STEP_2 §d): ``connected_org_id`` is REQUIRED — the org of
+    the environment whose portal this inventory is cut for (the operator
+    names the environment; the D-286 seam resolves it). The S1 checkpoint
+    the cut mints is bound to it; the org-less checkpoint at MAX+1 (the
+    four rows Step B found) is no longer possible.
 
     Each member dict carries the five v1 identity fields (``site``,
     ``path``, ``persona_scope``, optional ``record_context_ref`` /
@@ -109,7 +116,8 @@ def create_inventory_version(
     # fills — same transaction as the declaration.
     from primeqa.semantic.surface_entities import (
         materialize_surface_entities)
-    materialize_surface_entities(session, inventory_version=version)
+    materialize_surface_entities(session, inventory_version=version,
+                                 connected_org_id=connected_org_id)
     session.flush()
     return int(version)
 

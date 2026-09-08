@@ -36,6 +36,10 @@ def _claim(outcome="passed", *, overall="intact", stale=False, never=False,
         "flaky": flaky,
         "recent_outcomes": recent or ([] if never else [outcome]),
         "sequence": _CURRENT_SEQ,                        # Step B: resolved
+        # Step 2: readiness on the org axis — a never-run row is NEVER_RUN,
+        # every other hand-built row is CURRENT unless a test says otherwise
+        "readiness": (_NEVER_RUN_READY if never else _CURRENT_READY),
+        "ungrounded": False,
     }
 
 
@@ -46,6 +50,15 @@ _CURRENT_SEQ = {"state": "CURRENT", "current_seq": 9, "as_of": None,
 _UNBOUND_SEQ = {"state": "CANNOT_DETERMINE", "current_seq": None, "as_of": None,
                 "source": "org_current", "axis": "org_sequence",
                 "connected_org_id": None, "reason": "org_unbound"}
+_CURRENT_READY = {"state": "CURRENT", "source": "run_stamp", "axis": "org_sequence",
+                  "stamp_seq": 9, "current_seq": 9, "reason": None, "changed_reads": []}
+_NEVER_RUN_READY = {"state": "NEVER_RUN", "source": "run_stamp", "axis": "org_sequence",
+                    "reason": None, "changed_reads": []}
+_STALE_READY = {"state": "STALE", "source": "run_stamp", "axis": "org_sequence",
+                "stamp_seq": 7, "current_seq": 9, "reason": None,
+                "changed_reads": [["CustomField", "Amount", "entity_closed"]]}
+_UNSTAMPED_READY = {"state": "CANNOT_DETERMINE", "source": "run_stamp",
+                    "axis": "org_sequence", "reason": "unstamped", "changed_reads": []}
 
 
 def _checks(out):
@@ -64,11 +77,16 @@ def test_empty_evidence_is_not_applicable():
     assert out == {"applicable": False, "claim_count": 0}
 
 
-def test_all_never_run_is_no_go_via_has_runs():
+def test_all_never_run_is_ungraded_not_no_go():
+    # Step 2 (D9): no evidence at all is the fully UNGRADED case — unknown
+    # blocks GO and CONDITIONAL GO, it does not condemn. has_runs is still a
+    # failed criterion (a fact), no longer a graded blocker.
     out = compute_substrate_decision([_claim(never=True)], now=_NOW)
-    assert out["recommendation"] == "no_go"
+    assert out["recommendation"] == "cannot_determine"
     assert _checks(out)["has_runs"] == "fail"
     assert out["criteria_met"]["has_runs"] is False
+    assert _checks(out)["readiness"] == "fail"
+    assert out["metrics"]["blockers"] == 0
 
 
 def test_pass_rate_below_threshold_blocks():
@@ -113,11 +131,16 @@ def test_drifted_and_stale_warn_to_conditional_go():
     assert _checks(out)["grounding_integrity"] == "warn"
 
 
-def test_partial_coverage_warns():
+def test_partial_coverage_is_an_ungraded_input_under_d9():
+    # Step 2: a never-run claim beside a green one is no longer "one warning" —
+    # it is an UNGRADED input; unknown blocks GO and CONDITIONAL GO (D9). The
+    # coverage line still records the fact.
     out = compute_substrate_decision([_claim(), _claim(never=True)], now=_NOW)
+    assert out["recommendation"] == "cannot_determine"
     assert _checks(out)["coverage"] == "warn"
-    assert out["recommendation"] == "conditional_go"
-    assert out["metrics"]["never_run"] == 1
+    assert _checks(out)["readiness"] == "fail"
+    assert out["metrics"]["readiness"]["never_run"] == 1
+    assert out["metrics"]["readiness"]["ungraded"] == 1
 
 
 def test_version_currency_warns_on_superseded_and_unknown():
@@ -221,6 +244,7 @@ def _bclaim(outcome, *, keys=(), cause=None, verdict=None, flaky=False,
         "latest_run": {"run_id": "r", "outcome": outcome, "verdict": verdict,
                        "finished_at": finished_at, "version_unknown": False,
                        "cause": cause},
+        "readiness": _CURRENT_READY, "ungrounded": False,
         "sequence": _CURRENT_SEQ,
         "superseded_newer_run": False,
         "never_run": False,

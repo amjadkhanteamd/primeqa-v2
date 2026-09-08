@@ -204,6 +204,12 @@ def evaluate_decision(release_id):
         result = evaluate_and_record(
             db, release, request.user["tenant_id"],
             release_repo=svc.release_repo)
+        if result.get("refused"):
+            # Step 2: non-current scope → the act is refused, nothing recorded.
+            return json_error("SCOPE_NOT_CURRENT",
+                              f"{len(result['items'])} item(s) in scope are not "
+                              "current — run the scope, then evaluate",
+                              http=409, details={"items": result["items"]})
         svc._log(request.user["tenant_id"], request.user["id"],
                  "release.decision.evaluated", release_id,
                  {"recommendation": result.get("recommendation")})

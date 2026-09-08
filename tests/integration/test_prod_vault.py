@@ -14,6 +14,19 @@ from cryptography.fernet import Fernet
 from sqlalchemy import text
 
 DB = os.environ.get("S3A3_TEST_DATABASE_URL")
+def _s2_org(session):
+    """Step 2 (§d): an inventory cut binds its S1 checkpoint to an org — this
+    suite plants one (the operator names the environment in production)."""
+    import uuid as _u
+    from sqlalchemy import text as _t
+    oid = str(_u.uuid4())
+    session.execute(_t(
+        "INSERT INTO connected_orgs (id, org_type, sf_instance_url, label) "
+        "VALUES (CAST(:i AS uuid), 'sandbox', 'https://s2.example', :l)"),
+        {"i": oid, "l": f"s2-{oid[:8]}"})
+    return oid
+
+
 pytestmark = [
     pytest.mark.integration,
     pytest.mark.skipif(not DB, reason="set S3A3_TEST_DATABASE_URL "
@@ -185,7 +198,8 @@ def test_d_enqueue_boundary(session):
     sfx = uuid.uuid4().hex[:8]
     inv = create_inventory_version(session, members=[
         {"site": f"eq-{sfx}.example.com", "path": "/x",
-         "persona_scope": "eq"}], created_by=USER_ID)
+         "persona_scope": "eq"}], created_by=USER_ID,
+        connected_org_id=_s2_org(session))
     res = enumerate_claims(session, catalogue_release_id=2,
                            inventory_version=inv, persona_scope="eq",
                            created_by=USER_ID)
@@ -313,7 +327,8 @@ def test_f_manifest_pins_the_engine_run_set(session):
     sfx = uuid.uuid4().hex[:8]
     inv = create_inventory_version(session, members=[
         {"site": f"rs-{sfx}.example.com", "path": "/x",
-         "persona_scope": "rs"}], created_by=USER_ID)
+         "persona_scope": "rs"}], created_by=USER_ID,
+        connected_org_id=_s2_org(session))
     res = enumerate_claims(session, catalogue_release_id=2,
                            inventory_version=inv, persona_scope="rs",
                            created_by=USER_ID)

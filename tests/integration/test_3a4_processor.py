@@ -20,6 +20,19 @@ import pytest
 from sqlalchemy import text
 
 DB = os.environ.get("S3A3_TEST_DATABASE_URL")
+def _s2_org(session):
+    """Step 2 (§d): an inventory cut binds its S1 checkpoint to an org — this
+    suite plants one (the operator names the environment in production)."""
+    import uuid as _u
+    from sqlalchemy import text as _t
+    oid = str(_u.uuid4())
+    session.execute(_t(
+        "INSERT INTO connected_orgs (id, org_type, sf_instance_url, label) "
+        "VALUES (CAST(:i AS uuid), 'sandbox', 'https://s2.example', :l)"),
+        {"i": oid, "l": f"s2-{oid[:8]}"})
+    return oid
+
+
 pytestmark = [
     pytest.mark.integration,
     pytest.mark.skipif(not DB, reason="set S3A3_TEST_DATABASE_URL "
@@ -87,7 +100,8 @@ def world(eng):
     inv = create_inventory_version(s, members=[
         {"site": "proc.example.com", "path": "/a", "persona_scope": "proc"},
         {"site": "proc.example.com", "path": "/b", "persona_scope": "proc"},
-    ], created_by=USER_ID, notes="3A-4 integration inventory")
+    ], created_by=USER_ID, notes="3A-4 integration inventory",
+        connected_org_id=_s2_org(s))
     res = enumerate_claims(s, catalogue_release_id=release,
                            inventory_version=inv, persona_scope="proc",
                            created_by=USER_ID)

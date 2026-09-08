@@ -315,7 +315,10 @@ def _assemble_claim_evidence(session, external_keys, *, tenant_id=None,
 
     # Step B: the ONE org-required resolver; ``None`` org → the recorded
     # refusal on every row (never a tenant-wide number).
-    from primeqa.sync.readiness import SEQ_CURRENT, resolve_current_sequence
+    from primeqa.sync.readiness import (
+        SEQ_CURRENT, covered_reads_changed, resolve_current_sequence,
+        resolve_run_readiness_bulk,
+    )
     resolution = resolve_current_sequence(session, connected_org_id=connected_org_id)
     sequence = resolution.as_dict()
     current_seq = (resolution.current_seq
@@ -366,12 +369,20 @@ def _assemble_claim_evidence(session, external_keys, *, tenant_id=None,
         gv = gv_by_tid.get(tid)
         grounding = None
         if gv is not None:
-            # ``None`` only under a recorded CANNOT_DETERMINE (row["sequence"]
-            # carries the reason) — never a silent unknowable.
-            stale = (gv.evaluated_at_version_seq < current_seq
-                     if current_seq is not None else None)
+            # Step 2, ruling R-ground: a grounding is stale only when a COVERED
+            # read changed after its verdict — the same targeted predicate as
+            # run readiness, never "org moved → all stale". ``None`` only under
+            # a recorded CANNOT_DETERMINE (row["sequence"] carries the reason).
+            if current_seq is not None and connected_org_id is not None:
+                changed = covered_reads_changed(
+                    session, claim_test_id=tid, connected_org_id=connected_org_id,
+                    since_seq=gv.evaluated_at_version_seq)
+                stale = bool(changed)
+            else:
+                changed, stale = (), None
             grounding = {"overall": gv.overall, "stale": stale,
-                         "evaluated_at_version_seq": gv.evaluated_at_version_seq}
+                         "evaluated_at_version_seq": gv.evaluated_at_version_seq,
+                         "changed_reads": [list(c) for c in changed]}
 
         # D-300 review-fix B1: batches collapse to ONE logical run each (the
         # single path passes through byte-identical — batch_id NULL).
@@ -427,6 +438,9 @@ def _assemble_claim_evidence(session, external_keys, *, tenant_id=None,
             "recent_outcomes": recent_outcomes,
             "manual_quarantine": manual_q.get(sid),        # D-232: pinned|lifted|None
             "sequence": sequence,                          # Step B: the resolution
+            # Step 2: a run with no grounding verdict is UNGRADED on the
+            # grounding axis (ruling R-ungrounded) — recorded, never "fine".
+            "ungrounded": latest_run is not None and gv is None,
         })
 
     if sup_tids:
@@ -437,6 +451,19 @@ def _assemble_claim_evidence(session, external_keys, *, tenant_id=None,
         for c in out:
             if c["test_id"] in hit:
                 c["superseded_newer_run"] = True
+    # Step 2 (§b/§c): readiness for (claim, THIS environment) from the run
+    # stamp — the org axis, targeted through what each claim reads. The
+    # 0-env branch has no environment and no runs: every row is NEVER_RUN.
+    if environment_id is not None:
+        ready = resolve_run_readiness_bulk(
+            session, [(c["test_id"], environment_id) for c in out])
+        for c in out:
+            c["readiness"] = ready[(c["test_id"], int(environment_id))].as_dict()
+    else:
+        from primeqa.sync.readiness import ReadinessResolution
+        never = ReadinessResolution(state="NEVER_RUN").as_dict()
+        for c in out:
+            c["readiness"] = dict(never)
     return out
 
 
@@ -508,6 +535,45 @@ def compute_substrate_decision(claim_evidence, criteria=None, *, now=None) -> di
     counted = [c for c in claim_evidence if c["latest_run"] is not None]
     never_run = [c for c in claim_evidence if c["never_run"]]
 
+    # Step 2 (§c) — readiness. An unrun, unstampable or ungrounded claim is an
+    # UNGRADED INPUT: per D9 it blocks GO and CONDITIONAL GO (a graded blocker
+    # still makes NO GO), never NO GO alone; the line names the counts. A STALE
+    # claim is graded evidence that is old → a warning naming its reads. A row
+    # that carries no readiness at all is treated as CANNOT_DETERMINE.
+    _rs = lambda c: ((c.get("readiness") or {}).get("state") or "CANNOT_DETERMINE")  # noqa: E731
+    r_never = [c for c in claim_evidence if _rs(c) == "NEVER_RUN"]
+    r_cannot = [c for c in claim_evidence if _rs(c) == "CANNOT_DETERMINE"]
+    r_stale = [c for c in claim_evidence if _rs(c) == "STALE"]
+    r_current = [c for c in claim_evidence if _rs(c) == "CURRENT"]
+    r_ungrounded = [c for c in claim_evidence
+                    if c.get("ungrounded") and _rs(c) != "NEVER_RUN"]
+    ungraded_inputs = r_never + r_cannot + [c for c in r_ungrounded
+                                            if c not in r_never and c not in r_cannot]
+    if ungraded_inputs:
+        parts = []
+        if r_never:
+            parts.append(f"{len(r_never)} never run in this environment")
+        unst = [c for c in r_cannot if (c.get("readiness") or {}).get("reason") == "unstamped"]
+        if unst:
+            parts.append(f"{len(unst)} run without a stamp")
+        if len(r_cannot) - len(unst):
+            parts.append(f"{len(r_cannot) - len(unst)} of undeterminable readiness")
+        if r_ungrounded:
+            parts.append(f"{len(r_ungrounded)} with no grounding verdict for this org")
+        reasoning.append({"check": "readiness", "status": "fail",
+                          "detail": f"{len(ungraded_inputs)} claim(s) ungraded: "
+                                    + ", ".join(parts)
+                                    + " — unknown blocks GO and CONDITIONAL GO"})
+        criteria_met["readiness"] = False
+    elif r_stale:
+        reasoning.append({"check": "readiness", "status": "warn",
+                          "detail": f"{len(r_stale)} claim(s) STALE — something they "
+                                    "read changed after their last run"})
+        criteria_met["readiness"] = True
+        warnings += 1
+    else:
+        criteria_met["readiness"] = True
+
     # D-200 flake quarantine: a chronically-flipping claim whose latest run is
     # not-passed is QUARANTINED — excluded from the pass-rate (it must not block
     # a good release) and surfaced as its own warning. A flaky claim that
@@ -526,13 +592,15 @@ def compute_substrate_decision(claim_evidence, criteria=None, *, now=None) -> di
     failed = sum(1 for c in scored if c["latest_run"]["outcome"] == "failed")
     errored = sum(1 for c in scored if c["latest_run"]["outcome"] == "errored")
 
-    # has_runs — no evidence at all is a blocker (the v1 no-runs parallel).
+    # has_runs — no evidence at all. Step 2: this is the fully UNGRADED case
+    # (every claim NEVER_RUN → the readiness check above), so it is recorded
+    # as a failed criterion but no longer counted as a graded BLOCKER — an
+    # absence is not a NO GO (D9: unknown blocks GO, it does not condemn).
     if not counted:
         reasoning.append({"check": "has_runs", "status": "fail",
                           "detail": "No substrate runs exist for any of this "
                                     "release's claims"})
         criteria_met["has_runs"] = False
-        blockers += 1
     else:
         criteria_met["has_runs"] = True
 
@@ -559,18 +627,25 @@ def compute_substrate_decision(claim_evidence, criteria=None, *, now=None) -> di
     stale = [c for c in claim_evidence
              if (c["grounding"] or {}).get("stale") is True
              and (c["grounding"] or {}).get("overall") == "intact"]
+    # Step 2 (R-ungrounded): a claim with a run but NO grounding verdict is
+    # named here too — this line must never read "all intact" over an
+    # unknown (the HIGH FIX PLAN item, the vacuous-green class).
+    _ungrounded_note = (f"; {len(r_ungrounded)} with no grounding verdict for this org"
+                        if r_ungrounded else "")
     if broken and block_on_broken:
         reasoning.append({"check": "grounding_integrity", "status": "fail",
                           "detail": f"{len(broken)} claim(s) have BROKEN "
-                                    "grounding — their run evidence is vacuous"})
+                                    "grounding — their run evidence is vacuous"
+                                    + _ungrounded_note})
         criteria_met["grounding_integrity"] = False
         blockers += 1
-    elif drifted or stale or broken:
+    elif drifted or stale or broken or r_ungrounded:
         reasoning.append({"check": "grounding_integrity", "status": "warn",
                           "detail": f"{len(drifted)} drifted / {len(stale)} "
                                     f"stale grounding(s)"
                                     + (f"; {len(broken)} broken (blocking "
-                                       "disabled)" if broken else "")})
+                                       "disabled)" if broken else "")
+                                    + _ungrounded_note})
         criteria_met["grounding_integrity"] = True
         warnings += 1
     else:
@@ -616,6 +691,10 @@ def compute_substrate_decision(claim_evidence, criteria=None, *, now=None) -> di
             warnings += 1
 
     if ungraded:
+        recommendation, confidence = "cannot_determine", 0.0
+    elif ungraded_inputs and blockers == 0:
+        # D9: unknown blocks GO and CONDITIONAL GO; a graded blocker (below)
+        # still makes NO GO stand over it.
         recommendation, confidence = "cannot_determine", 0.0
     elif blockers == 0 and warnings == 0:
         recommendation, confidence = "go", 0.95
@@ -682,6 +761,11 @@ def compute_substrate_decision(claim_evidence, criteria=None, *, now=None) -> di
             "pass_rate": round(pass_rate, 1),
             "grounding": {"broken": len(broken), "drifted": len(drifted),
                           "stale": len(stale)},
+            "readiness": {"never_run": len(r_never), "stale": len(r_stale),
+                          "current": len(r_current),
+                          "cannot_determine": len(r_cannot),
+                          "ungrounded": len(r_ungrounded),
+                          "ungraded": len(ungraded_inputs)},
             "blockers": blockers, "warnings": warnings,
         },
         "risk": {"score": score, "level": _risk_level(score)},
@@ -777,6 +861,10 @@ def _rollup_env_decisions(env_decisions) -> dict:
     metrics["grounding"] = {
         k: sum(d["metrics"]["grounding"][k] for d in env_decisions)
         for k in ("broken", "drifted", "stale")}
+    metrics["readiness"] = {                       # Step 2: summed per env
+        k: sum((d["metrics"].get("readiness") or {}).get(k, 0) for d in env_decisions)
+        for k in ("never_run", "stale", "current", "cannot_determine",
+                  "ungrounded", "ungraded")}
     metrics["environments"] = [d["environment_id"] for d in env_decisions]
     score = max(d["risk"]["score"] for d in env_decisions)
     return {
@@ -875,3 +963,96 @@ def get_release_substrate_decision(tenant_id: int, external_keys,
         log.warning("substrate decision unavailable for tenant %s: %s",
                     tenant_id, exc)
         return {"available": False, "applicable": False, "claim_count": 0}
+
+
+# ---------------------------------------------------------------------------
+# Step 2 (§c) — the release SCOPE's readiness: every claim in scope × every
+# environment with evidence. The Evaluate act REFUSES on a non-current scope
+# (a readiness FACT, not policy — the policy object is Step 5) and names the
+# items; "Run the scope" is one click away. Best-effort wrapper discipline.
+# ---------------------------------------------------------------------------
+
+def release_scope_readiness(tenant_id: int, external_keys) -> dict:
+    """``{available, items: [{test_id, external_keys, environment_id, state,
+    reason, sentence, stamp_seq, current_seq}], non_current: n, environments:
+    [ids], claim_count}``. Zero environments with evidence = every claim
+    NEVER_RUN once (environment None) so the refusal still names them."""
+    keys = [k for k in (external_keys or []) if k]
+    if not keys:
+        return {"available": True, "items": [], "non_current": 0,
+                "environments": [], "claim_count": 0}
+    try:
+        from sqlalchemy.orm import Session
+
+        from primeqa.semantic.connection import get_tenant_connection
+        from primeqa.sync.readiness import resolve_run_readiness_bulk
+        with get_tenant_connection(tenant_id) as conn:
+            session = Session(bind=conn)
+            try:
+                test_ids, keys_by_tid = _claim_test_ids(session, keys)
+                if not test_ids:
+                    return {"available": True, "items": [], "non_current": 0,
+                            "environments": [], "claim_count": 0}
+                from primeqa.test_representation.coordinator import (
+                    SemanticTransactionCoordinator,
+                )
+                latest = SemanticTransactionCoordinator().get_latest_claims(session, test_ids)
+                live = [t for t in test_ids
+                        if getattr(latest.get(t), "status", None) != "deprecated"]
+                envs = _environments_with_evidence(session, live)
+                items = []
+                if not envs:
+                    for t in live:
+                        items.append({"test_id": str(t),
+                                      "external_keys": sorted(keys_by_tid.get(str(t), ())),
+                                      "environment_id": None, "state": "NEVER_RUN",
+                                      "reason": None, "sentence": "No run in any environment.",
+                                      "stamp_seq": None, "current_seq": None})
+                else:
+                    ready = resolve_run_readiness_bulk(
+                        session, [(t, e) for t in live for e in envs])
+                    for t in live:
+                        for e in envs:
+                            r = ready[(str(t), int(e))]
+                            items.append({"test_id": str(t),
+                                          "external_keys": sorted(keys_by_tid.get(str(t), ())),
+                                          "environment_id": int(e), "state": r.state,
+                                          "reason": r.reason, "sentence": r.sentence,
+                                          "stamp_seq": r.stamp_seq,
+                                          "current_seq": r.current_seq})
+                non_current = [i for i in items if i["state"] != "CURRENT"]
+                return {"available": True, "items": items,
+                        "non_current": len(non_current), "environments": envs,
+                        "claim_count": len(live)}
+            finally:
+                session.close()
+    except Exception as exc:
+        log.warning("release scope readiness unavailable for tenant %s: %s",
+                    tenant_id, exc)
+        return {"available": False, "items": [], "non_current": 0,
+                "environments": [], "claim_count": 0}
+
+
+def readiness_for_pairs(tenant_id: int, pairs) -> dict:
+    """``{available, map: {(test_id_str, environment_id): readiness dict}}`` —
+    the list/detail pages' read (best-effort; a tenant with no substrate
+    schema renders no pills). ``pairs`` = ``[(claim_test_id, environment_id)]``."""
+    pairs = [(str(t), int(e)) for t, e in (pairs or []) if t is not None and e is not None]
+    if not pairs:
+        return {"available": True, "map": {}}
+    try:
+        from sqlalchemy.orm import Session
+
+        from primeqa.semantic.connection import get_tenant_connection
+        from primeqa.sync.readiness import resolve_run_readiness_bulk
+        with get_tenant_connection(tenant_id) as conn:
+            session = Session(bind=conn)
+            try:
+                ready = resolve_run_readiness_bulk(session, pairs)
+                return {"available": True,
+                        "map": {k: v.as_dict() for k, v in ready.items()}}
+            finally:
+                session.close()
+    except Exception as exc:
+        log.warning("readiness unavailable for tenant %s: %s", tenant_id, exc)
+        return {"available": False, "map": {}}

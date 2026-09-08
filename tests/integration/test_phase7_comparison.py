@@ -27,6 +27,19 @@ import pytest
 from sqlalchemy import text
 
 DB = os.environ.get("S3A3_TEST_DATABASE_URL")
+def _s2_org(session):
+    """Step 2 (§d): an inventory cut binds its S1 checkpoint to an org — this
+    suite plants one (the operator names the environment in production)."""
+    import uuid as _u
+    from sqlalchemy import text as _t
+    oid = str(_u.uuid4())
+    session.execute(_t(
+        "INSERT INTO connected_orgs (id, org_type, sf_instance_url, label) "
+        "VALUES (CAST(:i AS uuid), 'sandbox', 'https://s2.example', :l)"),
+        {"i": oid, "l": f"s2-{oid[:8]}"})
+    return oid
+
+
 pytestmark = [
     pytest.mark.integration,
     pytest.mark.skipif(not DB, reason="set S3A3_TEST_DATABASE_URL "
@@ -120,7 +133,7 @@ def world():
     # ---- claim_set --------------------------------------------------
     inv = create_inventory_version(s, members=[
         {"site": site, "path": "/x", "persona_scope": "p7"}],
-        created_by=USER_ID)
+        created_by=USER_ID, connected_org_id=_s2_org(s))
     res = enumerate_claims(s, catalogue_release_id=2,
                            inventory_version=inv, persona_scope="p7",
                            created_by=USER_ID)
@@ -352,7 +365,7 @@ def test_cross_inventory_refused_and_idempotent_recompare(world):
 
     inv2 = create_inventory_version(s, members=[
         {"site": world["site"], "path": "/y", "persona_scope": "p7"}],
-        created_by=USER_ID)
+        created_by=USER_ID, connected_org_id=_s2_org(s))
     res2 = enumerate_claims(s, catalogue_release_id=2,
                             inventory_version=inv2, persona_scope="p7",
                             created_by=USER_ID)
