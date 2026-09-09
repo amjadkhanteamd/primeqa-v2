@@ -116,3 +116,22 @@ migration first (D-285), as every step.
   `public.environments` for the reaper tests (§0 item 8) are ledgered.
 - Schedule 1 on production stays enabled; under ruling 2 its next fire
   REFUSES until AK claims it on the panel at the merge.
+
+## h. Production transcript (2026-09-09, GO #1 + GO #2)
+
+| leg | observed |
+|---|---|
+| pre-flight trees | branch @ d5fd9eb clean; `main` = origin/main = fb59095, delta zero; branch 2 ahead |
+| pre-flight prod probes (read-only) | neither new table; 0 of the 8 plan columns; tenant head `20260910_0010`; schedule 1 enabled, creator NULL, no authority column yet, **last fired 06:01:33Z today** (its normal cron under the old code — a second plan-less batch; 568 plan-less stamped runs since AK's re-enable, valid evidence); release 16 targets undeclared by construction; 0 queued jobs |
+| classification | **ADDITIVE, dumpless (D-476)**: one alembic file — 2× CREATE TABLE IF NOT EXISTS, 8× ADD COLUMN IF NOT EXISTS, 3 functions, 4 triggers, 4 indexes, 2 comments; every DROP the downgrade or an idempotent re-create; zero SQL data-write statements added outside the planner / schedule store / console and their audit rows (the one grep hit is a Python `dict.update`); no backfill |
+| the window, proven (reads vs writes) | migration first, old code: safe — the tree at fb59095 names neither table, none of the 8 columns, nor the planner / console (0 files; the one `authorised_by` hit on main is the UI schedule's trigger key). New code first, READS: the plan view and targets block degrade to "unavailable"; the schedules panel degrades to absent (its store selects the new columns). New code first, WRITES: NOT safe — every S4 enqueue inserts `plan_id` (UndefinedColumn: the Plan routes, the API enqueue, the CI webhook, the repair gate) and the scheduler tick's store read fails; in-flight runs still persist (the plan id is passed only when set). The runbook never enters it |
+| GO #1 — migration | `alembic … upgrade tenant@head` 11:51:45Z → 11:52:10Z, exit 0, the single step on `tenant_1` |
+| GO #1 — read-back | head `20260911_0010`; `run_plans` (12 cols) + `release_targets` (9 cols), 0 rows; 8 of 8 columns, all nullable; CHECKs scope-kind / actor-present / execution-complete / deactivation-complete; triggers no-delete + immutable on both; indexes plan-scope, target-release, active-target unique, runs-by-plan; schedule 1's six new columns NULL; 0 runs / jobs carry a plan id |
+| GO #1 — refusal proofs (one rolled-back transaction) | plan DELETE refused; plan identity UPDATE refused; the first execution stamp allowed; a SECOND execution stamp refused naming the first; target DELETE refused; target identity UPDATE refused; target deactivation allowed; rows after rollback 0 / 0 |
+| GO #2 — merge + deploy | merge **3729821** (`--no-ff`, parents fb59095 + d5fd9eb, author AK, 0 trailers) pushed 12:05:33Z; four services **SUCCESS** at 3729821 by 12:08:46Z; `/api/_internal/health` 200; last 400 log lines per service: **0** error-class lines on all four |
+| read-only proof — release 16 | `/releases/16?tab=decision` 200: **Plan** present, "Run the scope" gone; the **Target environments** block with `data-target-count="0"`, the "No target declared — …" note and the declare form; no refusal block (the scope is current) |
+| read-only proof — /run | `GET /run` → 302 `/releases?from=run`; followed with a cookie jar: 200 with the flash "Run Tests has moved: plan a run from a release (the decision tab) or a requirement, look at the plan, then run it." |
+| read-only proof — schedule 1 | `/runs/substrate` (admin session) 200: "A schedule fires a recorded plan, under a person's authority."; the row reads "plan: every approved test on Prime QA NEW (legacy template)", **"no authorising user"** (authority attribute empty), **"Claim this schedule"** present, "last fired 2026-09-09T06:01 (before plans)" |
+| nothing written | plans 0, targets 0, schedule 1 authority NULL, 0 jobs since the deploy. The schedule was NOT claimed and no plan was run — both AK's acts |
+
+No dump was taken (ADDITIVE, classified). No data act followed the merge. Schedule 1 stays enabled; its next 06:00Z fire (2026-09-10) REFUSES loudly and records the refusal until AK claims it on the panel.
