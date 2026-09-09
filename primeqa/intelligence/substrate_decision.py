@@ -268,12 +268,36 @@ _ENVS_WITH_EVIDENCE_SQL = (
     "WHERE CAST(claim_test_id AS text) = ANY(:tids) "
     "ORDER BY environment_id")
 
+# Step 3 (LLD_STEP_3 §d — the release-scope interim): the scope's
+# environments are the ACTIVE environments holding evidence for its claims.
+# Legacy evidence on an inactive environment (env 78 "Prod1", found at
+# VERIFICATION_STEP_2 §k.1) stays on the runs surfaces; it stops holding a
+# release's scope. The same predicate EnvironmentRepository.list_environments
+# applies (core/repository.py). The declared-target model replaces this
+# interim in Step 4 (the Run Planner resolves required environments).
+_ACTIVE_ENVS_WITH_EVIDENCE_SQL = (
+    "SELECT DISTINCT r.environment_id FROM s4_execution_runs r "
+    "JOIN public.environments e ON e.id = r.environment_id "
+    "WHERE CAST(r.claim_test_id AS text) = ANY(:tids) "
+    "  AND e.tenant_id = :tenant_id AND e.is_active "
+    "ORDER BY r.environment_id")
 
-def _environments_with_evidence(session, test_ids) -> list[int]:
+
+def _environments_with_evidence(session, test_ids, *, tenant_id=None) -> list[int]:
+    """The environments holding evidence for ``test_ids`` — filtered to the
+    tenant's ACTIVE environments when ``tenant_id`` is given (every
+    production caller passes it: the engine's per-environment loop and the
+    release-scope check). ``tenant_id=None`` keeps the unfiltered read (the
+    tenant-only test harness carries no ``public.environments``)."""
     if not test_ids:
         return []
-    rows = session.execute(text(_ENVS_WITH_EVIDENCE_SQL),
-                           {"tids": [str(t) for t in test_ids]}).all()
+    if tenant_id is None:
+        rows = session.execute(text(_ENVS_WITH_EVIDENCE_SQL),
+                               {"tids": [str(t) for t in test_ids]}).all()
+    else:
+        rows = session.execute(text(_ACTIVE_ENVS_WITH_EVIDENCE_SQL),
+                               {"tids": [str(t) for t in test_ids],
+                                "tenant_id": int(tenant_id)}).all()
     return [r[0] for r in rows]
 
 
@@ -901,7 +925,7 @@ def _decide_for_session(session, conn, keys, criteria, *, tenant_id) -> dict:
       ruling D9."""
     from primeqa.sync.credentials import get_connected_org_for_environment
     test_ids, _ = _claim_test_ids(session, keys)
-    envs = _environments_with_evidence(session, test_ids)
+    envs = _environments_with_evidence(session, test_ids, tenant_id=tenant_id)
     if len(envs) <= 1:
         env = envs[0] if envs else None
         org = get_connected_org_for_environment(conn, env) if env is not None else None
@@ -999,7 +1023,7 @@ def release_scope_readiness(tenant_id: int, external_keys) -> dict:
                 latest = SemanticTransactionCoordinator().get_latest_claims(session, test_ids)
                 live = [t for t in test_ids
                         if getattr(latest.get(t), "status", None) != "deprecated"]
-                envs = _environments_with_evidence(session, live)
+                envs = _environments_with_evidence(session, live, tenant_id=tenant_id)
                 items = []
                 if not envs:
                     for t in live:

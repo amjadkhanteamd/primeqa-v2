@@ -423,6 +423,8 @@
     </div>
     {% endif %}
   </details>
+  {# Step 3: the requirement → surface link — the card renders directly after the test plan (Area 2). #}
+  {% include 'requirements/_conformance_surfaces.html' %}
 
   {# D-315/D-316: Generation history — ALL runs, newest first, each with status,
      tests produced, LLM model/cost, and any error/refusal reason. One row per
