@@ -587,6 +587,19 @@
 
 ## Added 2026-09-09 — from Step 3 (the requirement → surface link)
 
+- **Medium (deploy-watch finding, not Step 3's): the scheduler's LLM usage
+  write fails on a foreign-key resolution and the row is lost.** Seen once
+  on 2026-09-09 during the repair-proposal task: "llm usage log write
+  failed task=repair_proposal tenant=1: Foreign key associated with column
+  'llm_usage_log.requirement_id' could not find table 'requirements'" — the
+  best-effort write at `intelligence/llm/usage.py:92` warns and drops the
+  row because the scheduler process has not imported the ORM model that
+  owns `requirements`, so SQLAlchemy cannot resolve the FK at flush. Cost
+  accounting for scheduler-initiated LLM calls is therefore incomplete.
+  Fix: import the owning model in the scheduler's bootstrap (or declare the
+  FK by table name without the mapped-class dependency). Not folded into
+  Step 3.
+
 - **Low: the conformance card's verdict split folds `NEEDS_HUMAN` into "not
   determined".** The s6 verdict vocabulary is PASS / FAIL / NEEDS_HUMAN /
   NOT_DETERMINED; `requirement_surface_console._verdict_split` counts
