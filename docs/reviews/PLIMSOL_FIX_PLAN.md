@@ -612,3 +612,17 @@
   UUIDs — the id rides in `details`. Any activity view keyed on entity_id
   cannot find these rows. Pre-existing pattern (D-3A3), extended here, not
   changed.
+
+## Added 2026-09-09 — from Step 4 pre-flight (the Run Planner)
+
+- **Medium: an execution control changed state with no audit row — FIXED in
+  Step 4 (ruling 4).** The D-214 schedule toggle (`views.py`
+  `s4_schedule_update`: enable / disable / delete) writes no `activity_log`
+  row. Found at the Step 4 pre-flight: schedule 1 (env 59, `0 6 * * *`) read
+  `enabled = FALSE` at the Step 2 pre-flight and `enabled = TRUE, last_fired_at
+  = 2026-09-09 02:09:53Z` at Step 4's, with no audit row in between; the fire
+  enqueued 218 jobs with `created_by` NULL and 281 stamped runs followed. AK
+  confirms he re-enabled it by hand via the toggle, so the fire is authorised
+  in fact and the runs stand as valid evidence; the defect is the missing
+  record. Step 4 adds the audit row (actor, schedule id, old → new) to the
+  toggle and, under ruling 2, refuses any fire on absent authority.
