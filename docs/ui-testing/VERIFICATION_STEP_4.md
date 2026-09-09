@@ -1,0 +1,118 @@
+# VERIFICATION — Step 4, the Run Planner
+
+**Branch** `step-4-run-planner` from `main` @ fb59095. Design b11a67f (GO
+2026-09-09 with rulings 1–4). Build: this commit. Merge gated on AK seeing the
+fixture screenshots (`step-4-fixtures/`, eleven, from all three entry points).
+
+## 0. Corrections found at build (folded into the LLD)
+
+1. **A failing recipe is named even when its claim survives.** The first
+   planner dropped a recipe that failed S4's shape check silently when another
+   recipe of the same claim passed; it now records a recipe-level
+   `unexecutable_shape` exclusion beside the claim-level one. Found by the
+   harness test.
+2. **The plan id rides only when a plan exists.** Every finalize / persist call
+   site passes `plan_id` conditionally, so the many injected test fakes keep
+   their old signatures; the sync run entries (`run_recipe_execution`,
+   `run_all_recipes_execution`) needed the parameter too — the unit suite
+   found both.
+3. **Best-effort writes on savepoints.** The planner's audit row and the pin
+   read run under savepoints: the tenant-only harness has no
+   `public.activity_log`, and a failed INSERT aborts the whole transaction
+   even when Python catches it (the Step 3 lesson, applied).
+4. **The legacy `enqueue=` seam stays for the pre-Step-4 schedule tests
+   only.** Production passes nothing and takes the plan path; a test that
+   injects `enqueue=` keeps the old every-approved-claim behaviour. Stated in
+   the firer's docstring.
+5. **Jinja: `c.keys` on a dict is the method, not the item** — the plan view
+   reads `c['keys']`. Found by the shoot (a 500 on the first plan view).
+6. **The CSRF hidden field is empty on a session's very FIRST render** (the
+   cookie is minted on that same response); a plain form POST from that first
+   page fails 403 until any second navigation. Pre-existing, not Step 4's;
+   the shoot warms the cookie; ledgered (FIX PLAN Low).
+7. **A key created through the requirement service is classified at create**
+   (Step 1's runtime establish); a planted "fixture" requirement therefore
+   read `jira` until the Step 1 recorded override set it — the honest path,
+   used by the shoot. Not a planner matter.
+8. **Four `test_stranded_cleanup` reds on the local harness are pre-existing**
+   (the reaper resolves clients through `public.environments`, which the
+   harness lacks) — 4 failed on `main` @ fb59095 in a clean worktree too.
+   Ledgered (FIX PLAN Low).
+
+## a. THE PLANNER (harness: `test_step_4_planner.py`, 8; scratch: `test_step_4_scope.py`, 3)
+
+| item | proven |
+|---|---|
+| claims by kind with reasons | requirement scope on env 59: one kind (`data_behavior / value-claim`), the admitted claim carries its keys, link kind (`generated_from`), origins and its two recipes (data + metadata); every exclusion named: `no_eligible_recipe`, `claim_not_approved`, `claim_deprecated`, and env 78 as `env_not_target` with `is_production`, `read_only`, `inactive` on the exclusion |
+| hidden origins | a fixture-origin key's claim is excluded `origin_fixture`; `include_hidden` admits it |
+| the target's policy as exclusions | on a `read_only` target the data recipe is excluded `read_only_target_admits_inspection_only` and the pair carries the metadata recipe only; a `disabled` target admits nothing (`env_disabled`); an inactive target admits nothing (`env_inactive`) |
+| "Run this plan" executes exactly the recorded row, once | the injected enqueue receives exactly the plan's `(test_id, environment_id)` set with `created_by = 7` and the plan id; the row records the execution; a second execution refuses `plan_already_executed` and enqueues nothing; UPDATE of the resolution, UPDATE of `executed_by` after execution, and DELETE all raise at the table |
+| the tenant-wide plan | every approved executable claim on the environment, fixtures excluded with the reason — the successor of "Run all approved", recorded |
+| the schedule scope (ruling 2) | a schedule with `created_by` and `authorised_by` NULL → `PlanRefused(no_authorising_user)`, **no row written**; after a claim (`authorised_by = 5`) the plan resolves as the tenant-wide template, `planned_by` NULL, `authorised_by` 5, `legacy: true` |
+| release targets | declared with actor, idempotent, removal a state change with actor / time / reason, history readable, DELETE refused |
+| the conformance lane (Step 3 consumed) | one declared surface of two → personas `[customer]`, one conformance manifest naming the active set, `surface_keys = [A]`, `excluded_surfaces = [B]`, two checks; the other surface excluded `surface_not_declared`; execution hands the filter to the UI enqueue and makes NO S4 job |
+| release scope on scratch (public tables) | no target declared → `targets_source = fallback:evidence-active`, env 5901 named, a phantom evidence env excluded `env_not_target`; declare 5901 → `declared`, a NEW plan row; remove → the next plan falls back again; the audit trail names declare / remove and three plan creates |
+| the manifest filter through the REAL builder | over an approved scratch set with two surfaces: the manifest's `surfaces` names ONE, `scope.excluded_surfaces` the other, `claim_set_id` unchanged (membership by reference; no new set, no approval) |
+| the schedule tick end to end | a schedule without authority: `fire_due_schedules` refuses it (`refused` in the return, `last_refusal` "no authorising user — claim this schedule" on the row, an `s4.schedule.refused` audit row, zero `run_plans`); after `claim(user 1)`: the tick PLANS (`planned_by` NULL, `authorised_by` 1), executes THAT plan, `last_plan_id` on the row, the S4 jobs carry the plan id — count == the execution's un-attached jobs |
+
+## b. EXCLUSIONS, c. SEAMS
+
+Fifteen reason codes with sentences (`planner.REASON_SENTENCES`); the plan
+view's Excluded line reads the counts by reason and expands to the list.
+Four seam lines rendered verbatim ("not yet — every scoped item" ×2, "every
+declared persona", "every eligible recipe").
+
+## d. ENTRY POINTS (the real app on scratch; `shoot_step_4.py`)
+
+| screen | observed |
+|---|---|
+| `release_decision_tab_targets_and_plan.png` | the decision tab: **Plan** beside Evaluate; the Target environments block with "No target declared — a plan resolves against the active environments that hold evidence… Declare a target to make it a decision" and the declare form |
+| `plan_view_release_fallback_targets.png` | Plan → the PLAN view: "not yet run"; What runs (1 kind, 3 claims at that moment); Target environments **(no target declared — the active environments holding evidence)** `data-targets-source=fallback:evidence-active`; Personas "No declared surface on this scope — no conformance lane"; Manifests & pins; Excluded; the four "not yet" seams |
+| `release_targets_declared.png` | after Declare: env 5901 listed "declared by AK Scratch · 2026-09-09" with Remove |
+| `plan_view_release_declared_target.png` | re-plan: Target environments **(declared on the release)**, pin "seq — (org_unbound)" stated honestly (scratch's env has no org); **Excluded (1 item: 1 origin fixture)** naming the fixture claim and its requirement key; 2 claims · 2 jobs |
+| `run_this_plan_confirm.png` | the kit's confirm: "Run this plan? 2 substrate jobs will be queued exactly as shown. Excluded items stay excluded." |
+| `plan_view_after_run.png` | "run · by AK Scratch · 2026-09-09T12:32 · 3 jobs"; the button disabled with "already run — plan again to run again" |
+| `requirement_plan_button.png` / `plan_view_requirement.png` | the requirement page's **Plan 2 tests** (env select) → "Requirement S4-DEMO-1 · planned by AK Scratch"; 2 claims |
+| `schedules_panel_claim_this_schedule.png` / `schedules_panel_claimed.png` | the D-214 panel: "plan: every approved test on gate sandbox (legacy template)", **no authorising user** in red, **Claim this schedule** → "authority: user 7"; the toggle and claim each write an `s4.schedule.<action>` audit row (ruling 4) |
+| `run_tests_retired_redirect.png` | `/run` → `/releases?from=run` with the flash "Run Tests has moved: plan a run from a release (the decision tab) or a requirement, look at the plan, then run it." |
+
+`/run` GET and POST redirect; the POST enqueues nothing (`test_step_4_pages.py`,
+2). The Railway-DB page test `tests/test_run_tests_page.py` now asserts the
+retirement redirect.
+
+## e. ACTOR SEMANTICS
+
+`planned_by` (person) / `authorised_by` (a schedule's borrowed authority) /
+`executed_by` — recorded on every plan; the S4 jobs' `created_by` is the
+executor (NULL for the tick, whose plan carries `authorised_by`); the UI
+trigger carries `plan_id`, `executed_by`, `authorised_by` and the schedule id.
+
+## f. Suites (D-468) at the implementation commit
+
+- **unit: 5,039 passed** (the three `.env`-reading live-parity tests included; the execution-engine unit suite 461 green with the plan-id thread).
+- **test_representation (local PG): 429 passed, 3 skipped, 4 deselected** (421 before + the eight Step 4 harness tests).
+- **DB-real corpus on clean scratch: 110 passed, 7 skipped, 1 red** across the twenty DSN-gated files (the new `test_step_4_scope.py` included) + `test_scheduler_stale_tenants.py`, with DATABASE_URL / S3A3 / S5 on scratch and the test JWT secret. The red is the report-slice runs-list window artefact ledgered at D-480, not this slice.
+- **Pages: 7 passed** (the five report pages + the two Step 4 pages, one invocation). **Browser-gated: 63 passed, 11 skipped** (SPIKE_BROWSER=1).
+- S4 integration on the local schema (`tests/integration/execution_engine`):
+  39 passed, 4 failed — the four pre-existing `test_stranded_cleanup` reds
+  (§0 item 8); the job / consumer / intake tests green with the plan-id thread.
+
+## g. Migration, classified (for the merge runbook)
+
+`20260911_0010` — **ADDITIVE**: two new tables (`run_plans`, `release_targets`)
+with their triggers, three nullable columns on `s4_execution_jobs`,
+`s4_execution_runs` and six on `s4_run_schedules`; no data write; DROPs in
+the downgrade only. Dumpless under D-476. Reader window: old code ignores
+the nullable columns (its INSERTs omit them); new code before the migration
+would fail at enqueue / persist on `plan_id` and on every plan route —
+migration first (D-285), as every step.
+
+## Residual, stated plainly
+
+- The pin on scratch reads `org_unbound` (env 5901 has no connected org);
+  on production the pin is the org's current sequence.
+- The nav still says "Run Tests" (the slot is Step 6's); the route redirects.
+- The first-render CSRF field (§0 item 6) and the harness's missing
+  `public.environments` for the reaper tests (§0 item 8) are ledgered.
+- Schedule 1 on production stays enabled; under ruling 2 its next fire
+  REFUSES until AK claims it on the panel at the merge.

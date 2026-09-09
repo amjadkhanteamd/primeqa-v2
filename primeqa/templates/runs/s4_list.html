@@ -231,7 +231,7 @@
   <div class="bg-white shadow rounded-lg">
     <div class="px-4 py-3 border-b flex items-center justify-between">
       <h3 class="text-sm font-semibold text-gray-700">Scheduled runs</h3>
-      <span class="text-xs text-gray-400">Runs every approved test on a sandbox, on a cadence.</span>
+      <span class="text-xs text-gray-400">A schedule fires a recorded plan, under a person's authority.</span>
     </div>
     {% if schedules %}
     <table class="min-w-full divide-y divide-gray-200 text-sm">
@@ -245,8 +245,20 @@
               {% if s.enabled %}bg-green-100 text-green-800{% else %}bg-gray-100 text-gray-600{% endif %}">
               {{ 'enabled' if s.enabled else 'paused' }}</span>
           </td>
-          <td class="px-4 py-2 text-xs text-gray-500">
-            {% if s.last_fired_at %}last fired {{ s.last_fired_at[:16] }}{% else %}never fired{% endif %}
+          <td class="px-4 py-2 text-xs text-gray-600" data-testid="schedule-template">
+            {% if s.template.scope_kind == 'tenant' %}plan: every approved test on {{ s.environment }}{% if s.template.legacy %} <span class="text-gray-400">(legacy template)</span>{% endif %}
+            {% elif s.template.scope_kind == 'release' %}plan: release {{ s.template.release_id }}
+            {% else %}plan: {{ s.template.scope_kind }} {{ s.template.key }}{% endif %}
+          </td>
+          <td class="px-4 py-2 text-xs" data-testid="schedule-authority" data-authority="{{ s.authority or '' }}">
+            {% if s.authority %}<span class="text-gray-600">authority: user {{ s.authority }}</span>
+            {% else %}<span class="text-rose-700 font-medium">no authorising user</span>{% endif %}
+          </td>
+          <td class="px-4 py-2 text-xs text-gray-500" data-testid="schedule-last">
+            {% if s.last_refusal %}<span class="text-rose-700">refused {{ s.last_refused_at[:16] if s.last_refused_at else '' }} — {{ s.last_refusal }}</span>
+            {% elif s.last_plan_id %}last plan <a href="/plans/{{ s.last_plan_id }}" class="font-mono text-indigo-700 hover:underline">{{ s.last_plan_id[:8] }}</a> &middot; {{ s.last_fired_at[:16] if s.last_fired_at else '' }}
+            {% elif s.last_fired_at %}last fired {{ s.last_fired_at[:16] }} <span class="text-gray-400">(before plans)</span>
+            {% else %}never fired{% endif %}
           </td>
           <td class="px-4 py-2 text-right whitespace-nowrap">
             <form method="POST" action="/runs/substrate/schedules/{{ s.id }}" class="inline">
@@ -255,6 +267,14 @@
               <button type="submit" class="text-xs text-indigo-600 hover:underline">
                 {{ 'Pause' if s.enabled else 'Resume' }}</button>
             </form>
+            {% if not s.authority %}
+            <form method="POST" action="/runs/substrate/schedules/{{ s.id }}" class="inline ml-2">
+              {{ csrf_input | safe }}
+              <input type="hidden" name="action" value="claim">
+              <button type="submit" class="text-xs text-emerald-700 font-medium hover:underline" data-testid="claim-schedule"
+                      title="Take the authority this schedule fires under (audited)">Claim this schedule</button>
+            </form>
+            {% endif %}
             <form method="POST" action="/runs/substrate/schedules/{{ s.id }}" class="inline ml-2">
               {{ csrf_input | safe }}
               <input type="hidden" name="action" value="delete">

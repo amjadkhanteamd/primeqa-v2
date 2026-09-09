@@ -38,7 +38,7 @@ from primeqa.test_representation import SemanticTransactionCoordinator
 
 
 def finalize_run(session, evidence: RunEvidence, *, coordinator=None,
-                 batch_id=None, source=None):
+                 batch_id=None, source=None, plan_id=None):
     """Persist ``evidence`` and report its outcome as posture to S2.
 
     Args:
@@ -55,7 +55,8 @@ def finalize_run(session, evidence: RunEvidence, *, coordinator=None,
     Returns the :class:`RecipeRuntimeState` ``report_run_outcome`` produced —
     the post-callback runtime-state snapshot for the recipe.
     """
-    persist_run_evidence(session, evidence, batch_id=batch_id, source=source)
+    persist_run_evidence(session, evidence, batch_id=batch_id, source=source,
+                         plan_id=plan_id)
 
     coord = coordinator or SemanticTransactionCoordinator()
     return coord.report_run_outcome(

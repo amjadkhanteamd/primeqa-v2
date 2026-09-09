@@ -100,9 +100,11 @@ def process_execution_job_for_tenant(
         # tests + the sync fallback run_fn.
         client = (client_resolver(tenant_id, job.environment_id)
                   if client_resolver else None)
+        _plan_kw = ({"plan_id": job.plan_id}
+                    if getattr(job, "plan_id", None) else {})   # Step 4
         result = run_fn(
             tenant_id, UUID(job.test_id),
-            environment_id=job.environment_id, client=client)
+            environment_id=job.environment_id, client=client, **_plan_kw)
         # D-284 (Slice 4e): route handled which run path ran; the result is a
         # single RunPathResult or a run-all RunAllResult. _async_log_outcome handles
         # BOTH (a RunAllResult has no .evidence — the old direct read crashed).

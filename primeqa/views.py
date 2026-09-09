@@ -691,151 +691,28 @@ def results_list_alias():
 
 
 @views_bp.route("/run")
-@require_tier(Tier.MEMBER)
 @login_required
 def run_page():
-    """Run approved substrate tests in bulk: pick an environment + the
-    requirements to cover (or run everything approved). Replaces the v1
-    4-mode page (Prompt 16) whose pickers and POST /api/bulk-runs fed the
-    retired pipeline engine. Production environments are excluded — the
-    D-214 sandbox-only execution posture."""
-    from primeqa.core.models import Environment
-    from primeqa.intelligence.s4_execution_console import (
-        list_runnable_requirements, requirement_run_health,
-    )
-    from primeqa.test_management.models import Requirement
-
-    def _render():
-        db = next(get_db())
-        try:
-            tid = request.user["tenant_id"]
-            # Phase 3 (D-245): scope the env list to the caller's accessible
-            # set (groups), not just the tenant. Non-prod only (D-214).
-            envs = [e for e in EnvironmentRepository(db).list_environments(
-                        tid, request.user["id"], request.user["role"])
-                    if not e.is_production]
-            envs.sort(key=lambda e: (e.name or "").lower())
-            runnable = list_runnable_requirements(tid)
-            keys = [r["key"] for r in runnable["rows"]]
-            summaries = {}
-            jira_keys = [k for k in keys if not k.startswith("req-")]
-            req_ids = [int(k[4:]) for k in keys if k.startswith("req-")
-                       and k[4:].isdigit()]
-            if jira_keys:
-                for r in (db.query(Requirement)
-                          .filter(Requirement.tenant_id == tid,
-                                  Requirement.jira_key.in_(jira_keys)).all()):
-                    summaries[r.jira_key] = r.jira_summary
-            if req_ids:
-                for r in (db.query(Requirement)
-                          .filter(Requirement.tenant_id == tid,
-                                  Requirement.id.in_(req_ids)).all()):
-                    summaries[f"req-{r.id}"] = r.jira_summary
-            rows = [{**r, "summary": summaries.get(r["key"])}
-                    for r in runnable["rows"]]
-            # per-requirement last-run health (the picker's decide signal) +
-            # the total approved-test count for the "Run all" button.
-            health = requirement_run_health(tid, keys)
-            # Step 1 (§d): hide fixture / probe identities by default; the
-            # count is visible and one click away.
-            from primeqa.intelligence.requirement_identity_console import (
-                identity_overview,
-            )
-            from primeqa.test_representation.identity import (
-                HIDDEN_BY_DEFAULT, ORIGINS,
-            )
-            _identities = identity_overview(tid, keys=keys)
-            _origin = request.args.get("origin")
-            if _origin not in ORIGINS:
-                _origin = None
-            _show_hidden = request.args.get("show_hidden", "").lower() in ("1", "true", "yes")
-            for r in rows:
-                r["health"] = health.get(r["key"])
-            total_tests = sum(r.get("approved_claims") or 0 for r in rows)
-            for _r in rows:
-                _r["origin"] = _identities["origins"].get(_r["key"])
-            _hidden_here = sum(1 for _r in rows
-                               if _r["origin"] in HIDDEN_BY_DEFAULT)
-            if _identities["available"]:
-                if _origin:
-                    rows = [_r for _r in rows if _r["origin"] == _origin]
-                elif not _show_hidden:
-                    rows = [_r for _r in rows
-                            if _r["origin"] not in HIDDEN_BY_DEFAULT]
-            return render_template("run/index.html", **ctx(
-                origin_filter=_origin, show_hidden=_show_hidden,
-                hidden_count=_hidden_here, origins=list(ORIGINS),
-                active_page="run_tests", environments=[
-                    {"id": e.id, "name": e.name} for e in envs],
-                requirements=rows, available=runnable["available"],
-                total_tests=total_tests,
-            ))
-        finally:
-            db.close()
-
-    return _render()
+    """Step 4 (LLD_STEP_4 §d): Run Tests is retired — a run starts from a
+    RECORDED plan on a release or a requirement (Fork 5: PLAN succeeds Run
+    Tests). This route keeps the address alive as a redirect with the
+    retirement note; the nav slot is Step 6's."""
+    from flask import flash
+    flash("Run Tests has moved: plan a run from a release (the decision tab) "
+          "or a requirement, look at the plan, then run it.", "info")
+    return redirect("/releases?from=run")
 
 
 @views_bp.route("/run", methods=["POST"])
-@require_tier(Tier.MEMBER)
 @login_required
 def run_page_submit():
-    """Enqueue one s4 execution job per approved claim of the selected
-    requirements (all of them when run_all is set)."""
+    """Retired with the page: nothing is enqueued here any more — "Run all
+    approved" was a query, not a plan; its successor is the tenant-wide plan
+    a person must look at first (POST /plans, scope tenant)."""
     from flask import flash
-    from primeqa.core.models import Environment
-
-    def _submit():
-        tid = request.user["tenant_id"]
-        env_id = request.form.get("environment_id", type=int)
-        run_all = request.form.get("run_all") == "1"
-        keys = request.form.getlist("requirement_keys")
-        db = next(get_db())
-        try:
-            # Phase 3 (D-245): validate the client-supplied env_id is within the
-            # caller's accessible set (groups) BEFORE running — not just tenant.
-            repo = EnvironmentRepository(db)
-            if not (env_id and repo.is_environment_accessible(
-                    tid, request.user["id"], request.user["role"], env_id)):
-                flash("Pick an environment you have access to.", "error")
-                return redirect("/run")
-            env = repo.get_environment(env_id, tid)
-            if env.is_production:
-                flash("Substrate runs are sandbox-only — production "
-                      "environments cannot be targeted here.", "error")
-                return redirect("/run")
-        finally:
-            db.close()
-
-        if run_all:
-            from primeqa.intelligence.s4_execution_console import (
-                enqueue_all_approved_claims,
-            )
-            result = enqueue_all_approved_claims(
-                tid, env_id, created_by=request.user["id"])
-            count = len(result["enqueued"])
-        else:
-            if not keys:
-                flash("Select at least one requirement.", "error")
-                return redirect("/run")
-            from primeqa.execution_engine.intake import (
-                enqueue_claims_for_requirements,
-            )
-            result = enqueue_claims_for_requirements(
-                tenant_id=tid, external_keys=keys, environment_id=env_id,
-                created_by=request.user["id"])
-            count = result["enqueued"]
-        if count == 0:
-            flash("No approved test cases matched the selection.", "error")
-            return redirect("/run")
-        skipped = result.get("skipped_unexecutable") or 0
-        flash(f"{count} substrate run{'s' if count != 1 else ''} queued"
-              + (f" — {skipped} test case{'s' if skipped != 1 else ''} skipped "
-                 f"(not yet executable)" if skipped else ""),
-              "success")
-        return redirect("/runs/substrate")
-
-    return _submit()
+    flash("Run Tests is retired — nothing was queued. Plan a run from a "
+          "release or a requirement and run the plan you see.", "error")
+    return redirect("/releases?from=run")
 
 
 @views_bp.route("/environments")
@@ -2779,6 +2656,181 @@ def requirement_surface_unlink(req_id, link_id):
     return _hx_or_redirect(back)
 
 
+# ---------------------------------------------------------------------------
+# Step 4 — the Run Planner (LLD_STEP_4_RUN_PLANNER §d). D-245 declaration:
+# minimum tier MEMBER for plan / run / targets (the same gate as decorate and
+# run-substrate); environment policy is applied by the planner as EXCLUSIONS
+# and re-checked by the dispatch chokepoint. Every act is one tenant
+# transaction in the console.
+# ---------------------------------------------------------------------------
+
+def _plan_env_or_flash(env_id, back):
+    """The named environment must be one the caller can reach (the /run gate)."""
+    from flask import flash
+    db = next(get_db())
+    try:
+        repo = EnvironmentRepository(db)
+        if not (env_id and repo.is_environment_accessible(
+                request.user["tenant_id"], request.user["id"], request.user["role"], env_id)):
+            flash("Pick an environment you have access to.", "error")
+            return None
+        return repo.get_environment(env_id, request.user["tenant_id"])
+    finally:
+        db.close()
+
+
+@views_bp.route("/releases/<int:release_id>/plan", methods=["POST"])
+@require_tier(Tier.MEMBER)
+@login_required
+def release_plan(release_id):
+    """Plan the release's scope against its DECLARED targets (or the stated
+    fallback) — the recorded row, then the PLAN view."""
+    from flask import flash
+
+    from primeqa.intelligence.run_plan_console import create_plan
+    res = create_plan(request.user["tenant_id"],
+                      scope={"scope_kind": "release", "release_id": release_id,
+                             "include_hidden": request.form.get("include_hidden") == "1"},
+                      user_id=request.user["id"], user_role=request.user["role"])
+    if not res.get("ok"):
+        flash(res.get("sentence") or "Could not plan.", "error")
+        return redirect(f"/releases/{release_id}?tab=decision")
+    return redirect(f"/plans/{res['plan_id']}")
+
+
+@views_bp.route("/releases/<int:release_id>/targets", methods=["POST"])
+@require_tier(Tier.MEMBER)
+@login_required
+def release_target_declare(release_id):
+    from flask import flash
+
+    from primeqa.intelligence.run_plan_console import declare_target
+    env_id = request.form.get("environment_id", type=int)
+    env = _plan_env_or_flash(env_id, f"/releases/{release_id}?tab=decision")
+    if env is None:
+        return redirect(f"/releases/{release_id}?tab=decision")
+    res = declare_target(request.user["tenant_id"], release_id=release_id,
+                         environment_id=env_id, user_id=request.user["id"])
+    flash((f"{env.name} declared as a target." if res.get("created")
+           else f"{env.name} is already a target.") if res.get("ok")
+          else (res.get("sentence") or "Could not declare the target."),
+          "success" if res.get("ok") else "error")
+    return redirect(f"/releases/{release_id}?tab=decision")
+
+
+@views_bp.route("/releases/<int:release_id>/targets/<int:environment_id>/remove", methods=["POST"])
+@require_tier(Tier.MEMBER)
+@login_required
+def release_target_remove(release_id, environment_id):
+    from flask import flash
+
+    from primeqa.intelligence.run_plan_console import remove_target
+    res = remove_target(request.user["tenant_id"], release_id=release_id,
+                        environment_id=environment_id, user_id=request.user["id"],
+                        reason=(request.form.get("reason") or "").strip())
+    flash("Target removed — the next plan re-resolves." if res.get("ok") and res.get("removed")
+          else (res.get("sentence") or "That target was not active."),
+          "success" if res.get("ok") and res.get("removed") else "error")
+    return redirect(f"/releases/{release_id}?tab=decision")
+
+
+@views_bp.route("/requirements/<int:req_id>/plan", methods=["POST"])
+@require_tier(Tier.MEMBER)
+@login_required
+def requirement_plan(req_id):
+    """Plan this requirement's checks against a named environment."""
+    from flask import flash
+
+    from primeqa.intelligence.run_plan_console import create_plan
+    from primeqa.intelligence.s3_enqueue import _requirement_to_ref
+    from primeqa.test_management.repository import RequirementRepository
+    db = next(get_db())
+    try:
+        req = RequirementRepository(db).get_requirement(req_id, request.user["tenant_id"])
+        if req is None:
+            flash("Requirement not found.", "error")
+            return redirect("/requirements")
+        key = _requirement_to_ref(req)["key"]
+    finally:
+        db.close()
+    env_id = request.form.get("environment_id", type=int)
+    if _plan_env_or_flash(env_id, f"/requirements/{req_id}") is None:
+        return redirect(f"/requirements/{req_id}")
+    res = create_plan(request.user["tenant_id"],
+                      scope={"scope_kind": "requirement", "key": key, "environment_id": env_id,
+                             "include_hidden": request.form.get("include_hidden") == "1"},
+                      user_id=request.user["id"], user_role=request.user["role"])
+    if not res.get("ok"):
+        flash(res.get("sentence") or "Could not plan.", "error")
+        return redirect(f"/requirements/{req_id}")
+    return redirect(f"/plans/{res['plan_id']}")
+
+
+@views_bp.route("/plans", methods=["POST"])
+@require_tier(Tier.MEMBER)
+@login_required
+def plan_tenant_wide():
+    """The honest successor of "Run all approved": a tenant-wide plan on one
+    environment a person must look at first."""
+    from flask import flash
+
+    from primeqa.intelligence.run_plan_console import create_plan
+    env_id = request.form.get("environment_id", type=int)
+    if _plan_env_or_flash(env_id, "/runs/substrate") is None:
+        return redirect("/runs/substrate")
+    res = create_plan(request.user["tenant_id"],
+                      scope={"scope_kind": "tenant", "environment_id": env_id,
+                             "include_hidden": request.form.get("include_hidden") == "1"},
+                      user_id=request.user["id"], user_role=request.user["role"])
+    if not res.get("ok"):
+        flash(res.get("sentence") or "Could not plan.", "error")
+        return redirect("/runs/substrate")
+    return redirect(f"/plans/{res['plan_id']}")
+
+
+@views_bp.route("/plans/<uuid:plan_id>")
+@login_required
+def plan_detail(plan_id):
+    """The PLAN view: what / why / scope — the recorded row, never recomputed."""
+    from primeqa.intelligence.run_plan_console import read_plan
+    res = read_plan(request.user["tenant_id"], str(plan_id))
+    if res.get("available") and res.get("plan") is None:
+        abort(404)
+    db = next(get_db())
+    try:
+        env_names = {e.id: e.name for e in EnvironmentRepository(db).list_environments(
+            request.user["tenant_id"], request.user["id"], request.user["role"])}
+    except Exception:  # noqa: BLE001
+        env_names = {}
+    finally:
+        db.close()
+    return render_template("plans/detail.html", **ctx(
+        active_page="releases", plan=res.get("plan"), available=res.get("available"),
+        env_names=env_names))
+
+
+@views_bp.route("/plans/<uuid:plan_id>/run", methods=["POST"])
+@require_tier(Tier.MEMBER)
+@login_required
+def plan_run(plan_id):
+    """"Run this plan" — the second act: execute the recorded row, once."""
+    from flask import flash
+
+    from primeqa.intelligence.run_plan_console import run_plan
+    res = run_plan(request.user["tenant_id"], plan_id=str(plan_id),
+                   user_id=request.user["id"], user_role=request.user["role"])
+    if not res.get("ok"):
+        flash(res.get("sentence") or "Could not run the plan.", "error")
+        return redirect(f"/plans/{plan_id}")
+    r = res["receipt"]
+    n_jobs, n_ui, n_ref = len(r.get("s4_jobs") or ()), len(r.get("ui_jobs") or ()), len(r.get("refusals") or ())
+    flash(f"Plan run: {n_jobs} substrate job{'' if n_jobs == 1 else 's'} queued"
+          + (f", {n_ui} conformance batch{'' if n_ui == 1 else 'es'}" if n_ui else "")
+          + (f", {n_ref} refused (see the plan)" if n_ref else "") + ".",
+          "success" if not n_ref else "warning")
+    return redirect(f"/plans/{plan_id}")
+
+
 @views_bp.route("/requirements/<int:req_id>")
 @login_required
 def requirements_detail(req_id):
@@ -3881,6 +3933,10 @@ def s4_runs_list():
     if request.user["role"] in ("admin", "superadmin"):
         try:
             from primeqa.execution_engine.schedules import RunScheduleStore
+            from primeqa.execution_engine.schedules import (
+                RunScheduleStore as _RSS,
+            )
+            from primeqa.execution_engine.planner import schedule_template
             schedules = [{
                 "id": s.id, "environment_id": s.environment_id,
                 "environment": env_names.get(s.environment_id,
@@ -3888,6 +3944,15 @@ def s4_runs_list():
                 "cron_expr": s.cron_expr, "enabled": s.enabled,
                 "last_fired_at": (s.last_fired_at.isoformat()
                                   if s.last_fired_at else None),
+                # Step 4: what the cadence runs is a plan (§d), under whose
+                # authority (§e), and what the last tick did.
+                "template": schedule_template({"plan_template": s.plan_template,
+                                               "environment_id": s.environment_id}),
+                "authority": s.authority, "authorised_by": s.authorised_by,
+                "created_by": s.created_by,
+                "last_plan_id": s.last_plan_id, "last_refusal": s.last_refusal,
+                "last_refused_at": (s.last_refused_at.isoformat()
+                                    if s.last_refused_at else None),
             } for s in RunScheduleStore(tid).list()]
         except Exception:
             schedules = None                    # panel degrades, page renders
@@ -3976,13 +4041,48 @@ def s4_schedule_create():
 @role_required("admin", "superadmin")
 def s4_schedule_update(schedule_id):
     """D-214: toggle or delete one schedule (form `action` field)."""
+    import logging
+
+    from flask import flash
+
+    from primeqa.core.models import ActivityLog
     from primeqa.execution_engine.schedules import RunScheduleStore
-    store = RunScheduleStore(request.user["tenant_id"])
+    tid = request.user["tenant_id"]
+    store = RunScheduleStore(tid)
     action = request.form.get("action")
+    before = store.get(schedule_id)
+    if before is None:
+        flash("Schedule not found.", "error")
+        return redirect("/runs/substrate")
+    details = {"schedule_id": schedule_id, "environment_id": before.environment_id,
+               "cron_expr": before.cron_expr, "enabled_before": before.enabled}
     if action == "delete":
         store.delete(schedule_id)
+        details["enabled_after"] = None
     elif action in ("enable", "disable"):
         store.set_enabled(schedule_id, action == "enable")
+        details["enabled_after"] = (action == "enable")
+    elif action == "claim":
+        # Step 4 ruling 2: a person takes the authority the schedule fires under.
+        store.claim(schedule_id, user_id=request.user["id"])
+        details.update({"authorised_by_before": before.authorised_by,
+                        "authorised_by_after": request.user["id"]})
+        flash("Schedule claimed — it now fires under your authority.", "success")
+    else:
+        flash("Unknown schedule action.", "error")
+        return redirect("/runs/substrate")
+    # Step 4 ruling 4: an execution control that changes state writes its audit row.
+    db = next(get_db())
+    try:
+        db.add(ActivityLog(tenant_id=tid, user_id=request.user["id"],
+                           action=f"s4.schedule.{action}", entity_type="s4_run_schedule",
+                           entity_id=schedule_id, details=details))
+        db.commit()
+    except Exception as exc:  # noqa: BLE001 — the act stands; the audit failure is logged
+        db.rollback()
+        logging.getLogger(__name__).warning("schedule audit not written: %s", exc)
+    finally:
+        db.close()
     return redirect("/runs/substrate")
 
 
@@ -4909,6 +5009,12 @@ def releases_detail(release_id):
             # every non-current item, with "Run the scope" beside Evaluate.
             from primeqa.intelligence.substrate_decision import release_scope_readiness
             scope_readiness = release_scope_readiness(tid, external_keys)
+        # Step 4 (LLD_STEP_4 §d): the release's DECLARED targets + its recent plans.
+        from primeqa.intelligence.run_plan_console import (
+            plans_for_scope, targets_for_release,
+        )
+        _release_targets = targets_for_release(tid, release_id)
+        _release_plans = plans_for_scope(tid, "release", str(release_id))
 
         # Multi-org (3e): env names for the per-environment verdict cards.
         # Direct Environment query, NOT the access-scoped repo list — the
@@ -4935,6 +5041,7 @@ def releases_detail(release_id):
             environments=envs_data, substrate=substrate,
             substrate_decision=substrate_decision, parity=parity,
             env_names=env_names, scope_readiness=scope_readiness,
+            release_targets=_release_targets, release_plans=_release_plans,
         ))
     finally:
         db.close()

@@ -226,6 +226,7 @@ def build_manifest_for_claim_set(
     execution_mode: str = "claim-set",
     sf_client=None,
     org_env_snapshot_id: Optional[str] = None,
+    surface_keys: Optional[list] = None,
 ) -> str:
     """Build + persist an immutable Run Manifest from an APPROVED
     claim_set. Returns the manifest id. The payload records
@@ -272,6 +273,17 @@ def build_manifest_for_claim_set(
             if vp:
                 entry["viewport"] = vp
             surfaces[key] = entry
+    # Step 4 (LLD_STEP_4 §a step 6): a plan narrows the manifest to the scope's
+    # DECLARED surfaces — the surfaces list shrinks, the excluded ones are
+    # recorded, membership stays by reference to the APPROVED set (never a new
+    # set, never a new approval).
+    scope_record = None
+    if surface_keys is not None:
+        wanted = set(surface_keys)
+        excluded_surfaces = sorted(k for k in surfaces if k not in wanted)
+        surfaces = {k: v for k, v in surfaces.items() if k in wanted}
+        scope_record = {"surface_keys": sorted(wanted),
+                        "excluded_surfaces": excluded_surfaces}
     if not surfaces:
         raise ManifestBuildError(
             f"claim_set {claim_set_id} yields zero scannable surfaces — "
@@ -310,6 +322,7 @@ def build_manifest_for_claim_set(
         },
         "stabilisation": stabilisation or {},
         "execution": {"mode": execution_mode},
+        **({"scope": scope_record} if scope_record else {}),
     }
     if auth is not None:
         payload["auth"] = auth
@@ -322,7 +335,8 @@ def enqueue_ui_run(session: Session, *, subject, claim_set_id: UUID,
                    auth: Optional[dict] = None,
                    sf_client=None,
                    org_env_snapshot_id: Optional[str] = None,
-                   trigger: Optional[dict] = None) -> dict:
+                   trigger: Optional[dict] = None,
+                   surface_keys: Optional[list] = None) -> dict:
     """The enqueue boundary (LLD_PRODUCTIONISATION §c) — the D-245
     posture replicated for ui-inspection: authorize(subject, MEMBER)
     decides allowed (an AuthorizationError on deny — the route wrapper
@@ -339,6 +353,7 @@ def enqueue_ui_run(session: Session, *, subject, claim_set_id: UUID,
     manifest_id = build_manifest_for_claim_set(
         session, claim_set_id=claim_set_id, scheme=scheme,
         stabilisation=stabilisation, auth=auth, sf_client=sf_client,
+        surface_keys=surface_keys,
         org_env_snapshot_id=org_env_snapshot_id,
         execution_mode="scheduled" if trigger else "claim-set")
     job_id = enqueue_manifest_job(session, manifest_id)
