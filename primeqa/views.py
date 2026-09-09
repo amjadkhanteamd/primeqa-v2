@@ -2661,6 +2661,124 @@ def requirements_decorate():
     return redirect(f"/requirements/{res['requirement_id']}")
 
 
+# ---------------------------------------------------------------------------
+# Step 3 — the requirement → surface link (LLD_STEP_3_REQUIREMENT_SURFACE §c).
+# D-245 declaration: minimum tier MEMBER (the same gate as decorate /
+# run-substrate); no environment policy — nothing executes. Every write is
+# one tenant transaction in the console; the page is re-rendered in full
+# after a declare / unlink (Fork 4: HX-Redirect) so Area 2, the plan chips,
+# the readiness cells and the card agree through the existing paths.
+# ---------------------------------------------------------------------------
+
+def _requirement_for_surfaces(db, req_id):
+    """The requirement row + its identity key for the surface routes, or
+    ``(None, None)`` (the route 404s)."""
+    from primeqa.intelligence.s3_enqueue import _requirement_to_ref
+    from primeqa.test_management.repository import RequirementRepository
+    req = RequirementRepository(db).get_requirement(req_id, request.user["tenant_id"])
+    if req is None:
+        return None, None
+    return req, _requirement_to_ref(req)["key"]
+
+
+def _hx_or_redirect(url):
+    """HTMX callers get an HX-Redirect (a full re-render); plain forms a 302.
+
+    The HTMX target carries NO fragment: htmx assigns ``location.href``, and
+    a URL that differs from the current one only by its fragment scrolls
+    instead of navigating — the page would never re-render."""
+    if request.headers.get("HX-Request"):
+        resp = make_response("", 204)
+        resp.headers["HX-Redirect"] = url.split("#", 1)[0]
+        return resp
+    return redirect(url)
+
+
+@views_bp.route("/requirements/<int:req_id>/surfaces/picker")
+@require_tier(Tier.MEMBER)
+@login_required
+def requirement_surface_picker(req_id):
+    """The inline picker fragment: the ACTIVE inventory's surfaces minus the
+    declared and record-context ones. ``?close=1`` returns the empty slot."""
+    from primeqa.intelligence.requirement_surface_console import picker_candidates
+    db = next(get_db())
+    try:
+        req, req_key = _requirement_for_surfaces(db, req_id)
+        if req is None:
+            abort(404)
+        if request.args.get("close"):
+            return '<div id="surface-picker"></div>'
+        picker = picker_candidates(request.user["tenant_id"], req_key)
+        return render_template("requirements/_surface_picker.html",
+                               **ctx(req={"id": req.id}, picker=picker))
+    finally:
+        db.close()
+
+
+@views_bp.route("/requirements/<int:req_id>/surfaces", methods=["POST"])
+@require_tier(Tier.MEMBER)
+@login_required
+def requirement_surface_declare(req_id):
+    """Declare a surface: the DECLARED row + the materialised S2 ``verifies``
+    links + the ledger, one transaction; refusals name their reason."""
+    from flask import flash
+
+    from primeqa.intelligence.requirement_surface_console import declare_surface
+    db = next(get_db())
+    try:
+        req, req_key = _requirement_for_surfaces(db, req_id)
+        if req is None:
+            abort(404)
+    finally:
+        db.close()
+    surface_key = (request.form.get("surface_key") or "").strip()
+    back = f"/requirements/{req_id}#conformance-surfaces"
+    if not surface_key:
+        flash("Pick a surface to declare.", "error")
+        return _hx_or_redirect(back)
+    res = declare_surface(request.user["tenant_id"], requirement_key=req_key,
+                          surface_key=surface_key, user_id=request.user["id"])
+    if not res.get("ok"):
+        flash(res.get("sentence") or res.get("error") or "Could not declare the surface.", "error")
+        return _hx_or_redirect(back)
+    n = res["materialised"] + res["already_linked"]
+    verb = "Declared" if res["created"] else "Re-materialised"
+    flash(f"{verb} {res['display_name']} — {n} conformance check{'' if n == 1 else 's'} linked.", "success")
+    return _hx_or_redirect(back)
+
+
+@views_bp.route("/requirements/<int:req_id>/surfaces/<uuid:link_id>/unlink", methods=["POST"])
+@require_tier(Tier.MEMBER)
+@login_required
+def requirement_surface_unlink(req_id, link_id):
+    """Unlink: a state change with actor/time/reason; the S2 links this
+    declaration created are removed through S2's own API."""
+    from flask import flash
+
+    from primeqa.intelligence.requirement_surface_console import unlink_surface
+    db = next(get_db())
+    try:
+        req, req_key = _requirement_for_surfaces(db, req_id)
+        if req is None:
+            abort(404)
+    finally:
+        db.close()
+    back = f"/requirements/{req_id}#conformance-surfaces"
+    res = unlink_surface(request.user["tenant_id"], link_id=str(link_id),
+                         requirement_key=req_key, user_id=request.user["id"],
+                         reason=(request.form.get("reason") or "").strip())
+    if not res.get("ok"):
+        if res.get("reason") == "unknown_link":
+            abort(404)
+        flash(res.get("sentence") or res.get("error") or "Could not unlink the surface.", "error")
+        return _hx_or_redirect(back)
+    if res.get("already_inactive"):
+        flash(f"{res['display_name']} was already unlinked.", "info")
+    else:
+        flash(f"Unlinked {res['display_name']} — {res['removed_links']} conformance check{'' if res['removed_links'] == 1 else 's'} removed from the plan.", "success")
+    return _hx_or_redirect(back)
+
+
 @views_bp.route("/requirements/<int:req_id>")
 @login_required
 def requirements_detail(req_id):
@@ -2717,6 +2835,12 @@ def requirements_detail(req_id):
             read_requirement_ac_coverage)
         req_key = _requirement_to_ref(req)["key"]
         s2 = read_requirement_claims(tid, req_key)
+        # Step 3 (LLD_STEP_3 §c): the requirement → surface declarations, the
+        # count line and the per-surface verdict split (best-effort console).
+        from primeqa.intelligence.requirement_surface_console import (
+            read_requirement_surfaces,
+        )
+        surfaces = read_requirement_surfaces(tid, req_key)
 
         # Per-test last-run chip: one batched S4 read (latest run per test),
         # each chip linking to the run's evidence page (/runs/<run_id>). On a
@@ -2840,6 +2964,7 @@ def requirements_detail(req_id):
             quarantined_count=quarantined_count,
             runs_in_flight=bool(active_runs),
             ac_coverage=ac_coverage, readiness_envs=readiness_envs,
+            surfaces=surfaces,
         ))
     finally:
         db.close()

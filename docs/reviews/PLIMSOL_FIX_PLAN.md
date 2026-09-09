@@ -584,3 +584,18 @@
   whose migration production does not yet have. Deselected on the branch,
   re-run at merge. A unit test that reads production is a convention
   worth revisiting when the next such migration lands.
+
+## Added 2026-09-09 — from Step 3 (the requirement → surface link)
+
+- **Low: the conformance card's verdict split folds `NEEDS_HUMAN` into "not
+  determined".** The s6 verdict vocabulary is PASS / FAIL / NEEDS_HUMAN /
+  NOT_DETERMINED; `requirement_surface_console._verdict_split` counts
+  everything that is neither PASS nor FAIL as "not determined", and the card's
+  "human review" column counts applicability HUMAN_REVIEW, not that verdict. A
+  NEEDS_HUMAN verdict on an APPLICABLE claim therefore reads as "not
+  determined". Fix: a fourth bucket in the split, rendered beside human review.
+- **Low: `activity_log.entity_id` is NULL for every S2 act** (`s2.claim_set.
+  approve`, `s2.surface_link.*`) because the column is INTEGER and S2 ids are
+  UUIDs — the id rides in `details`. Any activity view keyed on entity_id
+  cannot find these rows. Pre-existing pattern (D-3A3), extended here, not
+  changed.

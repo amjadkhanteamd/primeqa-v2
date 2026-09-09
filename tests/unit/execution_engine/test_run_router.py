@@ -221,7 +221,7 @@ def test_real_approved_claims_route_single_dormant():
             # environment (the binding) → its org through the ONE seam; an
             # unprovisioned env records the refusal and still attaches `verified`.
             _tids, _ = _claim_test_ids(s, ["SQ-205", "SQ-212"])
-            _envs = _environments_with_evidence(s, _tids)
+            _envs = _environments_with_evidence(s, _tids, tenant_id=1)
             _env = _envs[0] if _envs else None
             ev = _assemble_claim_evidence(
                 s, ["SQ-205", "SQ-212"], tenant_id=1, environment_id=_env,

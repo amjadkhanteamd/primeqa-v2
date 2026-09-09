@@ -274,11 +274,20 @@ def approve_claim_set(
                "claims_promoted": claims_promoted,
                "recipes_promoted": recipes_promoted,
            })})
+    # Step 3 (LLD_STEP_3 §b, Fork 5): the link follows the surface, not the
+    # claim version — every ACTIVE declaration on this inventory version is
+    # re-materialised against the set just approved (add-only; never a
+    # removal). A superseding claim set is followed without a human
+    # remembering to.
+    from primeqa.test_representation import surface_links
+    links_rematerialised = surface_links.rematerialise(
+        session, actor_user_id=user_id, claim_set_id=str(claim_set_id))
     session.flush()
     return {"claim_set_id": str(claim_set_id),
             "claims_promoted": claims_promoted,
             "recipes_promoted": recipes_promoted,
-            "member_count": len(members)}
+            "member_count": len(members),
+            "surface_links_rematerialised": links_rematerialised}
 
 
 def revoke_member(

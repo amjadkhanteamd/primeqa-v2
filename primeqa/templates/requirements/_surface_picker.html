@@ -1,0 +1,36 @@
+{# Step 3 — the inline picker (an HTMX fragment swapped into #surface-picker).
+   ACTIVE inventory only; already-declared and record-context surfaces are
+   absent by construction (surface_links.picker_candidates). #}
+<div id="surface-picker" class="px-6 py-3 border-b border-indigo-100 bg-indigo-50/40" data-testid="surface-picker">
+  {% if not picker.available %}
+    <div class="text-sm text-gray-500">The inventory is unavailable right now.</div>
+  {% elif picker.active_inventory_version is none %}
+    <div class="text-sm text-gray-500" data-testid="picker-empty">No active inventory &mdash; no inventory version has an approved claim set yet.</div>
+  {% elif not picker.candidates %}
+    <div class="text-sm text-gray-500" data-testid="picker-empty">Every surface of inventory v{{ picker.active_inventory_version }} is already declared on this requirement.</div>
+  {% else %}
+    <div class="flex items-center justify-between mb-2">
+      <span class="text-xs font-semibold text-gray-700">Declare a surface from inventory v{{ picker.active_inventory_version }}</span>
+      <button type="button" hx-get="/requirements/{{ req.id }}/surfaces/picker?close=1"
+              hx-target="#surface-picker" hx-swap="outerHTML"
+              class="text-xs text-gray-500 hover:underline">Close</button>
+    </div>
+    <ul class="divide-y divide-indigo-100">
+      {% for c in picker.candidates %}
+      <li class="py-2 flex items-center justify-between gap-4" data-testid="picker-candidate" data-surface-key="{{ c.surface_key }}">
+        <div class="min-w-0">
+          <div class="text-sm text-gray-900">{{ c.display_name or c.path }}</div>
+          <div class="font-mono text-xs text-gray-500 break-all">{{ c.surface_key }}</div>
+        </div>
+        <form method="POST" action="/requirements/{{ req.id }}/surfaces" class="flex-shrink-0"
+              hx-post="/requirements/{{ req.id }}/surfaces" hx-swap="none">
+          {{ csrf_input | safe }}
+          <input type="hidden" name="surface_key" value="{{ c.surface_key }}">
+          <button type="submit" data-testid="declare-candidate"
+                  class="rounded-md bg-indigo-600 px-3 py-1 text-xs font-semibold text-white hover:bg-indigo-500">Declare</button>
+        </form>
+      </li>
+      {% endfor %}
+    </ul>
+  {% endif %}
+</div>

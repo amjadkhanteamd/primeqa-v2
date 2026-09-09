@@ -18,7 +18,11 @@ pytestmark = [
     pytest.mark.integration,
     pytest.mark.skipif(not DB, reason="set S3A3_TEST_DATABASE_URL (scratch, tenant_1 at 20260909_0010)"),
 ]
-TENANT, ENV = 1, 5902
+TENANT = 1
+# Step 3 §d (the release-scope interim): the scope enumerates ACTIVE environments
+# only — 5901 is scratch's one active environment; an id with no environments row
+# is excluded by design now (test_step_3_scope.py proves the filter itself).
+ENV = 5901
 MARK = "s2scope"
 
 
