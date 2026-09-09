@@ -626,3 +626,21 @@
   in fact and the runs stand as valid evidence; the defect is the missing
   record. Step 4 adds the audit row (actor, schedule id, old → new) to the
   toggle and, under ruling 2, refuses any fire on absent authority.
+
+## Added 2026-09-09 — from Step 4 (the Run Planner)
+
+- **Low: the CSRF hidden field renders EMPTY on a session's very first
+  response.** `core/csrf.py`'s `csrf_input` prefers the cookie value; on the
+  first render the cookie is minted in the same response and the field is
+  written as `value=""`, so a plain (non-htmx) form POST from that first page
+  fails 403 until any second navigation. htmx / fetch callers are unaffected
+  (`csrf.js` injects the header from the cookie). Found by the Step 4 shoot;
+  pre-existing. Fix: fall back to the freshly minted token in `csrf_input` on
+  the first render (the comment in the code already intends it).
+- **Low (test infra): four `tests/integration/execution_engine/
+  test_stranded_cleanup.py` tests are red on the local harness on `main`.**
+  The reaper resolves per-environment clients through `public.environments`,
+  which the tenant-only harness does not carry ("relation environments does
+  not exist" in the warning); 4 failed / 8 passed at fb59095 in a clean
+  worktree. Not a product defect; a harness gap (an injected env reader, as
+  the planner has, or a minimal public table in the harness).

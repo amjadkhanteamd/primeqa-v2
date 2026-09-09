@@ -83,6 +83,12 @@ _METADATA_RECIPE_KIND = "metadata-recipe"
 _DATA_RECIPE_KIND = "data-recipe"
 
 
+def _plan_kwargs(plan_id):
+    """Step 4: the recorded plan rides to the run row — passed only when a plan
+    exists, so every injected finalize / persist fake keeps its old signature."""
+    return {"plan_id": plan_id} if plan_id else {}
+
+
 def _resolve_env_gate(session, environment_id: int):
     """Read ``(execution_policy, is_production)`` for the env from a live session.
 
@@ -194,6 +200,7 @@ def run_recipe_execution(
     record_sink=None,
     field_overrides=None,
     caller_tier=None,
+    plan_id=None,
 ) -> RunPathResult:
     """Execute the eligible recipe for ``test_id`` end-to-end on ``session``.
 
@@ -224,7 +231,7 @@ def run_recipe_execution(
         recipe, session, environment_id, client, record_sink=record_sink,
         field_overrides=field_overrides, caller_tier=caller_tier,
         coordinator=coord)
-    state = finalize_run(session, evidence, coordinator=coord)
+    state = finalize_run(session, evidence, coordinator=coord, **_plan_kwargs(plan_id))
     interpretation = _interpret_and_persist(session, evidence)
 
     return RunPathResult(
@@ -544,6 +551,7 @@ def run_recipe_execution_for_tenant(
     coordinator=None,
     field_overrides=None,
     caller_tier=None,
+    plan_id=None,
 ) -> RunPathResult:
     """Production entry: own the tenant connection + the single commit.
 
@@ -578,6 +586,7 @@ def run_recipe_execution_for_tenant(
                 record_sink=sink,
                 field_overrides=field_overrides,
                 caller_tier=caller_tier,
+                plan_id=plan_id,
             )
         finally:
             session.close()
@@ -620,6 +629,7 @@ def run_recipe_execution_async(
     coordinator=None,
     session_scope=None,
     caller_tier=None,
+    plan_id=None,
 ) -> RunPathResult:
     """Async-safe execution: bracket the live read with **brief transactions** so
     no DB connection is held across Salesforce I/O (D-129; data path D-230.2). Three
@@ -683,7 +693,7 @@ def run_recipe_execution_async(
 
     # 3. persist + posture + interpret — a fresh brief transaction.
     with scope(tenant_id) as session:
-        state = finalize_run(session, evidence, coordinator=coord)
+        state = finalize_run(session, evidence, coordinator=coord, **_plan_kwargs(plan_id))
         interpretation = _interpret_and_persist(session, evidence)
 
     return RunPathResult(
@@ -904,6 +914,7 @@ def run_all_recipes_execution(
     execute_fn=None,
     tenant_id=None,
     manifest_writer=None,
+    plan_id=None,
 ) -> RunAllResult:
     """Run EVERY applicable recipe of ``test_id`` as one batch (sync; D-277).
 
@@ -972,7 +983,8 @@ def run_all_recipes_execution(
                 except Exception as exc:               # execute failed → errored probe
                     evidence = _synthesize_errored_evidence(recipe, environment_id, exc)
                 finalize_run(session, evidence, coordinator=coord,
-                             batch_id=batch_id, source=_RUNALL_SOURCE)
+                             batch_id=batch_id, source=_RUNALL_SOURCE,
+                             **_plan_kwargs(plan_id))
         except Exception:                              # persist/posture failed → no row
             _log.warning("run-all: probe %s did not persist (batch %s); the batch is "
                          "incomplete and re-runnable",
@@ -994,6 +1006,7 @@ def run_all_recipes_execution_async(
     coordinator=None,
     session_scope=None,
     caller_tier=None,
+    plan_id=None,
     execute_fn=None,
     manifest_writer=None,
 ) -> RunAllResult:
@@ -1076,7 +1089,8 @@ def run_all_recipes_execution_async(
         try:
             with scope(tenant_id) as session:
                 finalize_run(session, evidence, coordinator=coord,
-                             batch_id=batch_id, source=_RUNALL_SOURCE)
+                             batch_id=batch_id, source=_RUNALL_SOURCE,
+                             **_plan_kwargs(plan_id))
                 _interpret_and_persist(session, evidence)
         except Exception:
             _log.warning("run-all(async): probe %s did not persist (batch %s); the "
@@ -1209,6 +1223,7 @@ def async_run_claim_execution_for_tenant(
     session_scope=None,
     single_fn=None,
     runall_fn=None,
+    plan_id=None,
 ):
     """Async production entry — ROUTE by the claim's recorded strategy kind (D-284,
     Slice 4e), the ASYNC counterpart of the 3.4 sync router
@@ -1241,8 +1256,9 @@ def async_run_claim_execution_for_tenant(
         claim = coord.get_current_approved_claim(session, test_id)
         route = route_strategy(_recorded_strategy_kind(claim))
 
+    _plan_kw = {"plan_id": plan_id} if plan_id else {}   # Step 4: the recorded plan rides to the run row
     if route == _ROUTE_RUNALL:
         return runall(tenant_id, test_id,
-                      environment_id=environment_id, client=client)
+                      environment_id=environment_id, client=client, **_plan_kw)
     return single(tenant_id, test_id,
-                  environment_id=environment_id, client=client)
+                  environment_id=environment_id, client=client, **_plan_kw)

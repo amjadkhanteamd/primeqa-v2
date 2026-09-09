@@ -30,7 +30,7 @@ from primeqa.semantic.connection import get_tenant_connection
 _JOB_COLS = (
     "id, test_id, environment_id, status, current_request_id, attempt_count, "
     "claimed_at, started_at, completed_at, heartbeat_at, error_code, "
-    "error_message, created_by, created_at, updated_at"
+    "error_message, created_by, created_at, updated_at, plan_id"
 )
 
 # The active (non-terminal) states — the partial-unique + claim scope.
@@ -57,6 +57,7 @@ class ExecutionJob:
     created_by: Optional[int]
     created_at: Optional[datetime]
     updated_at: Optional[datetime]
+    plan_id: Optional[str] = None      # Step 4: the recorded plan this job executes
 
 
 @dataclass(frozen=True)
@@ -81,6 +82,7 @@ def _job(row) -> Optional[ExecutionJob]:
         heartbeat_at=row["heartbeat_at"], error_code=row["error_code"],
         error_message=row["error_message"], created_by=row["created_by"],
         created_at=row["created_at"], updated_at=row["updated_at"],
+        plan_id=(str(row["plan_id"]) if row.get("plan_id") else None),
     )
 
 
@@ -93,6 +95,7 @@ class ExecutionJobStore:
     # -- Idempotency (D-130.A): get-or-create the ACTIVE job --------------
     def create_or_get_job(
         self, *, test_id, environment_id: int, created_by: Optional[int] = None,
+        plan_id: Optional[str] = None,
     ) -> ExecutionJob:
         """Return the existing **active** job for ``(test_id, environment_id)`` or
         create a fresh ``queued`` one. Re-runnable: once the prior job is terminal
@@ -100,10 +103,11 @@ class ExecutionJobStore:
         the partial-unique ``ON CONFLICT … DO NOTHING`` then SELECT the active row."""
         with get_tenant_connection(self._tenant_id) as conn:
             conn.execute(text(
-                "INSERT INTO s4_execution_jobs (test_id, environment_id, created_by) "
-                "VALUES (CAST(:tid AS uuid), :eid, :cb) "
+                "INSERT INTO s4_execution_jobs (test_id, environment_id, created_by, plan_id) "
+                "VALUES (CAST(:tid AS uuid), :eid, :cb, CAST(:plan AS uuid)) "
                 f"ON CONFLICT (test_id, environment_id) WHERE {_ACTIVE} DO NOTHING"
-            ), {"tid": str(test_id), "eid": environment_id, "cb": created_by})
+            ), {"tid": str(test_id), "eid": environment_id, "cb": created_by,
+                "plan": (str(plan_id) if plan_id else None)})
             row = conn.execute(text(
                 f"SELECT {_JOB_COLS} FROM s4_execution_jobs "
                 f"WHERE test_id = CAST(:tid AS uuid) AND environment_id = :eid "

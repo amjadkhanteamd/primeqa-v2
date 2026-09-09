@@ -122,8 +122,12 @@ def run_tests():
     # --- Page render ---
     def test_run_renders_for_tester():
         login_form("tester_rt@primeqa.io", "test123")
+        # Step 4 (LLD_STEP_4 §d): Run Tests is RETIRED — the address redirects to
+        # the releases list with the retirement note; a run starts from a plan.
         r = client.get("/run", follow_redirects=False)
-        assert r.status_code == 200, f"Expected 200, got {r.status_code}"
+        assert r.status_code == 302, f"Expected the retirement redirect, got {r.status_code}"
+        assert r.headers["Location"].endswith("/releases?from=run")
+        return
         html = r.data.decode("utf-8", "replace")
         assert "Run Tests" in html, "Page title missing"
         # D-219: the substrate page — requirement picker, not the v1 tabs.

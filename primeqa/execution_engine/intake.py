@@ -23,6 +23,7 @@ log = logging.getLogger(__name__)
 def enqueue_s4_execution(
     *, tenant_id: int, test_id, environment_id: int,
     created_by: Optional[int] = None,
+    plan_id: Optional[str] = None,
 ) -> ExecutionJob:
     """Get-or-create the **active** execution job for ``(test_id, environment_id)``
     — idempotent while active, re-runnable once terminal (D-130.A). ``test_id`` is
@@ -50,6 +51,7 @@ def enqueue_s4_execution(
         test_id=tid,
         environment_id=int(environment_id),
         created_by=created_by,
+        plan_id=plan_id,
     )
 
 def enqueue_claims_for_requirements(

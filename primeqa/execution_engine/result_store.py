@@ -74,6 +74,8 @@ class S4ExecutionRun(Base):
     # in Slice 4.
     batch_id = Column(UUID(as_uuid=True), nullable=True)
     source = Column(String, nullable=True)
+    # Step 4: the recorded plan this run executed (NULL = not plan-driven).
+    plan_id = Column(UUID(as_uuid=True), nullable=True)
     # D-419/D-421: the Salesforce username the run executed as (JWT sub).
     # NULL = not identity-scoped (NOT "ran as admin" — absence stays absence).
     executing_identity = Column(String, nullable=True)
@@ -123,7 +125,8 @@ def _run_failure(evidence: RunEvidence):
 
 def persist_run_evidence(session, evidence: RunEvidence, *,
                          batch_id: uuid.UUID | None = None,
-                         source: str | None = None):
+                         source: str | None = None,
+                         plan_id=None):
     """Persist one :class:`RunEvidence` as an ``s4_execution_runs`` row.
 
     Maps the in-memory evidence to typed columns + an ``evidence`` JSONB trace,
@@ -152,6 +155,8 @@ def persist_run_evidence(session, evidence: RunEvidence, *,
         batch_cols["batch_id"] = batch_id
     if source is not None:
         batch_cols["source"] = source
+    if plan_id is not None:
+        batch_cols["plan_id"] = uuid.UUID(str(plan_id))
     # D-419: the run-as identity, same omit-when-None discipline — a NULL
     # column means "not identity-scoped", never "ran as admin", so a
     # non-identity run must not even reference the column.

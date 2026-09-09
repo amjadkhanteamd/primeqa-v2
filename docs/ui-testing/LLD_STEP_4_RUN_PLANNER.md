@@ -1,6 +1,6 @@
 # LLD — Step 4: the Run Planner (TA condition 3; Fork 5: PLAN succeeds Run Tests)
 
-**Status: DESIGN — GO (AK, 2026-09-09; rulings 1–4 folded below; AK confirms he re-enabled schedule 1 by hand via the D-214 toggle, so the 02:09Z fire is authorised in fact and unrecorded only because the toggle writes no audit row).** Branch `step-4-run-planner` from
+**Status: BUILT (2026-09-09; design b11a67f, GO with rulings 1–4; AK confirms he re-enabled schedule 1 by hand via the D-214 toggle, so the 02:09Z fire is authorised in fact and unrecorded only because the toggle wrote no audit row). Eight corrections found at build are recorded in VERIFICATION_STEP_4.md §0 (a failing recipe is named even when its claim survives; the plan id rides conditionally so injected fakes keep their signatures; best-effort writes on savepoints; the legacy enqueue seam kept for tests only; the Jinja dict-keys gotcha; the first-render CSRF field; create-time classification of a planted fixture key; four pre-existing reaper reds on the harness).** Branch `step-4-run-planner` from
 `main` @ fb59095 (Step 3 live, D-485). Mock approved by AK: the PLAN view
 answers what / why / scope only — claims by kind with reasons, declared
 target environments with exclusions named, manifests + pins, an explicit

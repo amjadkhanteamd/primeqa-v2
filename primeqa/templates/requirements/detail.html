@@ -75,19 +75,19 @@
           {# D-317 slice 6: htmx keeps you HERE — the response is the live
              poller (chips update in place). No-JS falls back to the classic
              POST → /runs/substrate redirect. #}
-          <form method="POST" action="/requirements/{{ req.id }}/run-substrate"
-                hx-post="/requirements/{{ req.id }}/run-substrate"
-                hx-target="#test-plan-status" hx-swap="outerHTML"
-                hx-disabled-elt="find button"
-                class="flex items-center space-x-2">
+          {# Step 4 (LLD_STEP_4 §d): Run becomes PLAN — the recorded plan for this
+             requirement on the named environment, then the PLAN view, then
+             "Run this plan". The live-chips poller keeps working after a run. #}
+          <form method="POST" action="/requirements/{{ req.id }}/plan"
+                class="flex items-center space-x-2" data-testid="plan-requirement">
             {{ csrf_input | safe }}
-            <select name="environment_id" required class="rounded-md border border-gray-300 px-2 py-1.5 text-sm" title="Environment to run against (sandbox only)">
-              <option value="">Run env&hellip;</option>
+            <select name="environment_id" required class="rounded-md border border-gray-300 px-2 py-1.5 text-sm" title="Environment to plan against">
+              <option value="">Plan env&hellip;</option>
               {% for env in environments if not env.is_production %}
               <option value="{{ env.id }}">{{ env.name }}</option>
               {% endfor %}
             </select>
-            {{ btn_success('Run ' ~ approved_count ~ ' test' ~ ('' if approved_count == 1 else 's'), type='submit', size='sm') }}
+            {{ btn_success('Plan ' ~ approved_count ~ ' test' ~ ('' if approved_count == 1 else 's'), type='submit', size='sm') }}
           </form>
           {% elif s2_claims and s2_claims.claims %}
           <span class="text-xs text-gray-400 whitespace-nowrap" title="Only approved test cases run — approve them from the test plan below.">approve test cases to run them</span>

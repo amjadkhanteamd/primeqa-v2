@@ -1,0 +1,169 @@
+{% extends "base.html" %}
+{% from 'components/breadcrumbs.html' import breadcrumbs %}
+{% from 'components/_empty_state.html' import empty_state %}
+{% block title %}Plan {{ plan.id[:8] if plan else '' }} - Plimsol{% endblock %}
+{% block content %}
+{# Step 4 (LLD_STEP_4_RUN_PLANNER §d) — the PLAN view: what / why / scope only,
+   rendered from the RECORDED row (never recomputed). "Run this plan" is the
+   second act; impact / risk / persona / regression are seams with a "not
+   yet" line each (§c). #}
+{% set back = ('/releases/' ~ plan.scope_ref ~ '?tab=decision') if plan and plan.scope_kind == 'release' else '/runs/substrate' %}
+{{ breadcrumbs([('Runs', '/runs/substrate'), ('Plan', None)]) }}
+{% if not available %}
+  <div class="bg-white shadow rounded-lg px-6 py-8 text-sm text-gray-400">The plan is unavailable right now.</div>
+{% elif not plan %}
+  {{ empty_state('No such plan', 'The plan id does not exist for this tenant.') }}
+{% else %}
+{% set res = plan.resolution %}
+{% set fx = res.manifests.functional %}
+{% set conf = res.manifests.conformance %}
+<div class="space-y-6" data-testid="plan-view" data-plan-id="{{ plan.id }}" data-executed="{{ '1' if plan.executed_at else '0' }}">
+  <!-- Header -->
+  <div class="flex justify-between items-start">
+    <div>
+      <h1 class="text-2xl font-bold text-gray-900">Plan
+        <span class="font-mono text-base text-gray-500">{{ plan.id[:8] }}</span></h1>
+      <p class="mt-1 text-sm text-gray-600" data-testid="plan-scope">
+        {% if plan.scope_kind == 'release' %}Release {{ plan.scope_ref }}
+        {% elif plan.scope_kind == 'requirement' %}Requirement <span class="font-mono">{{ plan.scope_ref }}</span>
+        {% elif plan.scope_kind == 'schedule' %}Schedule {{ plan.scope_ref }} &middot; template {{ plan.inputs.resolved_scope_kind }}{% if plan.inputs.schedule and plan.inputs.schedule.template.legacy %} (legacy: every approved test on the environment){% endif %}
+        {% else %}Tenant-wide on environment {{ env_names.get(plan.inputs.environment_id, plan.inputs.environment_id) }}{% endif %}
+        &middot; planned {% if plan.planned_by_name %}by {{ plan.planned_by_name }}{% else %}by the scheduler{% if plan.authorised_by_name %} under {{ plan.authorised_by_name }}'s authority{% endif %}{% endif %}
+        &middot; {{ plan.planned_at[:16] if plan.planned_at else '' }}
+      </p>
+      <p class="mt-1 text-xs" data-testid="plan-execution">
+        {% if plan.executed_at %}<span class="inline-flex items-center px-2 py-0.5 rounded-full text-xs font-medium bg-emerald-100 text-emerald-800">run</span>
+          <span class="text-gray-500">by {{ plan.executed_by_name or 'the scheduler' }} &middot; {{ plan.executed_at[:16] }} &middot; {{ plan.execution.s4_jobs | length }} job{{ '' if (plan.execution.s4_jobs | length) == 1 else 's' }}{% if plan.execution.ui_jobs %} &middot; {{ plan.execution.ui_jobs | length }} conformance batch{{ '' if (plan.execution.ui_jobs | length) == 1 else 'es' }}{% endif %}{% if plan.execution.refusals %} &middot; <span class="text-rose-700">{{ plan.execution.refusals | length }} refused</span>{% endif %}</span>
+        {% else %}<span class="inline-flex items-center px-2 py-0.5 rounded-full text-xs font-medium bg-gray-100 text-gray-700">not yet run</span>{% endif %}
+      </p>
+    </div>
+    <div class="flex items-center gap-3">
+      <a href="{{ back }}" class="text-sm text-gray-500 hover:underline">Back</a>
+      {% if user.role in ['ba', 'tester', 'admin', 'superadmin'] %}
+      <form method="POST" action="/plans/{{ plan.id }}/run" id="run-plan-form">
+        {{ csrf_input | safe }}
+        <button type="{{ 'button' if not plan.executed_at else 'button' }}"
+                {% if plan.executed_at %}disabled title="This plan was already run — plan again to run again."{% else %}
+                data-confirm data-confirm-title="Run this plan?"
+                data-confirm-message="{{ fx.job_count }} substrate job{{ '' if fx.job_count == 1 else 's' }}{% if conf %} and {{ conf | length }} conformance batch{{ '' if (conf | length) == 1 else 'es' }}{% endif %} will be queued exactly as shown. Excluded items stay excluded."
+                data-confirm-submit="Run this plan" data-confirm-form="#run-plan-form"{% endif %}
+                data-testid="run-this-plan"
+                class="rounded-md px-3 py-2 text-sm font-semibold text-white {{ 'bg-gray-400 cursor-not-allowed' if plan.executed_at else 'bg-green-600 hover:bg-green-500' }}">Run this plan</button>
+      </form>
+      {% endif %}
+    </div>
+  </div>
+
+  <!-- What: claims by kind, with reasons -->
+  <div class="bg-white shadow rounded-lg" data-testid="plan-claims">
+    <div class="px-4 py-3 border-b flex items-center justify-between">
+      <h3 class="text-sm font-semibold text-gray-700">What runs
+        <span class="text-gray-500 font-normal">({{ res.claim_count }} claim{{ '' if res.claim_count == 1 else 's' }} &middot; {{ fx.job_count }} job{{ '' if fx.job_count == 1 else 's' }}{% if conf %} &middot; {{ conf | length }} conformance batch{{ '' if (conf | length) == 1 else 'es' }}{% endif %})</span></h3>
+      <span class="text-xs text-gray-400">{{ res.requirement_keys | length }} requirement{{ '' if (res.requirement_keys | length) == 1 else 's' }}: {{ res.requirement_keys | join(', ') }}</span>
+    </div>
+    {% if res.claims_by_kind %}
+    <ul class="divide-y divide-gray-100">
+      {% for kind, g in res.claims_by_kind.items() %}
+      <li class="px-6 py-3" data-testid="plan-kind" data-kind="{{ kind }}">
+        <div class="flex items-center justify-between">
+          <span class="text-sm font-medium text-gray-900">{{ g.archetype }} &middot; {{ g.claim_kind }}</span>
+          <span class="text-xs text-gray-500">{{ g.claims | length }} claim{{ '' if (g.claims | length) == 1 else 's' }} &middot; {{ 'functional lane' if g.lane == 'functional' else 'conformance lane' }}</span>
+        </div>
+        <ul class="mt-1 space-y-0.5">
+          {% for c in g.claims %}
+          <li class="text-xs text-gray-600 flex items-center gap-2 flex-wrap" data-testid="plan-claim" data-test-id="{{ c.test_id }}">
+            <a href="/claims/{{ c.test_id }}" class="font-mono text-indigo-700 hover:underline">{{ c.test_id[:8] }}</a>
+            <span>v{{ c.version_seq }}</span>
+            <span class="text-gray-400">&middot;</span>
+            <span>because it {{ 'was generated from' if 'generated_from' in c.link_kinds else 'verifies' }} {{ c['keys'] | join(', ') }}</span>
+            <span class="text-gray-400">&middot;</span>
+            <span>{{ c.recipes | length }} recipe{{ '' if (c.recipes | length) == 1 else 's' }} ({{ c.recipes | map(attribute='recipe_kind') | unique | join(', ') }})</span>
+            {% if c.unclassified %}<span class="text-amber-700">&middot; origin not classified</span>{% endif %}
+          </li>
+          {% endfor %}
+        </ul>
+      </li>
+      {% endfor %}
+    </ul>
+    {% else %}
+      <div class="px-6 py-6 text-sm text-gray-500">Nothing to run — every scoped item is excluded below, with its reason.</div>
+    {% endif %}
+  </div>
+
+  <!-- Scope: target environments + personas -->
+  <div class="grid grid-cols-1 md:grid-cols-2 gap-6">
+    <div class="bg-white shadow rounded-lg" data-testid="plan-environments" data-targets-source="{{ plan.inputs.targets_source }}">
+      <div class="px-4 py-3 border-b">
+        <h3 class="text-sm font-semibold text-gray-700">Target environments
+          <span class="text-gray-500 font-normal">
+            {% if plan.inputs.targets_source == 'declared' %}(declared on the release)
+            {% elif plan.inputs.targets_source == 'fallback:evidence-active' %}(no target declared — the active environments holding evidence; declare a target to make this a decision)
+            {% else %}(named for this plan){% endif %}</span></h3>
+      </div>
+      <ul class="divide-y divide-gray-100">
+        {% for e in res.environments %}
+        <li class="px-6 py-2 text-sm flex items-center justify-between" data-testid="plan-env" data-env="{{ e.environment_id }}" data-admitted="{{ '1' if e.admitted else '0' }}">
+          <span><span class="font-medium text-gray-900">{{ e.name }}</span>
+            <span class="text-xs text-gray-500">&middot; {{ e.execution_policy }}{% if e.is_production %} &middot; production{% endif %}{% if e.is_active == false %} &middot; inactive{% endif %}</span></span>
+          <span class="text-xs {{ 'text-gray-600' if e.admitted else 'text-rose-700' }}">
+            {% if e.admitted %}pin: seq {{ e.pin.org_version_seq if e.pin and e.pin.org_version_seq is not none else '—' }}{% if e.pin and e.pin.state != 'CURRENT' %} ({{ e.pin.state }}){% endif %}{% else %}excluded{% endif %}</span>
+        </li>
+        {% else %}
+        <li class="px-6 py-3 text-sm text-gray-500">No target environment.</li>
+        {% endfor %}
+      </ul>
+    </div>
+    <div class="bg-white shadow rounded-lg" data-testid="plan-personas">
+      <div class="px-4 py-3 border-b"><h3 class="text-sm font-semibold text-gray-700">Personas <span class="text-gray-500 font-normal">(from the declared surfaces)</span></h3></div>
+      <div class="px-6 py-3 text-sm text-gray-700">
+        {% if res.personas %}{{ res.personas | join(', ') }} &middot; <span class="text-xs text-gray-500">{{ res.declared_surfaces | length }} declared surface{{ '' if (res.declared_surfaces | length) == 1 else 's' }}</span>
+        {% else %}<span class="text-gray-500">No declared surface on this scope — no conformance lane.</span>{% endif %}
+      </div>
+    </div>
+  </div>
+
+  <!-- Manifests + pins -->
+  <div class="bg-white shadow rounded-lg" data-testid="plan-manifests">
+    <div class="px-4 py-3 border-b"><h3 class="text-sm font-semibold text-gray-700">Manifests &amp; pins</h3></div>
+    <ul class="divide-y divide-gray-100 text-sm">
+      <li class="px-6 py-3" data-testid="manifest-functional">
+        <span class="font-medium text-gray-900">Functional</span>
+        <span class="text-gray-600">&middot; {{ fx.job_count }} job{{ '' if fx.job_count == 1 else 's' }} — one substrate job per (claim, environment); pins: the claim's approved version, the eligible recipe versions, the environment's org sequence at plan time.</span>
+      </li>
+      {% for m in conf %}
+      <li class="px-6 py-3" data-testid="manifest-conformance" data-surfaces="{{ m.surface_keys | length }}" data-excluded-surfaces="{{ m.excluded_surfaces | length }}">
+        <span class="font-medium text-gray-900">Conformance &middot; {{ m.persona_scope }}</span>
+        <span class="text-gray-600">&middot; claim set <span class="font-mono text-xs">{{ m.claim_set_id[:8] }}</span> on inventory v{{ m.inventory_version }} &middot; {{ m.surface_keys | length }} of {{ (m.surface_keys | length) + (m.excluded_surfaces | length) }} surface{{ '' if ((m.surface_keys | length) + (m.excluded_surfaces | length)) == 1 else 's' }} (the declared ones) &middot; {{ m.claims | length }} check{{ '' if (m.claims | length) == 1 else 's' }}; the manifest pins the engine run set at execution.</span>
+      </li>
+      {% endfor %}
+    </ul>
+  </div>
+
+  <!-- Excluded -->
+  <details class="bg-white shadow rounded-lg group" data-testid="plan-excluded" data-excluded-total="{{ plan.excluded_total }}">
+    <summary class="px-4 py-3 cursor-pointer select-none flex items-center justify-between">
+      <h3 class="text-sm font-semibold text-gray-700">Excluded <span class="text-gray-500 font-normal">({{ plan.excluded_total }} item{{ '' if plan.excluded_total == 1 else 's' }}{% if plan.exclusion_lines %}: {% for l in plan.exclusion_lines %}{{ l.count }} {{ l.reason | replace('_', ' ') }}{{ '' if loop.last else ', ' }}{% endfor %}{% endif %})</span></h3>
+      <span class="text-xs text-gray-400 group-open:hidden">Show &darr;</span><span class="text-xs text-gray-400 hidden group-open:inline">Hide &uarr;</span>
+    </summary>
+    {% if plan.exclusions['items'] %}
+    <ul class="divide-y divide-gray-100 text-xs">
+      {% for x in plan.exclusions['items'] %}
+      <li class="px-6 py-2 text-gray-600" data-testid="plan-exclusion" data-reason="{{ x.reason }}" data-ref="{{ x.ref }}">
+        <span class="font-medium text-gray-800">{{ x.kind }} <span class="font-mono">{{ x.ref if x.kind != 'environment' else env_names.get(x.ref, x.name or x.ref) }}</span></span>
+        &middot; {{ x.sentence }}{% if x.kind == 'environment' and x.name %} <span class="text-gray-500">({{ x.name }}{% if x.is_active == false %}, inactive{% endif %}{% if x.is_production %}, production{% endif %}{% if x.execution_policy %}, {{ x.execution_policy }}{% endif %})</span>{% endif %}{% if x['keys'] %} <span class="text-gray-400">&middot; {{ x['keys'] | join(', ') }}</span>{% endif %}
+      </li>
+      {% endfor %}
+    </ul>
+    {% else %}<div class="px-6 py-3 text-xs text-gray-500">Nothing excluded.</div>{% endif %}
+  </details>
+
+  <!-- Reserved seams -->
+  <div class="bg-white shadow rounded-lg" data-testid="plan-seams">
+    <div class="px-4 py-3 border-b"><h3 class="text-sm font-semibold text-gray-700">Selection <span class="text-gray-500 font-normal">(reserved)</span></h3></div>
+    <ul class="px-6 py-3 text-xs text-gray-500 space-y-1">
+      {% for k, v in res.selection.items() %}<li data-testid="plan-seam" data-seam="{{ k }}"><span class="font-medium text-gray-700">{{ k | capitalize }}</span> &middot; {{ v }}</li>{% endfor %}
+    </ul>
+  </div>
+</div>
+{% endif %}
+{% endblock %}
