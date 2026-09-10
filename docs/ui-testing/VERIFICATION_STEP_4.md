@@ -202,3 +202,24 @@ green after); pages 7; browser-gated 63 / 11 skipped; unit **5044 passed, 3 warn
 **Merge classification.** Code + tests only: two templates, three test files
 (two new guards + the clock fix), the docs — no migration, no data write.
 WRITE-FREE, dumpless under D-476.
+
+**Production transcript of the fix (2026-09-10).** Pre-flight: `main` =
+origin/main = aff7f8c, delta zero; the fix branch one commit ahead;
+WRITE-FREE with evidence (ten files: two templates, three test files, three
+docs, two screenshots; zero migration files; zero SQL write statements added
+to runtime code). Merge **c3c76e1** (`--no-ff`, parents aff7f8c + 8bf36e4,
+author AK, 0 trailers) pushed 04:54:24Z; four services **SUCCESS** by
+04:57:32Z; health 200; zero error-class log lines on all four. **The proof the
+merge should have had:** AK's production plans **f52771fd** and **1499dd4b**
+render **200** — "Release 16 · planned by Amanda Rivera · 2026-09-09T12:18",
+targets `fallback:evidence-active`, Excluded 5 (four `claim_deprecated` rows +
+the environment row "environment Prod1 · The environment holds evidence for
+this scope but is not a target. (Prod1, inactive, production, read_only)"),
+not executed, "Run this plan" present. Nothing written by this act: plans 3
+(a third, 02140ae7, planned by AK at 04:41Z today before the fix deployed —
+it renders now too), 0 executed, 0 targets, 0 jobs. Observed, not this act's:
+AK **claimed schedule 1 at 12:16:28Z on 2026-09-09** — `authorised_by = 1`,
+and the toggle's new audit row (`s4.schedule.claim`, ruling 4) recorded it;
+its next 06:00Z fire PLANS under that authority. User 1's recorded display
+name is "Amanda Rivera" (`public.users.full_name`); the plan view renders the
+recorded name.
