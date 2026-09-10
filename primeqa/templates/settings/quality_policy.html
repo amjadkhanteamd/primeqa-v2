@@ -1,0 +1,67 @@
+{% extends "settings/base.html" %}
+{% block title %}Quality policy - Plimsol{% endblock %}
+{% block settings_content %}
+{# Step 5 §f: a READ-ONLY view of the active quality policy. Authoring is
+   Settings-side by design and CLI in v1 — said plainly below. #}
+<div class="space-y-6" data-testid="quality-policy-page">
+  <div>
+    <h1 class="text-2xl font-bold text-gray-900">Quality policy</h1>
+    <p class="mt-1 text-sm text-gray-500">The rules a release decision is graded by: a closed vocabulary &mdash; evidence axis &times; condition &times; effect. A policy version is immutable once a decision has graded under it; editing means a new version.</p>
+    <p class="mt-1 text-xs text-amber-700" data-testid="authoring-note">Authoring is CLI in v1: <code class="font-mono">python -m primeqa.intelligence.quality_policy --tenant-id {{ user.tenant_id }} show | new-version | activate | retire</code>. This page only reads.</p>
+  </div>
+  {% if not overview.available %}
+    <p class="text-sm text-gray-400">The policy store is unavailable right now.</p>
+  {% else %}
+  {% set p = overview.active %}
+  <div class="bg-white shadow rounded-lg p-6" data-testid="active-policy" data-policy="{{ p.name ~ ' v' ~ p.version if p else '' }}">
+    {% if p %}
+    <div class="flex items-center justify-between">
+      <h2 class="text-lg font-medium text-gray-900">{{ p.name }} <span class="text-gray-500">v{{ p.version }}</span> <span class="ml-2 inline-flex px-2 py-0.5 rounded text-xs font-medium bg-green-100 text-green-800">active</span></h2>
+      <span class="text-xs text-gray-500">{% if p.first_used_at %}first used {{ p.first_used_at[:16] }} &middot; immutable{% else %}not yet used by a decision{% endif %}</span>
+    </div>
+    {% if p.note %}<p class="text-xs text-gray-500 mt-1">{{ p.note }}</p>{% endif %}
+    <table class="mt-4 min-w-full text-sm">
+      <thead><tr class="text-left text-xs text-gray-500 uppercase"><th class="py-1 pr-3">#</th><th class="py-1 pr-3">Axis</th><th class="py-1 pr-3">Condition</th><th class="py-1 pr-3">Parameter</th><th class="py-1 pr-3">Effect</th><th class="py-1 pr-3">Scope</th><th class="py-1">Note</th></tr></thead>
+      <tbody class="divide-y divide-gray-100">
+        {% for r in p.rules %}
+        <tr data-testid="policy-rule" data-position="{{ r.position }}">
+          <td class="py-1.5 pr-3 text-gray-500">{{ r.position }}</td>
+          <td class="py-1.5 pr-3 capitalize">{{ r.axis | replace('_', ' ') }}</td>
+          <td class="py-1.5 pr-3 font-mono text-xs">{{ r.condition }}</td>
+          <td class="py-1.5 pr-3">{{ r.parameter if r.parameter is not none else '—' }}</td>
+          <td class="py-1.5 pr-3"><span class="inline-flex px-1.5 py-0.5 rounded text-[11px] font-semibold
+              {% if r.effect == 'BLOCK' %}bg-red-100 text-red-800{% elif r.effect == 'REVIEW' %}bg-slate-200 text-slate-800{% elif r.effect == 'CONDITIONAL' %}bg-amber-100 text-amber-800{% else %}bg-green-100 text-green-800{% endif %}">{{ r.effect }}</span></td>
+          <td class="py-1.5 pr-3 text-xs text-gray-500">{{ r.scope }}</td>
+          <td class="py-1.5 text-xs text-gray-600">{{ r.note }}</td>
+        </tr>
+        {% endfor %}
+      </tbody>
+    </table>
+    {% else %}
+    <p class="text-sm text-slate-700" data-testid="no-active-policy">No active policy &mdash; no release grades until a human activates one (the seed "Plimsol default v1" is a draft below).</p>
+    {% endif %}
+  </div>
+  <div class="bg-white shadow rounded-lg p-6">
+    <h2 class="text-sm font-semibold text-gray-900">All versions</h2>
+    <ul class="mt-2 divide-y divide-gray-100 text-sm">
+      {% for v in overview.policies %}
+      <li class="py-2 flex items-center justify-between" data-testid="policy-version" data-status="{{ v.status }}">
+        <span><span class="font-medium">{{ v.name }} v{{ v.version }}</span> <span class="ml-2 inline-flex px-1.5 py-0.5 rounded text-[11px] {% if v.status == 'active' %}bg-green-100 text-green-800{% elif v.status == 'draft' %}bg-blue-50 text-blue-800{% else %}bg-gray-100 text-gray-600{% endif %}">{{ v.status }}</span>
+          <span class="ml-2 text-xs text-gray-500">{{ v.rules | length }} rules{% if v.first_used_at %} &middot; first used {{ v.first_used_at[:10] }}{% endif %}</span></span>
+        <span class="font-mono text-xs text-gray-400">{{ v.id }}</span>
+      </li>
+      {% else %}<li class="py-2 text-gray-500">No policy version exists.</li>{% endfor %}
+    </ul>
+  </div>
+  <div class="bg-white shadow rounded-lg p-6">
+    <h2 class="text-sm font-semibold text-gray-900">The vocabulary</h2>
+    <p class="text-xs text-gray-500 mt-0.5">A rule uses one condition from this closed set; effects are {{ overview.effects | join(', ') }}.</p>
+    <dl class="mt-2 grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-x-6 gap-y-2 text-xs">
+      {% for axis, conds in overview.vocabulary.items() %}{% for c, sentence in conds.items() %}
+      <div><dt class="font-mono text-gray-800">{{ axis }} · {{ c }}</dt><dd class="text-gray-500 mt-0.5">{{ sentence }}</dd></div>
+      {% endfor %}{% endfor %}
+    </dl>
+  </div>
+  {% endif %}
+</div>
+{% endblock %}

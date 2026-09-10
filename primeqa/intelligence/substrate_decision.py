@@ -1021,8 +1021,14 @@ def release_scope_readiness(tenant_id: int, external_keys) -> dict:
                     SemanticTransactionCoordinator,
                 )
                 latest = SemanticTransactionCoordinator().get_latest_claims(session, test_ids)
+                # Step 5 (R6): a conformance claim (archetype ``ui``) never runs on the
+                # S4 lane — its contemporaneity is the browser plane's processing run,
+                # graded by the policy engine's conformance axis (a claim with no
+                # verdict on the latest run is UNGRADED there). The S4 readiness
+                # census — and the Evaluate refusal — read the functional lane only.
                 live = [t for t in test_ids
-                        if getattr(latest.get(t), "status", None) != "deprecated"]
+                        if getattr(latest.get(t), "status", None) != "deprecated"
+                        and getattr(latest.get(t), "archetype", None) != "ui"]
                 envs = _environments_with_evidence(session, live, tenant_id=tenant_id)
                 items = []
                 if not envs:

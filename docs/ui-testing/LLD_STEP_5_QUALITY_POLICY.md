@@ -315,13 +315,37 @@ Plus the D-468 set.
 
 ## h. Migrations, classified (for the runbook)
 
-- tenant `20260912_0010`: three new tables + triggers — ADDITIVE; the seed
-  INSERTs (policy + 10 rules) are a DATA WRITE inside the migration → the
-  migration is **not write-free**: classify **ADDITIVE with a seed**, dump
-  per D-285/D-476 posture for data-writing migrations unless AK rules the
-  seed a runtime act (Fork 3).
+- tenant `20260912_0010`: three new tables + triggers, plus the seed INSERTs
+  (one policy + its 10 rules). **ADDITIVE, dumpless** under ruling 3: the
+  seed is written as a DRAFT — new rows in new tables, no state change on any
+  existing object, nothing graded until a human activates it. Idempotent (the
+  seed is skipped when `(name, version)` exists).
 - public `073_release_decisions_policy_refs.sql`: three nullable columns —
-  ADDITIVE, non-destructive; `decision_criteria` untouched.
+  ADDITIVE, non-destructive, dumpless; no data write, no constraint that can
+  reject a row; `releases.decision_criteria` untouched.
+
+## Build corrections (2026-09-10)
+
+Six corrections found while building; each is recorded with its evidence in
+`VERIFICATION_STEP_5.md` §0 and folded into the design above:
+
+1. **The lanes are split.** A conformance claim never runs on the S4 lane, so
+   Step 2's readiness census (and the Evaluate refusal) reads the FUNCTIONAL
+   lane; the policy's conformance axis grades the browser plane, and a
+   conformance claim with no verdict on the latest processing run is ungraded
+   THERE. Without this the Evaluate act refused a healthy release for ever.
+2. **The ACTIVE map set is PUBLIC (migrations 065/066), not tenant.** The
+   level read runs under a savepoint; the evidence carries
+   `levels_available`; a FAIL whose rule maps to no level is recorded
+   `unmapped`, never silently AA.
+3. **The policy is frozen before the decision row is written** (two
+   connections; the conservative order).
+4. **`expires_at` is NOT NULL at the table** — "no expiry, no waiver" holds
+   against a direct INSERT, not only the form.
+5. **The decider's name is a two-column SELECT**, not the ORM row (a render
+   must not depend on more than it shows — the D-487 class).
+6. **The gate-logic sweep is scoped to the decision surfaces**, with the four
+   pre-existing colour bands elsewhere pinned by name.
 
 ## Forks for the GO
 

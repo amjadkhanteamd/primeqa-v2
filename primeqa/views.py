@@ -5,6 +5,7 @@ All pages require authentication via JWT cookie except /login.
 
 import os
 import re
+from datetime import datetime, timezone
 from functools import wraps
 
 import jwt
@@ -4935,10 +4936,14 @@ def releases_evaluate_decision(release_id):
         if result.get("refused"):
             # Step 2: a non-current scope refuses the act; the decision tab
             # renders the items and "Run the scope" — nothing was recorded.
-            names = ", ".join(sorted({(i["external_keys"] or [i["test_id"][:8]])[0]
-                                      for i in result["items"]}))
-            flash(f"Evaluate refused — {len(result['items'])} item(s) in scope are "
-                  f"not current ({names}). Run the scope, then evaluate.", "error")
+            # Step 5 (ruling 3): no active policy refuses too, by sentence.
+            if result.get("reason") == "scope_not_current":
+                names = ", ".join(sorted({(i["external_keys"] or [i["test_id"][:8]])[0]
+                                          for i in result["items"]}))
+                flash(f"Evaluate refused — {len(result['items'])} item(s) in scope are "
+                      f"not current ({names}). Run the scope, then evaluate.", "error")
+            else:
+                flash(f"Evaluate refused — {result.get('sentence') or result.get('reason')}", "error")
             return redirect(f"/releases/{release_id}?tab=decision")
         rec = result["recommendation"].upper().replace("_", " ")
         suffix = ""
@@ -4951,6 +4956,115 @@ def releases_evaluate_decision(release_id):
     finally:
         db.close()
     return redirect(f"/releases/{release_id}?tab=decision")
+
+
+# Step 5 (LLD_STEP_5_QUALITY_POLICY §e): the human's FINAL decision, recorded
+# beside the recommendation — never replacing it. Ordered by permissiveness:
+# recording a word MORE permissive than the recommendation is an override —
+# "Record GO with reason" is the only path — Admin tier + a reason (the API's
+# existing gate). A word at or below the recommendation is a MEMBER's record.
+_FINAL_RANK = {"no_go": 0, "cannot_determine": 1, "conditional_go": 2, "go": 3}
+
+
+@views_bp.route("/releases/<int:release_id>/decisions/<int:decision_id>/final", methods=["POST"])
+@require_tier(Tier.MEMBER)
+@login_required
+def release_decision_final(release_id, decision_id):
+    from flask import flash
+    final = (request.form.get("final_decision") or "").strip()
+    reason = (request.form.get("override_reason") or "").strip()
+    back = f"/releases/{release_id}?tab=decision"
+    if final not in ("go", "conditional_go", "no_go"):
+        flash("Choose GO, CONDITIONAL GO or NO GO.", "error")
+        return redirect(back)
+    db = next(get_db())
+    try:
+        repo = ReleaseRepository(db)
+        release = repo.get_release(release_id, request.user["tenant_id"])
+        if not release:
+            return redirect("/releases")
+        from primeqa.release.models import ReleaseDecision
+        d = db.query(ReleaseDecision).filter(ReleaseDecision.id == decision_id,
+                                             ReleaseDecision.release_id == release_id).first()
+        if d is None:
+            flash("Decision not found.", "error")
+            return redirect(back)
+        override = _FINAL_RANK.get(final, 0) > _FINAL_RANK.get(d.recommendation, 0)
+        if override:
+            if not reason:
+                flash(f"Recording {final.replace('_', ' ').upper()} over a "
+                      f"{(d.recommendation or '').replace('_', ' ').upper()} recommendation needs a reason.", "error")
+                return redirect(back)
+            allow, _ = authorize(request.user, Tier.ADMIN)
+            if not allow:
+                flash("Only an admin records a decision more permissive than the recommendation.", "error")
+                return redirect(back)
+        repo.finalize_decision(decision_id, release_id, final, request.user["id"], reason or None)
+        ReleaseService(repo)._log(request.user["tenant_id"], request.user["id"], "release.decision.finalized",
+                                  release_id, {"decision_id": decision_id, "final_decision": final,
+                                               "override": override, "recommendation": d.recommendation})
+        flash(f"Final decision recorded: {final.replace('_', ' ').upper()}"
+              + (" — over the recommendation, with your reason." if override else "."), "success")
+    finally:
+        db.close()
+    return redirect(back)
+
+
+@views_bp.route("/releases/<int:release_id>/waivers", methods=["POST"])
+@require_tier(Tier.MEMBER)
+@login_required
+def release_waiver_record(release_id):
+    """§c / ruling 4: a waiver is a named human accepting a known state —
+    reviewer, reason and expiry all required; never auto-created."""
+    from flask import flash
+
+    from primeqa.intelligence.quality_decision_console import record_waiver
+    back = f"/releases/{release_id}?tab=decision"
+    expires = (request.form.get("expires_at") or "").strip()
+    try:
+        expires_at = datetime.fromisoformat(expires).replace(tzinfo=timezone.utc) if expires else None
+    except ValueError:
+        expires_at = None
+    if expires_at is None:
+        flash("No expiry, no waiver — give the date it stops counting.", "error")
+        return redirect(back)
+    reviewer = request.form.get("reviewer_user_id", type=int) or request.user["id"]
+    res = record_waiver(request.user["tenant_id"], release_id=release_id,
+                        item_kind=(request.form.get("item_kind") or "claim").strip(),
+                        item_ref=(request.form.get("item_ref") or "").strip(),
+                        axis=(request.form.get("axis") or "functional").strip(),
+                        reviewer_user_id=reviewer, reason=(request.form.get("reason") or "").strip(),
+                        expires_at=expires_at, user_id=request.user["id"])
+    flash("Waiver recorded — it allows that item until it expires." if res.get("ok")
+          else (res.get("sentence") or "Could not record the waiver."),
+          "success" if res.get("ok") else "error")
+    return redirect(back)
+
+
+@views_bp.route("/releases/<int:release_id>/waivers/<uuid:waiver_id>/revoke", methods=["POST"])
+@require_tier(Tier.MEMBER)
+@login_required
+def release_waiver_revoke(release_id, waiver_id):
+    from flask import flash
+
+    from primeqa.intelligence.quality_decision_console import revoke_waiver
+    res = revoke_waiver(request.user["tenant_id"], waiver_id=str(waiver_id), user_id=request.user["id"],
+                        reason=(request.form.get("reason") or "").strip())
+    flash("Waiver revoked — the item counts again." if res.get("ok")
+          else (res.get("sentence") or "Could not revoke the waiver."),
+          "success" if res.get("ok") else "error")
+    return redirect(f"/releases/{release_id}?tab=decision")
+
+
+@views_bp.route("/settings/quality-policy")
+@require_tier(Tier.ADMIN)
+@login_required
+def settings_quality_policy():
+    """§f: a READ-ONLY view of the active policy (authoring is CLI in v1)."""
+    from primeqa.intelligence.quality_decision_console import policy_overview
+    return render_template("settings/quality_policy.html", **ctx(
+        active_page="settings", settings_page="quality_policy",
+        breadcrumb_item="Quality policy", overview=policy_overview(request.user["tenant_id"])))
 
 
 @views_bp.route("/releases/<int:release_id>")
@@ -4991,6 +5105,8 @@ def releases_detail(release_id):
         substrate = None
         substrate_decision = None
         scope_readiness = None
+        quality = None
+        quality_waivers = None
         if tab == "decision":
             from primeqa.intelligence.release_substrate_console import get_release_substrate
             from primeqa.intelligence.substrate_decision import (
@@ -5009,6 +5125,24 @@ def releases_detail(release_id):
             # every non-current item, with "Run the scope" beside Evaluate.
             from primeqa.intelligence.substrate_decision import release_scope_readiness
             scope_readiness = release_scope_readiness(tid, external_keys)
+            # Step 5 (LLD_STEP_5 §b/§c/§e): the live PREVIEW under the active policy
+            # (nothing recorded), the release's waivers, the decider's name.
+            from primeqa.intelligence.quality_decision_console import (
+                preview_release_decision, waivers_for_release,
+            )
+            quality = preview_release_decision(tid, release_id, external_keys)
+            quality_waivers = waivers_for_release(tid, release_id)
+            _ld = release.get("latest_decision") or {}
+            if _ld.get("decided_by"):
+                # a plain read for the name (never the full row); best-effort — a
+                # name lookup must never take the decision tab down
+                try:
+                    from sqlalchemy import text as _sa_text
+                    _u = db.execute(_sa_text("SELECT full_name, email FROM users WHERE tenant_id = :t AND id = :i"),
+                                    {"t": tid, "i": _ld["decided_by"]}).first()
+                except Exception:  # noqa: BLE001
+                    _u = None
+                _ld["decided_by_name"] = ((_u[0] or _u[1]) if _u else f"user {_ld['decided_by']}")
         # Step 4 (LLD_STEP_4 §d): the release's DECLARED targets + its recent plans.
         from primeqa.intelligence.run_plan_console import (
             plans_for_scope, targets_for_release,
@@ -5042,6 +5176,8 @@ def releases_detail(release_id):
             substrate_decision=substrate_decision, parity=parity,
             env_names=env_names, scope_readiness=scope_readiness,
             release_targets=_release_targets, release_plans=_release_plans,
+            quality=quality, quality_waivers=quality_waivers,
+            today=datetime.now(timezone.utc).date().isoformat(),
         ))
     finally:
         db.close()

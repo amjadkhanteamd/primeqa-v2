@@ -140,6 +140,14 @@ def test_composer_proceeds_when_the_scope_is_current(monkeypatch):
     monkeypatch.setattr(sd, "get_release_substrate_decision", lambda *a, **k: {
         "available": True, "applicable": True, "recommendation": "go", "confidence": 0.95,
         "reasoning": [], "criteria_met": {}, "metrics": {}, "risk": {"score": 0, "level": "low"}})
+    # Step 5: the policy engine owns the word; the grading step is stubbed (no tenant DB here)
+    import primeqa.release.decision_composer as dc
+    lines = [{"axis": a, "observed": "obs", "rule": "no rule triggered", "effect": None, "rules": [], "items": []}
+             for a in ("functional", "conformance", "regressions", "waivers", "human_reviews", "environments", "grading")]
+    monkeypatch.setattr(dc, "_grade_under_policy", lambda t, r, k: {"ok": True, "decision": {
+        "recommendation": "go", "confidence": 0.95, "effect": "ALLOW", "because": "x", "evidence_lines": lines,
+        "triggered_rules": [], "ungraded": [], "policy": {"id": "p", "name": "Plimsol default", "version": 1,
+        "label": "Plimsol default v1"}, "plan_id": None, "plan": None, "observations": {}, "evaluated_at": "x"}})
     repo = _Repo()
     env = evaluate_and_record(None, _Release(), 1, release_repo=repo)
     assert env.get("refused") is None and env["recommendation"] == "go"
