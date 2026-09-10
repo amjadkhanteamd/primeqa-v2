@@ -75,7 +75,7 @@
             <a href="/claims/{{ c.test_id }}" class="font-mono text-indigo-700 hover:underline">{{ c.test_id[:8] }}</a>
             <span>v{{ c.version_seq }}</span>
             <span class="text-gray-400">&middot;</span>
-            <span>because it {{ 'was generated from' if 'generated_from' in c.link_kinds else 'verifies' }} {{ c['keys'] | join(', ') }}</span>
+            <span>because it {{ 'was generated from' if 'generated_from' in c.link_kinds else 'verifies' }} {{ (c.get('keys') or []) | join(', ') }}</span>
             <span class="text-gray-400">&middot;</span>
             <span>{{ c.recipes | length }} recipe{{ '' if (c.recipes | length) == 1 else 's' }} ({{ c.recipes | map(attribute='recipe_kind') | unique | join(', ') }})</span>
             {% if c.unclassified %}<span class="text-amber-700">&middot; origin not classified</span>{% endif %}
@@ -145,12 +145,12 @@
       <h3 class="text-sm font-semibold text-gray-700">Excluded <span class="text-gray-500 font-normal">({{ plan.excluded_total }} item{{ '' if plan.excluded_total == 1 else 's' }}{% if plan.exclusion_lines %}: {% for l in plan.exclusion_lines %}{{ l.count }} {{ l.reason | replace('_', ' ') }}{{ '' if loop.last else ', ' }}{% endfor %}{% endif %})</span></h3>
       <span class="text-xs text-gray-400 group-open:hidden">Show &darr;</span><span class="text-xs text-gray-400 hidden group-open:inline">Hide &uarr;</span>
     </summary>
-    {% if plan.exclusions['items'] %}
+    {% if plan.exclusions.get('items') %}
     <ul class="divide-y divide-gray-100 text-xs">
-      {% for x in plan.exclusions['items'] %}
+      {% for x in plan.exclusions.get('items') or [] %}
       <li class="px-6 py-2 text-gray-600" data-testid="plan-exclusion" data-reason="{{ x.reason }}" data-ref="{{ x.ref }}">
         <span class="font-medium text-gray-800">{{ x.kind }} <span class="font-mono">{{ x.ref if x.kind != 'environment' else env_names.get(x.ref, x.name or x.ref) }}</span></span>
-        &middot; {{ x.sentence }}{% if x.kind == 'environment' and x.name %} <span class="text-gray-500">({{ x.name }}{% if x.is_active == false %}, inactive{% endif %}{% if x.is_production %}, production{% endif %}{% if x.execution_policy %}, {{ x.execution_policy }}{% endif %})</span>{% endif %}{% if x['keys'] %} <span class="text-gray-400">&middot; {{ x['keys'] | join(', ') }}</span>{% endif %}
+        &middot; {{ x.sentence }}{% if x.kind == 'environment' and x.name %} <span class="text-gray-500">({{ x.name }}{% if x.is_active == false %}, inactive{% endif %}{% if x.is_production %}, production{% endif %}{% if x.execution_policy %}, {{ x.execution_policy }}{% endif %})</span>{% endif %}{% if x.get('keys') %} <span class="text-gray-400">&middot; {{ x.get('keys') | join(', ') }}</span>{% endif %}
       </li>
       {% endfor %}
     </ul>
