@@ -135,3 +135,70 @@ migration first (D-285), as every step.
 | nothing written | plans 0, targets 0, schedule 1 authority NULL, 0 jobs since the deploy. The schedule was NOT claimed and no plan was run — both AK's acts |
 
 No dump was taken (ADDITIVE, classified). No data act followed the merge. Schedule 1 stays enabled; its next 06:00Z fire (2026-09-10) REFUSES loudly and records the refusal until AK claims it on the panel.
+
+## i. Production defect after the merge — the plan view 500 (2026-09-09 → fixed 2026-09-10)
+
+**What AK saw.** Clicking Plan on release 16's decision tab rendered "Something
+went wrong" (a 500). The Plan POST itself succeeded — two plans were recorded
+(f52771fd at 12:18:04Z, 1499dd4b at 12:18:25Z: 19 claims, 19 jobs, fallback
+targets, four deprecated claims and env 78 excluded), neither executed, zero
+jobs. The GET of the plan view failed:
+
+```
+Unhandled TypeError on GET /plans/f52771fd-971f-4c3f-a507-53d110aa51dc
+  File "/app/primeqa/templates/plans/detail.html", line 153, in block 'content'
+  File ".../jinja2/filters.py", line 617, in sync_do_join
+TypeError: 'builtin_function_or_method' object is not iterable
+```
+
+**Root cause, one sentence.** The template read each exclusion's requirement
+keys as `x['keys']`, and on an ENVIRONMENT exclusion — which carries no such
+entry — Jinja's subscript falls back to attribute lookup and returns the dict's
+own `keys` method, which the join filter cannot iterate. A code defect in the
+template; the data shape (evidence on env 78 outside the targets) is ordinary
+and the planner recorded it correctly. The same class as build correction 5,
+fixed at one line and missed at this one.
+
+**The class, closed.** A sweep of every template for subscript access to a
+dict-method name (`keys values items get copy update pop clear`): **5 hits in
+2 templates** — `plans/detail.html` lines 78, 148, 150, 153 and
+`releases/detail.html` line 147 (`scope_readiness['items']`, latent: the key
+is always present there). Every hit now reads `.get(...)`, so an absent entry
+is falsy. The reverse form (an attribute read of a method name that is not a
+call) had zero hits. Two guards: `tests/unit/test_plan_view_template.py`
+renders the plan view — base template stubbed, no Flask, no database — over a
+resolution carrying an environment exclusion (plus the executed state and the
+no-exclusions state); `tests/unit/test_templates_dict_method_names.py` asserts
+no template subscripts or attribute-reads a dict-method name.
+
+**The verification gap, in AK's words.** A route whose only exercise was
+scratch, whose production data shape (evidence outside declared targets) is
+ordinary. The fixture world on scratch had no evidence on a non-target
+environment, so the environment-exclusion branch never rendered in the
+screenshots, and the merge proof rendered the decision tab's Plan link, not a
+plan view, because creating a plan is a write. **The standing correction: a
+merge proof must render the actual page on production data, not just the link
+to it.** Closed here two ways: the scratch fixture world gains an INACTIVE,
+production, `read_only` environment holding evidence for the scope
+(`plant_step_4_world.py`), and both release plan views were re-shot with the
+branch rendering — `plan_view_release_fallback_targets.png` /
+`plan_view_release_declared_target.png` now show "environment Prod1 (fixture) ·
+The environment holds evidence for this scope but is not a target. (Prod1
+(fixture), inactive, production, read_only)" under Excluded. After the deploy,
+the read-only proof is AK's two existing production plans rendering 200 with
+their env-78 exclusion visible — the proof the merge should have had.
+
+**One test fixed on the way.** `test_step_4_scope.py`'s schedule test froze its
+"now" at 2026-09-10 06:05Z — tomorrow when written, earlier than the row's own
+creation time once that day arrived, so the schedule was never due and the
+corpus went red on the day after the merge. Its clock is now the row's own
+clock plus a day and an hour. A test defect, not a product one.
+
+**Suites at the fix commit.** test_representation 429 passed / 3 skipped;
+DB-real corpus on clean scratch 109 passed / 7 skipped / 2 red before the test
+fix (the D-480 report-slice artefact + the schedule test above; the latter 3/3
+green after); pages 7; browser-gated 63 / 11 skipped; unit **5044 passed, 3 warnings in 276.12s (0:04:36)**.
+
+**Merge classification.** Code + tests only: two templates, three test files
+(two new guards + the clock fix), the docs — no migration, no data write.
+WRITE-FREE, dumpless under D-476.

@@ -644,3 +644,20 @@
   not exist" in the warning); 4 failed / 8 passed at fb59095 in a clean
   worktree. Not a product defect; a harness gap (an injected env reader, as
   the planner has, or a minimal public table in the harness).
+
+## Added 2026-09-10 — from the Step 4 production defect (the plan view 500)
+
+- **Verification gap (standing correction): a merge proof must render the
+  actual page on production data, not just the link to it.** The Step 4 plan
+  view was exercised only against the scratch world, whose fixture release had
+  no evidence on a non-target environment; production's ordinary data shape
+  (evidence on env 78 outside the targets) reached a template branch the
+  screenshots never rendered, and the merge proof stopped at the decision tab's
+  Plan link because creating a plan is a write. Fixed for Step 4 (a
+  prod-shaped scratch world; AK's two production plans as the post-deploy
+  proof); the correction stands for every step: the proof renders the page.
+- **Closed class (Low, recorded): Jinja subscript-to-attribute fallback on
+  dict-method names.** `x['keys']` on a dict without the entry yields the
+  dict's `keys` METHOD; `.get(...)` is the rule, and
+  `tests/unit/test_templates_dict_method_names.py` guards every template
+  (five hits fixed across `plans/detail.html` and `releases/detail.html`).

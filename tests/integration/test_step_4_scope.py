@@ -154,7 +154,10 @@ def test_schedule_refuses_without_authority_then_claims_plans_and_executes():
         c.commit()
     plan_id = None
     try:
-        now = datetime(2026, 9, 10, 6, 5, tzinfo=timezone.utc)      # past the 06:00 occurrence → due
+        # "now" is the row's own clock plus a day and an hour: past the next 06:00 occurrence
+        # whatever today is (a fixed date made the test due only until that date passed).
+        from datetime import timedelta
+        now = datetime.now(timezone.utc) + timedelta(days=1, hours=1)
         out = store.get(sid)
         assert out.authority is None
         r1 = fire_due_schedules(TENANT, production_env_ids=set(), now=now)
