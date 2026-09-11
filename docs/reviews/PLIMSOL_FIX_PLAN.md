@@ -697,3 +697,52 @@
   line says "N pending, N waived by <actor> until <date>", never "resolved".
   The successor is a review record with its own verdict, distinct from an
   exception.
+
+## Added 2026-09-11 — the read-only production guard was defective (AK's ruling, Step 5 merge)
+
+- **HIGH (closed here): the read-only guard used for production probes never
+  took effect, for the whole life of its use.** The shape was
+  `conn.execute(text("SET default_transaction_read_only = on"))` (or the same
+  SET from a driver `connect` hook). psycopg2 opens a transaction to run that
+  statement; the setting governs only transactions started AFTER it; every
+  later statement rides the SAME already-open transaction, which is writable.
+  The session reports `default_transaction_read_only = on` while the work is
+  unguarded — the status report and the reality disagree.
+  **Proven, not inferred:** a deliberate `CREATE TABLE` under the guard
+  SUCCEEDED. No production object was created — the connection closed without
+  commit and PostgreSQL DDL is transactional — and the absence of
+  `public._probe_should_fail` was verified afterwards on a fresh connection.
+  **Corrected** to a server-side connection option
+  (`?options=-c default_transaction_read_only=on`), which is in force from the
+  first transaction and cannot be outrun; verified by attempting `CREATE
+  TABLE`, `INSERT` and `UPDATE` under it — all three refused with
+  `ReadOnlySqlTransaction` — while reads still work.
+- **STANDING RULE (AK, 2026-09-11): a safety control must be PROVEN by
+  attempting the forbidden act under it, never accepted on its own status
+  report.** A control that reports its own health is evidence of nothing.
+- **The caveat on the record.** Every prior "read-only" claim in this
+  programme's transcripts was made under the defective guard. Searched: the
+  guard appears in three session transcripts and NONE of them applied it
+  through `psql` (where autocommit would have made it hold) — all used the
+  same driver-side shape. The acts themselves were reads, so no correction to
+  the record is required, only this caveat. One material fact belongs beside
+  it: those earlier probes carried a SECOND, INDEPENDENT control that DID
+  hold — a static write-verb refusal over the SQL text before any statement
+  ran (`insert / update / delete / drop / alter / create / truncate / grant /
+  revoke` → `REFUSED: write verb detected`, exit 2). The later probes dropped
+  that backstop, which is why the deliberate `CREATE TABLE` reached the server
+  at all. Restore it in any probe harness that runs arbitrary SQL.
+- **Corollary found while applying the rule (Medium, closed here): a refusal
+  proof that matches ZERO rows proves nothing and scores as a pass.** A
+  `BEFORE DELETE ... FOR EACH ROW` trigger never fires on an empty table, and
+  an UPDATE whose WHERE matches nothing raises nothing. Three of the Step 5
+  read-back proofs failed exactly that way on the first pass (an empty waiver
+  table; a draft policy "changed" to draft; a rule edit against a policy with
+  no rules) and were reported as accepted, i.e. as defects, until each was
+  rewritten to touch a real row. The proof harness now takes a `precheck`
+  row-count and reports `INVALID PROOF — matches 0 rows` instead of a pass.
+- **Related (Low, same mechanism): a `SET` is transactional and dies with its
+  transaction.** Rolling back the read-back transaction silently reverted
+  `SET search_path`, and the next statement failed with "relation does not
+  exist". Re-issue session settings after any rollback, or set them as
+  connection options.

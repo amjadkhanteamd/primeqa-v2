@@ -178,3 +178,81 @@ No layout collapse (Step 6); no policy authoring UI beyond the read-only view
 (authoring is CLI in v1, said on the page); no persona comparison; no backfill
 of old decision rows (their policy columns stay NULL — "decided before
 policies"); `releases.decision_criteria` untouched.
+
+## k. Post-merge transcript (2026-09-11)
+
+**Merge** c0c0c76 (parents 36228de + 067153c), pushed to `main`; author AK,
+zero `Co-Authored-By`.
+
+### k.1 Migrations, applied BEFORE the deploy
+
+| migration | classification | ruling | applied |
+|---|---|---|---|
+| tenant `20260912_0010` | ADDITIVE, **not write-free** (two seed INSERTs) | **DUMPLESS** — every written row is a NEW row in a NEW table, in DRAFT, referenced by nothing; no pre-existing row is read, altered or deleted (every UPDATE/DELETE token in the file sits inside a trigger definition) | head `20260911_0010` → `20260912_0010` |
+| public `073` | ADDITIVE (3 nullable columns, no default, no constraint, no data write) | dumpless | three columns present, NULL on the one existing decision row |
+
+### k.2 Read-backs and 25 refusal proofs
+
+Structure: three tables, six indexes including the one-active partial unique
+index, seven CHECKs on the rules table, four triggers. The seed is present and
+**DRAFT** with ten rules, `created_by` NULL, `first_used_at` NULL, zero active
+policies, zero waivers.
+
+Every refusal was **attempted for real** inside one rolled-back transaction —
+the closed vocabulary (7), the waiver rules (4), never-deleted on all three
+tables with rows present (3), waiver immutability (2), one active policy (1),
+draft-only rules (1), used-policy immutability (6) — and the one admitted
+change, a used policy retiring, was shown allowed. 25 as expected, 0 not.
+After rollback production carries exactly what the migration wrote.
+
+**Three first-pass proofs were WORTHLESS and are recorded as such**: they
+matched zero rows, so no row trigger fired and they scored as passes. An empty
+waiver table; a draft policy "changed" to draft; a rule edit against a policy
+with no rules. The harness now takes a precheck row-count and reports
+`INVALID PROOF — matches 0 rows`. This is AK's standing rule earning its keep
+on the same day it was given.
+
+### k.3 Deploy
+
+Four services SUCCESS on the merge commit. Health 200, `error_rate 0.0`,
+`errors_total 0`. Zero error-class lines in 400 log lines per service.
+
+### k.4 The read-only proof, GET only, on the deployed app
+
+| read | result |
+|---|---|
+| `/releases/16?tab=decision` | **200**, the quality card present |
+| the card, policy DRAFT | "No active quality policy — activate one (Settings → Quality policy; CLI in v1) before a release grades." |
+| evidence lines rendered | **0** — see the gap below |
+| recorded decision | "No decision recorded yet" |
+| waivers on the release | 0 |
+| `/settings/quality-policy` | **200**, seed as the only version, draft, 10 rules, "No active policy — no release grades until a human activates one" |
+| Step 4 surfaces still render | plan view, `/runs/substrate`, `/requirements` all 200 |
+| written by the act | nothing |
+
+**The gap, stated plainly.** The brief asked for the six lines AND the policy
+still DRAFT. Those cannot both appear today: the card gates the entire evidence
+block on an active policy, so a draft policy yields the refusal alone. The
+ENGINE does assemble them — read-only over live production data it produces all
+six lines plus grading for release 16:
+
+```
+functional     19 functional check(s) in scope · 19 with a counted run · pass rate 100.0%
+conformance    0 conformance check(s) in scope · latest run 368f09eb (WCAG22) · 0 pass
+regressions    comparison 022d8cc0: 0 new conformance failure(s) · environment moved
+waivers        0 active waiver(s), 0 applied
+human_reviews  0 pending · no human review outstanding
+environments   targets (fallback:evidence-active): Prime QA NEW: 19 of 19 checks current
+               · plan 9ea0c522 executed 2026-09-10T10:17
+grading        Nothing ungraded.
+```
+
+and would read **GO** on activation. Rendering those observations with a
+"not graded — no active policy" banner before activation is a one-template
+change. It is offered, not made.
+
+### k.5 Pending AK acts
+
+1. Activate the seed policy (CLI or Settings). Until then nothing grades.
+2. Then Evaluate on a release, to record the first decision citing a policy
+   and a plan.
