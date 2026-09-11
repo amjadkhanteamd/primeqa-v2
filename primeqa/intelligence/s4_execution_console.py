@@ -342,6 +342,9 @@ def _list_runs(conn, *, limit: int, offset: int, outcome=None, verdict=None,
         "SELECT CAST(r.run_id AS text) AS run_id, "
         "CAST(r.claim_test_id AS text) AS claim_test_id, "
         "r.outcome::text AS outcome, r.finished_at, r.duration_ms, r.environment_id, "
+        # Step 6a §d: the row says where it came FROM — the plan the Step 4
+        # planner recorded, or nothing (a run older than the planner).
+        "CAST(r.plan_id AS text) AS plan_id, "
         "i.verdict::text AS verdict, "
         "c.claim_kind::text AS claim_kind, c.asserted_truth, c.semantic_conditions, "
         "req.external_key AS requirement_key "
@@ -364,6 +367,8 @@ def _list_runs(conn, *, limit: int, offset: int, outcome=None, verdict=None,
              "duration_h": duration_human(r["duration_ms"]),
              "environment_id": r["environment_id"],
              "requirement_key": r["requirement_key"],
+             # Step 6a §d: carried through so the row can say where it came from
+             "plan_id": r["plan_id"],
              "title": (claim_title(r["claim_kind"], r["asserted_truth"], labels,
                                    semantic_conditions=r["semantic_conditions"])
                        if r["claim_kind"] else None)}

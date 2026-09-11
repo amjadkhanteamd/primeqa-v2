@@ -767,3 +767,21 @@
   "no plan (pre-planner)" — honest, but not the same sentence on both lanes.
   The successor is a Step 4 change: add `plan_id` to the UI inspection job,
   thread it through the enqueue seam, and the two lanes read alike.
+
+## Added 2026-09-11 — from Step 6a (the build)
+
+- **Low: the Requirements page costs 51 queries per render** (59 on the claims
+  tab, 46 on Results, 16 on Releases), measured on scratch after Step 2a made
+  the readiness column affordable. The page issues four separate bulk reads —
+  the identity census, the per-requirement claim counts, the release chips and
+  the 6a board — where one composite read would do. Affordable now; not
+  obviously right. The fix is a single page-scoped reader, and it wants its own
+  before/after rather than being folded into a layout slice.
+- **Low (fixture hygiene, closed here): a removed screenshot world left its
+  inventory checkpoint behind.** `create_inventory_version` mints a
+  `logical_versions` row named `surface-materialization-inv<N>`; the Step 6a
+  remover deleted the inventory and its members but not that row, so the next
+  suite cutting the same inventory number failed on the unique name and four
+  3A-3 tests went red. The remover now clears the checkpoint and the entities
+  materialised at it. Worth remembering for every future world: delete what the
+  fixture MINTED, not only what it inserted.

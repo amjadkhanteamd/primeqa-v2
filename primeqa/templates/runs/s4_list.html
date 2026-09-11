@@ -74,6 +74,22 @@
     {% endfor %}
   </div>
 
+  {# Step 6a §d — the KIND filter: one list spanning the execution lane and the
+     browser plane. It is meaningful on the flat "All runs" lens; the grouped
+     lenses group by a functional claim's requirement and cause, and say so. #}
+  <div class="mt-2 flex items-center gap-2 text-sm flex-wrap" data-testid="kind-filter" data-kind="{{ kind }}">
+    <span class="text-gray-400 text-xs">Kind</span>
+    {% for k, lbl in [('all','All'), ('functional','Functional'), ('conformance','Conformance')] %}
+    <a href="/runs/substrate?group={{ group }}&kind={{ k }}{{ scope_suffix }}"
+       data-testid="kind-chip" data-kind-id="{{ k }}"
+       class="px-3 py-1 rounded-full border text-xs {% if kind == k %}bg-slate-700 text-white border-slate-700{% else %}bg-white text-gray-600 border-gray-300 hover:bg-gray-50{% endif %}">{{ lbl }}</a>
+    {% endfor %}
+    {% if group != 'runs' %}
+    <span class="text-xs text-gray-400 italic" data-testid="kind-not-applicable">
+      &mdash; the {{ group }} lens groups functional runs only; switch to All runs to see both kinds</span>
+    {% endif %}
+  </div>
+
   {# ── Lens: by requirement (default) ─────────────────────────────────── #}
   {% if group == 'requirement' %}
     {% if not overview or not overview.available %}
@@ -184,6 +200,7 @@
             <th class="px-4 py-2">Outcome</th>
             <th class="px-4 py-2">Readiness</th>
             <th class="px-4 py-2">Test case</th>
+            <th class="px-4 py-2">Requirement</th>
             <th class="px-4 py-2">From</th>
             <th class="px-4 py-2">Result</th>
             <th class="px-4 py-2">Environment</th>
@@ -204,7 +221,16 @@
             {# Step 2: readiness on the org axis, separate from outcome #}
             <td class="px-4 py-2">{{ readiness_pill(r.readiness) }}</td>
             <td class="px-4 py-2"><a href="/claims/{{ r.claim_test_id }}" class="text-indigo-600 hover:underline">{{ r.title or r.claim_test_id[:8] }}</a></td>
-            <td class="px-4 py-2 text-gray-500 text-xs">{{ r.requirement_key or '' }}</td>
+            <td class="px-4 py-2 text-gray-500 text-xs font-mono">{{ r.requirement_key or '' }}</td>
+            {# Step 6a §d: what this run came FROM — the schedule, the plan, or
+               nothing, said plainly. Never inferred. #}
+            <td class="px-4 py-2 text-xs" data-testid="run-from" data-plan="{{ r.from_plan_id or '' }}">
+              {% if r.from_plan_id %}
+                <a href="/plans/{{ r.from_plan_id }}" class="text-indigo-700 hover:underline">{{ r.from_sentence }}</a>
+              {% else %}
+                <span class="text-gray-400 italic">{{ r.from_sentence or 'no plan (pre-planner)' }}</span>
+              {% endif %}
+            </td>
             <td class="px-4 py-2 text-gray-600 text-xs" {% if r.verdict %}title="{{ r.verdict }}"{% endif %}>{{ r.verdict_plain or '—' }}</td>
             <td class="px-4 py-2 text-gray-500 text-xs">{{ env_names.get(r.environment_id) or ('env ' ~ r.environment_id) }}</td>
             <td class="px-4 py-2 text-gray-500 text-xs" {% if r.finished_at %}title="{{ r.finished_at[:19] }}"{% endif %}>{{ r.finished_ago }}</td>
@@ -423,6 +449,50 @@
     <p class="px-6 py-4 text-sm text-gray-500">No open proposals &mdash; nothing repairable right now.</p>
     {% else %}
     <p class="px-6 py-4 text-sm text-gray-400">Repair queue unavailable right now.</p>
+    {% endif %}
+  </div>
+  {% endif %}
+  {# Step 6a §d — the conformance lane. A processing run is the unit a person
+     recognises. Its currency is NOT the org axis: a browser-plane claim records
+     no org reads, so "latest for its claim set" is the honest word (D-488). #}
+  {% if group == 'runs' and kind in ('all', 'conformance') and conformance %}
+  <div class="mt-6" data-testid="conformance-runs" data-available="{{ 'yes' if conformance.available else 'no' }}">
+    <h2 class="text-sm font-semibold text-gray-900 mb-2">Conformance runs
+      <span class="text-xs font-normal text-gray-400">(the browser plane &mdash; one row per processing run)</span></h2>
+    {% if not conformance.available %}
+      <p class="text-sm text-gray-400">The conformance lane is unavailable right now.</p>
+    {% elif conformance.runs %}
+    <div class="bg-white shadow rounded-lg overflow-hidden">
+      <table class="min-w-full divide-y divide-gray-200 text-sm">
+        <thead class="bg-gray-50">
+          <tr class="text-left text-xs font-medium text-gray-500 uppercase tracking-wide">
+            <th class="px-4 py-2">Outcome</th><th class="px-4 py-2">Currency</th>
+            <th class="px-4 py-2">Claim set</th><th class="px-4 py-2">From</th>
+            <th class="px-4 py-2">Engine</th><th class="px-4 py-2">When</th><th class="px-4 py-2">Run</th>
+          </tr>
+        </thead>
+        <tbody class="divide-y divide-gray-100">
+          {% for c in conformance.runs %}
+          <tr class="hover:bg-gray-50" data-testid="conformance-row" data-currency="{{ c.currency }}">
+            <td class="px-4 py-2 text-gray-700 text-xs">{{ c.outcome_sentence }}</td>
+            <td class="px-4 py-2">
+              <span class="inline-flex items-center px-1.5 py-0.5 rounded text-[11px] font-medium
+                {% if c.currency == 'LATEST' %}bg-green-100 text-green-800{% else %}bg-gray-100 text-gray-600{% endif %}"
+                title="{{ c.currency_sentence }}">{{ c.currency | lower }}</span>
+            </td>
+            <td class="px-4 py-2 text-xs text-gray-500">inventory v{{ c.inventory_version }} &middot; {{ c.persona_scope }}</td>
+            <td class="px-4 py-2 text-xs {% if c['from'] == 'no plan (pre-planner)' %}text-gray-400 italic{% else %}text-gray-600{% endif %}"
+                data-testid="conformance-from">{{ c['from'] }}</td>
+            <td class="px-4 py-2 text-xs text-gray-500">{{ c.engine }}</td>
+            <td class="px-4 py-2 text-xs text-gray-500">{{ c.processed_at[:16] if c.processed_at else '' }}</td>
+            <td class="px-4 py-2"><a href="/runs/conformance/{{ c.job_id }}" class="text-indigo-600 hover:underline font-mono text-xs">{{ c.job_id[:8] }} &rarr;</a></td>
+          </tr>
+          {% endfor %}
+        </tbody>
+      </table>
+    </div>
+    {% else %}
+      <p class="text-sm text-gray-500">No conformance run recorded yet.</p>
     {% endif %}
   </div>
   {% endif %}

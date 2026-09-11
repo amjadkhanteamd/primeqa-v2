@@ -42,25 +42,33 @@ def _client(role="admin"):
 
 
 def test_a_member_sees_all_three_pages_and_a_viewer_is_redirected():
+    """Step 6a re-homed two of these: the orphan index is retired into Results
+    and the run view lives under /runs/conformance. The two TOOLS (compare,
+    coverage) keep their URLs — they have no home in the 6a mock and were left
+    where they are rather than moved on a guess."""
     c = _client()
     for path, marker in (
-            ("/ui-report", b"UI conformance runs"),
-            (f"/ui-report/runs/{B1}?standard=WCAG22", b"Verdict listing"),
+            (f"/runs/conformance/{B1}?standard=WCAG22", b"Verdict listing"),
             (f"/ui-report/compare?baseline={P1}&candidate={B1}",
              b"Release comparison"),
             (f"/ui-report/coverage?job={B1}", b"N of M, per standard")):
         r = c.get(path)
         assert r.status_code == 200, (path, r.status_code)
         assert marker in r.data, path
+    # the re-homing itself
+    assert c.get("/ui-report").status_code == 302
+    assert c.get("/ui-report").headers["Location"].endswith("/runs/substrate?kind=conformance")
+    assert c.get(f"/ui-report/runs/{B1}").headers["Location"].endswith(f"/runs/conformance/{B1}")
+    # Step 6a §e: a VIEWER now READS the conformance run (view at VIEWER); the
+    # tools stay MEMBER, so those still bounce.
     v = _client(role="viewer")
-    for path in ("/ui-report", f"/ui-report/runs/{B1}"):
-        r = v.get(path)
-        assert r.status_code == 302 and r.headers["Location"].endswith("/")
+    assert v.get(f"/runs/conformance/{B1}").status_code == 200
+    assert v.get(f"/ui-report/compare?baseline={P1}&candidate={B1}").status_code == 302
 
 
 def test_b_run_page_carries_the_honesty_header_and_fail_rows():
     c = _client()
-    r = c.get(f"/ui-report/runs/{B1}?standard=WCAG22&verdict=FAIL")
+    r = c.get(f"/runs/conformance/{B1}?standard=WCAG22&verdict=FAIL")
     assert r.status_code == 200
     body = r.data.decode()
     assert "ratified_catalogue" in body and "21 of 55" in body

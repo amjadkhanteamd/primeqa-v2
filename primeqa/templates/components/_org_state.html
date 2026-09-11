@@ -1,0 +1,83 @@
+{# Step 6a (LLD_STEP_6A_WORK_SURFACES §b) — the org-state band.
+
+   Under the nav on Requirements, Results and Releases: what org this tenant is
+   looking at and how current it is, which policy grades its releases, and what
+   cadence runs its plans. READ-ONLY. Each group degrades on its own: a group
+   that could not be read says "unavailable" in place, never a zero pretending
+   to be a fact, never an exception. Rendered only when the route passes
+   `org_state`. #}
+{% if org_state %}
+<div class="mb-4 rounded-md border border-gray-200 bg-gray-50 px-4 py-2 flex flex-wrap items-center gap-x-6 gap-y-1 text-xs"
+     data-testid="org-state-band">
+
+  {# ---- the org(s): name, current sequence, last sync ---- #}
+  <div class="flex items-center gap-2" data-testid="band-orgs"
+       data-available="{{ 'yes' if org_state.orgs.available else 'no' }}">
+    <span class="uppercase tracking-wide text-gray-400">Org</span>
+    {% if not org_state.orgs.available %}
+      <span class="text-gray-400 italic">unavailable</span>
+    {% elif not org_state.orgs.entries %}
+      <span class="text-gray-600 italic">{{ org_state.orgs.sentence }}</span>
+    {% else %}
+      {% for o in org_state.orgs.entries %}
+      <span class="inline-flex items-center gap-1" data-testid="band-org" data-env="{{ o.environment_id }}">
+        <span class="font-medium text-gray-800">{{ o.name }}</span>
+        {% if o.sequence is not none %}
+          <span class="text-gray-700" title="the graded current sequence">seq {{ o.sequence }}</span>
+        {% else %}
+          <span class="text-slate-600" title="the resolver could not grade a current sequence">sequence {{ o.sequence_state | replace('_', ' ') | lower }}</span>
+        {% endif %}
+        {% if o.last_sync_at %}
+          <span class="text-gray-600" title="read from the sync job, not the org row">· synced {{ o.last_sync_at[:16] }}</span>
+        {% else %}
+          <span class="text-gray-600">· never synced</span>
+        {% endif %}
+      </span>
+      {% if not loop.last %}<span class="text-gray-300">|</span>{% endif %}
+      {% endfor %}
+    {% endif %}
+  </div>
+
+  {# ---- the active policy ---- #}
+  <div class="flex items-center gap-2" data-testid="band-policy"
+       data-available="{{ 'yes' if org_state.policy.available else 'no' }}"
+       data-policy="{{ org_state.policy.active.label if org_state.policy.active else '' }}">
+    <span class="uppercase tracking-wide text-gray-400">Policy</span>
+    {% if not org_state.policy.available %}
+      <span class="text-gray-400 italic">unavailable</span>
+    {% elif org_state.policy.active %}
+      <a href="/settings/quality-policy" class="font-medium text-gray-800 hover:text-indigo-700">{{ org_state.policy.active.label }}</a>
+      <span class="text-gray-600">{{ org_state.policy.active.rules }} rules</span>
+    {% else %}
+      <span class="text-gray-600">{{ org_state.policy.sentence }}</span>
+    {% endif %}
+  </div>
+
+  {# ---- the cadence + its last plan ---- #}
+  <div class="flex items-center gap-2" data-testid="band-cadence"
+       data-available="{{ 'yes' if org_state.cadence.available else 'no' }}">
+    <span class="uppercase tracking-wide text-gray-400">Cadence</span>
+    {% if not org_state.cadence.available %}
+      <span class="text-gray-400 italic">unavailable</span>
+    {% elif not org_state.cadence.entries %}
+      <span class="text-gray-600 italic">{{ org_state.cadence.sentence }}</span>
+    {% else %}
+      {% for c in org_state.cadence.entries %}
+      <span class="inline-flex items-center gap-1" data-testid="band-schedule" data-schedule="{{ c.id }}">
+        <span class="font-mono text-gray-700">{{ c.cron_expr }}</span>
+        <span class="text-gray-600">env {{ c.environment_id }}</span>
+        {% if c.last_plan_id %}
+          <span class="text-gray-600">· last plan</span>
+          <a href="/plans/{{ c.last_plan_id }}" class="font-mono text-indigo-700 hover:underline">{{ c.last_plan_id[:8] }}</a>
+        {% elif c.last_refusal %}
+          <span class="text-rose-700" title="{{ c.last_refusal }}">· refused</span>
+        {% else %}
+          <span class="text-gray-600">· not fired yet</span>
+        {% endif %}
+      </span>
+      {% if not loop.last %}<span class="text-gray-300">|</span>{% endif %}
+      {% endfor %}
+    {% endif %}
+  </div>
+</div>
+{% endif %}

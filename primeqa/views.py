@@ -2360,6 +2360,12 @@ def setup_wizard():
 @views_bp.route("/requirements")
 @login_required
 def requirements_list():
+    """Step 6a (LLD_STEP_6A §c): the work surface. Three tabs — the requirement
+    list, the re-homed claim library, and everything waiting for a person — plus
+    the functional / conformance / readiness columns and the org-state band."""
+    tab = (request.args.get("tab") or "requirements").strip().lower()
+    if tab not in ("requirements", "claims", "needs-review"):
+        tab = "requirements"
     db = next(get_db())
     try:
         from primeqa.test_management.repository import RequirementRepository, SectionRepository
@@ -2388,6 +2394,11 @@ def requirements_list():
         if origin_filter not in ORIGINS:
             origin_filter = None
         show_hidden = request.args.get("show_hidden", "").lower() in ("1", "true", "yes")
+        # Step 6a §c: the readiness filter, over the FUNCTIONAL lane
+        readiness_filter = (request.args.get("readiness") or "").strip().upper() or None
+        if readiness_filter not in ("CURRENT", "STALE", "NEVER_RUN",
+                                    "CANNOT_DETERMINE", "NO_FUNCTIONAL_CHECK"):
+            readiness_filter = None
         if request.args.get("stale", "").lower() in ("1", "true", "yes"):
             filters["is_stale"] = True
 
@@ -2484,8 +2495,34 @@ def requirements_list():
         } for e in envs]
         sections_data = [{"id": s.id, "name": s.name} for s in sections]
         conns_data = [{"id": c.id, "name": c.name} for c in conns]
+        # Step 6a §c: one bulk read for the page's three columns (never one per
+        # row); §b: the band. Both best-effort — the list renders without them.
+        from primeqa.core.permissions import pending_human_attention
+        from primeqa.intelligence.org_state_console import org_state_for_request
+        from primeqa.intelligence.requirements_board_console import board_rows
+        board = board_rows(tid, [r["external_key"] for r in reqs_data if r.get("external_key")])
+        if readiness_filter and board.get("available"):
+            reqs_data = [r for r in reqs_data
+                         if ((board["rows"].get(r["external_key"]) or {}).get("readiness") or {})
+                         .get("state") == readiness_filter]
+        attention = pending_human_attention(tid)
+        claims_data = drafts_data = None
+        claims_q = (request.args.get("cq") or "").strip() or None
+        claims_status = (request.args.get("cstatus") or "").strip() or None
+        if tab == "claims":
+            from primeqa.intelligence.s3_generation_console import list_claims
+            claims_data = list_claims(tid, page=page, per_page=50, q=claims_q,
+                                      status=claims_status)
+        elif tab == "needs-review":
+            from primeqa.intelligence.s3_generation_console import list_claims
+            drafts_data = list_claims(tid, page=page, per_page=50, status="draft")
+            _attach_requirement_summaries(tid, drafts_data.get("claims"))
         return render_template("requirements/list.html", **ctx(
-            active_page="requirements",
+            active_page="requirements", tab=tab, board=board,
+            attention=attention, claims_data=claims_data, drafts_data=drafts_data,
+            claims_q=claims_q, claims_status=claims_status,
+            readiness_filter=readiness_filter,
+            org_state=org_state_for_request(tid),
             requirements=reqs_data, sections=sections_data,
             environments=envs_data, jira_connections=conns_data,
             meta=meta, search=q, sort=sort, order=order,
@@ -3327,6 +3364,14 @@ def _attach_requirement_summaries(tenant_id, claims):
 
 @views_bp.route("/claims")
 @login_required
+def claims_list_redirect():
+    """Step 6a §f: the Test Library list is the Requirements "All claims" tab.
+    The claim DETAIL page did not move (ruling 6)."""
+    return redirect("/requirements?tab=claims")
+
+
+@views_bp.route("/claims/library")
+@login_required
 def claims_list():
     """D-165 (UI Area 2 slice 2c): the claims library — paginated + searchable
     list of the tenant's current S2 claims (the substrate replacement for the v1
@@ -3375,6 +3420,13 @@ def claims_list():
 
 
 @views_bp.route("/claims/inbox")
+@login_required
+def claims_inbox_redirect():
+    """Step 6a §f: the approval inbox is the Requirements "Needs review" tab."""
+    return redirect("/requirements?tab=needs-review")
+
+
+@views_bp.route("/claims/inbox/legacy")
 @role_required("admin", "ba", "tester", "superadmin")
 def claims_inbox():
     """D-206: the approval inbox — every draft claim awaiting a human decision,
@@ -3976,8 +4028,29 @@ def s4_runs_list():
         tid, [(r.get("claim_test_id"), r.get("environment_id")) for r in _runs])["map"]
     for r in _runs:
         r["readiness"] = _ready.get((str(r.get("claim_test_id")), r.get("environment_id")))
+    # Step 6a §d: the KIND filter spans both lanes in one list, and every row
+    # says where it came from. Conformance rows are processing runs, whose
+    # readiness is NEVER the org axis (D-488's lane split).
+    from primeqa.intelligence.org_state_console import org_state_for_request
+    from primeqa.intelligence.results_console import (
+        attach_provenance, list_conformance_runs,
+    )
+    kind = (request.args.get("kind") or "all").strip().lower()
+    if kind not in ("all", "functional", "conformance"):
+        kind = "all"
+    conformance = None
+    if group == "runs" and kind in ("all", "conformance"):
+        conformance = list_conformance_runs(tid, limit=per_page)
+    if group == "runs" and kind == "conformance":
+        data = {"available": True, "runs": [], "total": 0, "page": page,
+                "per_page": per_page, "total_pages": 1}
+    if _runs:
+        attach_provenance(tid, _runs)
+    active_filters["kind"] = kind
     return render_template("runs/s4_list.html", **ctx(
-        active_page="test_library", group=group, overview=overview, data=data,
+        active_page="results", kind=kind, conformance=conformance,
+        org_state=org_state_for_request(tid),
+        group=group, overview=overview, data=data,
         active_filters=active_filters, env_names=env_names,
         envs_for_picker=envs_for_picker, schedules=schedules,
         sched_envs=sched_envs, repairs=repairs,
@@ -4799,8 +4872,11 @@ def releases_list():
         svc = ReleaseService(ReleaseRepository(db))
         status_filter = request.args.get("status")
         releases = svc.list_releases(request.user["tenant_id"], status=status_filter)
+        # Step 6a §b: the band rides Requirements, Results and Releases.
+        from primeqa.intelligence.org_state_console import org_state_for_request
         return render_template("releases/list.html", **ctx(
             active_page="releases", releases=releases, status_filter=status_filter,
+            org_state=org_state_for_request(request.user["tenant_id"]),
         ))
     finally:
         db.close()
@@ -5177,6 +5253,8 @@ def releases_detail(release_id):
             env_names=env_names, scope_readiness=scope_readiness,
             release_targets=_release_targets, release_plans=_release_plans,
             quality=quality, quality_waivers=quality_waivers,
+            org_state=__import__("primeqa.intelligence.org_state_console",
+                                 fromlist=["org_state_for_request"]).org_state_for_request(tid),
             today=datetime.now(timezone.utc).date().isoformat(),
         ))
     finally:
@@ -5209,7 +5287,8 @@ def result_detail_redirect(run_id):
 @views_bp.route("/test-cases/<int:tc_id>")
 @login_required
 def test_cases_redirect(tc_id=None):
-    return redirect("/claims")
+    # Step 6a §f: the v1 library's successor is the Requirements "All claims" tab.
+    return redirect("/requirements?tab=claims")
 
 
 # --- The UI-conformance report slice (SDLC v3 item 2, D-474) -------------
@@ -5219,17 +5298,23 @@ def test_cases_redirect(tc_id=None):
 # only and never logged).
 
 @views_bp.route("/ui-report")
-@require_tier(Tier.MEMBER)
+@login_required
 def ui_report_index():
-    from primeqa.intelligence.ui_report_console import list_processing_runs
-    data = list_processing_runs(request.user["tenant_id"])
-    return render_template("ui_report/index.html", **ctx(
-        active_page="ui_report", data=data))
+    """Step 6a §f: the orphan index is retired into Results, where the same runs
+    now render beside the functional lane. Answers for one release cycle."""
+    return redirect("/runs/substrate?kind=conformance")
 
 
 @views_bp.route("/ui-report/runs/<job_id>")
-@require_tier(Tier.MEMBER)
-def ui_report_run(job_id):
+@login_required
+def ui_report_run_redirect(job_id):
+    """Step 6a §d: the conformance run view moved under Results."""
+    return redirect(f"/runs/conformance/{job_id}")
+
+
+@views_bp.route("/runs/conformance/<job_id>")
+@require_tier(Tier.VIEWER)
+def conformance_run(job_id):
     from primeqa.intelligence.ui_report_console import run_report
     standard = request.args.get("standard", "WCAG22")
     data = run_report(
@@ -5239,7 +5324,7 @@ def ui_report_run(job_id):
         surface=request.args.get("surface") or None,
         page=request.args.get("page", 1, type=int))
     return render_template("ui_report/run.html", **ctx(
-        active_page="ui_report", job_id=job_id, data=data,
+        active_page="results", job_id=job_id, data=data,
         standard=standard,
         f_verdict=request.args.get("verdict", ""),
         f_surface=request.args.get("surface", "")))
@@ -5296,7 +5381,8 @@ def ui_report_coverage():
 @views_bp.route("/reviews")
 @login_required
 def reviews_redirect():
-    return redirect("/claims/inbox")
+    # Step 6a §f: was /claims/inbox, now the Requirements "Needs review" tab.
+    return redirect("/requirements?tab=needs-review")
 
 
 @views_bp.route("/tickets")
