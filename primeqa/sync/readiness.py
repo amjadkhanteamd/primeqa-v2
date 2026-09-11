@@ -642,6 +642,7 @@ _CHANGED_READS_SQL = """
     WHERE g.connected_org_id = CAST(:org AS uuid)
       AND ((g.valid_to_seq IS NOT NULL AND g.valid_to_seq > :since)
            OR g.valid_from_seq > :since)
+    ORDER BY 1, 2, 3
 """
 
 
@@ -656,12 +657,7 @@ def covered_reads_changed(session, *, claim_test_id, connected_org_id,
     rows = session.execute(text(_CHANGED_READS_SQL), {
         "claim": str(claim_test_id), "org": str(connected_org_id),
         "since": int(since_seq)}).all()
-    seen, out = set(), []
-    for et, name, what in rows:
-        key = (et, name, what)
-        if key not in seen:
-            seen.add(key); out.append(key)
-    return tuple(out)
+    return _dedupe_reads(rows)
 
 
 def _has_coverage(session, claim_test_id) -> bool:
@@ -725,22 +721,110 @@ def resolve_run_readiness(session, *, claim_test_id, environment_id,
         changed_reads=changed)
 
 
+_BULK_LATEST_RUN_SQL = """
+    WITH pairs(claim, env) AS (
+        SELECT * FROM unnest(CAST(:claims AS uuid[]), CAST(:envs AS integer[]))
+    )
+    SELECT DISTINCT ON (r.claim_test_id, r.environment_id)
+           CAST(r.claim_test_id AS text) AS claim, r.environment_id AS env,
+           CAST(r.run_id AS text) AS run_id, r.org_version_seq,
+           CAST(r.connected_org_id AS text) AS connected_org_id
+    FROM s4_execution_runs r
+    JOIN pairs p ON p.claim = r.claim_test_id AND p.env = r.environment_id
+    ORDER BY r.claim_test_id, r.environment_id, r.finished_at DESC
+"""
+"""The single-pair read's ``ORDER BY finished_at DESC LIMIT 1``, set-based and
+byte-identical in effect: PostgreSQL's DESC sorts NULLS FIRST by default and
+DISTINCT ON keeps the first row per group, so an unfinished run wins in both
+paths exactly as it did before."""
+
+_BULK_COVERAGE_SQL = """
+    SELECT DISTINCT CAST(claim_test_id AS text)
+    FROM test_claim_coverage
+    WHERE claim_test_id = ANY(CAST(:claims AS uuid[]))
+"""
+
+_BULK_CHANGED_READS_SQL = """
+    WITH t(idx, claim, org, since) AS (
+        SELECT * FROM unnest(CAST(:idxs AS integer[]), CAST(:claims AS uuid[]),
+                             CAST(:orgs AS uuid[]), CAST(:sinces AS bigint[]))
+    ), cov AS (
+        SELECT t.idx, t.org, t.since, c.entity_type, c.entity_id
+        FROM t JOIN test_claim_coverage c ON c.claim_test_id = t.claim
+    )
+    SELECT idx, entity_type, sf_api_name, what FROM (
+        SELECT cov.idx, cov.entity_type, e.sf_api_name, 'entity_closed' AS what
+        FROM cov JOIN entities e ON e.id = cov.entity_id
+        WHERE e.connected_org_id = cov.org
+          AND e.valid_to_seq IS NOT NULL AND e.valid_to_seq > cov.since
+        UNION ALL
+        SELECT cov.idx, cov.entity_type, e.sf_api_name,
+               CASE WHEN g.valid_to_seq IS NOT NULL AND g.valid_to_seq > cov.since
+                    THEN 'edge_closed' ELSE 'edge_opened' END AS what
+        FROM cov JOIN entities e ON e.id = cov.entity_id
+        JOIN edges g ON (g.source_entity_id = cov.entity_id
+                         OR g.target_entity_id = cov.entity_id)
+        WHERE g.connected_org_id = cov.org
+          AND ((g.valid_to_seq IS NOT NULL AND g.valid_to_seq > cov.since)
+               OR g.valid_from_seq > cov.since)
+    ) u
+    ORDER BY idx, 2, 3, 4
+"""
+"""``_CHANGED_READS_SQL`` for many (claim, org, since) triples at once, keyed by
+the caller's pair INDEX so two pairs on the same claim with different stamps
+stay apart. The predicates are the single-pair ones verbatim, so R-ground is
+untouched: a read counts as changed only when the claim's OWN covered entity
+closed after that run's stamp, or an edge on that entity opened or closed
+after it. An org change touching none of the claim's reads is invisible here,
+exactly as before."""
+
+
 def resolve_run_readiness_bulk(session, pairs) -> dict:
     """``{(claim_test_id_str, environment_id): ReadinessResolution}`` for many
-    pairs. Per-pair reads today (the pair sets on every page are small —
-    a release's claims × its environments); the org's current sequence is
-    resolved once per org."""
-    out = {}
-    org_cache: dict = {}
-    for claim_test_id, environment_id in pairs:
-        run = _latest_run(session, claim_test_id, environment_id)
-        key = (str(claim_test_id), int(environment_id))
+    pairs, in a FIXED number of round trips.
+
+    Step 2a: the loop this replaced issued three queries per pair, on its own
+    stated assumption that "the pair sets on every page are small". A
+    requirements-shaped page breaks that assumption — a 20-row page spans about
+    136 functional claims on production, one requirement alone 79 — so the
+    reads are set-based: **3 queries + 1 per distinct org, whatever the pair
+    count.**
+
+    :func:`resolve_run_readiness` REMAINS the definition of readiness. This is
+    an optimisation of it, never a second opinion: the same five rules in the
+    same order, the same predicates, the same vocabulary, the same refusal
+    reasons. ``tests/integration/test_representation/test_step_2a_bulk_parity.py``
+    asserts the two agree element for element across every state.
+    """
+    norm = [(str(c), int(e)) for c, e in (pairs or [])]
+    if not norm:
+        return {}
+    out: dict = {}
+
+    # -- 1. the latest run per pair (ONE query) -----------------------------
+    runs = {}
+    for r in session.execute(text(_BULK_LATEST_RUN_SQL), {
+            "claims": [c for c, _ in norm],
+            "envs": [e for _, e in norm]}).mappings().all():
+        runs[(r["claim"], int(r["env"]))] = r
+
+    graded = []
+    for key in norm:
+        run = runs.get(key)
         if run is None:
-            out[key] = ReadinessResolution(state=READY_NEVER_RUN); continue
+            out[key] = ReadinessResolution(state=READY_NEVER_RUN)
+            continue
         if run["org_version_seq"] is None or run["connected_org_id"] is None:
             out[key] = ReadinessResolution(state=READY_CANNOT_DETERMINE,
                                            run_id=run["run_id"],
-                                           reason=REASON_UNSTAMPED); continue
+                                           reason=REASON_UNSTAMPED)
+            continue
+        graded.append((key, run))
+
+    # -- 2. the org's current sequence, once per org (unchanged) ------------
+    org_cache: dict = {}
+    still = []
+    for key, run in graded:
         org = run["connected_org_id"]
         if org not in org_cache:
             org_cache[org] = resolve_current_sequence(session, connected_org_id=org)
@@ -750,17 +834,55 @@ def resolve_run_readiness_bulk(session, pairs) -> dict:
             out[key] = ReadinessResolution(state=READY_CANNOT_DETERMINE,
                                            run_id=run["run_id"], stamp_seq=stamp,
                                            connected_org_id=str(org),
-                                           reason=cur.reason); continue
-        if not _has_coverage(session, claim_test_id):
+                                           reason=cur.reason)
+            continue
+        still.append((key, run, org, stamp, cur))
+    if not still:
+        return out
+
+    # -- 3. which claims record what they read (ONE query) ------------------
+    covered = {r[0] for r in session.execute(
+        text(_BULK_COVERAGE_SQL),
+        {"claims": sorted({k[0] for k, *_ in still})}).fetchall()}
+
+    changed_for = []
+    for key, run, org, stamp, cur in still:
+        if key[0] not in covered:
             out[key] = ReadinessResolution(state=READY_CANNOT_DETERMINE,
                                            run_id=run["run_id"], stamp_seq=stamp,
                                            current_seq=cur.current_seq,
                                            connected_org_id=str(org),
-                                           reason=REASON_NO_COVERAGE); continue
-        changed = covered_reads_changed(session, claim_test_id=claim_test_id,
-                                        connected_org_id=org, since_seq=stamp)
+                                           reason=REASON_NO_COVERAGE)
+            continue
+        changed_for.append((key, run, org, stamp, cur))
+    if not changed_for:
+        return out
+
+    # -- 4. the covered reads that moved, for every remaining pair (ONE query)
+    by_idx: dict = {}
+    for idx, et, name, what in session.execute(text(_BULK_CHANGED_READS_SQL), {
+            "idxs": list(range(len(changed_for))),
+            "claims": [k[0] for k, *_ in changed_for],
+            "orgs": [o for _, _, o, _, _ in changed_for],
+            "sinces": [st for _, _, _, st, _ in changed_for]}).all():
+        by_idx.setdefault(int(idx), []).append((et, name, what))
+
+    for i, (key, run, org, stamp, cur) in enumerate(changed_for):
+        changed = _dedupe_reads(by_idx.get(i, ()))
         out[key] = ReadinessResolution(
             state=READY_STALE if changed else READY_CURRENT,
             run_id=run["run_id"], stamp_seq=stamp, current_seq=cur.current_seq,
             connected_org_id=str(org), changed_reads=changed)
     return out
+
+
+def _dedupe_reads(rows) -> tuple:
+    """First-seen dedupe — the rule ``covered_reads_changed`` has always
+    applied, now shared by both paths so they cannot drift."""
+    seen, out = set(), []
+    for et, name, what in rows:
+        k = (et, name, what)
+        if k not in seen:
+            seen.add(k)
+            out.append(k)
+    return tuple(out)
