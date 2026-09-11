@@ -209,6 +209,10 @@ class ReleaseRepository:
             reasoning=kwargs.get("reasoning"),
             criteria_met=kwargs.get("criteria_met"),
             recommended_by=kwargs.get("recommended_by", "ai"),
+            # Step 5 (073): the policy, its version and the plan the decision graded
+            policy_id=kwargs.get("policy_id"),
+            policy_version=kwargs.get("policy_version"),
+            plan_id=kwargs.get("plan_id"),
         )
         self.db.add(d)
         self.db.commit()

@@ -1,4 +1,5 @@
-"""Release decision composer — theme #3 slice 3 (D-198).
+"""Release decision composer — theme #3 slice 3 (D-198); Step 5: the policy
+engine owns the recommendation (LLD_STEP_5_QUALITY_POLICY §b).
 
 Runs BOTH decision engines — the v1 ``DecisionEngine`` (zero-diff, its tables
 retire in 5b) and the substrate's ``get_release_substrate_decision`` (best-effort,
@@ -22,6 +23,28 @@ input here, not surgery inside an entangled engine.
 from __future__ import annotations
 
 _SEVERITY = {"no_go": 0, "conditional_go": 1, "go": 2}
+_EFFECT_STATUS = {"BLOCK": "fail", "REVIEW": "fail", "CONDITIONAL": "warn", "ALLOW": "pass", None: "pass"}
+
+
+def _grade_under_policy(tenant_id, release_id, keys) -> dict:
+    """Step 5: the active policy over the assembled evidence, in one tenant
+    transaction; the policy is marked USED (frozen) in that same transaction,
+    BEFORE the public decision row is written — the conservative order across
+    the two connections (a used-but-unrecorded policy is merely frozen early;
+    a recorded decision under an unfrozen policy would be the real defect)."""
+    from primeqa.intelligence import quality_policy as qp
+    from primeqa.intelligence.quality_decision_console import _with_session, grade_release
+
+    def _do(s):
+        out = grade_release(s, tenant_id=tenant_id, release_id=release_id, keys=keys)
+        if out.get("ok"):
+            qp.mark_used(s, policy_id=out["decision"]["policy"]["id"])
+        return out
+    try:
+        return _with_session(tenant_id, None, _do)
+    except Exception as exc:  # noqa: BLE001
+        return {"ok": False, "reason": "policy_unavailable",
+                "sentence": f"The quality policy could not grade this release: {str(exc)[:200]}"}
 
 
 def external_keys_for_requirements(requirements) -> list:
@@ -75,31 +98,45 @@ def evaluate_and_record(db, release, tenant_id, *, release_repo) -> dict:
             "mode": "substrate", "recommendation_source": "substrate",
             "v1": None, "substrate": None, "scope": scope, "items": items,
         }
+    # Step 5 (LLD_STEP_5 §b): the RECOMMENDATION is the policy engine's — the
+    # active tenant policy over the six evidence axes; gate logic lives only
+    # there. The substrate block keeps riding along for CI / the ledger
+    # (D-198 slice 4) — a fact set, no longer the release's verdict.
     substrate = get_release_substrate_decision(tenant_id, keys, criteria)
-
-    if substrate.get("available") and substrate.get("applicable"):
-        combined = {
-            "recommendation": substrate["recommendation"],
-            "confidence": substrate["confidence"],
-            "reasoning": substrate["reasoning"],
-            "criteria_met": substrate.get("criteria_met"),
-            "metrics": substrate.get("metrics"),
+    graded = _grade_under_policy(tenant_id, release.id, keys)
+    if not graded.get("ok"):
+        # Ruling 3: no active policy → a refusal, never a silent default.
+        return {
+            "refused": True, "reason": graded.get("reason") or "policy_unavailable",
+            "sentence": graded.get("sentence"),
+            "recommendation": None, "confidence": None,
+            "reasoning": [{"check": "policy", "status": "fail", "detail": graded.get("sentence")}],
+            "criteria_met": {"policy": False}, "metrics": None,
+            "mode": "policy", "recommendation_source": "policy",
+            "v1": None, "substrate": substrate, "scope": scope, "items": [],
         }
-    else:
-        combined = {
-            "recommendation": "no_go", "confidence": 0.5,
-            "reasoning": [{"check": "has_evidence", "status": "fail",
-                           "detail": "No substrate test evidence for this "
-                                     "release's requirements"}],
-            "criteria_met": {"has_evidence": False}, "metrics": None,
-        }
+    decision = graded["decision"]
+    combined = {
+        "recommendation": decision["recommendation"],
+        "confidence": decision["confidence"],
+        # the ledger's reasoning rows: one per evidence line (status ← effect)
+        "reasoning": [{"check": ln["axis"], "status": _EFFECT_STATUS.get(ln["effect"], "pass"),
+                       "detail": f"{ln['observed']} — {ln['rule']}"
+                                 + (f" → {ln['effect']}" if ln["effect"] else "")}
+                      for ln in decision["evidence_lines"]],
+        "criteria_met": {ln["axis"]: ln["effect"] not in ("BLOCK", "REVIEW") for ln in decision["evidence_lines"]},
+        "metrics": (substrate.get("metrics") if substrate.get("applicable") else None),
+    }
 
     envelope = {
         **combined,
-        "mode": "substrate",
-        "recommendation_source": "substrate",
+        "mode": "policy",
+        "recommendation_source": "policy",
         "v1": None,
         "substrate": substrate,
+        "policy": decision["policy"],
+        "plan_id": decision["plan_id"],
+        "decision": decision,
     }
     release_repo.create_decision(
         release_id=release.id,
@@ -108,6 +145,9 @@ def evaluate_and_record(db, release, tenant_id, *, release_repo) -> dict:
         reasoning=envelope,
         criteria_met=combined.get("criteria_met"),
         recommended_by="ai",
+        policy_id=decision["policy"]["id"],
+        policy_version=decision["policy"]["version"],
+        plan_id=decision["plan_id"],
     )
 
     # D-200: heads-up email on a non-clean verdict (best-effort, never blocks

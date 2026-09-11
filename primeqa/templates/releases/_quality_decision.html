@@ -1,0 +1,170 @@
+{# Step 5 (LLD_STEP_5_QUALITY_POLICY §b, §c, §e — the approved mock): the
+   release decision under the ACTIVE quality policy. The card renders the
+   ENGINE's output — the recommendation word, one line per evidence axis
+   (observed → rule → effect), "Nothing ungraded" when true — and the human's
+   final decision beside it. No gate logic here: no threshold, no comparison,
+   no effect derived in the template (tests/unit/test_templates_no_gate_logic.py).
+   Presentation switches on the engine's WORDS only. #}
+{% macro effect_chip(effect) %}
+  {% if effect == 'BLOCK' %}<span class="inline-flex items-center px-1.5 py-0.5 rounded text-[11px] font-semibold bg-red-100 text-red-800">BLOCK</span>
+  {% elif effect == 'REVIEW' %}<span class="inline-flex items-center px-1.5 py-0.5 rounded text-[11px] font-semibold bg-slate-200 text-slate-800">REVIEW</span>
+  {% elif effect == 'CONDITIONAL' %}<span class="inline-flex items-center px-1.5 py-0.5 rounded text-[11px] font-semibold bg-amber-100 text-amber-800">CONDITIONAL</span>
+  {% elif effect == 'ALLOW' %}<span class="inline-flex items-center px-1.5 py-0.5 rounded text-[11px] font-semibold bg-green-100 text-green-800">ALLOW</span>
+  {% else %}<span class="inline-flex items-center px-1.5 py-0.5 rounded text-[11px] text-gray-500 bg-gray-100">no effect</span>{% endif %}
+{% endmacro %}
+{% macro rec_pill(word) %}
+  <span class="inline-flex items-center px-2.5 py-0.5 rounded-full text-sm font-semibold
+      {% if word == 'go' %}bg-green-100 text-green-800
+      {% elif word == 'no_go' %}bg-red-100 text-red-800
+      {% elif word == 'cannot_determine' %}bg-slate-200 text-slate-800
+      {% else %}bg-amber-100 text-amber-800{% endif %}">{{ (word or 'none') | replace('_', ' ') | upper }}</span>
+{% endmacro %}
+{% set ld = release.latest_decision %}
+{% set q = quality %}
+<div class="bg-white shadow rounded-lg p-6 mb-6 border-l-4
+    {% if q and q.available and q.ok and q.decision.recommendation == 'go' %}border-green-400
+    {% elif q and q.available and q.ok and q.decision.recommendation == 'no_go' %}border-red-400
+    {% elif q and q.available and q.ok and q.decision.recommendation == 'conditional_go' %}border-amber-400
+    {% else %}border-slate-400{% endif %}"
+    data-testid="quality-decision-card"
+    data-recommendation="{{ q.decision.recommendation if q and q.available and q.ok else 'none' }}"
+    data-policy="{{ q.decision.policy.label if q and q.available and q.ok else '' }}"
+    data-plan="{{ q.decision.plan_id or '' if q and q.available and q.ok else '' }}">
+  <div class="flex items-start justify-between gap-4">
+    <div>
+      <h3 class="text-lg font-medium text-gray-900">Release decision <span class="text-xs font-normal text-gray-400">(quality policy)</span></h3>
+      {% if q and q.available and q.ok %}
+      <p class="text-xs text-gray-500 mt-0.5" data-testid="quality-policy-line">
+        Policy <span class="font-medium text-gray-700">{{ q.decision.policy.label }}</span>
+        &middot; plan {% if q.decision.plan_id %}<a href="/plans/{{ q.decision.plan_id }}" class="font-mono text-indigo-700 hover:underline">{{ q.decision.plan_id[:8] }}</a>{% if q.decision.plan and q.decision.plan.executed_at %} <span class="text-gray-400">run {{ q.decision.plan.executed_at[:16] }}</span>{% endif %}{% else %}<span class="italic">none — evidence predates plans</span>{% endif %}
+        &middot; live preview {{ q.decision.evaluated_at[:16] }} &middot; <span class="italic">nothing recorded until you Evaluate</span>
+      </p>
+      {% elif q and q.available %}
+      <p class="text-sm text-slate-700 mt-1" data-testid="quality-refusal">{{ q.sentence }}</p>
+      {% else %}
+      <p class="text-sm text-gray-400 mt-1">The quality policy preview is unavailable right now{% if q and q.sentence %} &mdash; {{ q.sentence }}{% endif %}.</p>
+      {% endif %}
+    </div>
+    {% if q and q.available and q.ok %}
+    <div class="text-right">
+      <div class="text-[11px] uppercase text-gray-400 mb-1">Recommendation</div>
+      {{ rec_pill(q.decision.recommendation) }}
+      <div class="text-[11px] text-gray-500 mt-1">{{ q.decision.because }}</div>
+    </div>
+    {% endif %}
+  </div>
+
+  {% if q and q.available and q.ok %}
+  <ul class="mt-4 divide-y divide-gray-100" data-testid="evidence-lines">
+    {% for ln in q.decision.evidence_lines if ln.axis != 'grading' %}
+    <li class="py-2 grid grid-cols-12 gap-2 text-sm items-start" data-testid="evidence-line" data-axis="{{ ln.axis }}" data-effect="{{ ln.effect or '' }}">
+      <span class="col-span-2 font-medium text-gray-800 capitalize">{{ ln.axis | replace('_', ' ') }}</span>
+      <span class="col-span-6 text-gray-700">{{ ln.observed }}</span>
+      <span class="col-span-3 text-xs text-gray-500">{{ ln.rule }}</span>
+      <span class="col-span-1 text-right">{{ effect_chip(ln.effect) }}</span>
+    </li>
+    {% endfor %}
+    {% for ln in q.decision.evidence_lines if ln.axis == 'grading' %}
+    <li class="py-2 grid grid-cols-12 gap-2 text-sm items-start" data-testid="grading-line" data-effect="{{ ln.effect or '' }}" data-ungraded="{{ q.decision.ungraded | length }}">
+      <span class="col-span-2 font-medium text-gray-800">Grading</span>
+      <span class="col-span-6 {% if q.decision.ungraded %}text-slate-800{% else %}text-green-700 font-medium{% endif %}">{{ ln.observed }}</span>
+      <span class="col-span-3 text-xs text-gray-500">{{ ln.rule }}</span>
+      <span class="col-span-1 text-right">{{ effect_chip(ln.effect) }}</span>
+    </li>
+    {% endfor %}
+  </ul>
+  {% set f_items = (q.evidence.functional or {}).get('items') or [] %}
+  {% set c_items = (q.evidence.conformance or {}).get('items') or [] %}
+  {% if f_items or c_items %}
+  <div class="mt-3 pt-3 border-t border-gray-100">
+    <p class="text-xs font-medium text-gray-500 uppercase mb-1">Named failures</p>
+    <ul class="space-y-1 text-sm">
+      {% for b in f_items %}<li class="flex items-start gap-2"><span class="text-red-600" aria-hidden="true">&#10007;</span><span class="text-gray-700"><span class="font-semibold">{{ b.item }}</span> &middot; {{ b.outcome }}{% if b.cause %} &mdash; {{ b.cause }}{% endif %} <span class="text-xs text-gray-400">env {{ b.environment_id }}</span></span></li>{% endfor %}
+      {% for b in c_items %}<li class="flex items-start gap-2"><span class="text-red-600" aria-hidden="true">&#10007;</span><span class="text-gray-700"><span class="font-semibold">{{ b.item }}</span> &middot; level {{ b.level }}</span></li>{% endfor %}
+    </ul>
+  </div>
+  {% endif %}
+  {% endif %}
+
+  {# ---- the RECORDED decision + the human's final decision (§e) ---- #}
+  <div class="mt-4 pt-4 border-t border-gray-200" data-testid="recorded-decision">
+    {% if ld %}
+    <div class="flex items-start justify-between gap-4">
+      <div class="text-sm text-gray-700">
+        <span class="text-[11px] uppercase text-gray-400">Recorded</span>
+        <span class="ml-1">{{ ld.created_at[:16] if ld.created_at else '' }}</span>
+        &middot; recommendation {{ rec_pill(ld.recommendation) }}
+        {% if ld.policy_version %}&middot; <span class="text-xs">policy {{ (ld.reasoning or {}).get('policy', {}).get('name', 'policy') }} v{{ ld.policy_version }}</span>{% else %}&middot; <span class="text-xs italic text-gray-400">decided before policies</span>{% endif %}
+        {% if ld.plan_id %}&middot; <a href="/plans/{{ ld.plan_id }}" class="font-mono text-xs text-indigo-700 hover:underline">plan {{ ld.plan_id[:8] }}</a>{% endif %}
+      </div>
+      <div class="text-right text-sm" data-testid="final-decision" data-final="{{ ld.final_decision or '' }}">
+        <span class="text-[11px] uppercase text-gray-400">Final decision</span>
+        {% if ld.final_decision %}
+        <div>{{ rec_pill(ld.final_decision) }}
+          <span class="text-xs text-gray-500">by {{ ld.decided_by_name or ('user ' ~ ld.decided_by) }} &middot; {{ ld.decided_at[:16] if ld.decided_at else '' }}</span></div>
+        {% if ld.override_reason %}<div class="text-xs text-gray-600 mt-0.5">reason: {{ ld.override_reason }}</div>{% endif %}
+        {% else %}<div class="text-gray-500 italic">pending — the recommendation stands alone</div>{% endif %}
+      </div>
+    </div>
+    {% if user.role in ['ba', 'tester', 'admin', 'superadmin'] %}
+    <form method="POST" action="/releases/{{ release.id }}/decisions/{{ ld.id }}/final" class="mt-3 flex flex-wrap items-end gap-2" data-testid="final-decision-form">
+      {{ csrf_input | safe }}
+      <label class="text-xs text-gray-600">Record final decision
+        <select name="final_decision" required class="block mt-1 rounded-md border border-gray-300 px-2 py-1.5 text-sm">
+          <option value="">Choose…</option>
+          <option value="go">GO{% if ld.recommendation != 'go' %} — with reason{% endif %}</option>
+          <option value="conditional_go">CONDITIONAL GO{% if ld.recommendation in ('no_go', 'cannot_determine') %} — with reason{% endif %}</option>
+          <option value="no_go">NO GO</option>
+        </select>
+      </label>
+      <label class="text-xs text-gray-600 flex-1 min-w-[16rem]">Reason <span class="text-gray-400">(required when recording above the recommendation)</span>
+        <input type="text" name="override_reason" class="block mt-1 w-full rounded-md border border-gray-300 px-2 py-1.5 text-sm" placeholder="why the human decides differently">
+      </label>
+      <button type="submit" class="rounded-md bg-indigo-600 px-3 py-1.5 text-sm font-semibold text-white hover:bg-indigo-500">Record</button>
+    </form>
+    <p class="text-[11px] text-gray-400 mt-1">The final decision is recorded beside the recommendation, never over it. "Record GO with reason" is the only path to a GO when the recommendation is not GO (admin).</p>
+    {% endif %}
+    {% else %}
+    <p class="text-sm text-gray-500">No decision recorded yet &mdash; <span class="font-medium">Evaluate GO/NO-GO</span> records the preview above under the active policy.</p>
+    {% endif %}
+  </div>
+
+  {# ---- waivers (§c, rulings 4 + 5) ---- #}
+  <div class="mt-4 pt-4 border-t border-gray-200" data-testid="waivers" data-count="{{ (quality_waivers.waivers | length) if quality_waivers and quality_waivers.available else 0 }}">
+    <div class="flex items-center justify-between">
+      <h4 class="text-sm font-semibold text-gray-900">Waivers</h4>
+      <span class="text-xs text-gray-400">a named human accepting a known state until a date &mdash; never an adjudication</span>
+    </div>
+    {% if quality_waivers and quality_waivers.available and quality_waivers.waivers %}
+    <ul class="mt-2 divide-y divide-gray-100">
+      {% for w in quality_waivers.waivers %}
+      <li class="py-2 flex items-center justify-between text-sm" data-testid="waiver" data-state="{{ w.state }}">
+        <span><span class="font-mono text-xs text-gray-800">{{ w.item_ref[:24] }}</span> <span class="text-xs text-gray-500">({{ w.item_kind }}, {{ w.axis | replace('_', ' ') }})</span>
+          &middot; <span class="text-gray-700">{{ w.reason }}</span>
+          &middot; <span class="text-xs text-gray-500">reviewer {{ w.reviewer_name }} &middot; until {{ w.expires_at[:10] }}</span>
+          {% if w.state == 'expired' %}<span class="ml-1 inline-flex px-1.5 py-0.5 rounded text-[11px] bg-gray-100 text-gray-600">expired, not counted</span>
+          {% elif w.state == 'revoked' %}<span class="ml-1 inline-flex px-1.5 py-0.5 rounded text-[11px] bg-gray-100 text-gray-600">revoked</span>
+          {% else %}<span class="ml-1 inline-flex px-1.5 py-0.5 rounded text-[11px] bg-green-100 text-green-800">active</span>{% endif %}</span>
+        {% if w.state == 'active' and user.role in ['ba', 'tester', 'admin', 'superadmin'] %}
+        <form method="POST" action="/releases/{{ release.id }}/waivers/{{ w.id }}/revoke" class="inline">{{ csrf_input | safe }}<input type="hidden" name="reason" value=""><button type="submit" class="text-xs text-rose-700 hover:underline">Revoke</button></form>
+        {% endif %}
+      </li>
+      {% endfor %}
+    </ul>
+    {% else %}<p class="mt-1 text-sm text-gray-500">No waiver on this release.</p>{% endif %}
+    {% if user.role in ['ba', 'tester', 'admin', 'superadmin'] %}
+    <form method="POST" action="/releases/{{ release.id }}/waivers" class="mt-3 grid grid-cols-12 gap-2 items-end" data-testid="waiver-form">
+      {{ csrf_input | safe }}
+      <label class="col-span-2 text-xs text-gray-600">Item kind
+        <select name="item_kind" class="block mt-1 w-full rounded-md border border-gray-300 px-2 py-1.5 text-sm"><option value="claim">claim (test id)</option><option value="rule">rule id</option><option value="surface">surface key</option></select></label>
+      <label class="col-span-3 text-xs text-gray-600">Item <input type="text" name="item_ref" required class="block mt-1 w-full rounded-md border border-gray-300 px-2 py-1.5 text-sm font-mono" placeholder="test id / PLM-A11Y-… / surface key"></label>
+      <label class="col-span-2 text-xs text-gray-600">Axis
+        <select name="axis" class="block mt-1 w-full rounded-md border border-gray-300 px-2 py-1.5 text-sm"><option value="functional">functional</option><option value="conformance">conformance</option><option value="human_reviews">human review</option></select></label>
+      <label class="col-span-3 text-xs text-gray-600">Reason <input type="text" name="reason" required class="block mt-1 w-full rounded-md border border-gray-300 px-2 py-1.5 text-sm" placeholder="why this is accepted"></label>
+      <label class="col-span-1 text-xs text-gray-600">Until <input type="date" name="expires_at" required min="{{ today }}" class="block mt-1 w-full rounded-md border border-gray-300 px-2 py-1.5 text-sm"></label>
+      <input type="hidden" name="reviewer_user_id" value="{{ user.id }}">
+      <button type="submit" class="col-span-1 rounded-md bg-white ring-1 ring-indigo-300 px-3 py-1.5 text-xs font-semibold text-indigo-700 hover:bg-indigo-50">Record waiver</button>
+    </form>
+    {% endif %}
+  </div>
+</div>

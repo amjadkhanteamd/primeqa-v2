@@ -155,6 +155,10 @@
       </ul>
     </div>
     {% endif %}
+    {# Step 5 (LLD_STEP_5 §b/§e): the release decision under the active quality
+       policy — the live preview, the recorded decision, the final decision, the
+       waivers. Gate logic lives in the engine; this partial renders its words. #}
+    {% include 'releases/_quality_decision.html' %}
     {# D-172 (5a): substrate evidence — the release's claims (via its requirements)
        grounding-drift + latest verdict. Signal the human weighs next to the v1
        recommendation above; the substrate does NOT produce the verdict. #}

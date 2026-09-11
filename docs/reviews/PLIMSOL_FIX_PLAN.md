@@ -661,3 +661,39 @@
   dict's `keys` METHOD; `.get(...)` is the rule, and
   `tests/unit/test_templates_dict_method_names.py` guards every template
   (five hits fixed across `plans/detail.html` and `releases/detail.html`).
+
+## Added 2026-09-10 — from Step 5 (the Release Quality Policy)
+
+- **Medium: the S4 assembler treats a conformance ('ui') claim as a functional
+  check with no run.** Step 2's `release_scope_readiness` enumerated EVERY
+  claim in the scope against the S4 environments, so a conformance claim —
+  which never runs on the S4 lane; its evidence is a browser processing run —
+  read NEVER_RUN for ever and the Evaluate act refused a release that had
+  nothing wrong with it. Step 5 splits the lanes: the readiness census (and
+  the refusal) reads the FUNCTIONAL lane, and the policy's conformance axis
+  grades the browser plane (a conformance claim with no verdict on the latest
+  processing run is ungraded THERE, named on the grading line). Fixed in
+  `substrate_decision.release_scope_readiness`; the substrate decision's
+  per-environment cards still count every claim, which overstates
+  `never_run` on a scope holding conformance claims — the honest fix is the
+  same lane split inside `_assemble_claim_evidence`, deferred because it
+  moves the D-198 card's numbers and wants its own before/after.
+- **Medium: `list_processing_runs` reads a fixed 50-row window, and
+  `tests/integration/test_report_slice.py::test_a_runs_list_carries_both_recorded_runs`
+  asserts a run from 2026-08-31 is inside it.** On scratch that run now has
+  140 newer rows in front of it (accumulated by the suites themselves), so
+  the test fails on data, not on code — and it fails identically without any
+  Step 5 row (both Step 5 fixture runs were removed before the corpus ran).
+  Fix: the test should pin its baseline by claim-set / job id through a
+  targeted read, or the console should accept a `since` / id filter.
+- **Low: no functional severity exists anywhere in the substrate.**
+  `test_recipes.priority` is unused by the engine and requirements carry
+  none, so the TA's "critical functional failure" cannot be told from any
+  other failure. Ruling 1 makes every functional failure critical in v1; the
+  recorded successor is a claim / requirement severity that splits seed rule
+  1 into critical → BLOCK and other → CONDITIONAL.
+- **Low: no human-review RESOLUTION object exists.** A NEEDS_HUMAN verdict
+  can only be accepted (a waiver, ruling 5), never adjudicated — the evidence
+  line says "N pending, N waived by <actor> until <date>", never "resolved".
+  The successor is a review record with its own verdict, distinct from an
+  exception.

@@ -8,6 +8,7 @@ from sqlalchemy import (
     Column, Integer, String, Boolean, DateTime, Date, Text, JSON, Float,
     ForeignKey, CheckConstraint, UniqueConstraint, Index,
 )
+from sqlalchemy.dialects.postgresql import UUID
 from sqlalchemy.orm import relationship
 from sqlalchemy.sql import func
 
@@ -113,6 +114,11 @@ class ReleaseDecision(Base):
     # verdict. Super Admin can flip per release if pre-agent truth is required.
     agent_verdict_counts = Column(Boolean, nullable=False, server_default="true")
     created_at = Column(DateTime(timezone=True), nullable=False, server_default=func.now())
+    # Step 5 (migration 073): every decision records the policy + version it
+    # graded under and the plan it graded (NULL on rows decided before policies).
+    policy_id = Column(UUID(as_uuid=False))
+    policy_version = Column(Integer)
+    plan_id = Column(UUID(as_uuid=False))
 
     release = relationship("Release", back_populates="decisions")
 

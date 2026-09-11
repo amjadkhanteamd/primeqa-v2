@@ -97,6 +97,13 @@ class ReleaseService:
                 "reasoning": latest_decision.reasoning,
                 "final_decision": latest_decision.final_decision,
                 "decided_at": latest_decision.decided_at.isoformat() if latest_decision.decided_at else None,
+                # Step 5: the human's record beside the recommendation + the policy refs
+                "decided_by": latest_decision.decided_by,
+                "override_reason": latest_decision.override_reason,
+                "created_at": latest_decision.created_at.isoformat() if latest_decision.created_at else None,
+                "policy_id": str(latest_decision.policy_id) if latest_decision.policy_id else None,
+                "policy_version": latest_decision.policy_version,
+                "plan_id": str(latest_decision.plan_id) if latest_decision.plan_id else None,
             } if latest_decision else None,
         }
 
