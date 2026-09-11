@@ -746,3 +746,24 @@
   `SET search_path`, and the next statement failed with "relation does not
   exist". Re-issue session settings after any rollback, or set them as
   connection options.
+
+## Added 2026-09-11 — from Step 6a (layout collapse, part 1)
+
+- **Medium (data hygiene): `connected_orgs.last_sync_completed_at` is NULL on
+  BOTH environment-bound production orgs (env-59, env-78) while syncs complete
+  daily** — `s1_sync_jobs` holds a completed row at 07:15:06Z on 2026-09-11.
+  The sync engine does not maintain the org column, so any surface reading it
+  would print "never synced" under a live daily sync. Step 6a's org-state band
+  reads the JOB table instead (ruling 5) and does not touch the column. The
+  fix — have the sync engine stamp the org on completion, or drop the column
+  and read the job everywhere — is its own slice, because it is a write-path
+  change in S1 and wants its own before/after.
+- **Medium (asymmetry): execution jobs carry `plan_id`, UI inspection jobs do
+  not.** Step 4 stamped `s4_execution_jobs` and `s4_execution_runs` with the
+  plan that produced them, but `s4_ui_inspection_jobs` was left without the
+  column, so a conformance run's provenance survives only as whatever
+  `payload.scope` recorded. Step 6a's Results "from" column therefore reads a
+  plan id on a functional row and, on a conformance row, the payload scope or
+  "no plan (pre-planner)" — honest, but not the same sentence on both lanes.
+  The successor is a Step 4 change: add `plan_id` to the UI inspection job,
+  thread it through the enqueue seam, and the two lanes read alike.
