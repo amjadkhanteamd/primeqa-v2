@@ -161,3 +161,45 @@ get the same reduction for free: the runs list (20 pairs per page), the release
 scope check (a release's claims × its environments — 19 pairs on release 16),
 and the Step 5 evidence assembler, which calls the resolver once per target
 environment.
+
+## Post-merge transcript (2026-09-11)
+
+**Merge** 97a9699 (parents db35fa8 + f70dce4), pushed to `main`; author AK,
+zero `Co-Authored-By`. Classified **WRITE-FREE** with evidence: zero migration
+files, zero write verbs added to runtime code, eight added SQL statements all
+SELECT, one runtime file touched. Dumpless. No migration, so no code/schema
+window exists in either direction and the reader risk is nil by construction —
+the six call sites in `substrate_decision.py` needed no edit, the signature and
+return shape being unchanged.
+
+**Deploy.** Four services SUCCESS on the merge commit. Health 200,
+`error_rate 0.0`. Zero error-class lines in 400 log lines per service.
+
+**The identity proof.** The three consumers captured over production data,
+read-only, three times — on main's resolver, on the branch's, and again after
+the merge and deploy:
+
+```
+sha256 before merge (main's loop) : 643466ff3e391d465dd8555018d2e3ac
+sha256 branch (bulk)              : 643466ff3e391d465dd8555018d2e3ac
+sha256 after merge + deploy       : 643466ff3e391d465dd8555018d2e3ac
+```
+
+20504 bytes each, `diff` silent. Release 16's decision preview (`go`, 7 lines),
+the release scope check (19 claims, 0 non-current, environments [59]) and one
+runs-list page (18 pairs, all CURRENT) are byte-identical across all three.
+
+**The rendered pages, GET only, on the deployed app** (the D-487 standing
+correction):
+
+| page | result |
+|---|---|
+| `/runs/substrate?group=runs&since=30d` | **200** in 4.2 s, **20 rows carrying readiness pills**, all CURRENT |
+| `/releases/16?tab=decision` | **200** in 2.4 s, quality card at **GO**, six evidence lines, no scope refusal |
+| `/requirements` | **200** |
+
+Screenshots: `step-2a-fixtures/LIVE_runs_list_readiness_after_2a.png`,
+`step-2a-fixtures/LIVE_release_16_decision_after_2a.png`.
+
+Recorded as **D-489**. Step 6a resumes from here with the readiness column
+intact per the approved mock.
