@@ -182,3 +182,61 @@ number, and four 3A-3 tests went red on a unique-name violation. The remover
 now deletes the checkpoint and the entities materialised at it. Fixture
 hygiene, not product code — but it would have looked like a Step 6a regression
 to anyone running the corpus after the shoot.
+
+## j. Post-merge transcript (2026-09-12)
+
+**Merge** efe39a3, pushed to `main`; author AK, zero `Co-Authored-By`.
+Classified **WRITE-FREE** (zero migration files, zero alembic diff, zero DDL
+and zero SQL write verbs added, 18 added SQL statements all SELECT), dumpless.
+No schema change, so no code/schema window in either direction.
+
+**Deploy.** Four services SUCCESS. Health 200, `error_rate 0.0`, zero
+error-class lines in 400 log lines per service.
+
+### The read-only production proof, GET only, in TWO sessions
+
+The gate bug is the point, so the same page was rendered under a member and a
+viewer:
+
+| | MEMBER (tester) | VIEWER |
+|---|---|---|
+| `/requirements` | **200** in 5.15 s | **200** in 5.79 s |
+| nav labels | Requirements · Results · Releases | Requirements · Results · Releases |
+| Settings gear | present | **absent** |
+| rows rendered | 10 | 10 |
+| readiness (live) | CURRENT, CANNOT_DETERMINE | CURRENT, CANNOT_DETERMINE |
+| conformance cells | "no surface declared" | "no surface declared" |
+| Needs review tab | 200 | 200 |
+| Approve control | offered | **absent** |
+
+Before 6a a viewer saw **no Requirements item at all**. Both sessions show the
+same org band:
+
+```
+ORG env-59 seq 259 · synced 2026-09-11T10:43 | env-78 seq 258 · synced 2026-09-11T07:15
+POLICY Plimsol default v1 · 10 rules
+CADENCE 0 6 * * * env 59 · last plan f24bae38
+```
+
+### Results, both kinds, with provenance
+
+`/runs/substrate?group=runs&since=7d` renders **200 in 3.24 s** with all three
+kind chips. **20 functional rows, every one reading `schedule 1`**, linked to
+plan `f24bae38` — AK's own fired schedule, so the "from" column is populated
+from real provenance rather than a fixture. **4 conformance rows** carrying
+LATEST and SUPERSEDED currency.
+
+### The redirects, live on production
+
+| old | lands on |
+|---|---|
+| `/claims` | `/requirements?tab=claims` |
+| `/claims/inbox` | `/requirements?tab=needs-review` |
+| `/reviews` | `/requirements?tab=needs-review` |
+| `/test-cases` | `/requirements?tab=claims` |
+| `/ui-report` | `/runs/substrate?kind=conformance` |
+
+Screenshots: `LIVE_requirements_tester.png`, `LIVE_requirements_viewer.png`,
+`LIVE_results_both_kinds.png`.
+
+Recorded as **D-490**. Part 2 (Releases and Settings) is the next slice.
