@@ -6,6 +6,11 @@ effective permissions so the rendered nav only ever shows what the user
 can actually use. `get_landing_page()` answers "after login, where?"
 based on the permission-set union — same source of truth as the UI.
 
+Step 6a (LLD_STEP_6A_WORK_SURFACES §a) collapsed the registry to four rendered
+items — Requirements, Results, Releases, Settings — each gated on a view_*
+capability held from VIEWER up. The mapping table below is the historical
+record of how the original prompt's URLs landed on real routes.
+
 URL conventions are adapted to PrimeQA's actual route space (the prompt
 used aspirational URLs like /tickets, /run, /results — those don't exist
 yet as standalone pages). Mapping:
@@ -46,113 +51,49 @@ from typing import Iterable, Optional
 # --------------------------------------------------------------------------
 
 SIDEBAR_ITEMS: list[dict] = [
-    # Primary — the things you do day-to-day
+    # Step 6a (LLD_STEP_6A §a): FOUR items. Eight slots collapsed to two work
+    # surfaces plus Releases and Settings — Requirements is "what should be
+    # true", Results is "what happened". The removed slots' content has a home:
+    #   Run Tests    -> retired to a redirect at D-486 (/run -> /releases?from=run)
+    #   Test Library -> the Requirements "All claims" tab
+    #   My Reviews   -> the Requirements "Needs review" tab + the badge below
+    #   Dashboard    -> Releases in 6b; the CHIP goes now, the ROUTE and its
+    #                   landing entry stay working until 6b re-homes the content
+    #                   (ruling 1) — /dashboard is not retired by this slice.
+    # The gates are the new view_* capabilities (VIEWER): reading the work is a
+    # viewer's right, acting on it is not. Before 6a, Requirements was gated on
+    # run_single_ticket (MEMBER), so a viewer saw no Requirements item at all.
     {
-        # The nav label matches the destination page's own title ("Requirements")
-        # — a requirement IS the Jira ticket, but the surface is named for the
-        # requirement everywhere else, so the tab name aligns to it (D-267).
-        "id": "my_tickets",
+        "id": "requirements",
         "label": "Requirements",
         "icon": "ticket",
         "url": "/requirements",
-        "permission": "run_single_ticket",
-        "section": "primary",
-    },
-    {
-        "id": "run_tests",
-        "label": "Run Tests",
-        "icon": "play",
-        "url": "/run",
-        "permission_any": ["run_sprint", "run_suite"],
+        # /claims and /reviews redirect here; keep the tab lit on the way through
+        "active_also_for": ("/claims", "/reviews", "/test-cases", "/tickets"),
+        "permission": "view_requirements",
         "section": "primary",
     },
     {
         "id": "results",
         "label": "Results",
         "icon": "chart",
-        # D-218: results now live on the substrate runs index — the v1
-        # /runs list froze when execution moved to s4_execution_runs.
-        # /runs stays in active_also_for so the legacy archive (and v1
-        # run-detail pages) still highlight this tab.
+        # D-218: results live on the substrate runs index. Step 6a adds the
+        # conformance lane and the re-homed run view, so /ui-report lights it too.
         "url": "/runs/substrate",
-        "active_also_for": ("/runs", "/results"),
-        "permission_any": ["view_own_results", "view_all_results"],
+        "active_also_for": ("/runs", "/results", "/ui-report"),
+        "permission": "view_results",
         "section": "primary",
     },
-    {
-        "id": "my_reviews",
-        "label": "My Reviews",
-        "icon": "check-circle",
-        # D-218: the substrate review act is draft-claim approval — the
-        # v1 /reviews queue stopped filling when generation moved to S3.
-        "url": "/claims/inbox",
-        "active_also_for": ("/reviews",),
-        "permission": "review_test_cases",
-        "section": "primary",
-    },
-    {
-        "id": "dashboard",
-        "label": "Dashboard",
-        "icon": "dashboard",
-        "url": "/dashboard",
-        # The legacy dashboard at / stays available (admins land there);
-        # treat both paths as "active" for nav highlighting.
-        "active_also_for": ("/",),
-        "permission": "view_dashboard",
-        "section": "primary",
-    },
-
-    # Testing — the artefacts of the practice
-    {
-        # D-165 (UI Area 2): the Test Library nav now points at the substrate
-        # claims library (/claims, S2) — the replacement for the v1 /test-cases
-        # list. The v1 page stays reachable by URL until cutover Step 5.
-        "id": "test_library",
-        "label": "Test Library",
-        "icon": "library",
-        "url": "/claims",
-        "permission": "view_test_library",
-        "section": "testing",
-    },
-    # Releases — the release gate / test plan. Restored here so Release
-    # Owners (view_dashboard) and Admins (approve_release) can navigate
-    # back into their existing surface without typing the URL manually.
     {
         "id": "releases",
         "label": "Releases",
         "icon": "package",
         "url": "/releases",
-        "permission_any": ["approve_release", "view_dashboard"],
-        "section": "testing",
-    },
-    {
-        # Coverage Map page isn't built yet. Item stays so when the page
-        # ships we just flip `enabled: True` and it reappears in nav for
-        # anyone holding view_coverage_map.
-        "id": "coverage",
-        "label": "Coverage Map",
-        "icon": "map",
-        "url": "/coverage",
-        "permission": "view_coverage_map",
-        "section": "testing",
-        "enabled": False,
-    },
-    # Substrate Insights / Ask / Org Model / Knowledge moved OUT of the top
-    # bar into the Settings sidebar's "Tools" section (AK 2026-07-07 — the bar
-    # was 12 items wide). Routes + gates unchanged; the pages stay reachable at
-    # their URLs and via templates/settings/base.html. Note the tradeoff: the
-    # Settings gear is admin-only, so BA/tester lose nav DISCOVERABILITY of
-    # Ask/Insights — the contextual "Ask about this" buttons remain for them.
-
-    # Admin — tenant-wide config
-    {
-        "id": "audit_log",
-        "label": "Audit Log",
-        "icon": "history",
-        "url": "/audit-log",
-        "permission": "view_audit_log",
-        "section": "admin",
-        "enabled": False,
+        # /dashboard's content moves here in 6b; light the tab from now so the
+        # surviving route reads as part of Releases rather than as an orphan.
+        "active_also_for": ("/dashboard",),
+        "permission": "view_releases",
+        "section": "primary",
     },
     {
         "id": "settings",
@@ -161,6 +102,25 @@ SIDEBAR_ITEMS: list[dict] = [
         "url": "/settings",
         "permission_any_prefix": "manage_",
         "section": "admin",
+    },
+    # Never rendered (no backing page); kept so the item reappears when one ships.
+    {
+        "id": "coverage",
+        "label": "Coverage Map",
+        "icon": "map",
+        "url": "/coverage",
+        "permission": "view_coverage_map",
+        "section": "testing",
+        "enabled": False,
+    },
+    {
+        "id": "audit_log",
+        "label": "Audit Log",
+        "icon": "history",
+        "url": "/audit-log",
+        "permission": "view_audit_log",
+        "section": "admin",
+        "enabled": False,
     },
 ]
 
@@ -258,16 +218,22 @@ def build_sidebar(user_permissions: set, current_path: str = "/",
 # 403s and redirects.
 _LANDING_PAGE_PERMISSION: dict[str, Iterable[str]] = {
     "/":              ("view_dashboard",),
+    # Step 6a ruling 1: /dashboard keeps working and keeps its landing entry
+    # until 6b re-homes it; only the nav chip went.
     "/dashboard":     ("view_dashboard",),
-    "/requirements":  ("run_single_ticket",),
+    "/requirements":  ("view_requirements", "run_single_ticket"),
     "/run":           ("run_sprint", "run_suite"),
     "/runs/new":      ("run_sprint", "run_suite"),  # legacy — wizard
-    "/runs":          ("view_own_results", "view_all_results"),
-    "/runs/substrate": ("view_own_results", "view_all_results"),
-    "/results":       ("view_own_results", "view_all_results"),
-    "/reviews":       ("review_test_cases",),
-    "/claims/inbox":  ("review_test_cases",),
-    "/test-cases":    ("view_test_library",),
+    "/runs":          ("view_results", "view_own_results", "view_all_results"),
+    "/runs/substrate": ("view_results", "view_own_results", "view_all_results"),
+    "/results":       ("view_results", "view_own_results", "view_all_results"),
+    # Step 6a: these three redirect into Requirements; a stored preference for
+    # one still resolves rather than bouncing the caller to the fallback.
+    "/reviews":       ("view_requirements", "review_test_cases"),
+    "/claims/inbox":  ("view_requirements", "review_test_cases"),
+    "/claims":        ("view_requirements", "view_test_library"),
+    "/test-cases":    ("view_requirements", "view_test_library"),
+    "/releases":      ("view_releases", "approve_release", "view_dashboard"),
     "/suites":        ("manage_test_suites", "view_suite_quality_gates"),
     "/settings":      (),  # special: any manage_* permission
 }

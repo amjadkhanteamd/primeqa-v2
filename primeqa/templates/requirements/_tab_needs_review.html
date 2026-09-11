@@ -1,0 +1,73 @@
+{# Step 6a §c — the "Needs review" tab: everything waiting for a PERSON, in the
+   two halves the nav badge sums (§a). Each half is shown separately so the
+   badge number is never a mystery. #}
+{% from 'components/_empty_state.html' import empty_state %}
+<div data-testid="tab-needs-review" data-total="{{ attention.total }}">
+  <p class="mb-3 text-xs text-gray-500">
+    The badge counts these two together: <span class="font-medium">{{ attention.drafts }}</span>
+    draft{{ '' if attention.drafts == 1 else 's' }} awaiting approval and
+    <span class="font-medium">{{ attention.human_reviews }}</span>
+    conformance check{{ '' if attention.human_reviews == 1 else 's' }} needing a human.
+  </p>
+
+  <h3 class="text-sm font-semibold text-gray-900 mb-2" data-testid="drafts-heading">
+    Draft claims awaiting approval ({{ attention.drafts }})</h3>
+  {% if not drafts_data or not drafts_data.available %}
+    {{ empty_state(title='The approval inbox is unavailable',
+        description='The substrate could not be read for your tenant right now.') }}
+  {% elif drafts_data.claims %}
+  <div class="bg-white shadow rounded-lg overflow-hidden mb-6">
+    <table class="min-w-full divide-y divide-gray-200 text-sm">
+      <thead class="bg-gray-50">
+        <tr class="text-left text-xs font-medium text-gray-500 uppercase tracking-wide">
+          <th class="px-4 py-2">Test</th><th class="px-4 py-2">Depth</th>
+          <th class="px-4 py-2">From</th><th class="px-4 py-2 text-right">Decision</th>
+        </tr>
+      </thead>
+      <tbody class="divide-y divide-gray-100">
+        {% for c in drafts_data.claims %}
+        <tr class="hover:bg-gray-50" data-testid="draft-row">
+          <td class="px-4 py-2">
+            <a href="/claims/{{ c.test_id }}" class="font-medium text-indigo-600 hover:underline">{{ c.title }}</a>
+            {% if c.requirement_summary %}<div class="text-xs text-gray-500 mt-0.5">{{ c.requirement_summary }}</div>{% endif %}
+            <div class="text-xs text-gray-400 mt-0.5">{{ (c.claim_kind or '') | replace('-', ' ') }} &middot; v{{ c.version_seq }}</div>
+          </td>
+          <td class="px-4 py-2">
+            <span class="inline-flex items-center px-2 py-0.5 rounded text-xs font-medium
+              {% if c.depth == 'behavioral' %}bg-emerald-100 text-emerald-800{% else %}bg-slate-100 text-slate-600{% endif %}">
+              {{ 'behavioral' if c.depth == 'behavioral' else 'config check' }}</span>
+          </td>
+          <td class="px-4 py-2 text-gray-500 text-xs font-mono">{{ c.requirement_key or '' }}</td>
+          <td class="px-4 py-2 text-right">
+            {% if has_permission('manage_requirements') %}
+            <form method="POST" action="/claims/{{ c.test_id }}/approve" class="inline" data-testid="approve-draft">
+              {{ csrf_input | safe }}
+              <input type="hidden" name="next" value="/requirements?tab=needs-review">
+              <button type="submit" class="inline-flex items-center rounded-md bg-indigo-600 px-2.5 py-1 text-xs font-semibold text-white shadow-sm hover:bg-indigo-500">Approve</button>
+            </form>
+            {% else %}<span class="text-xs text-gray-400">read-only</span>{% endif %}
+          </td>
+        </tr>
+        {% endfor %}
+      </tbody>
+    </table>
+  </div>
+  {% else %}
+    <p class="mb-6 text-sm text-gray-500" data-testid="no-drafts">No draft is waiting for approval.</p>
+  {% endif %}
+
+  <h3 class="text-sm font-semibold text-gray-900 mb-2" data-testid="reviews-heading">
+    Conformance checks needing a human ({{ attention.human_reviews }})</h3>
+  <p class="text-xs text-gray-500 mb-2">
+    NEEDS_HUMAN verdicts on the active claim set's latest run, and members marked
+    human-review, minus anything an active waiver covers. A waiver ACCEPTS a known
+    state until a date &mdash; it never adjudicates.</p>
+  {% if attention.human_reviews %}
+  <p class="text-sm text-gray-700">
+    {{ attention.human_reviews }} check{{ '' if attention.human_reviews == 1 else 's' }} pending.
+    Open the requirement's conformance card to see the surface, or record a waiver
+    on the release decision tab.</p>
+  {% else %}
+  <p class="text-sm text-gray-500" data-testid="no-human-reviews">No conformance check is waiting for a human.</p>
+  {% endif %}
+</div>

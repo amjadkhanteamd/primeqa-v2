@@ -63,7 +63,7 @@
                                 <span class="h-5 w-px bg-gray-200 mx-1" aria-hidden="true"></span>
                             {% endif %}
                             {% if item.id != 'settings' %}
-                            <a href="{{ item.url }}"
+                            <a href="{{ item.url }}" data-nav-item="{{ item.label }}"
                                class="{% if item.active %}bg-gray-100 text-gray-900{% else %}text-gray-500 hover:bg-gray-50 hover:text-gray-700{% endif %} inline-flex items-center gap-1.5 rounded-md px-3 py-2 text-sm font-medium"
                                data-nav-id="{{ item.id }}">
                                {{ item.label }}
@@ -110,7 +110,12 @@
                                     {% else %}bg-gray-100 text-gray-800{% endif %}">{{ user.role }}</span>
                             </div>
                             <div class="py-1">
+                                {# Step 6a §e: the gear above is gated on can_see_settings;
+                                   this link was not, so a viewer was offered a page the
+                                   route refuses. Same gate, one matrix. #}
+                                {% if can_see_settings %}
                                 <a href="/settings" class="block px-4 py-2 text-sm text-gray-700 hover:bg-gray-50">Settings</a>
+                                {% endif %}
                                 <a href="/logout" class="block px-4 py-2 text-sm text-red-600 hover:bg-gray-50">Sign out</a>
                             </div>
                         </div>
@@ -120,6 +125,9 @@
         </div>
     </nav>
     <main class="mx-auto max-w-7xl px-4 sm:px-6 lg:px-8 py-8">
+        {# Step 6a §b: the org-state band, directly under the nav. Rendered only
+   where the route passes `org_state` (Requirements, Results, Releases). #}
+        {% include 'components/_org_state.html' %}
         {% block content %}{% endblock %}
     </main>
 </div>

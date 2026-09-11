@@ -67,6 +67,16 @@ class NotificationPreference(Base):
 # --------------------------------------------------------------------------
 
 _CAPABILITY_MIN_TIER: dict[str, Tier] = {
+    # Step 6a (LLD_STEP_6A §e): the work surfaces are READ by a viewer and ACTED
+    # on by a member. Presentation only — the route decorators stay the
+    # enforcement. Before 6a the Requirements nav slot was gated on
+    # run_single_ticket (MEMBER), so a viewer saw no Requirements item at all.
+    "view_requirements": Tier.VIEWER,
+    "view_results": Tier.VIEWER,
+    "view_releases": Tier.VIEWER,
+    "manage_requirements": Tier.MEMBER,
+    "manage_results": Tier.MEMBER,
+    "manage_releases": Tier.MEMBER,
     # Viewer — read surfaces
     "view_dashboard": Tier.VIEWER,
     "view_intelligence_report": Tier.VIEWER,
@@ -139,13 +149,15 @@ def register_template_context(app) -> None:
         can_see_settings = is_superadmin or any(p.startswith("manage_") for p in perms)
         sidebar = build_sidebar(perms, request.path, is_superadmin=is_superadmin)
 
-        # Badge count for the "My Reviews" nav item, only when it renders.
-        if any(i["id"] == "my_reviews" for i in sidebar):
-            count = _count_pending_reviews_for(user)
-            if count:
+        # Step 6a: the badge rides the REQUIREMENTS item and counts everything
+        # waiting for a person — draft claims + pending human reviews (§a).
+        if any(i["id"] == "requirements" for i in sidebar):
+            counts = pending_human_attention(user["tenant_id"])
+            if counts["total"]:
                 for i in sidebar:
-                    if i["id"] == "my_reviews":
-                        i["badge"] = count
+                    if i["id"] == "requirements":
+                        i["badge"] = counts["total"]
+                        i["badge_detail"] = counts
 
         return {
             "user_permissions": perms,
@@ -158,23 +170,87 @@ def register_template_context(app) -> None:
         }
 
 
-def _count_pending_reviews_for(user: dict) -> int:
-    """The My Reviews nav badge: draft claims awaiting approval (tenant-wide)."""
-    try:
-        from sqlalchemy import text
+def pending_human_attention(tenant_id: int) -> dict:
+    """Step 6a (§a) — the Requirements badge: everything waiting for a PERSON.
 
-        from primeqa.semantic.connection import get_tenant_connection
-        with get_tenant_connection(user["tenant_id"]) as conn:
-            return conn.execute(text(
+    ``{drafts, human_reviews, total}``. Two halves, summed because both say the
+    same thing to a human, and each is shown separately on the Needs review tab
+    so the number is never a mystery:
+
+      - ``drafts``        draft claims awaiting approval (tenant-wide) — the
+                          count the My Reviews badge carried before 6a,
+                          unchanged.
+      - ``human_reviews`` the STEP 5 human_reviews axis, reused rather than
+                          redefined: NEEDS_HUMAN verdicts on the latest
+                          processing run of the ACTIVE claim set, plus
+                          HUMAN_REVIEW members of that set, MINUS any item an
+                          active waiver covers.
+
+    Best-effort in both halves: a failing read contributes 0 and the badge
+    never takes a page down."""
+    from sqlalchemy import text
+
+    from primeqa.semantic.connection import get_tenant_connection
+    out = {"drafts": 0, "human_reviews": 0, "total": 0}
+    try:
+        with get_tenant_connection(tenant_id) as conn:
+            out["drafts"] = conn.execute(text(
                 "SELECT COUNT(*) FROM test_claims "
                 "WHERE status = 'draft' AND valid_to IS NULL"
             )).scalar() or 0
-    except Exception:
+            try:
+                out["human_reviews"] = _pending_human_reviews(conn, tenant_id)
+            except Exception:                       # noqa: BLE001 — half a badge beats none
+                out["human_reviews"] = 0
+    except Exception:                               # noqa: BLE001
+        return out
+    out["total"] = out["drafts"] + out["human_reviews"]
+    return out
+
+
+def _pending_human_reviews(conn, tenant_id: int) -> int:
+    """NEEDS_HUMAN verdicts on the latest processing run of the ACTIVE claim set
+    + HUMAN_REVIEW members of that set, minus what an active waiver covers.
+    The same definition the Step 5 evidence assembler grades on."""
+    from sqlalchemy import text
+    row = conn.execute(text("""
+        SELECT CAST(cs.id AS text) FROM claim_sets cs
+        WHERE cs.status = 'approved'
+          AND cs.inventory_version = (SELECT MAX(inventory_version) FROM claim_sets
+                                      WHERE status = 'approved')
+        ORDER BY cs.created_at DESC LIMIT 1
+    """)).first()
+    if row is None:
         return 0
+    claim_set = row[0]
+    pending = {r[0] for r in conn.execute(text("""
+        SELECT CAST(v.test_id AS text) FROM s6_ui_verdicts v
+        WHERE v.verdict = 'NEEDS_HUMAN' AND v.job_id = (
+            SELECT job_id FROM s6_ui_processing_runs
+            WHERE claim_set_id = CAST(:cs AS uuid)
+            ORDER BY processed_at DESC LIMIT 1)
+    """), {"cs": claim_set}).fetchall()}
+    pending |= {r[0] for r in conn.execute(text("""
+        SELECT CAST(test_id AS text) FROM claim_set_members
+        WHERE claim_set_id = CAST(:cs AS uuid) AND applicability = 'HUMAN_REVIEW'
+          AND revoked_at IS NULL
+    """), {"cs": claim_set}).fetchall()}
+    if not pending:
+        return 0
+    try:                                            # the waiver table exists from Step 5
+        waived = {r[0] for r in conn.execute(text("""
+            SELECT item_ref FROM quality_waivers
+            WHERE axis IN ('human_reviews', 'conformance') AND item_kind = 'claim'
+              AND revoked_at IS NULL AND expires_at > now()
+        """)).fetchall()}
+    except Exception:                               # noqa: BLE001
+        waived = set()
+    return len(pending - waived)
 
 
 __all__ = [
     "SharedDashboardLink",
     "NotificationPreference",
     "register_template_context",
+    "pending_human_attention",
 ]
