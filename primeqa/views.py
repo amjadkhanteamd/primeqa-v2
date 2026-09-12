@@ -247,9 +247,24 @@ from primeqa.core.auth import require_auth as _require_auth_api  # noqa: E402
 @require_tier(Tier.VIEWER)
 @login_required
 def release_dashboard():
-    """Release Owner's executive view. Answers 'is it safe to release?'
-    in 5 seconds: hero Go/No-Go, ticket grid, quality gates, sprint
-    trend, intelligence summary."""
+    """Step 6b §a: ABSORBED into Releases, not moved. Six of this page's eight
+    elements already live on the release page in better form (the hero verdict
+    and its reason — where the quality card names the POLICY that produced it;
+    risk; the per-check reasoning; the blockers; the ticket grid, redundant
+    since 6a put those columns on every Requirements row; and the intelligence
+    summary, its own page). `gates` was dead in code — always []. `trends` was
+    the one survivor and is an ENVIRONMENT fact, so it went to Results.
+
+    The route and its landing entry survive until the single retirement commit
+    at the end of the cycle; nothing is deleted in this slice."""
+    return redirect("/releases")
+
+
+@views_bp.route("/dashboard/legacy")
+@require_tier(Tier.VIEWER)
+@login_required
+def release_dashboard_legacy():
+    """The pre-6b executive view, reachable for one release cycle."""
     from primeqa.core.models import User
     # D-219: the dashboard reads substrate evidence (v1-shaped drop-in).
     from primeqa.intelligence.substrate_dashboard import (
@@ -4873,10 +4888,16 @@ def releases_list():
         status_filter = request.args.get("status")
         releases = svc.list_releases(request.user["tenant_id"], status=status_filter)
         # Step 6a §b: the band rides Requirements, Results and Releases.
+        # Step 6b §a: and every card says what evidence it has and what its
+        # decision state IS — not merely what was last recorded. Best-effort per
+        # row (ruling 6): an odd release renders "unavailable" on that cell.
         from primeqa.intelligence.org_state_console import org_state_for_request
+        from primeqa.intelligence.releases_board_console import board as releases_board
+        tid = request.user["tenant_id"]
         return render_template("releases/list.html", **ctx(
             active_page="releases", releases=releases, status_filter=status_filter,
-            org_state=org_state_for_request(request.user["tenant_id"]),
+            board=releases_board(tid, releases, db=db),
+            org_state=org_state_for_request(tid),
         ))
     finally:
         db.close()
@@ -5132,8 +5153,176 @@ def release_waiver_revoke(release_id, waiver_id):
     return redirect(f"/releases/{release_id}?tab=decision")
 
 
+# --- Step 6b §b: Release quality — the two ACTING pages -------------------
+
+@views_bp.route("/settings/quality-policy/activate", methods=["POST"])
+@require_tier(Tier.MEMBER)
+@login_required
+def settings_policy_activate():
+    """ACTIVATE a draft policy — the control AK had to reach for a CLI to use.
+
+    It calls ``quality_policy.activate`` exactly as the CLI does, so the act is
+    ONE code path: draft → active, the previous active retired, both audited
+    with the real actor. Rule EDITING stays CLI in v1 (§f)."""
+    from flask import flash
+
+    from primeqa.intelligence import quality_policy as qp
+    from primeqa.intelligence.quality_decision_console import _with_session
+    pid = (request.form.get("policy_id") or "").strip()
+    tid = request.user["tenant_id"]
+    try:
+        p = _with_session(tid, None, lambda s: qp.activate(
+            s, policy_id=pid, user_id=request.user["id"], tenant_id=tid))
+        flash(f"{p.label} is active — it grades every release evaluated from now, "
+              "and freezes the moment the first decision uses it.", "success")
+    except qp.PolicyError as exc:
+        flash(str(exc), "error")
+    except Exception as exc:  # noqa: BLE001
+        flash(f"Could not activate: {str(exc)[:160]}", "error")
+    return redirect("/settings/quality-policy")
+
+
+@views_bp.route("/settings/waivers")
+@require_tier(Tier.MEMBER)
+@login_required
+def settings_waivers():
+    """Every waiver in the tenant, in one place — the same objects the decision
+    tab creates, so a waiver made in either place is the same row."""
+    from primeqa.intelligence import quality_policy as qp
+    from primeqa.intelligence.quality_decision_console import _user_names, _with_session
+    tid = request.user["tenant_id"]
+
+    def _read(s):
+        rows = qp.waivers_for_release(s, None)
+        names = _user_names(s, tid, {r["reviewer_user_id"] for r in rows}
+                            | {r["created_by"] for r in rows})
+        for r in rows:
+            r["reviewer_name"] = names.get(r["reviewer_user_id"], f"user {r['reviewer_user_id']}")
+            r["created_by_name"] = names.get(r["created_by"], f"user {r['created_by']}")
+        return rows
+    try:
+        waivers = _with_session(tid, None, _read)
+        available = True
+    except Exception:  # noqa: BLE001
+        waivers, available = [], False
+    releases = []
+    db = next(get_db())
+    try:
+        releases = [{"id": r.id, "name": r.name}
+                    for r in ReleaseRepository(db).list_releases(tid, None)]
+    finally:
+        db.close()
+    return render_template("settings/waivers.html", **ctx(
+        active_page="settings", settings_page="waivers", breadcrumb_item="Waivers",
+        waivers=waivers, available=available, releases=releases,
+        today=datetime.now(timezone.utc).date().isoformat()))
+
+
+@views_bp.route("/settings/waivers", methods=["POST"])
+@require_tier(Tier.MEMBER)
+@login_required
+def settings_waiver_record():
+    from flask import flash
+
+    from primeqa.intelligence.quality_decision_console import record_waiver
+    expires = (request.form.get("expires_at") or "").strip()
+    try:
+        expires_at = datetime.fromisoformat(expires).replace(tzinfo=timezone.utc) if expires else None
+    except ValueError:
+        expires_at = None
+    if expires_at is None:
+        flash("No expiry, no waiver — give the date it stops counting.", "error")
+        return redirect("/settings/waivers")
+    res = record_waiver(request.user["tenant_id"],
+                        release_id=request.form.get("release_id", type=int),
+                        item_kind=(request.form.get("item_kind") or "claim").strip(),
+                        item_ref=(request.form.get("item_ref") or "").strip(),
+                        axis=(request.form.get("axis") or "functional").strip(),
+                        reviewer_user_id=(request.form.get("reviewer_user_id", type=int)
+                                          or request.user["id"]),
+                        reason=(request.form.get("reason") or "").strip(),
+                        expires_at=expires_at, user_id=request.user["id"])
+    flash("Waiver recorded — it allows that item until it expires." if res.get("ok")
+          else (res.get("sentence") or "Could not record the waiver."),
+          "success" if res.get("ok") else "error")
+    return redirect("/settings/waivers")
+
+
+@views_bp.route("/settings/waivers/<uuid:waiver_id>/revoke", methods=["POST"])
+@require_tier(Tier.MEMBER)
+@login_required
+def settings_waiver_revoke(waiver_id):
+    from flask import flash
+
+    from primeqa.intelligence.quality_decision_console import revoke_waiver
+    res = revoke_waiver(request.user["tenant_id"], waiver_id=str(waiver_id),
+                        user_id=request.user["id"],
+                        reason=(request.form.get("reason") or "").strip())
+    flash("Waiver revoked — the item counts again." if res.get("ok")
+          else (res.get("sentence") or "Could not revoke the waiver."),
+          "success" if res.get("ok") else "error")
+    return redirect("/settings/waivers")
+
+
+# --- Step 6b §b: Conformance setup — five READ-ONLY pages ------------------
+
+@views_bp.route("/settings/sites")
+@require_tier(Tier.MEMBER)
+@login_required
+def settings_sites():
+    """READ-ONLY, and not merely "not in v1": a registration form would be a
+    CREDENTIAL-ENTRY surface, and the web tier holds no portal cryptography.
+    Key material lives in the vault, reached by the CLI and the worker."""
+    from primeqa.intelligence.conformance_setup_console import sites_and_personas
+    return render_template("settings/sites.html", **ctx(
+        active_page="settings", settings_page="sites", breadcrumb_item="Sites & personas",
+        data=sites_and_personas(request.user["tenant_id"])))
+
+
+@views_bp.route("/settings/surface-inventory")
+@require_tier(Tier.MEMBER)
+@login_required
+def settings_surface_inventory():
+    from primeqa.intelligence.conformance_setup_console import surface_inventory
+    return render_template("settings/surface_inventory.html", **ctx(
+        active_page="settings", settings_page="surface_inventory",
+        breadcrumb_item="Surface inventory",
+        data=surface_inventory(request.user["tenant_id"])))
+
+
+@views_bp.route("/settings/claim-sets")
+@require_tier(Tier.MEMBER)
+@login_required
+def settings_claim_sets():
+    from primeqa.intelligence.conformance_setup_console import claim_sets
+    return render_template("settings/claim_sets.html", **ctx(
+        active_page="settings", settings_page="claim_sets", breadcrumb_item="Claim sets",
+        data=claim_sets(request.user["tenant_id"])))
+
+
+@views_bp.route("/settings/standards")
+@require_tier(Tier.MEMBER)
+@login_required
+def settings_standards():
+    from primeqa.intelligence.conformance_setup_console import standards_and_catalogues
+    return render_template("settings/standards.html", **ctx(
+        active_page="settings", settings_page="standards",
+        breadcrumb_item="Standards & catalogues",
+        data=standards_and_catalogues(request.user["tenant_id"])))
+
+
+@views_bp.route("/settings/custom-rules")
+@require_tier(Tier.MEMBER)
+@login_required
+def settings_custom_rules():
+    from primeqa.intelligence.conformance_setup_console import custom_rules
+    return render_template("settings/custom_rules.html", **ctx(
+        active_page="settings", settings_page="custom_rules", breadcrumb_item="Custom rules",
+        data=custom_rules(request.user["tenant_id"])))
+
+
 @views_bp.route("/settings/quality-policy")
-@require_tier(Tier.ADMIN)
+@require_tier(Tier.MEMBER)
 @login_required
 def settings_quality_policy():
     """§f: a READ-ONLY view of the active policy (authoring is CLI in v1)."""
@@ -5347,25 +5536,51 @@ def ui_report_evidence():
 
 
 @views_bp.route("/ui-report/compare")
-@require_tier(Tier.MEMBER)
-def ui_report_compare():
+@login_required
+def ui_report_compare_redirect():
+    """Step 6b §a: the comparison is a release question — it moved."""
+    from flask import request as _rq
+    qs = _rq.query_string.decode()
+    return redirect("/releases/compare" + (f"?{qs}" if qs else ""))
+
+
+@views_bp.route("/releases/compare")
+@require_tier(Tier.VIEWER)
+def releases_compare():
     from primeqa.intelligence.ui_report_console import (
         comparison_report, list_processing_runs)
     baseline = request.args.get("baseline") or None
     candidate = request.args.get("candidate") or None
     runs = list_processing_runs(request.user["tenant_id"])
+    # Step 6b §a: arriving from a release pre-fills the candidate with the
+    # newest processing run, so "Compare releases" lands somewhere useful
+    # rather than on two empty pickers.
+    release_id = request.args.get("release", type=int)
+    if release_id and not candidate and runs.get("available") and runs.get("runs"):
+        candidate = runs["runs"][0]["job_id"]
+        if not baseline and len(runs["runs"]) > 1:
+            baseline = runs["runs"][1]["job_id"]
     data = None
     if baseline and candidate:
-        data = comparison_report(request.user["tenant_id"],
-                                 baseline, candidate)
+        data = comparison_report(request.user["tenant_id"], baseline, candidate)
     return render_template("ui_report/compare.html", **ctx(
-        active_page="ui_report", runs=runs, data=data,
+        active_page="releases", runs=runs, data=data, release_id=release_id,
         baseline=baseline or "", candidate=candidate or ""))
 
 
 @views_bp.route("/ui-report/coverage")
+@login_required
+def ui_report_coverage_redirect():
+    """Step 6b §d: catalogue coverage is a property of the ACTIVE map set, not
+    of a release — it lives with the catalogue."""
+    from flask import request as _rq
+    qs = _rq.query_string.decode()
+    return redirect("/settings/standards" + (f"?{qs}" if qs else ""))
+
+
+@views_bp.route("/settings/standards/coverage")
 @require_tier(Tier.MEMBER)
-def ui_report_coverage():
+def standards_coverage():
     from primeqa.intelligence.ui_report_console import (
         coverage_report, list_processing_runs)
     runs = list_processing_runs(request.user["tenant_id"])
@@ -5375,7 +5590,8 @@ def ui_report_coverage():
     data = coverage_report(request.user["tenant_id"], job_id) \
         if job_id else {"available": False}
     return render_template("ui_report/coverage.html", **ctx(
-        active_page="ui_report", runs=runs, data=data, job_id=job_id))
+        active_page="settings", settings_page="standards", runs=runs, data=data,
+        job_id=job_id))
 
 
 @views_bp.route("/reviews")

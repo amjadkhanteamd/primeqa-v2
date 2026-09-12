@@ -41,6 +41,10 @@
                         title="Resolve the scope into a recorded plan you look at before running">Plan</button>
             </form>
             {% endif %}
+            {# Step 6b §a: the phase-7 comparison, re-homed out of the orphan tree
+               and pre-filled with this release's latest conformance run. #}
+            <a href="/releases/compare?release={{ release.id }}" data-testid="compare-releases"
+               class="rounded-md bg-white ring-1 ring-gray-300 px-3 py-2 text-sm font-semibold text-gray-700 hover:bg-gray-50">Compare releases</a>
             {{ btn_edit('Edit', href='/releases/' ~ release.id ~ '/edit') }}
         </div>
         {% endif %}

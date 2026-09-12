@@ -52,13 +52,19 @@ def test_decision_tab_renders_the_quality_decision_card(release):
     assert 'data-testid="waiver-form"' in html and "never an adjudication" in html
 
 
-def test_settings_quality_policy_page_is_read_only_and_names_the_cli(release):
+def test_settings_quality_policy_page_names_the_cli_for_authoring(release):
+    """Step 6b changed two things here deliberately: ACTIVATE is now on the page
+    (it was CLI-only in Step 5), and the page is MEMBER+ because it carries an
+    act. Rule AUTHORING is still CLI, and the page still says so."""
     c = _client(role="admin")
     r = c.get("/settings/quality-policy", follow_redirects=False)
     assert r.status_code == 200
     html = r.data.decode()
-    assert 'data-testid="quality-policy-page"' in html and "Authoring is CLI in v1" in html
+    assert 'data-testid="quality-policy-page"' in html
+    assert "Rule AUTHORING stays CLI in v1" in html or "new-version" in html
     assert "Plimsol default" in html and html.count('data-testid="policy-rule"') in (0, 10)
     assert "failure_present" in html
-    # a MEMBER is redirected (Admin tier)
-    assert _client(role="tester").get("/settings/quality-policy", follow_redirects=False).status_code == 302
+    # Step 6b §e: a MEMBER now reaches it (the page carries Activate)
+    assert _client(role="tester").get("/settings/quality-policy", follow_redirects=False).status_code == 200
+    # a VIEWER still does not
+    assert _client(role="viewer").get("/settings/quality-policy", follow_redirects=False).status_code == 302

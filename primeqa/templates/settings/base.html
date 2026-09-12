@@ -16,92 +16,112 @@
     <!-- Sidebar -->
     <nav class="w-56 flex-shrink-0">
         <div class="space-y-1">
-            <h3 class="px-3 text-xs font-semibold text-gray-400 uppercase tracking-wider mb-2">Settings</h3>
-
-            <a href="/settings" class="{% if settings_page == 'general' %}bg-indigo-50 text-indigo-700 border-indigo-600{% else %}text-gray-600 hover:bg-gray-50 border-transparent{% endif %} group flex items-center px-3 py-2 text-sm font-medium rounded-md border-l-2">
-                <svg class="mr-3 h-4 w-4 {% if settings_page == 'general' %}text-indigo-500{% else %}text-gray-400{% endif %}" fill="none" viewBox="0 0 24 24" stroke-width="1.5" stroke="currentColor"><path stroke-linecap="round" stroke-linejoin="round" d="M2.25 12l8.954-8.955c.44-.439 1.152-.439 1.591 0L21.75 12M4.5 9.75v10.125c0 .621.504 1.125 1.125 1.125H9.75v-4.875c0-.621.504-1.125 1.125-1.125h2.25c.621 0 1.125.504 1.125 1.125V21h4.125c.621 0 1.125-.504 1.125-1.125V9.75M8.25 21h8.25" /></svg>
-                General
+            <h3 class="px-3 mt-4 first:mt-0 text-xs font-semibold text-gray-400 uppercase tracking-wider mb-2" data-settings-group="General">General</h3>
+            <a href="/settings" data-settings-item="General" class="{% if settings_page == 'general' %}bg-indigo-50 text-indigo-700 border-indigo-600{% else %}text-gray-600 hover:bg-gray-50 border-transparent{% endif %} group flex items-center px-3 py-2 text-sm font-medium rounded-md border-l-2">
+              <svg class="mr-3 h-4 w-4 {% if settings_page == 'general' %}text-indigo-500{% else %}text-gray-400{% endif %}" fill="none" viewBox="0 0 24 24" stroke-width="1.5" stroke="currentColor"><path stroke-linecap="round" stroke-linejoin="round" d="M12 6.75a5.25 5.25 0 100 10.5 5.25 5.25 0 000-10.5z" /></svg>
+              General
             </a>
-
             {% if user.role in ('admin', 'superadmin') %}
-            <a href="/settings/connections" class="{% if settings_page == 'connections' %}bg-indigo-50 text-indigo-700 border-indigo-600{% else %}text-gray-600 hover:bg-gray-50 border-transparent{% endif %} group flex items-center px-3 py-2 text-sm font-medium rounded-md border-l-2">
-                <svg class="mr-3 h-4 w-4 {% if settings_page == 'connections' %}text-indigo-500{% else %}text-gray-400{% endif %}" fill="none" viewBox="0 0 24 24" stroke-width="1.5" stroke="currentColor"><path stroke-linecap="round" stroke-linejoin="round" d="M13.19 8.688a4.5 4.5 0 011.242 7.244l-4.5 4.5a4.5 4.5 0 01-6.364-6.364l1.757-1.757m13.35-.622l1.757-1.757a4.5 4.5 0 00-6.364-6.364l-4.5 4.5a4.5 4.5 0 001.242 7.244" /></svg>
-                Connections
+            <a href="/settings/connections" data-settings-item="Connections" class="{% if settings_page == 'connections' %}bg-indigo-50 text-indigo-700 border-indigo-600{% else %}text-gray-600 hover:bg-gray-50 border-transparent{% endif %} group flex items-center px-3 py-2 text-sm font-medium rounded-md border-l-2">
+              <svg class="mr-3 h-4 w-4 {% if settings_page == 'connections' %}text-indigo-500{% else %}text-gray-400{% endif %}" fill="none" viewBox="0 0 24 24" stroke-width="1.5" stroke="currentColor"><path stroke-linecap="round" stroke-linejoin="round" d="M12 6.75a5.25 5.25 0 100 10.5 5.25 5.25 0 000-10.5z" /></svg>
+              Connections
             </a>
-
-            <a href="/settings/environments" class="{% if settings_page == 'environments' %}bg-indigo-50 text-indigo-700 border-indigo-600{% else %}text-gray-600 hover:bg-gray-50 border-transparent{% endif %} group flex items-center px-3 py-2 text-sm font-medium rounded-md border-l-2">
-                <svg class="mr-3 h-4 w-4 {% if settings_page == 'environments' %}text-indigo-500{% else %}text-gray-400{% endif %}" fill="none" viewBox="0 0 24 24" stroke-width="1.5" stroke="currentColor"><path stroke-linecap="round" stroke-linejoin="round" d="M5.25 14.25h13.5m-13.5 0a3 3 0 01-3-3m3 3a3 3 0 100 6h13.5a3 3 0 100-6m-16.5-3a3 3 0 013-3h13.5a3 3 0 013 3m-19.5 0a4.5 4.5 0 01.9-2.7L5.737 5.1a3.375 3.375 0 012.7-1.35h7.126c1.062 0 2.062.5 2.7 1.35l2.587 3.45a4.5 4.5 0 01.9 2.7m0 0a3 3 0 01-3 3m0 3h.008v.008h-.008v-.008zm0-6h.008v.008h-.008v-.008zm-3 6h.008v.008h-.008v-.008zm0-6h.008v.008h-.008v-.008z" /></svg>
-                Environments
+            {% endif %}
+            {% if user.role in ('admin', 'superadmin') %}
+            <a href="/settings/environments" data-settings-item="Environments" class="{% if settings_page == 'environments' %}bg-indigo-50 text-indigo-700 border-indigo-600{% else %}text-gray-600 hover:bg-gray-50 border-transparent{% endif %} group flex items-center px-3 py-2 text-sm font-medium rounded-md border-l-2">
+              <svg class="mr-3 h-4 w-4 {% if settings_page == 'environments' %}text-indigo-500{% else %}text-gray-400{% endif %}" fill="none" viewBox="0 0 24 24" stroke-width="1.5" stroke="currentColor"><path stroke-linecap="round" stroke-linejoin="round" d="M12 6.75a5.25 5.25 0 100 10.5 5.25 5.25 0 000-10.5z" /></svg>
+              Environments
             </a>
-
-            <a href="/settings/groups" class="{% if settings_page == 'groups' %}bg-indigo-50 text-indigo-700 border-indigo-600{% else %}text-gray-600 hover:bg-gray-50 border-transparent{% endif %} group flex items-center px-3 py-2 text-sm font-medium rounded-md border-l-2">
-                <svg class="mr-3 h-4 w-4 {% if settings_page == 'groups' %}text-indigo-500{% else %}text-gray-400{% endif %}" fill="none" viewBox="0 0 24 24" stroke-width="1.5" stroke="currentColor"><path stroke-linecap="round" stroke-linejoin="round" d="M18 18.72a9.094 9.094 0 003.741-.479 3 3 0 00-4.682-2.72m.94 3.198l.001.031c0 .225-.012.447-.037.666A11.944 11.944 0 0112 21c-2.17 0-4.207-.576-5.963-1.584A6.062 6.062 0 016 18.719m12 0a5.971 5.971 0 00-.941-3.197m0 0A5.995 5.995 0 0012 12.75a5.995 5.995 0 00-5.058 2.772m0 0a3 3 0 00-4.681 2.72 8.986 8.986 0 003.74.477m.94-3.197a5.971 5.971 0 00-.94 3.197M15 6.75a3 3 0 11-6 0 3 3 0 016 0zm6 3a2.25 2.25 0 11-4.5 0 2.25 2.25 0 014.5 0zm-13.5 0a2.25 2.25 0 11-4.5 0 2.25 2.25 0 014.5 0z" /></svg>
-                Groups
+            {% endif %}
+            {% if user.role in ('admin', 'superadmin') %}
+            <a href="/settings/groups" data-settings-item="Groups" class="{% if settings_page == 'groups' %}bg-indigo-50 text-indigo-700 border-indigo-600{% else %}text-gray-600 hover:bg-gray-50 border-transparent{% endif %} group flex items-center px-3 py-2 text-sm font-medium rounded-md border-l-2">
+              <svg class="mr-3 h-4 w-4 {% if settings_page == 'groups' %}text-indigo-500{% else %}text-gray-400{% endif %}" fill="none" viewBox="0 0 24 24" stroke-width="1.5" stroke="currentColor"><path stroke-linecap="round" stroke-linejoin="round" d="M12 6.75a5.25 5.25 0 100 10.5 5.25 5.25 0 000-10.5z" /></svg>
+              Groups
             </a>
-
+            {% endif %}
             {% if has_permission('manage_users') %}
-            <a href="/settings/users" class="{% if settings_page == 'users' %}bg-indigo-50 text-indigo-700 border-indigo-600{% else %}text-gray-600 hover:bg-gray-50 border-transparent{% endif %} group flex items-center px-3 py-2 text-sm font-medium rounded-md border-l-2">
-                <svg class="mr-3 h-4 w-4 {% if settings_page == 'users' %}text-indigo-500{% else %}text-gray-400{% endif %}" fill="none" viewBox="0 0 24 24" stroke-width="1.5" stroke="currentColor"><path stroke-linecap="round" stroke-linejoin="round" d="M15.75 6a3.75 3.75 0 11-7.5 0 3.75 3.75 0 017.5 0zM4.501 20.118a7.5 7.5 0 0114.998 0A17.933 17.933 0 0112 21.75c-2.676 0-5.216-.584-7.499-1.632z" /></svg>
-                Users
+            <a href="/settings/users" data-settings-item="Users" class="{% if settings_page == 'users' %}bg-indigo-50 text-indigo-700 border-indigo-600{% else %}text-gray-600 hover:bg-gray-50 border-transparent{% endif %} group flex items-center px-3 py-2 text-sm font-medium rounded-md border-l-2">
+              <svg class="mr-3 h-4 w-4 {% if settings_page == 'users' %}text-indigo-500{% else %}text-gray-400{% endif %}" fill="none" viewBox="0 0 24 24" stroke-width="1.5" stroke="currentColor"><path stroke-linecap="round" stroke-linejoin="round" d="M12 6.75a5.25 5.25 0 100 10.5 5.25 5.25 0 000-10.5z" /></svg>
+              Users
             </a>
             {% endif %}
-
-            <a href="/settings/quality-policy" class="{% if settings_page == 'quality_policy' %}bg-indigo-50 text-indigo-700 border-indigo-600{% else %}text-gray-600 hover:bg-gray-50 border-transparent{% endif %} group flex items-center px-3 py-2 text-sm font-medium rounded-md border-l-2">
-                <svg class="mr-3 h-4 w-4 {% if settings_page == 'quality_policy' %}text-indigo-500{% else %}text-gray-400{% endif %}" fill="none" viewBox="0 0 24 24" stroke-width="1.5" stroke="currentColor"><path stroke-linecap="round" stroke-linejoin="round" d="M9 12.75L11.25 15 15 9.75m-3-7.036A11.959 11.959 0 013.598 6 11.99 11.99 0 003 9.749c0 5.592 3.824 10.29 9 11.623 5.176-1.332 9-6.03 9-11.622 0-1.31-.21-2.571-.598-3.751h-.152c-3.196 0-6.1-1.248-8.25-3.285z" /></svg>
-                Quality policy
+            <a href="/settings/my-llm-usage" data-settings-item="LLM usage &amp; plan" class="{% if settings_page == 'my_llm_usage' %}bg-indigo-50 text-indigo-700 border-indigo-600{% else %}text-gray-600 hover:bg-gray-50 border-transparent{% endif %} group flex items-center px-3 py-2 text-sm font-medium rounded-md border-l-2">
+              <svg class="mr-3 h-4 w-4 {% if settings_page == 'my_llm_usage' %}text-indigo-500{% else %}text-gray-400{% endif %}" fill="none" viewBox="0 0 24 24" stroke-width="1.5" stroke="currentColor"><path stroke-linecap="round" stroke-linejoin="round" d="M12 6.75a5.25 5.25 0 100 10.5 5.25 5.25 0 000-10.5z" /></svg>
+              LLM usage &amp; plan
             </a>
-
-            <a href="/settings/my-llm-usage" class="{% if settings_page == 'my_llm_usage' %}bg-indigo-50 text-indigo-700 border-indigo-600{% else %}text-gray-600 hover:bg-gray-50 border-transparent{% endif %} group flex items-center px-3 py-2 text-sm font-medium rounded-md border-l-2">
-                <svg class="mr-3 h-4 w-4 {% if settings_page == 'my_llm_usage' %}text-indigo-500{% else %}text-gray-400{% endif %}" fill="none" viewBox="0 0 24 24" stroke-width="1.5" stroke="currentColor"><path stroke-linecap="round" stroke-linejoin="round" d="M2.25 18L9 11.25l4.306 4.307a11.95 11.95 0 015.814-5.519l2.74-1.22m0 0l-5.94-2.28m5.94 2.28l-2.28 5.941" /></svg>
-                LLM usage &amp; plan
+            <h3 class="px-3 mt-4 first:mt-0 text-xs font-semibold text-gray-400 uppercase tracking-wider mb-2" data-settings-group="Release quality">Release quality</h3>
+            <a href="/settings/quality-policy" data-settings-item="Policy" class="{% if settings_page == 'quality_policy' %}bg-indigo-50 text-indigo-700 border-indigo-600{% else %}text-gray-600 hover:bg-gray-50 border-transparent{% endif %} group flex items-center px-3 py-2 text-sm font-medium rounded-md border-l-2">
+              <svg class="mr-3 h-4 w-4 {% if settings_page == 'quality_policy' %}text-indigo-500{% else %}text-gray-400{% endif %}" fill="none" viewBox="0 0 24 24" stroke-width="1.5" stroke="currentColor"><path stroke-linecap="round" stroke-linejoin="round" d="M12 6.75a5.25 5.25 0 100 10.5 5.25 5.25 0 000-10.5z" /></svg>
+              Policy
+            </a>
+            <a href="/settings/waivers" data-settings-item="Waivers" class="{% if settings_page == 'waivers' %}bg-indigo-50 text-indigo-700 border-indigo-600{% else %}text-gray-600 hover:bg-gray-50 border-transparent{% endif %} group flex items-center px-3 py-2 text-sm font-medium rounded-md border-l-2">
+              <svg class="mr-3 h-4 w-4 {% if settings_page == 'waivers' %}text-indigo-500{% else %}text-gray-400{% endif %}" fill="none" viewBox="0 0 24 24" stroke-width="1.5" stroke="currentColor"><path stroke-linecap="round" stroke-linejoin="round" d="M12 6.75a5.25 5.25 0 100 10.5 5.25 5.25 0 000-10.5z" /></svg>
+              Waivers
+            </a>
+            <h3 class="px-3 mt-4 first:mt-0 text-xs font-semibold text-gray-400 uppercase tracking-wider mb-2" data-settings-group="Conformance setup">Conformance setup</h3>
+            <a href="/settings/sites" data-settings-item="Sites &amp; personas" class="{% if settings_page == 'sites' %}bg-indigo-50 text-indigo-700 border-indigo-600{% else %}text-gray-600 hover:bg-gray-50 border-transparent{% endif %} group flex items-center px-3 py-2 text-sm font-medium rounded-md border-l-2">
+              <svg class="mr-3 h-4 w-4 {% if settings_page == 'sites' %}text-indigo-500{% else %}text-gray-400{% endif %}" fill="none" viewBox="0 0 24 24" stroke-width="1.5" stroke="currentColor"><path stroke-linecap="round" stroke-linejoin="round" d="M12 6.75a5.25 5.25 0 100 10.5 5.25 5.25 0 000-10.5z" /></svg>
+              Sites &amp; personas
+            </a>
+            <a href="/settings/surface-inventory" data-settings-item="Surface inventory" class="{% if settings_page == 'surface_inventory' %}bg-indigo-50 text-indigo-700 border-indigo-600{% else %}text-gray-600 hover:bg-gray-50 border-transparent{% endif %} group flex items-center px-3 py-2 text-sm font-medium rounded-md border-l-2">
+              <svg class="mr-3 h-4 w-4 {% if settings_page == 'surface_inventory' %}text-indigo-500{% else %}text-gray-400{% endif %}" fill="none" viewBox="0 0 24 24" stroke-width="1.5" stroke="currentColor"><path stroke-linecap="round" stroke-linejoin="round" d="M12 6.75a5.25 5.25 0 100 10.5 5.25 5.25 0 000-10.5z" /></svg>
+              Surface inventory
+            </a>
+            <a href="/settings/claim-sets" data-settings-item="Claim sets" class="{% if settings_page == 'claim_sets' %}bg-indigo-50 text-indigo-700 border-indigo-600{% else %}text-gray-600 hover:bg-gray-50 border-transparent{% endif %} group flex items-center px-3 py-2 text-sm font-medium rounded-md border-l-2">
+              <svg class="mr-3 h-4 w-4 {% if settings_page == 'claim_sets' %}text-indigo-500{% else %}text-gray-400{% endif %}" fill="none" viewBox="0 0 24 24" stroke-width="1.5" stroke="currentColor"><path stroke-linecap="round" stroke-linejoin="round" d="M12 6.75a5.25 5.25 0 100 10.5 5.25 5.25 0 000-10.5z" /></svg>
+              Claim sets
+            </a>
+            <a href="/settings/standards" data-settings-item="Standards &amp; catalogues" class="{% if settings_page == 'standards' %}bg-indigo-50 text-indigo-700 border-indigo-600{% else %}text-gray-600 hover:bg-gray-50 border-transparent{% endif %} group flex items-center px-3 py-2 text-sm font-medium rounded-md border-l-2">
+              <svg class="mr-3 h-4 w-4 {% if settings_page == 'standards' %}text-indigo-500{% else %}text-gray-400{% endif %}" fill="none" viewBox="0 0 24 24" stroke-width="1.5" stroke="currentColor"><path stroke-linecap="round" stroke-linejoin="round" d="M12 6.75a5.25 5.25 0 100 10.5 5.25 5.25 0 000-10.5z" /></svg>
+              Standards &amp; catalogues
+            </a>
+            <a href="/settings/custom-rules" data-settings-item="Custom rules" class="{% if settings_page == 'custom_rules' %}bg-indigo-50 text-indigo-700 border-indigo-600{% else %}text-gray-600 hover:bg-gray-50 border-transparent{% endif %} group flex items-center px-3 py-2 text-sm font-medium rounded-md border-l-2">
+              <svg class="mr-3 h-4 w-4 {% if settings_page == 'custom_rules' %}text-indigo-500{% else %}text-gray-400{% endif %}" fill="none" viewBox="0 0 24 24" stroke-width="1.5" stroke="currentColor"><path stroke-linecap="round" stroke-linejoin="round" d="M12 6.75a5.25 5.25 0 100 10.5 5.25 5.25 0 000-10.5z" /></svg>
+              Custom rules
+            </a>
+            {# ruling 2: the D-214 panel is LINKED, not copied — it acts on
+               runs, is admin-gated, and already carries the Step 4 authority
+               affordances. Duplicating it would fork a working surface. #}
+            <a href="/runs/substrate" data-settings-item="Schedules" class="text-gray-600 hover:bg-gray-50 border-transparent group flex items-center px-3 py-2 text-sm font-medium rounded-md border-l-2">
+              <svg class="mr-3 h-4 w-4 {% if settings_page == '_schedules' %}text-indigo-500{% else %}text-gray-400{% endif %}" fill="none" viewBox="0 0 24 24" stroke-width="1.5" stroke="currentColor"><path stroke-linecap="round" stroke-linejoin="round" d="M12 6.75a5.25 5.25 0 100 10.5 5.25 5.25 0 000-10.5z" /></svg>
+              Schedules <span class="ml-1 text-[10px] text-gray-400">on Results &rarr;</span>
+            </a>
+            <h3 class="px-3 mt-4 first:mt-0 text-xs font-semibold text-gray-400 uppercase tracking-wider mb-2" data-settings-group="Org reference">Org reference</h3>
+            {% if user.role in ('admin', 'superadmin') %}
+            <a href="/org-model" data-settings-item="Org Model" class="{% if settings_page == 'org_model' %}bg-indigo-50 text-indigo-700 border-indigo-600{% else %}text-gray-600 hover:bg-gray-50 border-transparent{% endif %} group flex items-center px-3 py-2 text-sm font-medium rounded-md border-l-2">
+              <svg class="mr-3 h-4 w-4 {% if settings_page == 'org_model' %}text-indigo-500{% else %}text-gray-400{% endif %}" fill="none" viewBox="0 0 24 24" stroke-width="1.5" stroke="currentColor"><path stroke-linecap="round" stroke-linejoin="round" d="M12 6.75a5.25 5.25 0 100 10.5 5.25 5.25 0 000-10.5z" /></svg>
+              Org Model
             </a>
             {% endif %}
-
-            {# Tools — the full-page surfaces moved out of the top nav
-               (AK 2026-07-07). Plain hrefs to their own URLs (the
-               Connections pattern); per-item gates match the old nav gates. #}
-            {% if has_permission('view_intelligence_report') or has_permission('manage_knowledge') or user.role in ('admin', 'superadmin') %}
-            <div class="pt-3 mt-3 border-t border-gray-200">
-              <h3 class="px-3 text-xs font-semibold text-gray-400 uppercase tracking-wider mb-2">Tools</h3>
-              {% if has_permission('view_intelligence_report') %}
-              <a href="/ask" class="text-gray-600 hover:bg-gray-50 border-transparent group flex items-center px-3 py-2 text-sm font-medium rounded-md border-l-2">
-                <svg class="mr-3 h-4 w-4 text-gray-400" fill="none" viewBox="0 0 24 24" stroke-width="1.5" stroke="currentColor"><path stroke-linecap="round" stroke-linejoin="round" d="M8.625 12a.375.375 0 11-.75 0 .375.375 0 01.75 0zm0 0H8.25m4.125 0a.375.375 0 11-.75 0 .375.375 0 01.75 0zm0 0H12m4.125 0a.375.375 0 11-.75 0 .375.375 0 01.75 0zm0 0h-.375M21 12c0 4.556-4.03 8.25-9 8.25a9.764 9.764 0 01-2.555-.337A5.972 5.972 0 015.41 20.97a5.969 5.969 0 01-.474-.065 4.48 4.48 0 00.978-2.025c.09-.457-.133-.901-.467-1.226C3.93 16.178 3 14.189 3 12c0-4.556 4.03-8.25 9-8.25s9 3.694 9 8.25z" /></svg>
-                Ask
-              </a>
-              <a href="/substrate-insights" class="text-gray-600 hover:bg-gray-50 border-transparent group flex items-center px-3 py-2 text-sm font-medium rounded-md border-l-2">
-                <svg class="mr-3 h-4 w-4 text-gray-400" fill="none" viewBox="0 0 24 24" stroke-width="1.5" stroke="currentColor"><path stroke-linecap="round" stroke-linejoin="round" d="M9.813 15.904L9 18.75l-.813-2.846a4.5 4.5 0 00-3.09-3.09L2.25 12l2.846-.813a4.5 4.5 0 003.09-3.09L9 5.25l.813 2.846a4.5 4.5 0 003.09 3.09L15.75 12l-2.846.813a4.5 4.5 0 00-3.09 3.09zM18.259 8.715L18 9.75l-.259-1.035a3.375 3.375 0 00-2.455-2.456L14.25 6l1.036-.259a3.375 3.375 0 002.455-2.456L18 2.25l.259 1.035a3.375 3.375 0 002.456 2.456L21.75 6l-1.035.259a3.375 3.375 0 00-2.456 2.456z" /></svg>
-                Substrate Insights
-              </a>
-              {% endif %}
-              {% if user.role in ('admin', 'superadmin') %}
-              <a href="/org-model" class="text-gray-600 hover:bg-gray-50 border-transparent group flex items-center px-3 py-2 text-sm font-medium rounded-md border-l-2">
-                <svg class="mr-3 h-4 w-4 text-gray-400" fill="none" viewBox="0 0 24 24" stroke-width="1.5" stroke="currentColor"><path stroke-linecap="round" stroke-linejoin="round" d="M9 6.75V15m6-6v8.25m.503 3.498l4.875-2.437c.381-.19.622-.58.622-1.006V4.82c0-.836-.88-1.38-1.628-1.006l-3.869 1.934c-.317.159-.69.159-1.006 0L9.503 3.252a1.125 1.125 0 00-1.006 0L3.622 5.689C3.24 5.88 3 6.27 3 6.695V19.18c0 .836.88 1.38 1.628 1.006l3.869-1.934c.317-.159.69-.159 1.006 0l4.994 2.497c.317.158.69.158 1.006 0z" /></svg>
-                Org Model
-              </a>
-              {% endif %}
-              {% if has_permission('manage_knowledge') %}
-              <a href="/knowledge" class="text-gray-600 hover:bg-gray-50 border-transparent group flex items-center px-3 py-2 text-sm font-medium rounded-md border-l-2">
-                <svg class="mr-3 h-4 w-4 text-gray-400" fill="none" viewBox="0 0 24 24" stroke-width="1.5" stroke="currentColor"><path stroke-linecap="round" stroke-linejoin="round" d="M12 6.042A8.967 8.967 0 006 3.75c-1.052 0-2.062.18-3 .512v14.25A8.987 8.987 0 016 18c2.305 0 4.408.867 6 2.292m0-14.25a8.966 8.966 0 016-2.292c1.052 0 2.062.18 3 .512v14.25A8.987 8.987 0 0018 18a8.967 8.967 0 00-6 2.292m0-14.25v14.25" /></svg>
-                Knowledge
-              </a>
-              {% endif %}
-            </div>
+            {% if has_permission('manage_knowledge') %}
+            <a href="/knowledge" data-settings-item="Knowledge" class="{% if settings_page == 'knowledge' %}bg-indigo-50 text-indigo-700 border-indigo-600{% else %}text-gray-600 hover:bg-gray-50 border-transparent{% endif %} group flex items-center px-3 py-2 text-sm font-medium rounded-md border-l-2">
+              <svg class="mr-3 h-4 w-4 {% if settings_page == 'knowledge' %}text-indigo-500{% else %}text-gray-400{% endif %}" fill="none" viewBox="0 0 24 24" stroke-width="1.5" stroke="currentColor"><path stroke-linecap="round" stroke-linejoin="round" d="M12 6.75a5.25 5.25 0 100 10.5 5.25 5.25 0 000-10.5z" /></svg>
+              Knowledge
+            </a>
             {% endif %}
-
+            {% if has_permission('view_intelligence_report') %}
+            <a href="/substrate-insights" data-settings-item="Substrate Insights" class="{% if settings_page == 'insights' %}bg-indigo-50 text-indigo-700 border-indigo-600{% else %}text-gray-600 hover:bg-gray-50 border-transparent{% endif %} group flex items-center px-3 py-2 text-sm font-medium rounded-md border-l-2">
+              <svg class="mr-3 h-4 w-4 {% if settings_page == 'insights' %}text-indigo-500{% else %}text-gray-400{% endif %}" fill="none" viewBox="0 0 24 24" stroke-width="1.5" stroke="currentColor"><path stroke-linecap="round" stroke-linejoin="round" d="M12 6.75a5.25 5.25 0 100 10.5 5.25 5.25 0 000-10.5z" /></svg>
+              Substrate Insights
+            </a>
+            {% endif %}
+            {% if has_permission('view_intelligence_report') %}
+            <a href="/ask" data-settings-item="Ask" class="{% if settings_page == 'ask' %}bg-indigo-50 text-indigo-700 border-indigo-600{% else %}text-gray-600 hover:bg-gray-50 border-transparent{% endif %} group flex items-center px-3 py-2 text-sm font-medium rounded-md border-l-2">
+              <svg class="mr-3 h-4 w-4 {% if settings_page == 'ask' %}text-indigo-500{% else %}text-gray-400{% endif %}" fill="none" viewBox="0 0 24 24" stroke-width="1.5" stroke="currentColor"><path stroke-linecap="round" stroke-linejoin="round" d="M12 6.75a5.25 5.25 0 100 10.5 5.25 5.25 0 000-10.5z" /></svg>
+              Ask
+            </a>
+            {% endif %}
             {% if user.role == 'superadmin' %}
-            <div class="pt-3 mt-3 border-t border-gray-200">
-              <h3 class="px-3 text-xs font-semibold text-purple-700 uppercase tracking-wider mb-2">Super Admin</h3>
-              <a href="/settings/agent" class="{% if settings_page == 'agent' %}bg-purple-50 text-purple-700 border-purple-600{% else %}text-gray-600 hover:bg-gray-50 border-transparent{% endif %} group flex items-center px-3 py-2 text-sm font-medium rounded-md border-l-2">
-                <svg class="mr-3 h-4 w-4 {% if settings_page == 'agent' %}text-purple-500{% else %}text-gray-400{% endif %}" fill="none" viewBox="0 0 24 24" stroke-width="1.5" stroke="currentColor"><path stroke-linecap="round" stroke-linejoin="round" d="M9.813 15.904L9 18.75l-.813-2.846a4.5 4.5 0 00-3.09-3.09L2.25 12l2.846-.813a4.5 4.5 0 003.09-3.09L9 5.25l.813 2.846a4.5 4.5 0 003.09 3.09L15.75 12l-2.846.813a4.5 4.5 0 00-3.09 3.09z" /></svg>
-                Agent autonomy
-              </a>
-              <a href="/settings/llm-usage" class="{% if settings_page == 'llm_usage' %}bg-purple-50 text-purple-700 border-purple-600{% else %}text-gray-600 hover:bg-gray-50 border-transparent{% endif %} group flex items-center px-3 py-2 text-sm font-medium rounded-md border-l-2">
-                <svg class="mr-3 h-4 w-4 {% if settings_page == 'llm_usage' %}text-purple-500{% else %}text-gray-400{% endif %}" fill="none" viewBox="0 0 24 24" stroke-width="1.5" stroke="currentColor"><path stroke-linecap="round" stroke-linejoin="round" d="M3.75 3v11.25A2.25 2.25 0 006 16.5h12M3.75 3h-1.5m1.5 0h16.5m0 0h1.5m-1.5 0v11.25A2.25 2.25 0 0118 16.5m-15-7.5h.008v.008H3V9zm0 3h.008v.008H3V12zm0 3h.008v.008H3v-.008zM7.5 9h.008v.008H7.5V9zm0 3h.008v.008H7.5v-.008zm0 3h.008v.008H7.5V15zm4.5-6h.008v.008H12V9zm0 3h.008v.008H12v-.008zm0 3h.008v.008H12V15z" /></svg>
-                LLM usage
-              </a>
-            </div>
+            <h3 class="px-3 mt-4 first:mt-0 text-xs font-semibold text-gray-400 uppercase tracking-wider mb-2" data-settings-group="Superadmin">Superadmin</h3>
+            <a href="/settings/agent" data-settings-item="Agent settings" class="{% if settings_page == 'agent' %}bg-indigo-50 text-indigo-700 border-indigo-600{% else %}text-gray-600 hover:bg-gray-50 border-transparent{% endif %} group flex items-center px-3 py-2 text-sm font-medium rounded-md border-l-2">
+              <svg class="mr-3 h-4 w-4 {% if settings_page == 'agent' %}text-indigo-500{% else %}text-gray-400{% endif %}" fill="none" viewBox="0 0 24 24" stroke-width="1.5" stroke="currentColor"><path stroke-linecap="round" stroke-linejoin="round" d="M12 6.75a5.25 5.25 0 100 10.5 5.25 5.25 0 000-10.5z" /></svg>
+              Agent settings
+            </a>
+            <a href="/settings/llm-usage" data-settings-item="LLM usage (all tenants)" class="{% if settings_page == 'llm_usage' %}bg-indigo-50 text-indigo-700 border-indigo-600{% else %}text-gray-600 hover:bg-gray-50 border-transparent{% endif %} group flex items-center px-3 py-2 text-sm font-medium rounded-md border-l-2">
+              <svg class="mr-3 h-4 w-4 {% if settings_page == 'llm_usage' %}text-indigo-500{% else %}text-gray-400{% endif %}" fill="none" viewBox="0 0 24 24" stroke-width="1.5" stroke="currentColor"><path stroke-linecap="round" stroke-linejoin="round" d="M12 6.75a5.25 5.25 0 100 10.5 5.25 5.25 0 000-10.5z" /></svg>
+              LLM usage (all tenants)
+            </a>
             {% endif %}
-        </div>
     </nav>
 
     <!-- Content -->
