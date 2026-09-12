@@ -79,7 +79,7 @@ def _assemble_release_substrate(session, external_keys) -> dict:
             "grounding_counts": gc, "verdict_counts": vc, "at_risk": at_risk}
 
 
-def get_release_substrate(tenant_id: int, external_keys) -> dict:
+def get_release_substrate(tenant_id: int, external_keys, *, session=None) -> dict:
     """Best-effort substrate evidence for a release (its requirements' claims →
     grounding + latest verdict). Never raises. Returns ``{available, claim_count,
     grounding_counts, verdict_counts, at_risk}``; ``available=False`` on read error.
@@ -91,6 +91,8 @@ def get_release_substrate(tenant_id: int, external_keys) -> dict:
     try:
         from primeqa.semantic.connection import get_tenant_connection
         from sqlalchemy.orm import Session
+        if session is not None:                     # close 2: the request's session
+            return _assemble_release_substrate(session, keys)
         with get_tenant_connection(tenant_id) as conn:
             session = Session(bind=conn)
             try:

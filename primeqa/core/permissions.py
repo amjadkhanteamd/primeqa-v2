@@ -170,7 +170,10 @@ def register_template_context(app) -> None:
         }
 
 
-def pending_human_attention(tenant_id: int) -> dict:
+_ATTENTION_KEY = "_plimsol_pending_attention"
+
+
+def pending_human_attention(tenant_id: int, *, session=None) -> dict:
     """Step 6a (§a) — the Requirements badge: everything waiting for a PERSON.
 
     ``{drafts, human_reviews, total}``. Two halves, summed because both say the
@@ -187,24 +190,53 @@ def pending_human_attention(tenant_id: int) -> dict:
                           active waiver covers.
 
     Best-effort in both halves: a failing read contributes 0 and the badge
-    never takes a page down."""
+    never takes a page down.
+
+    Close 2: read ONCE per request. The sidebar badge and the Requirements page
+    both want this number, and two reads could return two — a nav badge that
+    contradicts the page it links to is the defect D-491 named. ``session``
+    lets the render that already holds a read scope keep it on one connection.
+    Outside a request context the cache is skipped and this behaves as before."""
     from sqlalchemy import text
 
     from primeqa.semantic.connection import get_tenant_connection
-    out = {"drafts": 0, "human_reviews": 0, "total": 0}
+    from primeqa.semantic.read_scope import conn_of
     try:
-        with get_tenant_connection(tenant_id) as conn:
-            out["drafts"] = conn.execute(text(
-                "SELECT COUNT(*) FROM test_claims "
-                "WHERE status = 'draft' AND valid_to IS NULL"
-            )).scalar() or 0
-            try:
-                out["human_reviews"] = _pending_human_reviews(conn, tenant_id)
-            except Exception:                       # noqa: BLE001 — half a badge beats none
-                out["human_reviews"] = 0
+        from flask import g, has_request_context
+        cached = getattr(g, _ATTENTION_KEY, None) if has_request_context() else None
+    except Exception:                               # noqa: BLE001 — no Flask, no cache
+        g = None
+        cached = None
+    if cached is not None:
+        return cached
+
+    out = {"drafts": 0, "human_reviews": 0, "total": 0}
+
+    def _read(conn):
+        out["drafts"] = conn.execute(text(
+            "SELECT COUNT(*) FROM test_claims "
+            "WHERE status = 'draft' AND valid_to IS NULL"
+        )).scalar() or 0
+        try:
+            out["human_reviews"] = _pending_human_reviews(conn, tenant_id)
+        except Exception:                           # noqa: BLE001 — half a badge beats none
+            out["human_reviews"] = 0
+
+    try:
+        shared = conn_of(session)
+        if shared is not None:
+            _read(shared)
+        else:
+            with get_tenant_connection(tenant_id) as conn:
+                _read(conn)
     except Exception:                               # noqa: BLE001
         return out
     out["total"] = out["drafts"] + out["human_reviews"]
+    if g is not None:
+        try:
+            setattr(g, _ATTENTION_KEY, out)
+        except Exception:                           # noqa: BLE001
+            pass
     return out
 
 

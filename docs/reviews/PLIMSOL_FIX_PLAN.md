@@ -809,3 +809,39 @@
   Evaluate names — and the evidence in CLAIMS, so a release read "1 item not
   current" beside "1 of 1 check current". Both were true; together they were
   nonsense. Each cell now says which unit it counts, in code and in the note.
+
+## Added 2026-09-12 — from close 2 (session / query consolidation)
+
+- **Medium (partly closed here): the decision tab's per-claim loops.** Close 2
+  removed the repeated whole-page reads: the decision tab fell from 213 queries
+  and 11 tenant connections to 156 and 2, Requirements from 50 and 6 to 33 and
+  1, both byte-identical on production data. What remains is a different family
+  and needs its own slice: four reads issued **once per claim** —
+  `coordinator.get_current_approved_claim` (23), `s4_execution_console._read_claim_runs`
+  (23), `evolution/result_store.read_grounding_validity` (19) and
+  `sync/readiness.covered_reads_changed` (19) — 84 of the remaining 156 queries
+  over 23 claims. This is Step 2a's shape, and it wants Step 2a's treatment: one
+  set-based read per loop with element-for-element parity as the acceptance
+  test. (The earlier "106 queries" figure was measured on the scratch fixture
+  world; production release 16 carries more scope and measures 213 with a
+  counter that sees every engine. The before/after here uses one counter for
+  both trees.)
+- **Low: the sidebar's attention badge is one tenant connection on every page.**
+  It is read by a Flask context processor, which runs outside any view's read
+  scope, so it cannot join one — and giving the scope an ambient handle was
+  refused by design (a write path could silently pick up a read-only session).
+  The badge is now read once per request rather than twice, and the Requirements
+  page avoids the extra connection only because its view reads the badge inside
+  its own scope first. The honest fix is for the badge to become part of a
+  page's declared reads rather than a template-time side effect.
+- **Low: the releases list (3 connections) and the runs list (4) are untouched.**
+  They were the control surfaces for this slice's parity proof, and both are
+  byte-identical before and after. The same `session=` seams would close them
+  whenever they are worth a slice.
+- **Note for every future scope-style helper: a context manager that wraps its
+  own `yield` in `except Exception` swallows the CALLER's exception and answers
+  with a confusing `RuntimeError`.** Only the acquisition should be best-effort.
+  Related and cheaper to get wrong: an `ExitStack` bound inside the `try` whose
+  `finally` closes it will raise `UnboundLocalError` on any earlier failure and
+  **mask the real error**. Both happened in this slice's own code and both are
+  now guarded mechanically.
