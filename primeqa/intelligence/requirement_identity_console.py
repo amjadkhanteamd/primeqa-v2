@@ -32,7 +32,7 @@ from primeqa.test_representation.identity import (
 log = logging.getLogger(__name__)
 
 
-def identity_overview(tenant_id: int, *, keys=None) -> dict:
+def identity_overview(tenant_id: int, *, keys=None, session=None) -> dict:
     """``{available, origins: {key: origin}, counts: {origin: n},
     hidden_count, hidden_keys, gaps: [...], unestablished}``.
 
@@ -41,20 +41,32 @@ def identity_overview(tenant_id: int, *, keys=None) -> dict:
     only counted the current page would be a lie about what is hidden).
     An identity with no ``requirement_identities`` row reports
     ``CANNOT_CLASSIFY`` — the honest state before the backfill runs, never
-    an invented origin."""
+    an invented origin.
+
+    ``session`` (close 2) reads on the render's shared connection instead of
+    opening one; the queries and the result are unchanged either way."""
     try:
         from primeqa.semantic.connection import get_tenant_connection
-        with get_tenant_connection(tenant_id) as conn:
+        from primeqa.semantic.read_scope import conn_of
+
+        def _read(conn):
             rows = conn.execute(text(
                 "SELECT external_key, origin FROM requirement_identities"
             )).mappings().all()
-            established = {r["external_key"]: r["origin"] for r in rows}
-            census = link_key_census(conn)
-            decorated = {r[0] for r in conn.execute(text(
-                "SELECT COALESCE(external_key, jira_key, 'req-' || id) "
-                "FROM public.requirements "
-                "WHERE tenant_id = :t AND deleted_at IS NULL"),
-                {"t": tenant_id}).all()}
+            return ({r["external_key"]: r["origin"] for r in rows},
+                    link_key_census(conn),
+                    {r[0] for r in conn.execute(text(
+                        "SELECT COALESCE(external_key, jira_key, 'req-' || id) "
+                        "FROM public.requirements "
+                        "WHERE tenant_id = :t AND deleted_at IS NULL"),
+                        {"t": tenant_id}).all()})
+
+        shared = conn_of(session)
+        if shared is not None:
+            established, census, decorated = _read(shared)
+        else:
+            with get_tenant_connection(tenant_id) as conn:
+                established, census, decorated = _read(conn)
 
         all_keys = set(established) | set(census) | decorated
         origins = {k: established.get(k, CANNOT_CLASSIFY) for k in all_keys}

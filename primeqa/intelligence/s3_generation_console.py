@@ -1079,16 +1079,25 @@ def _count_claims_by_requirement_status(conn, keys) -> dict:
     return out
 
 
-def count_claims_by_requirement_status(tenant_id: int, requirement_keys) -> dict:
+def count_claims_by_requirement_status(tenant_id: int, requirement_keys, *,
+                                       session=None) -> dict:
     """Best-effort bulk read of per-status generated-claim counts per requirement
     key (the richer list chips). Never raises. Returns ``{available, counts}``
     with ``counts[key] = {status: n, ..., 'total': n}``; missing keys simply
-    don't appear (caller defaults to 0)."""
+    don't appear (caller defaults to 0).
+
+    ``session`` (close 2) reads on the render's shared connection instead of
+    opening one; the query and the result are unchanged either way."""
     keys = list(requirement_keys or [])
     if not keys:
         return {"available": True, "counts": {}}
     try:
         from primeqa.semantic.connection import get_tenant_connection
+        from primeqa.semantic.read_scope import conn_of
+        shared = conn_of(session)
+        if shared is not None:
+            return {"available": True,
+                    "counts": _count_claims_by_requirement_status(shared, keys)}
         with get_tenant_connection(tenant_id) as conn:
             return {"available": True,
                     "counts": _count_claims_by_requirement_status(conn, keys)}

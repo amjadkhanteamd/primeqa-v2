@@ -20,17 +20,25 @@ from sqlalchemy import text
 log = logging.getLogger(__name__)
 
 
-def manual_states(tenant_id: int) -> dict:
+def manual_states(tenant_id: int, *, session=None) -> dict:
     """The MANUAL override map for the decision: ``{test_id_str: 'pinned'|'lifted'}``
     over ``source='manual'`` rows (active→pinned, inactive→lifted). Best-effort → ``{}``
     on any error (incl. a missing table). ``auto`` rows are NOT returned — they are
-    redundant with the live signal, never an override."""
+    redundant with the live signal, never an override.
+
+    ``session`` (close 2) reads on the render's shared connection instead of
+    opening one; the query and the result are unchanged either way."""
+    SQL = ("SELECT CAST(test_id AS text) AS test_id, active "
+           "FROM claim_quarantine WHERE source = 'manual'")
     try:
         from primeqa.semantic.connection import get_tenant_connection
-        with get_tenant_connection(tenant_id) as conn:
-            rows = conn.execute(text(
-                "SELECT CAST(test_id AS text) AS test_id, active "
-                "FROM claim_quarantine WHERE source = 'manual'")).mappings().all()
+        from primeqa.semantic.read_scope import conn_of
+        shared = conn_of(session)
+        if shared is not None:
+            rows = shared.execute(text(SQL)).mappings().all()
+        else:
+            with get_tenant_connection(tenant_id) as conn:
+                rows = conn.execute(text(SQL)).mappings().all()
         return {r["test_id"]: ("pinned" if r["active"] else "lifted") for r in rows}
     except Exception as exc:
         log.warning("quarantine.manual_states unavailable for tenant %s: %s",

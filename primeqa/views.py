@@ -5,6 +5,7 @@ All pages require authentication via JWT cookie except /login.
 
 import os
 import re
+from contextlib import ExitStack as _ExitStack
 from datetime import datetime, timezone
 from functools import wraps
 
@@ -12,6 +13,7 @@ import jwt
 from flask import Blueprint, render_template, request, redirect, url_for, make_response, jsonify, abort
 
 from primeqa.db import get_db
+from primeqa.semantic.read_scope import read_scope as _read_scope
 from primeqa.core.repository import (
     UserRepository, RefreshTokenRepository, EnvironmentRepository,
     ConnectionRepository, GroupRepository,
@@ -2332,11 +2334,16 @@ def requirements_list():
     if tab not in ("requirements", "claims", "needs-review"):
         tab = "requirements"
     db = next(get_db())
+    _read = _ExitStack()          # close 2: bound before the try (see releases_detail)
     try:
         from primeqa.test_management.repository import RequirementRepository, SectionRepository
         req_repo = RequirementRepository(db)
         sec_repo = SectionRepository(db)
         tid = request.user["tenant_id"]
+        # Close 2: ONE tenant session for this render, opened as soon as the
+        # tenant is known and handed to every console through the session=
+        # seams they carry. Closed in this function's existing finally.
+        shared = _read.enter_context(_read_scope(tid))
         sections = sec_repo.list_sections(tid)
         envs = EnvironmentRepository(db).list_environments(tid, request.user["id"], request.user["role"])
         conns = ConnectionRepository(db).list_connections(tid, "jira")
@@ -2414,7 +2421,7 @@ def requirements_list():
             count_claims_by_requirement_status)
         req_keys = {r.id: _requirement_to_ref(r)["key"] for r in reqs}
         claim_counts = count_claims_by_requirement_status(
-            tid, set(req_keys.values())).get("counts", {})
+            tid, set(req_keys.values()), session=shared).get("counts", {})
         # Which releases each requirement is attached to — one batched query
         # for the page's rows, chips link to the release detail.
         req_releases = ReleaseRepository(db).list_releases_for_requirements(
@@ -2435,7 +2442,7 @@ def requirements_list():
         from primeqa.intelligence.requirement_identity_console import (
             identity_overview,
         )
-        identities = identity_overview(tid)
+        identities = identity_overview(tid, session=shared)
         for r in reqs_data:
             r["external_key"] = req_keys.get(r["id"]) or r.get("jira_key")
             r["origin"] = identities["origins"].get(r["external_key"])
@@ -2465,12 +2472,13 @@ def requirements_list():
         from primeqa.core.permissions import pending_human_attention
         from primeqa.intelligence.org_state_console import org_state_for_request
         from primeqa.intelligence.requirements_board_console import board_rows
-        board = board_rows(tid, [r["external_key"] for r in reqs_data if r.get("external_key")])
+        board = board_rows(tid, [r["external_key"] for r in reqs_data if r.get("external_key")],
+                           session=shared)
         if readiness_filter and board.get("available"):
             reqs_data = [r for r in reqs_data
                          if ((board["rows"].get(r["external_key"]) or {}).get("readiness") or {})
                          .get("state") == readiness_filter]
-        attention = pending_human_attention(tid)
+        attention = pending_human_attention(tid, session=shared)
         claims_data = drafts_data = None
         claims_q = (request.args.get("cq") or "").strip() or None
         claims_status = (request.args.get("cstatus") or "").strip() or None
@@ -2487,7 +2495,7 @@ def requirements_list():
             attention=attention, claims_data=claims_data, drafts_data=drafts_data,
             claims_q=claims_q, claims_status=claims_status,
             readiness_filter=readiness_filter,
-            org_state=org_state_for_request(tid),
+            org_state=org_state_for_request(tid, session=shared),
             requirements=reqs_data, sections=sections_data,
             environments=envs_data, jira_connections=conns_data,
             meta=meta, search=q, sort=sort, order=order,
@@ -2499,6 +2507,7 @@ def requirements_list():
             coverage_filter=coverage, coverage_notice=coverage_notice,
         ))
     finally:
+        _read.close()
         db.close()
 
 
@@ -5206,6 +5215,10 @@ def settings_quality_policy():
 @login_required
 def releases_detail(release_id):
     db = next(get_db())
+    # Close 2: bound BEFORE the try. A stack created inside the body would leave
+    # the finally raising UnboundLocalError on any earlier failure, MASKING the
+    # real error — which is exactly how this was caught.
+    _read = _ExitStack()
     try:
         svc = ReleaseService(ReleaseRepository(db))
         release = svc.get_release_detail(release_id, request.user["tenant_id"])
@@ -5242,6 +5255,11 @@ def releases_detail(release_id):
         scope_readiness = None
         quality = None
         quality_waivers = None
+        # Close 2: ONE tenant session for this render, handed to every console
+        # through the session= seams they carry. Before this the decision tab
+        # opened ELEVEN connections and read the same claims three times over.
+        # It is closed in this function's existing finally, beside db.close().
+        shared = _read.enter_context(_read_scope(tid)) if tab == "decision" else None
         if tab == "decision":
             from primeqa.intelligence.release_substrate_console import get_release_substrate
             from primeqa.intelligence.substrate_decision import (
@@ -5250,23 +5268,24 @@ def releases_detail(release_id):
             from primeqa.release.decision_composer import external_keys_for_requirements
             external_keys = external_keys_for_requirements(
                 release.get("requirements", []))
-            substrate = get_release_substrate(tid, external_keys)
+            substrate = get_release_substrate(tid, external_keys, session=shared)
             # D-198 (slice 4): the live substrate RECOMMENDATION card — recomputed
             # at render like the evidence panel; the persisted snapshot lives in
             # latest_decision.reasoning.substrate.
             substrate_decision = get_release_substrate_decision(
-                tid, external_keys, release.get("decision_criteria") or {})
+                tid, external_keys, release.get("decision_criteria") or {},
+                session=shared)
             # Step 2 (§c/§e): the scope's readiness — the refusal block names
             # every non-current item, with "Run the scope" beside Evaluate.
             from primeqa.intelligence.substrate_decision import release_scope_readiness
-            scope_readiness = release_scope_readiness(tid, external_keys)
+            scope_readiness = release_scope_readiness(tid, external_keys, session=shared)
             # Step 5 (LLD_STEP_5 §b/§c/§e): the live PREVIEW under the active policy
             # (nothing recorded), the release's waivers, the decider's name.
             from primeqa.intelligence.quality_decision_console import (
                 preview_release_decision, waivers_for_release,
             )
-            quality = preview_release_decision(tid, release_id, external_keys)
-            quality_waivers = waivers_for_release(tid, release_id)
+            quality = preview_release_decision(tid, release_id, external_keys, session=shared)
+            quality_waivers = waivers_for_release(tid, release_id, session=shared)
             _ld = release.get("latest_decision") or {}
             if _ld.get("decided_by"):
                 # a plain read for the name (never the full row); best-effort — a
@@ -5282,8 +5301,8 @@ def releases_detail(release_id):
         from primeqa.intelligence.run_plan_console import (
             plans_for_scope, targets_for_release,
         )
-        _release_targets = targets_for_release(tid, release_id)
-        _release_plans = plans_for_scope(tid, "release", str(release_id))
+        _release_targets = targets_for_release(tid, release_id, session=shared)
+        _release_plans = plans_for_scope(tid, "release", str(release_id), session=shared)
 
         # Multi-org (3e): env names for the per-environment verdict cards.
         # Direct Environment query, NOT the access-scoped repo list — the
@@ -5313,10 +5332,12 @@ def releases_detail(release_id):
             release_targets=_release_targets, release_plans=_release_plans,
             quality=quality, quality_waivers=quality_waivers,
             org_state=__import__("primeqa.intelligence.org_state_console",
-                                 fromlist=["org_state_for_request"]).org_state_for_request(tid),
+                                 fromlist=["org_state_for_request"]
+                                 ).org_state_for_request(tid, session=shared),
             today=datetime.now(timezone.utc).date().isoformat(),
         ))
     finally:
+        _read.close()
         db.close()
 
 

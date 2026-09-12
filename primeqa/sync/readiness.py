@@ -525,6 +525,19 @@ class SequenceResolution:
 
 
 def resolve_current_sequence(session, *, connected_org_id) -> SequenceResolution:
+    """Memoised within a read scope (close 2), otherwise a plain call.
+
+    Every console on a page resolves the same org's current sequence. Reading
+    it once per render also makes the render self-consistent: before this, a
+    sync landing mid-page could give two consoles two different sequences and
+    so two different readiness verdicts for one claim."""
+    from primeqa.semantic.read_scope import memo
+    return memo(session, ("current_sequence", str(connected_org_id)),
+                lambda: _resolve_current_sequence_uncached(
+                    session, connected_org_id=connected_org_id))
+
+
+def _resolve_current_sequence_uncached(session, *, connected_org_id) -> SequenceResolution:
     """The ONLY place a decision-facing current S1 sequence is computed.
 
     ``connected_org_id`` is keyword-only and required by the signature; a

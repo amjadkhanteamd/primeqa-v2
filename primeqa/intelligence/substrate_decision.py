@@ -236,6 +236,15 @@ _NEWER_SUPERSEDED_BULK_SQL = (
 
 
 def _claim_test_ids(session, external_keys):
+    """Memoised within a read scope (close 2): every console on a page asks for
+    the same keys, and the answer cannot change inside one transaction. Outside
+    a scope this is a plain call, byte-identical to before."""
+    from primeqa.semantic.read_scope import memo
+    return memo(session, ("claim_test_ids", tuple(sorted(external_keys or ()))),
+                lambda: _claim_test_ids_uncached(session, external_keys))
+
+
+def _claim_test_ids_uncached(session, external_keys):
     """The release's requirement keys → (ordered distinct claim test_ids,
     ``{test_id: {requirement keys}}``) via the COVERAGE_LINK_KINDS links
     (``generated_from`` + curated ``verifies``). ONE link query for all keys
@@ -304,6 +313,41 @@ def _environments_with_evidence(session, test_ids, *, tenant_id=None) -> list[in
 def _assemble_claim_evidence(session, external_keys, *, tenant_id=None,
                              environment_id=None, connected_org_id=None,
                              manual_q=None) -> list[dict]:
+    """Memoised within a read scope (close 2), otherwise a plain call.
+
+    The decision tab assembles the same (keys x environment x org) evidence
+    twice — once for the substrate verdict, once for the Step 5 quality
+    preview. The key carries EVERY input, including the resolved manual
+    quarantine map, so a memo hit can only serve a call with identical
+    arguments. ``external_keys`` is keyed in its given order, not sorted: a
+    different order misses the memo rather than risking a wrong hit.
+
+    One deliberate strengthening: a caller that passes ``manual_q=None`` inside
+    a scope gets the map read ONCE for the whole render, where before each
+    console opened its own connection and read it again. Two consoles on one
+    page can therefore no longer disagree about a pin made mid-render."""
+    from primeqa.semantic.read_scope import in_scope, memo
+    if not in_scope(session):
+        return _assemble_claim_evidence_uncached(
+            session, external_keys, tenant_id=tenant_id,
+            environment_id=environment_id,
+            connected_org_id=connected_org_id, manual_q=manual_q)
+    if manual_q is None and tenant_id is not None:
+        from primeqa.intelligence import quarantine as _q
+        manual_q = memo(session, ("manual_states", tenant_id),
+                        lambda: _q.manual_states(tenant_id, session=session))
+    key = ("claim_evidence", tuple(external_keys or ()), tenant_id,
+           environment_id, str(connected_org_id),
+           tuple(sorted((manual_q or {}).items())))
+    return memo(session, key, lambda: _assemble_claim_evidence_uncached(
+        session, external_keys, tenant_id=tenant_id,
+        environment_id=environment_id,
+        connected_org_id=connected_org_id, manual_q=manual_q))
+
+
+def _assemble_claim_evidence_uncached(session, external_keys, *, tenant_id=None,
+                                      environment_id=None, connected_org_id=None,
+                                      manual_q=None) -> list[dict]:
     """The release's requirement keys → one decision-grade evidence row per distinct
     claim. Each row::
 
@@ -942,7 +986,7 @@ def _decide_for_session(session, conn, keys, criteria, *, tenant_id) -> dict:
                                    if env is not None else [])
         return out
     from primeqa.intelligence import quarantine as _q
-    manual_q = _q.manual_states(tenant_id) if tenant_id is not None else {}
+    manual_q = _q.manual_states(tenant_id, session=session) if tenant_id is not None else {}
     env_decisions = []
     for env in envs:
         org = get_connected_org_for_environment(conn, env)
@@ -963,7 +1007,7 @@ def _decide_for_session(session, conn, keys, criteria, *, tenant_id) -> dict:
 
 
 def get_release_substrate_decision(tenant_id: int, external_keys,
-                                   criteria=None) -> dict:
+                                   criteria=None, *, session=None) -> dict:
     """Best-effort: assemble + compute in one tenant connection. Never raises —
     ``{available: False}`` on any read error; zero claims → ``{available: True,
     applicable: False}`` (the composer skips cleanly). The release_substrate_console
@@ -973,16 +1017,19 @@ def get_release_substrate_decision(tenant_id: int, external_keys,
     if not keys:
         return {"available": True, "applicable": False, "claim_count": 0}
     try:
+        if session is not None:            # close 2: the request's own session
+            return _decide_for_session(session, session.connection(), keys,
+                                       criteria, tenant_id=tenant_id)
         from sqlalchemy.orm import Session
 
         from primeqa.semantic.connection import get_tenant_connection
         with get_tenant_connection(tenant_id) as conn:
-            session = Session(bind=conn)
+            own = Session(bind=conn)
             try:
-                return _decide_for_session(session, conn, keys, criteria,
+                return _decide_for_session(own, conn, keys, criteria,
                                            tenant_id=tenant_id)
             finally:
-                session.close()
+                own.close()
     except Exception as exc:
         log.warning("substrate decision unavailable for tenant %s: %s",
                     tenant_id, exc)
@@ -996,7 +1043,7 @@ def get_release_substrate_decision(tenant_id: int, external_keys,
 # items; "Run the scope" is one click away. Best-effort wrapper discipline.
 # ---------------------------------------------------------------------------
 
-def release_scope_readiness(tenant_id: int, external_keys) -> dict:
+def release_scope_readiness(tenant_id: int, external_keys, *, session=None) -> dict:
     """``{available, items: [{test_id, external_keys, environment_id, state,
     reason, sentence, stamp_seq, current_seq}], non_current: n, environments:
     [ids], claim_count}``. Zero environments with evidence = every claim
@@ -1006,12 +1053,16 @@ def release_scope_readiness(tenant_id: int, external_keys) -> dict:
         return {"available": True, "items": [], "non_current": 0,
                 "environments": [], "claim_count": 0}
     try:
+        from contextlib import nullcontext
+
         from sqlalchemy.orm import Session
 
         from primeqa.semantic.connection import get_tenant_connection
         from primeqa.sync.readiness import resolve_run_readiness_bulk
-        with get_tenant_connection(tenant_id) as conn:
-            session = Session(bind=conn)
+        shared = session
+        with (nullcontext(None) if shared is not None
+              else get_tenant_connection(tenant_id)) as conn:
+            session = shared if shared is not None else Session(bind=conn)
             try:
                 test_ids, keys_by_tid = _claim_test_ids(session, keys)
                 if not test_ids:
@@ -1063,7 +1114,7 @@ def release_scope_readiness(tenant_id: int, external_keys) -> dict:
                 "environments": [], "claim_count": 0}
 
 
-def readiness_for_pairs(tenant_id: int, pairs) -> dict:
+def readiness_for_pairs(tenant_id: int, pairs, *, session=None) -> dict:
     """``{available, map: {(test_id_str, environment_id): readiness dict}}`` —
     the list/detail pages' read (best-effort; a tenant with no substrate
     schema renders no pills). ``pairs`` = ``[(claim_test_id, environment_id)]``."""
@@ -1071,18 +1122,21 @@ def readiness_for_pairs(tenant_id: int, pairs) -> dict:
     if not pairs:
         return {"available": True, "map": {}}
     try:
+        from primeqa.sync.readiness import resolve_run_readiness_bulk
+        if session is not None:
+            ready = resolve_run_readiness_bulk(session, pairs)
+            return {"available": True, "map": {k: v.as_dict() for k, v in ready.items()}}
         from sqlalchemy.orm import Session
 
         from primeqa.semantic.connection import get_tenant_connection
-        from primeqa.sync.readiness import resolve_run_readiness_bulk
         with get_tenant_connection(tenant_id) as conn:
-            session = Session(bind=conn)
+            own = Session(bind=conn)
             try:
-                ready = resolve_run_readiness_bulk(session, pairs)
+                ready = resolve_run_readiness_bulk(own, pairs)
                 return {"available": True,
                         "map": {k: v.as_dict() for k, v in ready.items()}}
             finally:
-                session.close()
+                own.close()
     except Exception as exc:
         log.warning("readiness unavailable for tenant %s: %s", tenant_id, exc)
         return {"available": False, "map": {}}

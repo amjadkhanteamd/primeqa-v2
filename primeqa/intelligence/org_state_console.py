@@ -148,14 +148,16 @@ def _fill_cadence(s, cadence: dict) -> None:
                    sentence=("no enabled schedule" if not entries else ""))
 
 
-def org_state_for_request(tenant_id: int) -> dict:
-    """The per-request cache: three includes, one query path."""
+def org_state_for_request(tenant_id: int, *, session=None) -> dict:
+    """The per-request cache: three includes, one query path. ``session`` lets a
+    page that already opened a read scope (close 2) keep the band on the same
+    connection instead of opening a second one."""
     try:
         from flask import g
     except Exception:  # noqa: BLE001 — outside a request context
-        return read_org_state(tenant_id)
+        return read_org_state(tenant_id, session=session)
     cached = getattr(g, _G_KEY, None)
     if cached is None:
-        cached = read_org_state(tenant_id)
+        cached = read_org_state(tenant_id, session=session)
         setattr(g, _G_KEY, cached)
     return cached
