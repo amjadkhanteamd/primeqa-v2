@@ -673,6 +673,32 @@ def covered_reads_changed(session, *, claim_test_id, connected_org_id,
     return _dedupe_reads(rows)
 
 
+def covered_reads_changed_bulk(session, triples) -> list:
+    """:func:`covered_reads_changed` for many ``(claim, org, since)`` triples in
+    ONE query, answered POSITIONALLY: the i-th result is the i-th triple's.
+
+    Keyed by the caller's index, never by claim, so two triples on the same
+    claim with different stamps stay apart — a release evaluated against two
+    runs of one claim is exactly that shape. Each entry is passed through the
+    same :func:`_dedupe_reads` the singular uses, so the tuples match element
+    for element.
+
+    :func:`covered_reads_changed` remains the definition of "a covered read
+    moved". This is one implementation shared by both bulk callers rather than a
+    second copy of a predicate that decides staleness."""
+    rows = list(triples or [])
+    if not rows:
+        return []
+    by_idx: dict = {}
+    for idx, et, name, what in session.execute(text(_BULK_CHANGED_READS_SQL), {
+            "idxs": list(range(len(rows))),
+            "claims": [str(c) for c, _, _ in rows],
+            "orgs": [str(o) for _, o, _ in rows],
+            "sinces": [int(s) for _, _, s in rows]}).all():
+        by_idx.setdefault(int(idx), []).append((et, name, what))
+    return [_dedupe_reads(by_idx.get(i, ())) for i in range(len(rows))]
+
+
 def _has_coverage(session, claim_test_id) -> bool:
     return bool(session.execute(text(
         "SELECT 1 FROM test_claim_coverage WHERE claim_test_id = CAST(:c AS uuid) "
@@ -872,16 +898,11 @@ def resolve_run_readiness_bulk(session, pairs) -> dict:
         return out
 
     # -- 4. the covered reads that moved, for every remaining pair (ONE query)
-    by_idx: dict = {}
-    for idx, et, name, what in session.execute(text(_BULK_CHANGED_READS_SQL), {
-            "idxs": list(range(len(changed_for))),
-            "claims": [k[0] for k, *_ in changed_for],
-            "orgs": [o for _, _, o, _, _ in changed_for],
-            "sinces": [st for _, _, _, st, _ in changed_for]}).all():
-        by_idx.setdefault(int(idx), []).append((et, name, what))
+    changed_all = covered_reads_changed_bulk(
+        session, [(k[0], o, st) for k, _, o, st, _ in changed_for])
 
     for i, (key, run, org, stamp, cur) in enumerate(changed_for):
-        changed = _dedupe_reads(by_idx.get(i, ()))
+        changed = changed_all[i]
         out[key] = ReadinessResolution(
             state=READY_STALE if changed else READY_CURRENT,
             run_id=run["run_id"], stamp_seq=stamp, current_seq=cur.current_seq,

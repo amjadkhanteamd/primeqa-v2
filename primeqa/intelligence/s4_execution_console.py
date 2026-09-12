@@ -112,7 +112,31 @@ _CLAIM_RUNS_SQL = (
     "FROM s4_execution_runs r "
     "LEFT JOIN s6_interpretations i ON i.run_id = r.run_id "
     "WHERE r.claim_test_id = CAST(:tid AS uuid) "
-    "ORDER BY r.finished_at DESC LIMIT :limit")
+    # run_id breaks a tie on finished_at. Two runs of one claim finishing at
+    # the same instant had an arbitrary relative order, and the callers read
+    # runs[0]; the bulk form cannot be proven equal to an unspecified order.
+    # Production carries zero tied finished_at values and zero NULLs, so this
+    # specifies an order rather than changing one.
+    "ORDER BY r.finished_at DESC, r.run_id DESC LIMIT :limit")
+
+_CLAIM_RUNS_BULK_SQL = (
+    "SELECT CAST(u.claim_test_id AS text) AS tid, "
+    "CAST(u.run_id AS text) AS run_id, CAST(u.recipe_id AS text) AS recipe_id, "
+    "u.outcome::text AS outcome, u.failure_category, u.finished_at, "
+    "u.verdict::text AS verdict "
+    "FROM (SELECT r.claim_test_id, r.run_id, r.recipe_id, r.outcome, "
+    "             r.failure_category, r.finished_at, i.verdict, "
+    "             row_number() OVER (PARTITION BY r.claim_test_id "
+    "                                ORDER BY r.finished_at DESC, r.run_id DESC) AS rn "
+    "      FROM s4_execution_runs r "
+    "      LEFT JOIN s6_interpretations i ON i.run_id = r.run_id "
+    "      WHERE r.claim_test_id = ANY(CAST(:tids AS uuid[]))) u "
+    "WHERE u.rn <= :limit "
+    "ORDER BY u.claim_test_id, u.rn")
+"""``_CLAIM_RUNS_SQL`` for many claims in ONE query. The window is partitioned
+by claim and ordered by the singular's own ORDER BY, so ``rn <= :limit``
+reproduces the per-claim ``LIMIT`` exactly and each claim's list comes back in
+the singular's order. Same columns, same shaping, same recency rule."""
 
 
 def _read_claim_runs(session, test_id, *, limit: int = 50) -> list[dict]:
@@ -128,6 +152,31 @@ def _read_claim_runs(session, test_id, *, limit: int = 50) -> list[dict]:
         "failure_category": r["failure_category"],
         "finished_at": _iso(r["finished_at"]),
     } for r in rows]
+
+
+def _read_claim_runs_bulk(session, test_ids, *, limit: int = 50) -> dict:
+    """Pure: ``{test_id_str: [run, ...]}`` for many claims in one query — the
+    set-based form of :func:`_read_claim_runs`.
+
+    Each claim's list is element-for-element what the singular call returns for
+    that claim, including order and the per-claim ``limit``. A claim with no
+    runs is ABSENT from the dict, so a caller reads ``out.get(tid, [])`` and
+    gets the singular's empty list. :func:`_read_claim_runs` remains the
+    definition; this is an optimisation of it, proven equal in
+    ``tests/integration/test_representation/test_per_claim_loops_parity.py``."""
+    ids = [str(t) for t in (test_ids or [])]
+    if not ids:
+        return {}
+    out: dict[str, list[dict]] = {}
+    for r in session.execute(text(_CLAIM_RUNS_BULK_SQL),
+                             {"tids": ids, "limit": limit}).mappings().all():
+        out.setdefault(r["tid"], []).append({
+            "run_id": r["run_id"], "recipe_id": r["recipe_id"],
+            "outcome": r["outcome"], "verdict": r["verdict"],
+            "failure_category": r["failure_category"],
+            "finished_at": _iso(r["finished_at"]),
+        })
+    return out
 
 
 def read_claim_runs(tenant_id: int, test_id) -> dict:

@@ -29,13 +29,23 @@ import uuid
 from dataclasses import dataclass
 from typing import Optional
 
-from sqlalchemy import Column, Integer, Text, case, tuple_
+from sqlalchemy import Column, Integer, Text, case, func, select, tuple_
+from sqlalchemy.orm import aliased
 from sqlalchemy.dialects.postgresql import JSONB, UUID
 
 from primeqa.db import Base
 from primeqa.evolution.grounding_validity import GroundingValidity
 
 _LIST_HARD_CAP = 500  # the substrate list-bound convention.
+_LIST_BOUND_DEFAULT = 200  # list_grounding_validity's default `limit`.
+
+
+def list_bound(limit: int = _LIST_BOUND_DEFAULT) -> int:
+    """The row bound :func:`list_grounding_validity` actually applies. Named
+    once so a caller that must REPRODUCE that bound — the release evidence
+    console, whose definition is ``list_grounding_validity(...)[-1]`` — cannot
+    drift from it if the convention changes."""
+    return min(int(limit), _LIST_HARD_CAP)
 
 
 class S8GroundingValidity(Base):
@@ -150,7 +160,7 @@ def read_grounding_validity(
 
 
 def read_grounding_validity_bulk(
-    session, targets, connected_org_id=None,
+    session, targets, connected_org_id=None, *, unpinned_list_bound=None,
 ) -> dict:
     """Batch read: one verdict per test for many tests in (at most) two
     queries — the set-based form of the per-claim decision read.
@@ -167,7 +177,15 @@ def read_grounding_validity_bulk(
       rows fit the list bound.
 
     Returns ``{test_id (uuid): GroundingValidityRead}``; tests with no verdict
-    row are absent. Callers pass a bounded test set (a release's corpus)."""
+    row are absent. Callers pass a bounded test set (a release's corpus).
+
+    ``unpinned_list_bound`` reproduces :func:`list_grounding_validity`'s row
+    bound on the unpinned branch, for the one caller whose definition is
+    literally ``list_grounding_validity(test_id=tid)[-1]``. That list is bounded
+    and ordered ASCENDING, so above the bound its last element is the Nth
+    verdict and not the latest — a difference from this function's true-latest.
+    Passing the bound preserves that caller's answer exactly, including above
+    the bound. ``None`` (every other caller) keeps the true latest, unchanged."""
     org = (uuid.UUID(str(connected_org_id))
            if connected_org_id is not None else None)
     pinned, unpinned = [], []
@@ -188,7 +206,7 @@ def read_grounding_validity_bulk(
                           S8GroundingValidity.connected_org_id).all()
         for r in rows:                       # worst-first per test → first wins
             out.setdefault(r.test_id, _row_to_read(r))
-    if unpinned:
+    if unpinned and unpinned_list_bound is None:
         q = (session.query(S8GroundingValidity)
              .filter(S8GroundingValidity.test_id.in_(unpinned)))
         if org is not None:
@@ -198,12 +216,32 @@ def read_grounding_validity_bulk(
                           S8GroundingValidity.connected_org_id).all()
         for r in rows:                       # ascending per test → last wins
             out[r.test_id] = _row_to_read(r)
+    elif unpinned:
+        # The bounded form: rank each test's verdicts by the SAME ascending
+        # order the list read uses, keep the first N, and let the last of those
+        # win — which is `list_grounding_validity(test_id=tid)[:N][-1]`, the
+        # bound applied per test rather than across the whole result.
+        rn = func.row_number().over(
+            partition_by=S8GroundingValidity.test_id,
+            order_by=(S8GroundingValidity.version_seq,
+                      S8GroundingValidity.connected_org_id)).label("rn")
+        stmt = select(S8GroundingValidity, rn).where(
+            S8GroundingValidity.test_id.in_(unpinned))
+        if org is not None:
+            stmt = stmt.where(S8GroundingValidity.connected_org_id == org)
+        sub = stmt.subquery()
+        ent = aliased(S8GroundingValidity, sub)
+        rows = (session.query(ent)
+                .filter(sub.c.rn <= int(unpinned_list_bound))
+                .order_by(sub.c.test_id, sub.c.rn).all())
+        for r in rows:                       # ascending per test → last wins
+            out[r.test_id] = _row_to_read(r)
     return out
 
 
 def list_grounding_validity(
     session, *, test_id=None, overall=None, connected_org_id=None,
-    limit: int = 200,
+    limit: int = _LIST_BOUND_DEFAULT,
 ) -> list[GroundingValidityRead]:
     """List verdicts on the caller's tenant-scoped session, optionally scoped by
     ``test_id`` (all versions of a test), ``overall`` (e.g. all ``drifted`` /
@@ -222,7 +260,7 @@ def list_grounding_validity(
     rows = (q.order_by(S8GroundingValidity.test_id,
                        S8GroundingValidity.version_seq,
                        S8GroundingValidity.connected_org_id)
-            .limit(min(int(limit), _LIST_HARD_CAP)).all())
+            .limit(list_bound(limit)).all())
     return [_row_to_read(r) for r in rows]
 
 

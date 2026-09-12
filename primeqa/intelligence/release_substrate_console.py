@@ -9,9 +9,12 @@ validity, S6 latest run verdict}``. The v1 ``DecisionEngine`` stays the GO/NO-GO
 authority; this surfaces grounding-drift + per-claim verdict **evidence** the human
 weighs alongside it — it does not produce or flip the verdict (D-172).
 
-One tenant connection + a shared session (not N ``read_claim_runs`` calls). Never
-raises (``available=False`` on any error); the S6/S8 stores are empty until the live
-sync, so ``available=True, claim_count=0`` is the common state.
+One tenant connection + a shared session, and a FIXED number of queries whatever
+the release's size — the loop this docstring always claimed was absent became
+absent in the per-claim-loops slice, which replaced five reads per claim with
+four set-based ones. Never raises (``available=False`` on any error); the S6/S8
+stores are empty until the live sync, so ``available=True, claim_count=0`` is
+the common state.
 """
 from __future__ import annotations
 
@@ -28,38 +31,48 @@ def _assemble_release_substrate(session, external_keys) -> dict:
     from primeqa.test_representation.coordinator import (
         COVERAGE_LINK_KINDS, SemanticTransactionCoordinator,
     )
-    from primeqa.evolution import list_grounding_validity, read_grounding_validity
-    from primeqa.intelligence.s4_execution_console import _read_claim_runs
+    from primeqa.evolution import read_grounding_validity_bulk
+    from primeqa.evolution.result_store import list_bound
+    from primeqa.intelligence.s4_execution_console import _read_claim_runs_bulk
 
     coord = SemanticTransactionCoordinator()
+    # ONE query for the release's requirement keys; the per-key order and each
+    # key's match order are the singular read's, so the dedupe below picks the
+    # same first-seen claims it always did.
+    by_key = coord.list_tests_by_requirements(
+        session, external_system="jira", external_keys=list(external_keys),
+        link_kind=COVERAGE_LINK_KINDS)
     test_ids, seen = [], set()
     for key in external_keys:                          # release's requirement keys
-        for m in coord.list_tests_by_requirement(
-                session, external_system="jira", external_key=key,
-                link_kind=COVERAGE_LINK_KINDS):
+        for m in by_key.get(key, ()):
             sid = str(m.test_id)
             if sid not in seen:                        # dedupe a claim shared by 2 reqs
                 seen.add(sid)
                 test_ids.append(m.test_id)
 
+    # Ground the APPROVED claim version (what the release ships) — not the
+    # newest version, which can be an unapproved draft after a hash-changing
+    # edit (D-172 5a review). Fall back to the latest grounding only when no
+    # approved version exists yet. Both branches in ONE bulk read: the approved
+    # seq pins it, and `None` means "the fallback", which the bound makes
+    # identical to `list_grounding_validity(test_id=tid)[-1]`.
+    approved_by_tid = coord.get_current_approved_claims(session, test_ids)
+    gv_by_tid = read_grounding_validity_bulk(
+        session,
+        [(tid, getattr(approved_by_tid.get(tid), "version_seq", None))
+         for tid in test_ids],
+        unpinned_list_bound=list_bound())
+    runs_by_tid = _read_claim_runs_bulk(session, test_ids)
+
     gc = {"intact": 0, "drifted": 0, "broken": 0, "not_computed": 0}
     vc = {"passed": 0, "failed": 0, "errored": 0, "never_run": 0}
     at_risk = []
     for tid in test_ids:
-        # Ground the APPROVED claim version (what the release ships) — not the
-        # newest version, which can be an unapproved draft after a hash-changing
-        # edit (D-172 5a review). Fall back to the latest grounding only when no
-        # approved version exists yet.
-        approved = coord.get_current_approved_claim(session, tid)
-        if approved is not None:
-            gv = read_grounding_validity(session, tid, approved.version_seq)
-        else:
-            gv_rows = list_grounding_validity(session, test_id=tid)
-            gv = gv_rows[-1] if gv_rows else None
+        gv = gv_by_tid.get(tid)
         overall = gv.overall if gv is not None else None
         gc[overall if overall in gc else "not_computed"] += 1
 
-        runs = _read_claim_runs(session, tid)          # recency-correct, newest-first
+        runs = runs_by_tid.get(str(tid), [])           # recency-correct, newest-first
         latest = runs[0] if runs else None
         if latest is None:
             vc["never_run"] += 1
