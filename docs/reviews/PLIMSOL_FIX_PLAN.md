@@ -845,3 +845,41 @@
   `finally` closes it will raise `UnboundLocalError` on any earlier failure and
   **mask the real error**. Both happened in this slice's own code and both are
   now guarded mechanically.
+
+## Added 2026-09-12 — from the per-claim loops slice
+
+- **Closed here: the decision tab's last N+1 family.** Five per-claim reads
+  became four set-based ones; the tab fell from 156 queries to 69, byte-identical
+  on production data. Across close 2 and this slice it has gone from 213 queries
+  and 11 tenant connections to 69 and 2. Nothing on the page is a per-claim loop
+  any more: the largest single contributor to the remaining 69 issues six
+  queries. **The finding worth keeping** is that three of the four loops already
+  had an exact batch sibling in the same class — `list_tests_by_requirements`,
+  `get_current_approved_claims`, `read_grounding_validity_bulk` — written,
+  tested, and wired in by nobody. The evidence console's own docstring even
+  claimed it avoided the N calls it was making. A batch form is not adopted just
+  because it exists; check the callers, not the module.
+- **Medium: `list_grounding_validity(...)[-1]` is not the latest verdict above
+  the row bound.** The list is bounded at 200 rows ascending, so a claim with
+  more than 200 verdicts returns its 200th as "latest" — where
+  `read_grounding_validity_bulk` returns the true latest, and the two consumers
+  can therefore disagree about one claim's grounding. Measured on production:
+  the maximum is **2** verdict rows per claim and **zero** claims exceed the
+  bound, so nothing is wrong today. This slice PRESERVES the bounded answer
+  exactly (`read_grounding_validity_bulk(..., unpinned_list_bound=list_bound())`)
+  so that consolidation stays an optimisation. Fixing it is a correctness slice
+  with its own proof: decide whether the fallback should read the latest verdict
+  or the bounded one, then make both consumers agree.
+- **Low: `test_step_5_scope` is not idempotent on a scratch database.** It
+  activates the seed quality policy and records a decision against it, and never
+  restores it, so a SECOND run of the DB-real corpus on the same scratch
+  database fails on `assert seed.status == "draft"`. It cost a triage here: the
+  suite went red, reproduced identically on `main`, and turned out to be replay
+  state rather than a regression. The world-remover rule generalises — a fixture
+  must restore state it MUTATES, not only delete rows it inserted.
+- **Note on editing files with a script:** two edits in this session silently
+  did nothing because the guard matched a substring that already appeared
+  elsewhere in the file (`"ONLY" not in s` matched `READ-ONLY GUARD`), and one
+  earlier one because the anchor text did not match. Every scripted edit must
+  `assert` its anchor and be verified by reading back the result — a script that
+  prints "applied" having changed nothing is worse than one that fails.

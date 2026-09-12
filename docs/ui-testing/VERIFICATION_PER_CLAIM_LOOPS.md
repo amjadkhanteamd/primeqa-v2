@@ -116,4 +116,135 @@ as they are.
 
 ---
 
-*Sections b onward are written as the build proceeds.*
+## b. What changed
+
+Code and tests only. **No migration, none expected, none written** — this slice
+adds no column, no table and no DDL of any kind.
+
+| file | change |
+|---|---|
+| `intelligence/s4_execution_console.py` | new `_read_claim_runs_bulk`; the singular's tie broken by `run_id` |
+| `sync/readiness.py` | new `covered_reads_changed_bulk`, extracted; `resolve_run_readiness_bulk` now calls it |
+| `evolution/result_store.py` | `read_grounding_validity_bulk` gains `unpinned_list_bound`; the bound named once as `list_bound()` |
+| `intelligence/release_substrate_console.py` | the per-claim loop replaced by four set-based reads |
+| `intelligence/substrate_decision.py` | the last per-claim read replaced by one |
+
+The evidence console's module docstring claimed it avoided N per-claim reads
+while the code performed exactly N. The docstring now describes what the code
+does, because the code now does it.
+
+## c. Sweeps first (D-490)
+
+Run before any page was rendered or believed: dict-method template names, dead
+links and route hygiene, both navigation sweeps, no gate logic in templates, and
+close 2's call-site guard. **60 passed.**
+
+## d. Parity — the acceptance test
+
+`tests/integration/test_representation/test_per_claim_loops_parity.py` carries
+`_assemble_by_loop`, the pre-slice function body **copied verbatim from main
+@87e727d**, and asserts the shipped function equals it element for element over
+a world holding every shape in §a.5. **18 tests, all passing.**
+
+Two of them exist to keep the suite honest rather than merely green:
+
+* `test_the_bound_reproduces_the_list_read_ABOVE_the_bound` plants a claim with
+  more verdict rows than the bound and asserts three things: the bounded batch
+  equals the list read, the UNBOUNDED batch **differs** from it, and the two
+  differ in the expected direction. Without the middle assertion the test would
+  pass while exercising nothing.
+* `test_the_panel_costs_a_FIXED_number_of_queries` measures both forms. The
+  set-based panel must stay at or below six queries; the reference loop must
+  still cost about three per claim, or the thing being compared against is not
+  the code that shipped.
+
+## e. Suites
+
+| suite | result |
+|---|---|
+| unit | **5,138 passed** |
+| `tests/integration/test_representation` | **460 passed**, 4 skipped |
+| DB-real corpus (24 suites, clean scratch) | **104 passed**, 49 skipped, **1 failed** |
+| page suites (`REPORT_PAGES=1`) | **45 passed**, 2 skipped |
+
+The single red is the `test_report_slice` window artefact ledgered since D-488,
+proven identically red on `main` in a worktree.
+
+**A second red appeared and was triaged, not absorbed.**
+`test_step_5_scope` failed asserting the seed policy is `draft`; scratch held it
+`active`. It reproduced identically on `main` against the same database, so it
+is not this slice. The cause is replay: that suite activates the seed policy and
+uses it, and never restores it, so a second run of the corpus on the same
+scratch database reddens it. Scratch was restored and the corpus returned to
+104/1. The non-idempotency is ledgered.
+
+## f. The production before/after
+
+Both trees run in-process against production data under the server-side
+read-only connection option. The guard was **proven, not accepted on its status
+report**: `CREATE TABLE`, `INSERT` and `UPDATE` each raised
+`ReadOnlySqlTransaction`; `SELECT` returned 25 releases. GET only throughout.
+
+### f.1 Cost
+
+| surface | queries before | after | connections |
+|---|---:|---:|---:|
+| release decision tab | 156 | **69** | 2 (unchanged) |
+| releases list (control) | 30 | 30 | 3 |
+| Requirements (control) | 33 | 33 | 1 |
+| runs list (control) | 28 | 28 | 4 |
+
+Wall time on the decision tab, over the public proxy where a round trip costs
+roughly 600 ms: 84.4 s to 50.3 s. The durable number is the query count.
+
+Across close 2 and this slice together the decision tab has gone from **213
+queries and 11 tenant connections to 69 and 2**.
+
+### f.2 What remains
+
+Nothing on the decision tab is a per-claim loop any more. The largest single
+contributor to the remaining 69 issues **six** queries, and
+`_read_claim_runs` no longer appears at all.
+
+### f.3 Parity — and the honest account of getting there
+
+The first comparisons were not clean, and the reason is worth recording because
+it nearly read as a regression.
+
+Three surfaces matched immediately. The runs list did not — and neither did two
+consecutive captures of **main**. The org-state band showed `seq 258` on the
+first three pages of a run and `seq 260` on the fourth: a live production sync
+landed *between two page renders of a single capture*. The decision tab then
+disagreed in the same way, on a per-claim `@ S1 seq` line.
+
+So the captures were interleaved until the data stopped moving:
+main, then branch, then main again. The second and third agreed exactly, which
+proves the earlier differences were the sequence advancing and not the code. A
+final adjacent pair over all four surfaces then gave:
+
+| surface | main | branch | verdict |
+|---|---|---|---|
+| decision tab | `7163820ff098939f` | `7163820ff098939f` | identical |
+| releases list | `a598f8919e3d77e9` | `a598f8919e3d77e9` | identical |
+| Requirements | `6e6d78642339ee7b` | `6e6d78642339ee7b` | identical |
+| runs list | `c3408364ad6eb4bf` | `c3408364ad6eb4bf` | identical |
+
+`diff` is silent on all four. Nothing any console returns has changed.
+
+**The method this adds to close 2's.** Capturing a baseline three times catches
+fields that are volatile *within* a run. It does not catch a value that is
+stable within a run and moves *between* runs, which is what a daily sync looks
+like. For that, interleave the trees and require an adjacent pair to agree.
+
+## g. Ledgered
+
+* **`list_grounding_validity(...)[-1]` is not the latest verdict above the row
+  bound.** The list is bounded at 200 and ordered ascending, so a claim with
+  more than 200 verdicts reads its 200th as "latest". Preserved exactly here so
+  this slice stays an optimisation; the maximum on production today is 2 rows
+  per claim, so nothing is currently wrong. It is a correctness slice of its own.
+* **`test_step_5_scope` is not idempotent on a scratch database.** It activates
+  the seed policy and never restores it, so the corpus reddens on a second run
+  against the same database. The world-remover discipline (delete what the
+  fixture minted) applies to state a fixture MUTATES, not only to rows it
+  inserts.
