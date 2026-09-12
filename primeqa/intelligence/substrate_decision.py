@@ -384,7 +384,7 @@ def _assemble_claim_evidence_uncached(session, external_keys, *, tenant_id=None,
     # Step B: the ONE org-required resolver; ``None`` org → the recorded
     # refusal on every row (never a tenant-wide number).
     from primeqa.sync.readiness import (
-        SEQ_CURRENT, covered_reads_changed, resolve_current_sequence,
+        SEQ_CURRENT, covered_reads_changed_bulk, resolve_current_sequence,
         resolve_run_readiness_bulk,
     )
     resolution = resolve_current_sequence(session, connected_org_id=connected_org_id)
@@ -427,6 +427,18 @@ def _assemble_claim_evidence_uncached(session, external_keys, *, tenant_id=None,
     for r in run_rows:                      # newest-first within each claim
         raw_by_tid.setdefault(r["tid"], []).append(r)
 
+    # Step 2's R-ground predicate for every claim at once (ONE query). Only
+    # claims with a grounding verdict, under a resolved sequence and a named
+    # org, are asked — exactly the condition the per-claim call carried, so the
+    # claims that were never asked are still never asked.
+    ground_ask = ([(tid, connected_org_id, gv_by_tid[tid].evaluated_at_version_seq)
+                   for tid in live_ids if tid in gv_by_tid]
+                  if current_seq is not None and connected_org_id is not None
+                  else [])
+    ground_changed = dict(zip(
+        [t for t, _, _ in ground_ask],
+        covered_reads_changed_bulk(session, ground_ask)))
+
     out = []
     sup_tids, sup_seqs, sup_cutoffs = [], [], []
     for tid in live_ids:
@@ -442,9 +454,7 @@ def _assemble_claim_evidence_uncached(session, external_keys, *, tenant_id=None,
             # run readiness, never "org moved → all stale". ``None`` only under
             # a recorded CANNOT_DETERMINE (row["sequence"] carries the reason).
             if current_seq is not None and connected_org_id is not None:
-                changed = covered_reads_changed(
-                    session, claim_test_id=tid, connected_org_id=connected_org_id,
-                    since_seq=gv.evaluated_at_version_seq)
+                changed = ground_changed.get(tid, ())
                 stale = bool(changed)
             else:
                 changed, stale = (), None
