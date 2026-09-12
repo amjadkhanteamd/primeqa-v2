@@ -244,3 +244,55 @@ declared reads rather than a template-time side effect.
 
 **Ledgered.** The releases list (3 connections) and the runs list (4) were not
 targeted and are untouched. The same seams would close them.
+
+---
+
+## h. Post-merge transcript (2026-09-12)
+
+**Merge** 026e044 (parents 9a224e0 + f6201d9); author AK, zero `Co-Authored-By`.
+Classified WRITE-FREE as to schema and SQL — zero migrations, zero alembic
+files, zero DDL verbs and zero SQL write verbs in the added lines, and a verb
+census of **3 SELECT added against the identical 3 SELECT removed** (relocated
+into helpers, not written). Dumpless: there is no migration to apply.
+
+**Window against the deployed tree.** Six signatures changed, every addition
+keyword-only defaulting to `None`. Twelve call sites enumerated in `origin/main`
+with `git grep`; each passes only arguments that stay valid. Reads and writes
+split cleanly: both wired routes accept GET only, and the scope marker is set in
+exactly one file, so no write path can obtain a shared session. Reader risk nil.
+
+**Deploy.** Four services SUCCESS on 026e044 by 04:05:32Z. Health 200 with
+`error_rate 0.0`. **Zero error-class lines** across all four service logs.
+
+### The production proof, GET only
+
+Three samples before the merge and three after, against the **deployed** app.
+
+| surface | bytes (all six samples) | median s before | after |
+|---|---:|---:|---:|
+| release decision tab | 75,641 | 1.94 | **1.54** |
+| releases list (control) | 50,977 | 2.49 | 2.19 |
+| Requirements | 87,864 | 5.02 | **4.02** |
+| runs list (control) | 37,985 | 0.97 | 1.36 |
+
+**Body size is identical across all six samples on every surface.** The decision
+tab still shows decision 72 — GO under Plimsol default v1, citing plan
+9ea0c522, final decision GO — and the four-item nav. The page is the real one,
+not a stable-sized error.
+
+**The app's own instrumentation is the sharper reading.** Three post-merge
+decision-tab renders produced **one** `slow_request` line, at 1034.3 ms, so two
+of the three fell under the 800 ms threshold and were never logged. The route
+previously logged itself at 1103.8 ms (D-491's ledger). Requirements still logs
+itself at roughly 3.6 s server-side; that residue is the per-claim loops named
+in §g, and it is the next slice.
+
+Recorded as **D-492**.
+
+### A note on the wall-clock columns
+
+The reduction in queries is larger than the reduction in seconds. On production's
+own network a query costs little, so removing 57 of them buys less than the
+count suggests. The durable results of this slice are the connection counts
+(11 to 2, and 6 to 1) and the byte-identical output; the timing is a secondary
+reading and is reported as measured, not rounded in its favour.
