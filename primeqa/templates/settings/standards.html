@@ -1,0 +1,41 @@
+{% extends "settings/base.html" %}
+{% block title %}Standards &amp; catalogues - Plimsol{% endblock %}
+{% block settings_content %}
+<div class="space-y-4" data-testid="settings-standards">
+  <div>
+    <h1 class="text-2xl font-bold text-gray-900">Standards &amp; catalogues</h1>
+    <p class="mt-1 text-sm text-gray-500">The ratified standard map sets, and how much of each standard the catalogue covers.</p>
+  </div>
+  {% if not data.available %}
+    <p class="text-sm text-gray-400" data-testid="unavailable">This view is unavailable right now.</p>
+  {% else %}
+  <p class="text-xs text-gray-500" data-testid="coverage-note">Catalogue coverage lives here, not on a
+    release: it is a property of the ACTIVE map set and changes when a map set is
+    ratified, not when a release ships. A release's own coverage question is
+    answered by its quality card's conformance line.
+    <a href="/settings/standards/coverage" class="text-indigo-700 hover:underline" data-testid="coverage-link">Open the coverage report &rarr;</a></p>
+  {% if data.rows %}
+  <table class="min-w-full divide-y divide-gray-200 text-sm bg-white shadow rounded-lg overflow-hidden">
+    <thead class="bg-gray-50"><tr class="text-left text-xs font-medium text-gray-500 uppercase">
+      <th class="px-4 py-2">Standard</th><th class="px-4 py-2">Version</th><th class="px-4 py-2">State</th>
+      <th class="px-4 py-2">Rules by level</th><th class="px-4 py-2">Activated</th></tr></thead>
+    <tbody class="divide-y divide-gray-100">
+      {% for r in data.rows %}
+      <tr data-testid="map-set-row" data-state="{{ r.state }}">
+        <td class="px-4 py-2 font-medium">{{ r.standard }}</td>
+        <td class="px-4 py-2 text-xs text-gray-500">{{ r.standard_version }}</td>
+        <td class="px-4 py-2"><span class="inline-flex px-1.5 py-0.5 rounded text-[11px] font-medium
+          {% if r.state == 'ACTIVE' %}bg-green-100 text-green-800{% elif r.state == 'RETIRED' %}bg-gray-100 text-gray-600{% else %}bg-blue-50 text-blue-800{% endif %}">{{ r.state }}</span></td>
+        <td class="px-4 py-2 text-xs text-gray-600">
+          {% if r.state == 'ACTIVE' %}{% set lv = data.levels.get(r.standard) or {} %}
+            {% for level, n in lv.items() %}{{ level }} {{ n }}{% if not loop.last %} · {% endif %}{% endfor %}
+            {% if not lv %}—{% endif %}
+          {% else %}—{% endif %}</td>
+        <td class="px-4 py-2 text-xs text-gray-500">{{ r.activated_at[:10] if r.activated_at else '—' }}</td></tr>
+      {% endfor %}
+    </tbody>
+  </table>
+  {% else %}<p class="text-sm text-gray-500">No map set exists.</p>{% endif %}
+  {% endif %}
+</div>
+{% endblock %}

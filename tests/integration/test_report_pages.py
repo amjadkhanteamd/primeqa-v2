@@ -49,9 +49,11 @@ def test_a_member_sees_all_three_pages_and_a_viewer_is_redirected():
     c = _client()
     for path, marker in (
             (f"/runs/conformance/{B1}?standard=WCAG22", b"Verdict listing"),
-            (f"/ui-report/compare?baseline={P1}&candidate={B1}",
+            # Step 6b re-homed both tools: the comparison is a release
+            # question, catalogue coverage is a property of the catalogue.
+            (f"/releases/compare?baseline={P1}&candidate={B1}",
              b"Release comparison"),
-            (f"/ui-report/coverage?job={B1}", b"N of M, per standard")):
+            (f"/settings/standards/coverage?job={B1}", b"N of M, per standard")):
         r = c.get(path)
         assert r.status_code == 200, (path, r.status_code)
         assert marker in r.data, path
@@ -61,9 +63,15 @@ def test_a_member_sees_all_three_pages_and_a_viewer_is_redirected():
     assert c.get(f"/ui-report/runs/{B1}").headers["Location"].endswith(f"/runs/conformance/{B1}")
     # Step 6a §e: a VIEWER now READS the conformance run (view at VIEWER); the
     # tools stay MEMBER, so those still bounce.
+    # the old tool URLs still answer, as redirects to their new homes
+    assert c.get(f"/ui-report/compare?baseline={P1}&candidate={B1}").status_code == 302
+    assert c.get(f"/ui-report/coverage?job={B1}").status_code == 302
+    # Step 6b §e: a VIEWER reads the conformance run AND the comparison
+    # (a release question); the catalogue's coverage report stays MEMBER.
     v = _client(role="viewer")
     assert v.get(f"/runs/conformance/{B1}").status_code == 200
-    assert v.get(f"/ui-report/compare?baseline={P1}&candidate={B1}").status_code == 302
+    assert v.get(f"/releases/compare?baseline={P1}&candidate={B1}").status_code == 200
+    assert v.get(f"/settings/standards/coverage?job={B1}").status_code == 302
 
 
 def test_b_run_page_carries_the_honesty_header_and_fail_rows():
@@ -81,20 +89,20 @@ def test_b_run_page_carries_the_honesty_header_and_fail_rows():
 
 def test_c_compare_page_groups_the_taxonomy_and_names_the_drift():
     c = _client()
-    r = c.get(f"/ui-report/compare?baseline={P1}&candidate={B1}")
+    r = c.get(f"/releases/compare?baseline={P1}&candidate={B1}")
     body = r.data.decode()
     assert "NOT_COMPARABLE" in body and "142" in body
     assert "STILL_FAILING" in body and "NEW_CLAIM" in body
     assert "Tool dimension moved" in body
     assert "catalogue_release_id" in body
     # the unstored direction renders the honest empty state
-    r2 = c.get(f"/ui-report/compare?baseline={B1}&candidate={P1}")
+    r2 = c.get(f"/releases/compare?baseline={B1}&candidate={P1}")
     assert b"no recorded comparison" in r2.data
 
 
 def test_d_coverage_page_shows_n_of_m_and_the_refusal_panel():
     c = _client()
-    r = c.get(f"/ui-report/coverage?job={B1}")
+    r = c.get(f"/settings/standards/coverage?job={B1}")
     body = r.data.decode()
     for frag in ("21", "55", "50", "38", "CUSTOM:acme",
                  "What we cannot test for you", "NOT_COVERED"):

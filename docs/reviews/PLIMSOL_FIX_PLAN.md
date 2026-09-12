@@ -785,3 +785,27 @@
   3A-3 tests went red. The remover now clears the checkpoint and the entities
   materialised at it. Worth remembering for every future world: delete what the
   fixture MINTED, not only what it inserted.
+
+## Added 2026-09-12 — from Step 6b (Releases and Settings)
+
+- **Medium: the release DECISION tab costs 106 queries and 1.10 s, crossing the
+  app's own 800 ms slow-request threshold** — it logs itself doing so
+  (`slow_request route=/releases/<id> ms=1103.8`). The cause is the same family
+  as the 51-query Requirements page: five consoles (the substrate evidence
+  panel, the substrate decision, the scope readiness, the Step 5 quality
+  preview, and the plans/targets reads) each open their own tenant session and
+  re-read the same claims. 6b added one link to this page and no reads. The fix
+  is one page-scoped composite reader shared by the panels, and it wants its own
+  before/after rather than being folded into a layout slice.
+- **Low (closed here): a list must not contradict the page it links to.** The
+  first releases-board implementation counted evidence on environment 78, which
+  the canonical scope read excludes as inactive (D-485's active-environment
+  interim), so release 16 read "15 items in scope are not current" on the list
+  while its own page said the scope was clean. The board now uses the same
+  `_environments_with_evidence` filter. Worth generalising: any summary that
+  restates a canonical read must call that read's own filter, not re-derive it.
+- **Low (closed here): two counts of different things in one sentence.** The
+  same board reported the refusal in (claim, environment) ITEMS — matching what
+  Evaluate names — and the evidence in CLAIMS, so a release read "1 item not
+  current" beside "1 of 1 check current". Both were true; together they were
+  nonsense. Each cell now says which unit it counts, in code and in the note.
