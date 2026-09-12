@@ -248,3 +248,63 @@ like. For that, interleave the trees and require an adjacent pair to agree.
   against the same database. The world-remover discipline (delete what the
   fixture minted) applies to state a fixture MUTATES, not only to rows it
   inserts.
+
+---
+
+## h. Post-merge transcript (2026-09-12)
+
+**Merge** 7f83cf0 (parents 87e727d + fed5e01); author AK, zero `Co-Authored-By`.
+Classified WRITE-FREE as to schema and SQL — zero migrations, zero alembic
+files, zero DDL verbs and zero SQL write verbs in the added lines, two added
+statements both SELECT. Dumpless: there is no migration to apply.
+
+**Window against the deployed tree.** Three functions are new and so have no
+existing callers. The grounding batch gained one keyword-only parameter
+defaulting to off, whose single deployed call site passes positional arguments.
+The grounding list read had its literal default replaced by a named constant of
+the same value; its three deployed call sites are unaffected. The singular
+`covered_reads_changed` keeps its own caller, so the definition this slice
+optimises is still wired and still exercised. Reader risk nil.
+
+**Deploy.** Four services SUCCESS on 7f83cf0 by 08:37:39Z. Health 200 with
+`error_rate 0.0`. **Zero error-class lines** across all four service logs.
+
+### The production proof, GET only
+
+Three samples before the merge and three after, against the **deployed** app.
+
+| surface | bytes | median s before | after |
+|---|---:|---:|---:|
+| release decision tab | 75,641 both | 1.41 | **1.26** |
+| releases list (control) | 50,977 both | 2.78 | 2.09 |
+| Requirements (control) | 87,864 both | 5.18 | **3.77** |
+| runs list (control) | see below | 0.83 | 1.03 |
+
+**The runs list drifted 12 bytes** between the two deployed measurements, ten
+minutes apart. Rather than attribute that to elapsed time by assertion, the
+**pre-merge tree (87e727d) and the merged tree were run in-process back to back
+on the same data and produced the identical RAW hash** — no normalisation
+needed. The drift is data, not code.
+
+One transient `RemoteDisconnected` interrupted a runs-list request during the
+proof. The web log carries zero error-class lines and three immediate retries
+returned 200, so it was the proxy and not the application.
+
+### The sharpest reading of the whole two-slice arc
+
+The application's own instrumentation, on the release decision route:
+
+| stage | `slow_request` lines |
+|---|---|
+| before close 2 | **every** render, at 1103.8 ms |
+| after close 2 | **one of three**, at 1034.3 ms |
+| after this slice | **none of three** |
+
+The route no longer crosses the 800 ms threshold. Nothing on the page is a
+per-claim loop; the largest single contributor to the remaining 69 queries
+issues six, and `_read_claim_runs` does not appear at all.
+
+Cumulative across D-492 and D-493: **213 queries and 11 tenant connections → 69
+and 2.**
+
+Recorded as **D-493**.
