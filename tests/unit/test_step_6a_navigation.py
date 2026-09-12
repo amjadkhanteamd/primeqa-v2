@@ -83,10 +83,10 @@ def test_the_new_capabilities_sit_at_the_stated_tiers():
 
 @pytest.mark.parametrize("path,expected", [
     ("/requirements", "Requirements"), ("/requirements/12", "Requirements"),
-    ("/claims", "Requirements"), ("/reviews", "Requirements"),
+    ("/claims/9f1c2a3b-0000-0000-0000-000000000000", "Requirements"),
     ("/runs/substrate", "Results"), ("/runs/conformance/abc", "Results"),
-    ("/ui-report/runs/abc", "Results"), ("/results", "Results"),
-    ("/releases", "Releases"), ("/releases/16", "Releases"), ("/dashboard", "Releases"),
+    ("/results", "Results"),
+    ("/releases", "Releases"), ("/releases/16", "Releases"), ("/releases/compare", "Releases"),
     ("/settings", "Settings"), ("/settings/quality-policy", "Settings"),
 ])
 def test_the_active_item_follows_the_path_including_the_redirected_ones(path, expected):

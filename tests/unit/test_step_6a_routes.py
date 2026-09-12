@@ -17,12 +17,33 @@ def _rules():
     return app.url_map
 
 
-def test_every_moved_path_still_answers():
+def test_the_retired_paths_no_longer_answer():
+    """The retirement commit: after 6b's cycle closed, the 6a and 6b redirect
+    paths and the legacy bodies behind them are DELETED. The dead-link sweep
+    below is this commit's gate — it caught a live dead link on the root page
+    and one orphan template when they went."""
     rules = {str(r.rule) for r in _rules().iter_rules()}
-    for path in ("/claims", "/claims/inbox", "/reviews", "/test-cases",
-                 "/ui-report", "/ui-report/runs/<job_id>", "/dashboard",
-                 "/run", "/runs", "/tickets", "/suites"):
-        assert path in rules, f"{path} no longer answers — §f says it must, for one release cycle"
+    for path in ("/claims", "/claims/inbox", "/claims/library", "/claims/inbox/legacy",
+                 "/reviews", "/test-cases", "/test-cases/<int:tc_id>",
+                 "/ui-report", "/ui-report/runs/<job_id>", "/ui-report/compare",
+                 "/ui-report/coverage", "/dashboard", "/dashboard/legacy"):
+        assert path not in rules, f"{path} still answers — the retirement did not remove it"
+
+
+def test_the_older_redirects_keep_their_own_cycles():
+    """Only 6a's and 6b's paths retire here. /run (D-486), /runs, /tickets and
+    /suites belong to earlier steps and are not this commit's business."""
+    rules = {str(r.rule) for r in _rules().iter_rules()}
+    for path in ("/run", "/runs", "/tickets", "/suites"):
+        assert path in rules, f"{path} was retired by the wrong commit"
+
+
+def test_what_replaced_them_is_there():
+    rules = {str(r.rule) for r in _rules().iter_rules()}
+    for path in ("/requirements", "/runs/substrate", "/runs/conformance/<job_id>",
+                 "/releases", "/releases/compare", "/settings/standards/coverage",
+                 "/claims/<uuid:test_id>"):
+        assert path in rules, f"{path} is missing — the replacement must exist"
 
 
 def test_the_rehomed_surfaces_exist():

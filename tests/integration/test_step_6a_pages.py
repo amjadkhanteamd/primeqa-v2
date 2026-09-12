@@ -121,22 +121,18 @@ def test_every_functional_row_says_where_it_came_from():
 
 # --- §f route hygiene --------------------------------------------------------
 
-@pytest.mark.parametrize("old,new", [
-    ("/claims", "/requirements?tab=claims"),
-    ("/claims/inbox", "/requirements?tab=needs-review"),
-    ("/reviews", "/requirements?tab=needs-review"),
-    ("/test-cases", "/requirements?tab=claims"),
-    ("/ui-report", "/runs/substrate?kind=conformance"),
+@pytest.mark.parametrize("retired", [
+    "/claims", "/claims/inbox", "/reviews", "/test-cases", "/ui-report",
 ])
-def test_the_old_paths_redirect(old, new):
-    r = _client().get(old, follow_redirects=False)
-    assert r.status_code == 302 and r.headers["Location"].endswith(new), (old, r.headers.get("Location"))
+def test_the_old_paths_are_retired(retired):
+    """They redirected for one release cycle (6a §f); the cycle closed with
+    6b's D-entry and the retirement commit deleted them."""
+    assert _client().get(retired, follow_redirects=False).status_code == 404
 
 
-def test_the_conformance_run_view_is_rehomed():
+def test_the_conformance_run_view_lives_at_its_new_home():
     job = "00000000-0000-0000-0000-000000000000"
-    r = _client().get(f"/ui-report/runs/{job}", follow_redirects=False)
-    assert r.status_code == 302 and r.headers["Location"].endswith(f"/runs/conformance/{job}")
+    assert _client().get(f"/ui-report/runs/{job}", follow_redirects=False).status_code == 404
     assert _client().get(f"/runs/conformance/{job}").status_code == 200
 
 

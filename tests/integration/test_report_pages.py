@@ -57,15 +57,15 @@ def test_a_member_sees_all_three_pages_and_a_viewer_is_redirected():
         r = c.get(path)
         assert r.status_code == 200, (path, r.status_code)
         assert marker in r.data, path
-    # the re-homing itself
-    assert c.get("/ui-report").status_code == 302
-    assert c.get("/ui-report").headers["Location"].endswith("/runs/substrate?kind=conformance")
-    assert c.get(f"/ui-report/runs/{B1}").headers["Location"].endswith(f"/runs/conformance/{B1}")
+    # the orphan tree is gone: it redirected for one release cycle, and the
+    # retirement commit deleted it once 6b's D-entry closed that cycle.
+    assert c.get("/ui-report").status_code == 404
+    assert c.get(f"/ui-report/runs/{B1}").status_code == 404
     # Step 6a §e: a VIEWER now READS the conformance run (view at VIEWER); the
     # tools stay MEMBER, so those still bounce.
-    # the old tool URLs still answer, as redirects to their new homes
-    assert c.get(f"/ui-report/compare?baseline={P1}&candidate={B1}").status_code == 302
-    assert c.get(f"/ui-report/coverage?job={B1}").status_code == 302
+    # the old tool URLs were retired after their cycle
+    assert c.get(f"/ui-report/compare?baseline={P1}&candidate={B1}").status_code == 404
+    assert c.get(f"/ui-report/coverage?job={B1}").status_code == 404
     # Step 6b §e: a VIEWER reads the conformance run AND the comparison
     # (a release question); the catalogue's coverage report stays MEMBER.
     v = _client(role="viewer")
