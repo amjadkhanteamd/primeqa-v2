@@ -243,60 +243,10 @@ def dashboard():
 from primeqa.core.auth import require_auth as _require_auth_api  # noqa: E402
 
 
-@views_bp.route("/dashboard")
-@require_tier(Tier.VIEWER)
-@login_required
-def release_dashboard():
-    """Step 6b §a: ABSORBED into Releases, not moved. Six of this page's eight
-    elements already live on the release page in better form (the hero verdict
-    and its reason — where the quality card names the POLICY that produced it;
-    risk; the per-check reasoning; the blockers; the ticket grid, redundant
-    since 6a put those columns on every Requirements row; and the intelligence
-    summary, its own page). `gates` was dead in code — always []. `trends` was
-    the one survivor and is an ENVIRONMENT fact, so it went to Results.
-
-    The route and its landing entry survive until the single retirement commit
-    at the end of the cycle; nothing is deleted in this slice."""
-    return redirect("/releases")
-
-
-@views_bp.route("/dashboard/legacy")
-@require_tier(Tier.VIEWER)
-@login_required
-def release_dashboard_legacy():
-    """The pre-6b executive view, reachable for one release cycle."""
-    from primeqa.core.models import User
-    # D-219: the dashboard reads substrate evidence (v1-shaped drop-in).
-    from primeqa.intelligence.substrate_dashboard import (
-        get_substrate_dashboard_data as get_dashboard_data,
-    )
-    from primeqa.runs.my_tickets import (
-        resolve_active_environment, list_switchable_environments,
-    )
-
-    def _render():
-        db = next(get_db())
-        try:
-            user_row = db.query(User).filter_by(id=request.user["id"]).first()
-            env = resolve_active_environment(user_row, db)
-            if env is None:
-                return render_template("dashboard_release.html", **ctx(
-                    active_page="dashboard",
-                    data={"environment": None, "empty": True},
-                    envs=[],
-                    empty_reason="no_environment",
-                ))
-            data = get_dashboard_data(env.id, request.user["tenant_id"], db)
-            envs = list_switchable_environments(user_row, db)
-            return render_template("dashboard_release.html", **ctx(
-                active_page="dashboard",
-                data=data, envs=envs, env=env,
-                empty_reason=None,
-            ))
-        finally:
-            db.close()
-
-    return _render()
+# Step 6b retirement (D-491's cycle closed): /dashboard and /dashboard/legacy
+# are gone. Six of the executive view's eight elements live on the release page,
+# `gates` was dead in code, and trends moved to Results — the enumeration is in
+# D-491. The landing resolver no longer offers it.
 
 
 @views_bp.route("/substrate-insights")
@@ -3377,86 +3327,6 @@ def _attach_requirement_summaries(tenant_id, claims):
         c["requirement_summary"] = summaries.get(c.get("requirement_key"))
 
 
-@views_bp.route("/claims")
-@login_required
-def claims_list_redirect():
-    """Step 6a §f: the Test Library list is the Requirements "All claims" tab.
-    The claim DETAIL page did not move (ruling 6)."""
-    return redirect("/requirements?tab=claims")
-
-
-@views_bp.route("/claims/library")
-@login_required
-def claims_list():
-    """D-165 (UI Area 2 slice 2c): the claims library — paginated + searchable
-    list of the tenant's current S2 claims (the substrate replacement for the v1
-    Test Library at /test-cases). Best-effort read via the bridge."""
-    from primeqa.intelligence.s3_generation_console import list_claims
-    tid = request.user["tenant_id"]
-    page = request.args.get("page", 1, type=int) or 1
-    per_page = request.args.get("per_page", 20, type=int) or 20
-    q = (request.args.get("q") or "").strip() or None
-    # Multi-org filter: ?environment_id=N (validated against the caller's
-    # accessible envs) keeps claims with a run in that env and shows that
-    # env's latest run. Default stays the tenant-wide library.
-    db = next(get_db())
-    try:
-        envs = EnvironmentRepository(db).list_environments(
-            tid, request.user["id"], request.user["role"])
-    finally:
-        db.close()
-    env_names = {e.id: e.name for e in envs}
-    envs_for_picker = [{"id": e.id, "name": e.name} for e in envs]
-    env = request.args.get("environment_id", type=int)
-    if env is not None and env not in env_names:
-        env = None
-    data = list_claims(tid, page=page, per_page=per_page, q=q,
-                       environment_id=env)
-    _attach_requirement_summaries(tid, data.get("claims"))
-    # D-232: mark quarantined rows for the list badge — one best-effort batch read
-    # over the active ledger rows (a missing table degrades to no badges).
-    from primeqa.intelligence import quarantine as _quar
-    _q_ids = {r["test_id"] for r in _quar.list_quarantined(request.user["tenant_id"])}
-    for _c in data.get("claims") or []:
-        _c["quarantined"] = str(_c.get("test_id")) in _q_ids
-    # Env name on each row's last-run chip (multi-org tenants only).
-    if len(envs_for_picker) > 1:
-        for _c in data.get("claims") or []:
-            lr = _c.get("last_run")
-            if lr and lr.get("environment_id") is not None:
-                lr["env_name"] = (env_names.get(lr["environment_id"])
-                                  or f"env {lr['environment_id']}")
-    # The inbox chip: how many drafts are waiting for approval (D-206).
-    pending = list_claims(request.user["tenant_id"], page=1, per_page=1, status="draft")
-    return render_template("claims/list.html", **ctx(
-        active_page="test_library", data=data, q=q or "",
-        envs_for_picker=envs_for_picker, active_env=env,
-        pending_total=pending.get("total", 0)))
-
-
-@views_bp.route("/claims/inbox")
-@login_required
-def claims_inbox_redirect():
-    """Step 6a §f: the approval inbox is the Requirements "Needs review" tab."""
-    return redirect("/requirements?tab=needs-review")
-
-
-@views_bp.route("/claims/inbox/legacy")
-@role_required("admin", "ba", "tester", "superadmin")
-def claims_inbox():
-    """D-206: the approval inbox — every draft claim awaiting a human decision,
-    with the plain-English title + the behavioral/configuration-check depth
-    badge + the source requirement, and a per-row Approve. Approval is the
-    human gate that makes a claim runnable (and auto-queues its first runs),
-    so this page is the manual-approval workflow's home."""
-    from primeqa.intelligence.s3_generation_console import list_claims
-    page = request.args.get("page", 1, type=int) or 1
-    data = list_claims(request.user["tenant_id"], page=page, per_page=50,
-                       status="draft")
-    _attach_requirement_summaries(request.user["tenant_id"], data.get("claims"))
-    return render_template("claims/inbox.html", **ctx(
-        active_page="test_library", data=data))
-
 
 def _plan_nav_for(tenant_id, requirement_key, test_id):
     """The claim's position in its requirement's live plan + prev/next test ids
@@ -5472,35 +5342,6 @@ def result_detail_redirect(run_id):
     return redirect("/runs/substrate")
 
 
-@views_bp.route("/test-cases")
-@views_bp.route("/test-cases/<int:tc_id>")
-@login_required
-def test_cases_redirect(tc_id=None):
-    # Step 6a §f: the v1 library's successor is the Requirements "All claims" tab.
-    return redirect("/requirements?tab=claims")
-
-
-# --- The UI-conformance report slice (SDLC v3 item 2, D-474) -------------
-# Read-only pages over recorded substrate rows: runs, verdicts, stored
-# comparisons, coverage. MEMBER+ (the demo surface; no execution, no
-# writes beyond on-demand evidence-URL minting, which is response-body
-# only and never logged).
-
-@views_bp.route("/ui-report")
-@login_required
-def ui_report_index():
-    """Step 6a §f: the orphan index is retired into Results, where the same runs
-    now render beside the functional lane. Answers for one release cycle."""
-    return redirect("/runs/substrate?kind=conformance")
-
-
-@views_bp.route("/ui-report/runs/<job_id>")
-@login_required
-def ui_report_run_redirect(job_id):
-    """Step 6a §d: the conformance run view moved under Results."""
-    return redirect(f"/runs/conformance/{job_id}")
-
-
 @views_bp.route("/runs/conformance/<job_id>")
 @require_tier(Tier.VIEWER)
 def conformance_run(job_id):
@@ -5535,15 +5376,6 @@ def ui_report_evidence():
     return render_template("ui_report/_evidence_links.html", data=data)
 
 
-@views_bp.route("/ui-report/compare")
-@login_required
-def ui_report_compare_redirect():
-    """Step 6b §a: the comparison is a release question — it moved."""
-    from flask import request as _rq
-    qs = _rq.query_string.decode()
-    return redirect("/releases/compare" + (f"?{qs}" if qs else ""))
-
-
 @views_bp.route("/releases/compare")
 @require_tier(Tier.VIEWER)
 def releases_compare():
@@ -5568,16 +5400,6 @@ def releases_compare():
         baseline=baseline or "", candidate=candidate or ""))
 
 
-@views_bp.route("/ui-report/coverage")
-@login_required
-def ui_report_coverage_redirect():
-    """Step 6b §d: catalogue coverage is a property of the ACTIVE map set, not
-    of a release — it lives with the catalogue."""
-    from flask import request as _rq
-    qs = _rq.query_string.decode()
-    return redirect("/settings/standards" + (f"?{qs}" if qs else ""))
-
-
 @views_bp.route("/settings/standards/coverage")
 @require_tier(Tier.MEMBER)
 def standards_coverage():
@@ -5592,13 +5414,6 @@ def standards_coverage():
     return render_template("ui_report/coverage.html", **ctx(
         active_page="settings", settings_page="standards", runs=runs, data=data,
         job_id=job_id))
-
-
-@views_bp.route("/reviews")
-@login_required
-def reviews_redirect():
-    # Step 6a §f: was /claims/inbox, now the Requirements "Needs review" tab.
-    return redirect("/requirements?tab=needs-review")
 
 
 @views_bp.route("/tickets")

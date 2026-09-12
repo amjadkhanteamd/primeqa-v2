@@ -74,25 +74,20 @@ def test_the_open_release_offers_compare_and_the_quality_card():
     assert 'data-testid="quality-decision-card"' in html
 
 
-def test_compare_is_rehomed_under_releases():
+def test_compare_lives_under_releases_and_the_old_path_is_retired():
     c = _client()
-    r = c.get("/ui-report/compare?baseline=a&candidate=b", follow_redirects=False)
-    assert r.status_code == 302 and "/releases/compare" in r.headers["Location"]
-    assert "baseline=a" in r.headers["Location"]
+    assert c.get("/ui-report/compare?baseline=a&candidate=b", follow_redirects=False).status_code == 404
     assert c.get("/releases/compare").status_code == 200
 
 
-def test_the_dashboard_is_absorbed_into_releases():
+def test_the_dashboard_is_retired_after_its_cycle():
+    """Absorbed in 6b, deleted by the retirement commit. The enumeration that
+    justifies it is in D-491: six elements already present, `gates` dead in
+    code, trends re-homed to Results."""
     c = _client()
-    r = c.get("/dashboard", follow_redirects=False)
-    assert r.status_code == 302 and r.headers["Location"].endswith("/releases")
-    # the pre-6b view survives for one release cycle — nothing is deleted here.
-    # It is asserted as REGISTERED rather than 200: the scratch copy's users
-    # table predates `preferred_landing_page`, so the legacy page 500s here and
-    # renders fine on production. What 6b promises is that it still answers.
-    from primeqa.app import app
-    assert "/dashboard/legacy" in {str(r.rule) for r in app.url_map.iter_rules()}
-    assert c.get("/dashboard/legacy").status_code != 404
+    assert c.get("/dashboard", follow_redirects=False).status_code == 404
+    assert c.get("/dashboard/legacy", follow_redirects=False).status_code == 404
+    assert c.get("/releases").status_code == 200
 
 
 # --- §b Settings -------------------------------------------------------------
@@ -119,10 +114,9 @@ def test_sites_says_why_it_is_read_only():
     assert "<form" not in html.split('data-testid="settings-sites"')[1].split("</div>")[0]
 
 
-def test_coverage_is_rehomed_under_standards():
+def test_coverage_lives_under_standards_and_the_old_path_is_retired():
     c = _client()
-    r = c.get("/ui-report/coverage?job=abc", follow_redirects=False)
-    assert r.status_code == 302 and "/settings/standards" in r.headers["Location"]
+    assert c.get("/ui-report/coverage?job=abc", follow_redirects=False).status_code == 404
     assert 'data-testid="coverage-link"' in c.get("/settings/standards").data.decode()
     assert c.get("/settings/standards/coverage").status_code == 200
 
@@ -154,7 +148,7 @@ def test_a_member_acts_and_the_acts_are_gated():
     assert m.get("/settings/waivers").status_code == 200
     from primeqa.app import app
     anon = app.test_client()
-    for url in ("/settings/waivers", "/releases/compare", "/dashboard"):
+    for url in ("/settings/waivers", "/releases/compare", "/releases"):
         r = anon.get(url, follow_redirects=False)
         assert r.status_code == 302 and "/login" in r.headers["Location"], url
 

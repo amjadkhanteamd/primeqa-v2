@@ -68,8 +68,9 @@ SIDEBAR_ITEMS: list[dict] = [
         "label": "Requirements",
         "icon": "ticket",
         "url": "/requirements",
-        # /claims and /reviews redirect here; keep the tab lit on the way through
-        "active_also_for": ("/claims", "/reviews", "/test-cases", "/tickets"),
+        # /claims/<uuid> is the claim DETAIL page, which never moved (6a ruling
+        # 6); the /claims and /reviews REDIRECTS were retired after their cycle.
+        "active_also_for": ("/claims", "/tickets"),
         "permission": "view_requirements",
         "section": "primary",
     },
@@ -80,7 +81,7 @@ SIDEBAR_ITEMS: list[dict] = [
         # D-218: results live on the substrate runs index. Step 6a adds the
         # conformance lane and the re-homed run view, so /ui-report lights it too.
         "url": "/runs/substrate",
-        "active_also_for": ("/runs", "/results", "/ui-report"),
+        "active_also_for": ("/runs", "/results"),
         "permission": "view_results",
         "section": "primary",
     },
@@ -89,9 +90,6 @@ SIDEBAR_ITEMS: list[dict] = [
         "label": "Releases",
         "icon": "package",
         "url": "/releases",
-        # /dashboard's content moves here in 6b; light the tab from now so the
-        # surviving route reads as part of Releases rather than as an orphan.
-        "active_also_for": ("/dashboard",),
         "permission": "view_releases",
         "section": "primary",
     },
@@ -218,21 +216,12 @@ def build_sidebar(user_permissions: set, current_path: str = "/",
 # 403s and redirects.
 _LANDING_PAGE_PERMISSION: dict[str, Iterable[str]] = {
     "/":              ("view_dashboard",),
-    # Step 6a ruling 1: /dashboard keeps working and keeps its landing entry
-    # until 6b re-homes it; only the nav chip went.
-    "/dashboard":     ("view_dashboard",),
     "/requirements":  ("view_requirements", "run_single_ticket"),
     "/run":           ("run_sprint", "run_suite"),
     "/runs/new":      ("run_sprint", "run_suite"),  # legacy — wizard
     "/runs":          ("view_results", "view_own_results", "view_all_results"),
     "/runs/substrate": ("view_results", "view_own_results", "view_all_results"),
     "/results":       ("view_results", "view_own_results", "view_all_results"),
-    # Step 6a: these three redirect into Requirements; a stored preference for
-    # one still resolves rather than bouncing the caller to the fallback.
-    "/reviews":       ("view_requirements", "review_test_cases"),
-    "/claims/inbox":  ("view_requirements", "review_test_cases"),
-    "/claims":        ("view_requirements", "view_test_library"),
-    "/test-cases":    ("view_requirements", "view_test_library"),
     "/releases":      ("view_releases", "approve_release", "view_dashboard"),
     "/suites":        ("manage_test_suites", "view_suite_quality_gates"),
     "/settings":      (),  # special: any manage_* permission
@@ -292,9 +281,10 @@ def get_landing_page(user_permissions: set,
     if has_bulk:
         return "/requirements"
 
-    # 4. Release Owner read-only view — new dashboard at /dashboard.
+    # 4. Release Owner read-only view — the executive page was absorbed into
+    #    Releases and retired, so that is where a read-only owner lands.
     if has_dashboard and not has_any_run:
-        return "/dashboard"
+        return "/releases"
 
     # 5. Admin without explicit dashboard perm still lands there.
     if has_any_manage:
@@ -302,7 +292,7 @@ def get_landing_page(user_permissions: set,
 
     # 6. Fallback.
     if has_dashboard:
-        return "/dashboard"
+        return "/releases"
     if "run_single_ticket" in perms:
         return "/requirements"
     # Utterly unprivileged — send them to / so the page can render an
