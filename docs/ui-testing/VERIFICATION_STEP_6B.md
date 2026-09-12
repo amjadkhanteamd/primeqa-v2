@@ -179,3 +179,34 @@ artefact, ledgered since D-488 and unrelated to 6b. The world remover deleted
 what the fixture minted (D-490's lesson): after it, scratch carries zero
 releases, zero requirements, zero decisions, no org on 5901, no waivers, and
 the seed policy back at DRAFT.
+
+## j. Post-merge transcript (2026-09-12)
+
+**Merge** 23b6798; author AK, zero `Co-Authored-By`. Classified WRITE-FREE as to
+schema and SQL (zero migrations, zero alembic diff, zero DDL, zero new SQL write
+statements, 15 added statements all SELECT), dumpless, with the qualifier that
+three new POST routes trigger writes that already existed through the Step 5
+services unchanged.
+
+**Deploy.** Four services SUCCESS, health 200, `error_rate 0.0`, zero
+error-class lines per service.
+
+### The production proof, GET only
+
+| check | result |
+|---|---|
+| `/releases` | **200**, 23 cards: **20 not evaluated · 1 refuses · 2 stale** |
+| nav | four hooks for a member, three for a viewer |
+| release 16 | **decision 72 exactly**: GO · Plimsol default v1 · plan 9ea0c522 · recorded 06:01 · final GO by Amanda Rivera 06:02 · Compare present |
+| Settings | the four groups: General, Release quality, Conformance setup, Org reference |
+| policy page | frozen ("immutable"); **Activate absent**, because production's seed is active not draft |
+| Sites & personas | its sentence renders, and the page contains **zero forms** |
+| redirects | `/dashboard` → `/releases`, `/ui-report/compare` → `/releases/compare`, `/ui-report/coverage` → `/settings/standards` |
+
+Screenshots: `LIVE_releases_list.png`, `LIVE_release_16_decision.png`,
+`LIVE_settings_policy.png`, `LIVE_settings_sites.png`.
+
+Recorded as **D-491**. Next, in order: the retirement commit (deleting the 6a
+and 6b redirect paths, gated on the dead-link sweep), then the session/query
+slice (106 queries on the decision tab, 51 on Requirements) under Step 2a's
+parity discipline.
