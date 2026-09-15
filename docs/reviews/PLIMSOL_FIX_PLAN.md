@@ -883,3 +883,32 @@
   earlier one because the anchor text did not match. Every scripted edit must
   `assert` its anchor and be verified by reading back the result — a script that
   prints "applied" having changed nothing is worse than one that fails.
+
+## Added 2026-09-15 — from the AUD-013 containment (plan required at the intake)
+
+- **Closed here: the plan requirement is enforced at the intake, the sync
+  entry and the worker**, and every route and fan-out refuses first with the
+  plan named. On scratch, all seven plan-less paths now refuse; the planner's
+  own path runs and stamps the plan on the job.
+- **Medium: the CI webhook is refused until it learns to plan.** It is
+  configured on production and, under containment, a signed trigger gets
+  `409 PLAN_REQUIRED`. The fix is the schedule's shape (D-486): record a plan
+  under the webhook's authority for the release's scope, then execute THAT
+  plan. Its own slice — it needs an authority model for a machine caller.
+- **Medium: the two claim-level run routes and the API now refuse rather than
+  plan.** Either teach them plan-for-one-claim (a requirement-scoped plan
+  filtered to the claim, executed at once) or retire them as `/run` was and
+  remove the buttons. Until then a claim page's Run refuses with the exit named.
+- **Low: 85 pending repair proposals on production will re-run under their
+  run's plan, or be refused if that run is legacy.** 1,314 legacy runs keep
+  `plan_id NULL` by decision (no backfill). A repair decided on a legacy run
+  now records the refusal instead of enqueueing a plan-less re-run — check the
+  first few decisions after deploy read that way.
+- **Low: `/requirements/<id>/run-substrate` is an orphan route** (no template
+  links to it) that now refuses; retire it with the claim-level routes.
+- **Low (pre-existing, found while gating this slice): five harness tests rot
+  with the calendar.** `test_step_b_staleness_pin` plants runs dated
+  2026-09-06 and asserts GO under a 168-hour freshness window; `test_step_5_policy`
+  fixes `NOW` and a waiver expiry against it. Both went red on 2026-09-15 on
+  `main` and on this branch alike (proven in a worktree). D-487 already made the
+  schedule scratch test's clock relative; the same fix applies here.
