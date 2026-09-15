@@ -187,3 +187,31 @@ as stale tests under the corrected semantics (§c). Nothing else moved.
 | runs with a plan | 1,567 |
 | pending repair proposals | 85 — each re-runs under its run's plan, or records the refusal if that run is legacy |
 | `WEBHOOK_SECRET` on production | configured — the CI webhook is live-capable and will now refuse (§a.4) |
+
+## h. Post-merge transcript (2026-09-15)
+
+**Merge** 1eb64a8 (parents 35f89c3 + fce35f2); author AK, zero `Co-Authored-By`.
+WRITE-FREE, dumpless. Four services SUCCESS on 1eb64a8 by 09:10:37Z; health
+200, `error_rate 0.0`; zero error-class lines on all four services before and
+after the proofs.
+
+**The fork answered.** AK's GO #1 carried "with the webhook fork answered": the
+webhook refuses as built, until it learns the schedule's plan-then-execute
+shape (its own slice, in the FIX PLAN).
+
+### The production proof
+
+Two refused POSTs — each refused at the top of its route, before any write —
+and one GET, against the deployed app:
+
+| act | before the merge | after |
+|---|---|---|
+| `GET /releases/16?tab=decision` | 200 | **200**, quality-decision card present |
+| `POST /api/s4-execution-jobs` as a member whose id holds no environment access | 403, environment scope | **409 PLAN_REQUIRED**, names the plan |
+| `POST /api/webhooks/ci-trigger`, correctly signed | would have fanned out | **409 PLAN_REQUIRED**, names the plan |
+| the same, unsigned | 401 | **401 UNAUTHORIZED**, no plan mentioned — the signature gate stays first |
+
+Nothing written: job counts unchanged (2,267 completed, 4 failed, 0 other),
+newest job row untouched, zero activity-log rows in the window.
+
+Recorded as **D-494**.
