@@ -18,7 +18,7 @@ def recorded(monkeypatch):
     function-locally, so the source attr is the one seam)."""
     calls = []
 
-    def _fake_enqueue(*, tenant_id, test_id, environment_id, created_by=None):
+    def _fake_enqueue(*, tenant_id, test_id, environment_id, created_by=None, plan_id=None):
         calls.append({"tenant_id": tenant_id, "test_id": test_id,
                       "environment_id": environment_id})
         return types.SimpleNamespace(id=len(calls), status="queued")
@@ -43,11 +43,21 @@ def test_approval_no_longer_auto_enqueues():
 
 
 def test_enqueue_claims_for_keys_empty_keys_short_circuits(recorded):
-    out = console.enqueue_claims_for_keys(1, [], 59)
+    out = console.enqueue_claims_for_keys(1, [], 59, plan_id="p1")
     assert out == {"enqueued": [], "claim_count": 0}
     assert recorded == []
 
 
 def test_enqueue_claims_for_keys_best_effort_bad_tenant(recorded):
-    out = console.enqueue_claims_for_keys(-1, ["X-1"], 59)
+    out = console.enqueue_claims_for_keys(-1, ["X-1"], 59, plan_id="p1")
     assert out == {"enqueued": [], "claim_count": 0}       # never raises
+
+def test_a_plan_less_fan_out_refuses_loudly(recorded):
+    """AUD-013: with keys and no plan, the fan-out raises rather than
+    best-efforting to an empty answer — silence here was the hole."""
+    import pytest
+    from primeqa.execution_engine.errors import PlanRequiredError
+    from primeqa.intelligence.s4_execution_console import enqueue_claims_for_keys
+    with pytest.raises(PlanRequiredError):
+        enqueue_claims_for_keys(1, ["SQ-1"], 7)
+    assert recorded == []

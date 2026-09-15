@@ -127,8 +127,14 @@ def _write_claim_and_recipe(session, *, asserted_field: str,
     return cr.test_id, rr.recipe_id, rr.version_seq
 
 
+# AUD-013: every run a repair may re-run carries the plan it ran under; the
+# re-run inherits it. A LEGACY run (plan_id=None) is the one shape that is now
+# refused, and one test below plants exactly that.
+PLAN = "00000000-0000-4000-8000-00000000a013"
+
+
 def _plant_run(conn, *, claim_id, recipe_id, recipe_seq, outcome, verdict,
-               cause_kind, error=None):
+               cause_kind, error=None, plan_id=PLAN):
     run_id = uuid4()
     now = datetime.now(timezone.utc)
     steps = []
@@ -137,11 +143,11 @@ def _plant_run(conn, *, claim_id, recipe_id, recipe_seq, outcome, verdict,
     conn.execute(text(
         "INSERT INTO s4_execution_runs (run_id, recipe_id, recipe_version_seq, "
         "claim_test_id, environment_id, outcome, started_at, finished_at, "
-        "evidence) VALUES (:r, :rc, :rs, :c, :e, :o, :t, :t, "
-        "CAST(:ev AS jsonb))"),
+        "evidence, plan_id) VALUES (:r, :rc, :rs, :c, :e, :o, :t, :t, "
+        "CAST(:ev AS jsonb), CAST(:p AS uuid))"),
         {"r": str(run_id), "rc": str(recipe_id), "rs": recipe_seq,
          "c": str(claim_id), "e": ENV, "o": outcome, "t": now,
-         "ev": json.dumps({"steps": steps})})
+         "ev": json.dumps({"steps": steps}), "p": plan_id})
     conn.execute(text(
         "INSERT INTO s6_interpretations (run_id, recipe_id, claim_test_id, "
         "outcome, verdict, detail, cause_kind) VALUES (:r, :rc, :c, :o, :v, "
@@ -870,3 +876,20 @@ def test_h_settings_page_is_the_one_home_and_audits_each_flag(world):
     finally:
         _settings(agent_enabled=True, repair_auto_apply=False,
                   repair_gate_apply_enabled=False, max_fix_attempts_per_run=3)
+
+
+def test_z_a_legacy_run_without_a_plan_is_refused_with_the_plan_named(world):
+    """AUD-013: a repair re-run runs under ITS run's plan. A legacy run has
+    none and nothing is backfilled, so its re-run is refused — loudly, in the
+    decision record — never enqueued plan-less."""
+    from primeqa.intelligence.repair_agent import _apply
+    from primeqa.semantic.connection import get_tenant_connection
+    claim, recipe, seq = world["A"]
+    with get_tenant_connection(TENANT) as conn:
+        run = _plant_run(conn, claim_id=claim, recipe_id=recipe, recipe_seq=seq,
+                         outcome="failed", verdict="creation_rejected",
+                         cause_kind="validation_rule", plan_id=None)
+    out = _apply(TENANT, {"proposal_kind": "rerun", "claim_test_id": str(claim),
+                          "environment_id": ENV, "run_id": str(run)}, decided_by=1)
+    assert "no plan" in (out.get("error") or ""), out
+    assert "D-486" in out["error"]

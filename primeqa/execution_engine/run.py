@@ -1165,6 +1165,7 @@ def run_claim_execution_for_tenant(
     session_scope=None,
     single_fn=None,
     runall_fn=None,
+    plan_id=None,
 ):
     """Production sync entry — ROUTE by the claim's recorded strategy kind (D-278,
     Slice 3.4), then run + commit. Opens one tenant connection, resolves the claim's
@@ -1188,6 +1189,10 @@ def run_claim_execution_for_tenant(
     consumer wiring is a Slice-4 companion (it lands with the RunAllResult
     result-handling the consumer will then need).
     """
+    from primeqa.execution_engine.errors import PlanRequiredError
+    if not plan_id:                                     # AUD-013: the sync entry is an execution too
+        raise PlanRequiredError(test_id=test_id, where="sync run")
+    _plan_kw = _plan_kwargs(plan_id)
     from primeqa.execution_engine.stranded_cleanup import StrandedRecordSink
 
     coord = coordinator or SemanticTransactionCoordinator()
@@ -1205,12 +1210,12 @@ def run_claim_execution_for_tenant(
                 available_environment=available_environment, client=client,
                 coordinator=coord, record_sink=sink,
                 field_overrides=field_overrides, caller_tier=caller_tier,
-                tenant_id=tenant_id)        # 4c.0: for the batch manifest's own txn
+                tenant_id=tenant_id, **_plan_kw)        # 4c.0: for the batch manifest's own txn
         return single(
             session, test_id, environment_id=environment_id,
             available_environment=available_environment, client=client,
             coordinator=coord, record_sink=sink,
-            field_overrides=field_overrides, caller_tier=caller_tier)
+            field_overrides=field_overrides, caller_tier=caller_tier, **_plan_kw)
 
 
 def async_run_claim_execution_for_tenant(
@@ -1247,6 +1252,9 @@ def async_run_claim_execution_for_tenant(
     :class:`RunAllResult` on the run-all branch. ``session_scope`` / ``single_fn`` /
     ``runall_fn`` are injectable seams for tests (assert WHICH path is selected
     without a live SF run)."""
+    if not plan_id:                                     # AUD-013: a queued job without a plan does not run
+        from primeqa.execution_engine.errors import PlanRequiredError
+        raise PlanRequiredError(test_id=test_id, where="worker")
     coord = coordinator or SemanticTransactionCoordinator()
     scope = session_scope or _default_session_scope
     single = single_fn or run_recipe_execution_async

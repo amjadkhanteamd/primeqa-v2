@@ -71,7 +71,8 @@ def _map_run_result(result) -> dict:
 
 
 def trigger_claim_run(tenant_id: int, test_id, environment_id: int, *,
-                      client=None, field_overrides=None, caller_tier=None) -> dict:
+                      client=None, field_overrides=None, caller_tier=None,
+                      plan_id=None) -> dict:
     """Run the eligible recipe for ``test_id`` on ``environment_id`` (synchronous).
     Best-effort — returns ``{ok: False, error}`` on any failure (never raises).
     On success: ``{ok: True, ran, outcome, verdict, recipe_id}`` (``ran=False`` +
@@ -90,6 +91,7 @@ def trigger_claim_run(tenant_id: int, test_id, environment_id: int, *,
         result = run_claim_execution_for_tenant(
             tenant_id, UUID(str(test_id)), environment_id=environment_id,
             client=client, field_overrides=field_overrides or None,
+            plan_id=plan_id,
             caller_tier=caller_tier)
         return _map_run_result(result)
     except Exception as exc:                      # credential / SF / execution error
@@ -795,7 +797,7 @@ def deprecate_claim(tenant_id: int, test_id, reason: str) -> dict:
 # --- D-199 trigger 3: bulk-enqueue a release's claims (the CI gate re-verify) --
 
 def enqueue_claims_for_keys(tenant_id: int, external_keys, environment_id: int,
-                            *, created_by=None) -> dict:
+                            *, created_by=None, plan_id=None) -> dict:
     """Enqueue every coverage claim (COVERAGE_LINK_KINDS: ``generated_from``
     + curated ``verifies``) behind ``external_keys`` for
     execution on ``environment_id`` (deduped; best-effort per claim). The CI
@@ -804,6 +806,10 @@ def enqueue_claims_for_keys(tenant_id: int, external_keys, environment_id: int,
     keys = [k for k in (external_keys or []) if k]
     if not keys:
         return {"enqueued": [], "claim_count": 0}
+
+    if not plan_id:                                     # AUD-013: loud, before any read
+        from primeqa.execution_engine.errors import PlanRequiredError
+        raise PlanRequiredError(where="enqueue_claims_for_keys")
     try:
         from sqlalchemy.orm import Session
 
@@ -834,7 +840,8 @@ def enqueue_claims_for_keys(tenant_id: int, external_keys, environment_id: int,
             try:
                 job = enqueue_s4_execution(
                     tenant_id=tenant_id, test_id=tid,
-                    environment_id=environment_id, created_by=created_by)
+                    environment_id=environment_id, created_by=created_by,
+                    plan_id=plan_id)
                 jobs.append(job.id)
             except UnexecutableClaimError as exc:
                 # D-223: shape refusal — skip this claim, never the batch.
@@ -855,11 +862,14 @@ def enqueue_claims_for_keys(tenant_id: int, external_keys, environment_id: int,
 # --- D-214 trigger: enqueue EVERY approved claim (the scheduled regression) ---
 
 def enqueue_all_approved_claims(tenant_id: int, environment_id: int,
-                                *, created_by=None) -> dict:
+                                *, created_by=None, plan_id=None) -> dict:
     """Enqueue every currently-APPROVED claim for execution on
     ``environment_id`` — the scheduled-regression trigger's body (D-214).
     Deduped by the job store's active-set semantics; best-effort per claim.
     Never raises."""
+    if not plan_id:                                     # AUD-013: loud, before any read
+        from primeqa.execution_engine.errors import PlanRequiredError
+        raise PlanRequiredError(where="enqueue_all_approved_claims")
     try:
         from primeqa.execution_engine.intake import enqueue_s4_execution
         from primeqa.semantic.connection import get_tenant_connection
@@ -874,7 +884,8 @@ def enqueue_all_approved_claims(tenant_id: int, environment_id: int,
             try:
                 job = enqueue_s4_execution(
                     tenant_id=tenant_id, test_id=tid,
-                    environment_id=environment_id, created_by=created_by)
+                    environment_id=environment_id, created_by=created_by,
+                    plan_id=plan_id)
                 jobs.append(job.id)
             except UnexecutableClaimError as exc:
                 # D-223: shape refusal — skip this claim, never the batch.

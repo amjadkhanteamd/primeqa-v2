@@ -3,6 +3,7 @@
 All pages require authentication via JWT cookie except /login.
 """
 
+import logging
 import os
 import re
 from contextlib import ExitStack as _ExitStack
@@ -422,6 +423,21 @@ def ask():
             active_page="ask", environments=environments, answer=answer, form=form))
 
     return _render()
+
+
+def _hash_share_token(raw: str) -> str:
+    """SHA-256 of the raw token, hex-encoded. Stored in
+    shared_dashboard_links.token (UNIQUE VARCHAR(64)). Lookups compute
+    the hash from the incoming URL token and match by equality — the
+    raw token never lands in the DB so a dump doesn't leak active
+    links.
+
+    Restored verbatim from 7fd518f^ (AUD-006): the v1 retirement deleted this
+    definition while both callers stayed, so every share link 500'd and none
+    could be minted. Verbatim, so links hashed before the retirement still
+    match."""
+    import hashlib
+    return hashlib.sha256(raw.encode("utf-8")).hexdigest()
 
 
 @views_bp.route("/api/dashboard/share", methods=["POST"])
@@ -3108,6 +3124,11 @@ def requirements_run_substrate(req_id):
             {"toast": {"message": message, "kind": kind}})
         return resp
 
+    from primeqa.execution_engine.errors import PlanRequiredError
+    if is_hx:                                              # AUD-013: the page's Plan is the exit
+        return _hx_notice(PlanRequiredError.REASON)
+    flash(PlanRequiredError.REASON, "error")
+    return redirect(f"/requirements/{req_id}")
     env_id = request.form.get("environment_id", type=int)
     db = next(get_db())
     try:
@@ -3514,6 +3535,9 @@ def claims_run(test_id):
     environment_id = request.form.get("environment_id", type=int)
     confirm_production = request.form.get("confirm_production") in ("on", "1", "true")
     field_overrides = _parse_field_overrides(request.form.get("field_overrides"))
+    from primeqa.execution_engine.errors import PlanRequiredError
+    flash(PlanRequiredError.REASON, "error")               # AUD-013: before the environment gate
+    return redirect(f"/claims/{test_id}")
     if not environment_id:
         flash("Pick an environment to run against.", "error")
         return redirect(f"/claims/{test_id}")
@@ -3587,6 +3611,9 @@ def claims_run_async(test_id):
     def _refused(message, tone="error"):
         return render_template("claims/_run_status.html", **ctx(
             state="refused", message=message, tone=tone, test_id=str(test_id)))
+
+    from primeqa.execution_engine.errors import PlanRequiredError
+    return _refused(PlanRequiredError.REASON)             # AUD-013: before the environment gate
 
     if not environment_id:
         return _refused("Pick an environment to run against.")
@@ -4545,6 +4572,13 @@ def api_s4_execution_enqueue():
     D-245 Phase 6: gated at the Member tier (the floor of the old inline
     ``("admin","tester","superadmin")`` list — ``ba`` admitted too, superadmin
     via the ladder top)."""
+    # AUD-013 containment: refused before any other gate, so a plan-less
+    # request is refused for the reason that is true of it. There is no
+    # plan to accept here: an execution is started from a recorded plan
+    # (POST /plans/<id>/run), never from a bare claim + environment.
+    from primeqa.execution_engine.errors import PlanRequiredError
+    return ({"error": {"code": "PLAN_REQUIRED", "message": PlanRequiredError.REASON}}, 409)
+
     from uuid import UUID
 
     body = request.get_json(silent=True) or {}
@@ -4833,6 +4867,9 @@ def releases_run(release_id):
             external_keys_for_requirements,
         )
         tid = request.user["tenant_id"]
+        from primeqa.execution_engine.errors import PlanRequiredError
+        flash(PlanRequiredError.REASON, "error")           # AUD-013: the decision tab plans, then runs THAT plan
+        return redirect(f"/releases/{release_id}?tab=decision")
         env_id = request.form.get("environment_id", type=int)
         if not env_id:
             flash("Pick an environment to run against.", "error")

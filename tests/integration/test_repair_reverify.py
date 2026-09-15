@@ -164,7 +164,7 @@ def _run_fn_persisting(outcome="failed", verdict="creation_rejected"):
 
     from primeqa.execution_engine.run import RunPathResult
 
-    def _fn(tenant_id, test_id, *, environment_id, client=None):
+    def _fn(tenant_id, test_id, *, environment_id, client=None, plan_id=None):
         with T._conn() as conn:
             rec = conn.execute(text(
                 "SELECT recipe_id, version_seq FROM test_recipes WHERE claim_test_id = "
@@ -180,7 +180,7 @@ def _run_fn_persisting(outcome="failed", verdict="creation_rejected"):
     return _fn
 
 
-def _run_fn_nothing(tenant_id, test_id, *, environment_id, client=None):
+def _run_fn_nothing(tenant_id, test_id, *, environment_id, client=None, plan_id=None):
     from primeqa.execution_engine.run import RunPathResult
     return RunPathResult(ran=False, reason="no_eligible_recipe")
 

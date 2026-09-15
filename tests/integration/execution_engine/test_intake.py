@@ -19,9 +19,12 @@ def _store():
     return ExecutionJobStore(TEST_TENANT_ID)
 
 
+PLAN = "00000000-0000-4000-8000-00000000a013"   # AUD-013: no execution without a recorded plan; the column is a uuid with no FK
+
+
 def test_enqueue_creates_a_queued_job():
     tid = uuid4()
-    job = enqueue_s4_execution(
+    job = enqueue_s4_execution(plan_id=PLAN,
         tenant_id=TEST_TENANT_ID, test_id=tid, environment_id=7, created_by=3)
     assert job.status == "queued"
     assert job.test_id == str(tid) and job.environment_id == 7
@@ -29,16 +32,16 @@ def test_enqueue_creates_a_queued_job():
 
 def test_enqueue_is_idempotent_while_active():
     tid = uuid4()
-    a = enqueue_s4_execution(tenant_id=TEST_TENANT_ID, test_id=tid, environment_id=7)
-    b = enqueue_s4_execution(tenant_id=TEST_TENANT_ID, test_id=tid, environment_id=7)
+    a = enqueue_s4_execution(tenant_id=TEST_TENANT_ID, test_id=tid, environment_id=7, plan_id=PLAN)
+    b = enqueue_s4_execution(tenant_id=TEST_TENANT_ID, test_id=tid, environment_id=7, plan_id=PLAN)
     assert a.id == b.id                              # same active job, not a duplicate
 
 
 def test_enqueue_rerunnable_after_terminal():
     tid = uuid4()
-    a = enqueue_s4_execution(tenant_id=TEST_TENANT_ID, test_id=tid, environment_id=7)
+    a = enqueue_s4_execution(tenant_id=TEST_TENANT_ID, test_id=tid, environment_id=7, plan_id=PLAN)
     _store().complete(a.id)                          # terminal
-    c = enqueue_s4_execution(tenant_id=TEST_TENANT_ID, test_id=tid, environment_id=7)
+    c = enqueue_s4_execution(tenant_id=TEST_TENANT_ID, test_id=tid, environment_id=7, plan_id=PLAN)
     assert c.id != a.id                              # a fresh job once the prior is terminal
 
 
@@ -50,7 +53,21 @@ def test_enqueue_then_tick_completes_the_job():
     # offline. (The same tick the worker fires, so green here ⇒ the production loop
     # runs an enqueued job on the next poll.)
     tid = uuid4()
-    job = enqueue_s4_execution(tenant_id=TEST_TENANT_ID, test_id=tid, environment_id=7)
+    job = enqueue_s4_execution(tenant_id=TEST_TENANT_ID, test_id=tid, environment_id=7, plan_id=PLAN)
     outcomes = run_s4_execution_tick([TEST_TENANT_ID])           # production defaults
     assert outcomes[TEST_TENANT_ID] == f"processed:{job.id}"
     assert _store().get_job(job.id).status == "completed"
+
+
+def test_a_plan_less_enqueue_is_refused_before_the_recipe_gate():
+    """AUD-013: a claim with NO recipe at all would also be refused by the
+    recipe gate — the plan must be named first, because it is the reason that
+    is true of the request before any other is."""
+    from primeqa.execution_engine.errors import PlanRequiredError
+    from uuid import uuid4
+    try:
+        enqueue_s4_execution(tenant_id=TEST_TENANT_ID, test_id=uuid4(), environment_id=7)
+    except PlanRequiredError as e:
+        assert "no plan" in str(e) and e.where == "intake"
+    else:
+        raise AssertionError("a plan-less enqueue was accepted")

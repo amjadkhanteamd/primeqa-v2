@@ -6,7 +6,6 @@ Endpoints: /api/runs/*
 from flask import Blueprint, jsonify, request
 
 from primeqa.core.auth import require_auth, require_role
-from primeqa.db import get_db
 from primeqa.shared.api import json_error
 
 execution_bp = Blueprint("execution", __name__)
@@ -59,25 +58,14 @@ def jira_ticket_search():
     if len(q) < 2:
         return _render([], hint="Type at least 2 characters\u2026")
 
-    db = next(get_db())
-    try:
-        if conn_id:
-            client = _jira_client(db, conn_id, request.user["tenant_id"])
-            if not client:
-                return _render([], hint="Jira connection not found or not configured.")
-            effective_conn_id = conn_id
-        else:
-            client, env = _jira_client_for_env(db, env_id, request.user["tenant_id"])
-            if not client:
-                return _render([], hint=(
-                    "This environment has no Jira connection. "
-                    "Attach one in Settings \u2192 Environments, or pick a different env."
-                ))
-            effective_conn_id = env.jira_connection_id
-        try:
-            results = client.search_issues(q, connection_id=effective_conn_id, limit=limit)
-        except Exception as e:
-            return _render([], error=f"Jira search failed: {e}")
-        return _render(results)
-    finally:
-        db.close()
+    # AUD-009: the search client (`_jira_client` / `_jira_client_for_env`,
+    # built on the v1 JiraClient) retired with the v1 layer in dc9b005, and
+    # this branch kept calling it — NameError on every search that named a
+    # connection. No search client exists in the live tree (only the
+    # single-issue fetch the import path uses), and the requirements picker
+    # never sends its connection with the query, so live search has not
+    # worked since the retirement. The route now says so instead of dying;
+    # rebuilding search is ledgered in the FIX PLAN.
+    return _render([], hint=(
+        "Ticket search is not available: the Jira search client was retired "
+        "with the v1 layer. Enter ticket keys directly to import them."))
