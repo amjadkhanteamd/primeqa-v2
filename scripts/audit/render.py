@@ -62,6 +62,9 @@ def main():
                 continue
             body = resp.get_data(as_text=True)
             final = resp.request.path if resp.request else path
+            if os.environ.get("AUDIT_SAVE_DIR"):
+                _fn = os.path.join(os.environ["AUDIT_SAVE_DIR"], "%s__%s.html" % (label, re.sub(r"[^A-Za-z0-9]+", "_", path)[:120]))
+                open(_fn, "w").write(body)
             is_json = resp.mimetype == "application/json"
             m = MAIN_RX.search(body)
             main_text = TAG_RX.sub(" ", SCRIPT_RX.sub("", m.group(1))) if m else ""
