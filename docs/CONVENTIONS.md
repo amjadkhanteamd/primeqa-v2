@@ -212,6 +212,11 @@ For PostgreSQL on macOS Homebrew:
   must take an unused number, or carry a continuation marker
   (`(close)` / `CLOSE` / `(design)` / `Result` / `REALIZED` / `(cont.)`)
   when they extend an existing decision — enforced by
+  Undefined-name gate: `tests/unit/test_no_undefined_names.py` runs pyflakes
+  over `primeqa/` and fails on any F821 — and fails, never skips, when
+  pyflakes is absent (`pip install -r requirements-dev.txt`). The pre-commit
+  hook runs the same check on staged Python. Origin: the v1 retirement
+  deleted definitions and left callers behind (audit 2026-09, AUD-006/8/9/10).
   `scripts/check_decision_numbers.py` (runs in the unit gate suite;
   commit-time via `git config core.hooksPath .githooks`, once per clone).
 - **`EVOLUTION.md`** (per substrate) is append-only.
