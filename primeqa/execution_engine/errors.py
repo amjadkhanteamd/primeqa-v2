@@ -145,3 +145,29 @@ class UnexecutableClaimError(ExecutionEngineError):
         super().__init__(
             f"claim {test_id} has no S4-executable recipe: {detail}"
         )
+
+
+class PlanRequiredError(ExecutionEngineError):
+    """An execution was asked for with no recorded plan behind it.
+
+    D-486 records that every execution starts from a RECORDED plan. Until the
+    audit of 2026-09-15 that held by convention of the caller — the release,
+    requirement and schedule entry points planned first, while the jobs API,
+    the two claim-level run routes, the CI webhook and the repair re-runs
+    handed the intake a job with no plan and it accepted it (AUD-013). This
+    error is the invariant enforced where every execution passes: the intake
+    for queued runs, the sync entry for immediate ones, and the worker for a
+    queued job that arrives without one.
+
+    The reason names the missing plan and the exit, so every route can show it
+    verbatim. Legacy rows keep their NULL; nothing is backfilled.
+    """
+
+    REASON = ("no plan: an execution starts from a recorded plan (D-486). "
+              "Plan it from the requirement or release page, or let the "
+              "schedule plan it, then run that plan.")
+
+    def __init__(self, *, test_id=None, where: str = "intake") -> None:
+        self.test_id = test_id
+        self.where = where
+        super().__init__(self.REASON)

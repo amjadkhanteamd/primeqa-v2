@@ -526,7 +526,7 @@ def revert_refused_auto_applies(tenant_id: int, *, actor_user_id: Optional[int] 
     out: list = []
     with get_tenant_connection(tenant_id) as conn:
         rows = conn.execute(text(
-            "SELECT id, claim_test_id, environment_id, gate_verdict, payload "
+            "SELECT id, run_id, claim_test_id, environment_id, gate_verdict, payload "
             "FROM repair_proposals WHERE status = 'applied' AND auto_applied "
             "  AND proposal_kind = 'recipe_edit' AND reverted_at IS NULL "
             "ORDER BY id")).mappings().all()
@@ -594,9 +594,11 @@ def revert_refused_auto_applies(tenant_id: int, *, actor_user_id: Optional[int] 
                     session.commit()
                 finally:
                     session.close()
+            from primeqa.execution_engine.intake import plan_of_run
             job = enqueue_s4_execution(
                 tenant_id=tenant_id, test_id=r["claim_test_id"],
-                environment_id=r["environment_id"])
+                environment_id=r["environment_id"],
+                plan_id=plan_of_run(tenant_id, r.get("run_id")))   # AUD-013
             rec.update(action="reverted", recipe_id=str(recipe_id),
                        new_version_seq=res.version_seq,
                        restores_version_seq=int(new_seq) - 1,
@@ -631,7 +633,7 @@ def reexamine_applied(tenant_id: int, *, actor_user_id: Optional[int] = None) ->
     out: list = []
     with get_tenant_connection(tenant_id) as conn:
         rows = conn.execute(text(
-            "SELECT p.id, p.claim_test_id, p.environment_id, p.gate_verdict, "
+            "SELECT p.id, p.run_id, p.claim_test_id, p.environment_id, p.gate_verdict, "
             "       p.payload, p.revert_recipe_version_seq, c.status AS claim_status "
             "FROM repair_proposals p "
             "LEFT JOIN test_claims c ON c.test_id = p.claim_test_id "
@@ -685,9 +687,11 @@ def reexamine_applied(tenant_id: int, *, actor_user_id: Optional[int] = None) ->
                     session.commit()
                 finally:
                     session.close()
+            from primeqa.execution_engine.intake import plan_of_run
             job = enqueue_s4_execution(
                 tenant_id=tenant_id, test_id=r["claim_test_id"],
-                environment_id=r["environment_id"], created_by=actor_user_id)
+                environment_id=r["environment_id"], created_by=actor_user_id,
+                plan_id=plan_of_run(tenant_id, r.get("run_id")))   # AUD-013
             with get_tenant_connection(tenant_id) as conn:
                 conn.execute(text(
                     "UPDATE repair_proposals SET applied_recipe_version_seq = :v, "

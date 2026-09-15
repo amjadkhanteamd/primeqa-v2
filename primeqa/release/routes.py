@@ -460,6 +460,14 @@ def ci_webhook_trigger():
         if not ok:
             return json_error("FORBIDDEN", msg, http=403)
 
+        # AUD-013 containment: the webhook carries no recorded plan, and an
+        # execution starts from one (D-486). It is refused here, after the
+        # signature and production gates, with the reason on the wire. The
+        # follow-up that keeps CI working is the schedule's shape — plan under
+        # the webhook's authority, then execute THAT plan — not a bare enqueue.
+        from primeqa.execution_engine.errors import PlanRequiredError
+        return json_error("PLAN_REQUIRED", PlanRequiredError.REASON, http=409)
+
         # D-221 R3: the v1 pipeline half retired with the engine — the CI
         # trigger is substrate-only now. CI polls /status whose D-198
         # substrate block carries the verdict over fresh evidence.
