@@ -21,3 +21,20 @@ if git diff --cached --name-only | grep -q '^docs/architecture/DECISIONS_LOG\.md
     fi
 fi
 exit 0
+
+# Undefined-name gate (AUD-006/008/009/010): a call site that outlived its
+# definition must not reach the ledger. Checks the STAGED Python only; the
+# backstop is tests/unit/test_no_undefined_names.py over the whole package.
+staged_py=$(git diff --cached --name-only --diff-filter=ACM | grep '^primeqa/.*\.py$')
+if [ -n "$staged_py" ]; then
+    if ! python3 -c "import pyflakes" 2>/dev/null; then
+        echo "pre-commit: pyflakes is not installed (pip install -r requirements-dev.txt)." >&2
+        exit 1
+    fi
+    hits=$(echo "$staged_py" | xargs python3 -m pyflakes 2>&1 | grep 'undefined name')
+    if [ -n "$hits" ]; then
+        echo "pre-commit: undefined names in staged Python — fix before committing; --no-verify is prohibited." >&2
+        echo "$hits" >&2
+        exit 1
+    fi
+fi

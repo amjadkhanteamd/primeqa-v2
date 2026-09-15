@@ -3,6 +3,7 @@
 All pages require authentication via JWT cookie except /login.
 """
 
+import logging
 import os
 import re
 from contextlib import ExitStack as _ExitStack
@@ -422,6 +423,21 @@ def ask():
             active_page="ask", environments=environments, answer=answer, form=form))
 
     return _render()
+
+
+def _hash_share_token(raw: str) -> str:
+    """SHA-256 of the raw token, hex-encoded. Stored in
+    shared_dashboard_links.token (UNIQUE VARCHAR(64)). Lookups compute
+    the hash from the incoming URL token and match by equality — the
+    raw token never lands in the DB so a dump doesn't leak active
+    links.
+
+    Restored verbatim from 7fd518f^ (AUD-006): the v1 retirement deleted this
+    definition while both callers stayed, so every share link 500'd and none
+    could be minted. Verbatim, so links hashed before the retirement still
+    match."""
+    import hashlib
+    return hashlib.sha256(raw.encode("utf-8")).hexdigest()
 
 
 @views_bp.route("/api/dashboard/share", methods=["POST"])

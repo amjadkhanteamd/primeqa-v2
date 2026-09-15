@@ -1,0 +1,6 @@
+# Test and gate dependencies. Not shipped in the runtime image.
+# The unit gate suite (`pytest tests/unit`) needs BOTH: pytest to run it, and
+# pyflakes for tests/unit/test_no_undefined_names.py — a gate that must fail,
+# not skip, when its tool is absent.
+pytest>=9.0
+pyflakes==3.4.0
