@@ -124,7 +124,7 @@ def _run(claim, *, single, runall, session_obj=None, test_id=None):
     test_id = test_id or uuid4()
     coord = _DispatchCoord(claim)
     out = run_claim_execution_for_tenant(
-        1, test_id, environment_id=7, coordinator=coord,
+        1, test_id, environment_id=7, plan_id="test-plan", coordinator=coord,
         session_scope=_scope_yielding(session_obj),
         single_fn=single, runall_fn=runall)
     return out, coord, session_obj, test_id
@@ -261,7 +261,7 @@ def _async_run(claim, *, single, runall, test_id=None):
     test_id = test_id or uuid4()
     coord = _DispatchCoord(claim)
     out = async_run_claim_execution_for_tenant(
-        1, test_id, environment_id=7, coordinator=coord,
+        1, test_id, environment_id=7, plan_id="test-plan", coordinator=coord,
         session_scope=_scope_yielding(object()),
         single_fn=single, runall_fn=runall)
     return out, test_id

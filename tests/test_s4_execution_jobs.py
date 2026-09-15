@@ -93,7 +93,7 @@ def run_tests():
         assert r.status_code == 404, f"{r.status_code} {r.data[:200]}"
     results.append(test("404 on unknown environment", test_404_on_unknown_env))
 
-    def test_202_and_status_poll():
+    def test_refused_without_a_plan_before_anything_else():
         # A random test_id (no approved recipe) → if the live worker claims it, it
         # no-ops (select → ran=False → completed; no org write). Idempotency is
         # proven deterministically offline (test_intake.py) — asserting it here
@@ -102,7 +102,12 @@ def run_tests():
         try:
             r1 = client.post("/api/s4-execution-jobs", headers=H,
                              json={"test_id": tid, "environment_id": env_id})
-            assert r1.status_code == 202, f"{r1.status_code} {r1.data[:200]}"
+            # AUD-013: the API carries no recorded plan, so it is refused FIRST,
+            # naming the plan — before the environment or the recipe is looked at.
+            assert r1.status_code == 409, f"{r1.status_code} {r1.data[:200]}"
+            assert r1.get_json()["error"]["code"] == "PLAN_REQUIRED"
+            assert "no plan" in r1.get_json()["error"]["message"]
+            return
             j1 = r1.get_json()
             assert j1["status"] == "queued", f"status={j1.get('status')}"
             assert isinstance(j1["job_id"], int)

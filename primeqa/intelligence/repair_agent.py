@@ -659,9 +659,11 @@ def _apply_recipe_edit(tenant_id: int, row, *, decided_by: Optional[int] = None)
                 session.commit()
             finally:
                 session.close()
+        from primeqa.execution_engine.intake import plan_of_run
         job = enqueue_s4_execution(
             tenant_id=tenant_id, test_id=row["claim_test_id"],
-            environment_id=row["environment_id"], created_by=decided_by)
+            environment_id=row["environment_id"], created_by=decided_by,
+            plan_id=plan_of_run(tenant_id, row.get("run_id")))   # AUD-013: the re-run runs under ITS run's plan
         reused = bool(job.created_at and job.created_at < apply_started)
         return {"action": "recipe_edit", "recipe_id": str(recipe_id),
                 "new_version_seq": res.version_seq,
@@ -679,11 +681,19 @@ def _apply(tenant_id: int, row, *, decided_by: Optional[int] = None) -> dict:
     if row["proposal_kind"] == "recipe_edit":
         return _apply_recipe_edit(tenant_id, row, decided_by=decided_by)
     if row["proposal_kind"] == "rerun":
-        from primeqa.execution_engine.intake import enqueue_s4_execution
+        from primeqa.execution_engine.errors import PlanRequiredError
+        from primeqa.execution_engine.intake import enqueue_s4_execution, plan_of_run
         started = datetime.now(timezone.utc)
-        job = enqueue_s4_execution(
-            tenant_id=tenant_id, test_id=row["claim_test_id"],
-            environment_id=row["environment_id"], created_by=decided_by)
+        try:
+            job = enqueue_s4_execution(
+                tenant_id=tenant_id, test_id=row["claim_test_id"],
+                environment_id=row["environment_id"], created_by=decided_by,
+                plan_id=plan_of_run(tenant_id, row.get("run_id")))   # AUD-013: the re-run runs under ITS run's plan
+        except PlanRequiredError as exc:
+            # A legacy run carries no plan and nothing is backfilled: the
+            # re-run is refused and the refusal is the decision's record, the
+            # same shape the recipe_edit branch records.
+            return {"action": "rerun", "error": str(exc)}
         reused = bool(job.created_at and job.created_at < started)
         return {"action": "rerun", "s4_job_id": job.id,
                 "reverify_job_id": job.id, "reverify_job_reused": reused or None}
