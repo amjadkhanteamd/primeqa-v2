@@ -912,3 +912,22 @@
   fixes `NOW` and a waiver expiry against it. Both went red on 2026-09-15 on
   `main` and on this branch alike (proven in a worktree). D-487 already made the
   schedule scratch test's clock relative; the same fix applies here.
+
+## Added 2026-09-15 — from the undefined-name gate (AUD-006/008/009/010)
+
+- **Closed here:** the four locations, under a gate that fails rather than
+  skips when its tool is absent.
+- **Medium: Jira ticket search needs a search client, and the picker never
+  sends its connection.** The route now says "not available" instead of
+  raising; the requirements import picker's search input sends `q` alone (no
+  `hx-include` of `#import-jira-conn`), so even a rebuilt route would receive
+  no connection from the page. Rebuild the search on the live single-issue
+  fetch's auth shape (JQL `/rest/api/2/search`), and include the connection
+  select in the request — one slice, tested against a real Jira.
+- **Low: `execution/routes.py` still imports `require_role` and `json_error`
+  it does not use**, and the search route binds a `limit` it no longer reads.
+  Cosmetic; pyflakes lists them; not gated.
+- **Rule (self-inflicted, 2026-09-15): a secret piped to `python -` is a
+  secret printed.** Read secrets into a script FILE's stdin, never into an
+  interpreter reading its program from stdin. The production JWT_SECRET was
+  printed once this way and must be rotated.
