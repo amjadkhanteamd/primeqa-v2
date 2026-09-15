@@ -99,3 +99,28 @@ the first line of the HOLD. The rule this adds: a secret goes to a script
 FILE on stdin, never to `python -`; and the earlier proofs in this session did
 exactly that — the failure was one command, not the method.
 
+
+## g. Post-merge transcript (2026-09-15)
+
+**Merge** 0b36d91 (parents f8adc12 + ff3a288); author AK, zero `Co-Authored-By`.
+WRITE-FREE, dumpless: no SQL added; the deleted legacy function's v1
+statements are removed. Four services SUCCESS on 0b36d91 by 11:44:14Z; health
+200, `error_rate 0.0`; zero error-class lines on all four services before and
+after the proof.
+
+**Window.** `refresh_metadata` has zero callers on the deployed tree; the
+removed `get_db` import had one use, the deleted branch's; `_hash_share_token`
+is defined once and used at both callers.
+
+### The production proof, GET only, no session and no secret
+
+| act | before the merge | after |
+|---|---|---|
+| `GET /shared/no-such-token` | the themed 500 page (NameError) | **404, "Invalid link"** not-found state |
+| `GET /shared/another-bad-token` | the themed 500 page | **404**, the same state |
+
+The Jira search and the readiness net are proven on scratch and by the gate,
+not on production: minting a production session would mean reading the signing
+secret again before its rotation (§e).
+
+Recorded as **D-495**.
