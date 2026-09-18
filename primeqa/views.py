@@ -4956,6 +4956,8 @@ def releases_evaluate_decision(release_id):
                 flash(f"Evaluate refused — {len(result['items'])} item(s) in scope are "
                       f"not current ({names}). Run the scope, then evaluate.", "error")
             else:
+                # AUD-014: an empty scope (or one that could not be read) names
+                # what is empty; no active policy names the policy.
                 flash(f"Evaluate refused — {result.get('sentence') or result.get('reason')}", "error")
             return redirect(f"/releases/{release_id}?tab=decision")
         rec = result["recommendation"].upper().replace("_", " ")

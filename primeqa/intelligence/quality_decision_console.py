@@ -15,13 +15,15 @@ from typing import Optional
 from sqlalchemy import text
 
 from primeqa.intelligence import quality_policy as qp
-from primeqa.intelligence.quality_evidence import assemble
+from primeqa.intelligence.quality_evidence import assemble, release_scope
 
 log = logging.getLogger(__name__)
 
 NO_ACTIVE_POLICY = "no_active_policy"
 NO_ACTIVE_POLICY_SENTENCE = ("No active quality policy — activate one (Settings → Quality policy; CLI in v1) "
                              "before a release grades.")
+SCOPE_EMPTY = "scope_empty"
+WILL_REFUSE = "Evaluate will refuse — "
 
 
 def _with_session(tenant_id: int, session, fn):
@@ -55,12 +57,29 @@ def _user_names(session, tenant_id: int, ids) -> dict:
 
 def grade_release(session, *, tenant_id: int, release_id: Optional[int], keys, now: Optional[datetime] = None,
                   **seams) -> dict:
-    """Assemble + evaluate under the ACTIVE policy over one session. Returns
-    ``{ok, policy, evidence, decision}`` or ``{ok: False, reason, sentence,
-    evidence}`` when no policy is active (ruling 3 — never a silent default)."""
+    """Resolve the scope, refuse on emptiness, assemble + evaluate under the
+    ACTIVE policy — over one session. Returns ``{ok, policy, evidence,
+    decision}``; ``{ok: False, reason: "scope_empty", empty, sentence, scope}``
+    when the scope holds zero checks (AUD-014 — a decision requires a
+    non-empty graded scope: the refusal comes BEFORE the policy is read, the
+    evidence assembled, or a rule evaluated, and names what is empty); or
+    ``{ok: False, reason, sentence, evidence}`` when no policy is active
+    (ruling 3 — never a silent default)."""
     now = now or datetime.now(timezone.utc)
+    if seams.get("env_reader") is None:
+        # one cached environment reader for the scope read AND the assembly
+        from primeqa.execution_engine import planner
+        seams["env_reader"] = planner.read_env_info(session, tenant_id)
+    scope_seams = {k: seams[k] for k in ("env_reader", "evidence_envs", "targets", "plan") if k in seams}
+    scope = release_scope(session, tenant_id=tenant_id, release_id=release_id, keys=keys, **scope_seams)
+    if scope["empty"]:
+        return {"ok": False, "reason": SCOPE_EMPTY, "empty": scope["empty"],
+                "sentence": WILL_REFUSE + scope["empty"]["sentence"],
+                "scope": {k: scope[k] for k in ("keys", "requirement_count", "functional_ids", "conformance_ids",
+                                                "targets", "targets_source", "active_targets", "checks")},
+                "policy": None, "evidence": None, "decision": None}
     policy = qp.active_policy(session)
-    evidence = assemble(session, tenant_id=tenant_id, keys=keys, release_id=release_id, now=now, **seams)
+    evidence = assemble(session, tenant_id=tenant_id, keys=keys, release_id=release_id, now=now, scope=scope, **seams)
     if policy is None:
         return {"ok": False, "reason": NO_ACTIVE_POLICY, "sentence": NO_ACTIVE_POLICY_SENTENCE,
                 "policy": None, "evidence": evidence, "decision": None}
@@ -73,7 +92,7 @@ def preview_release_decision(tenant_id: int, release_id: int, keys, *, session=N
     try:
         def _read(s):
             out = grade_release(s, tenant_id=tenant_id, release_id=release_id, keys=keys)
-            names = _user_names(s, tenant_id, {a.get("reviewer") for a in (out["evidence"].get("waivers") or {}).get("items", [])})
+            names = _user_names(s, tenant_id, {a.get("reviewer") for a in ((out.get("evidence") or {}).get("waivers") or {}).get("items", [])})
             out["available"] = True
             out["user_names"] = names
             return out

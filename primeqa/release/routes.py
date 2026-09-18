@@ -205,11 +205,23 @@ def evaluate_decision(release_id):
             db, release, request.user["tenant_id"],
             release_repo=svc.release_repo)
         if result.get("refused"):
-            # Step 2: non-current scope → the act is refused, nothing recorded.
-            return json_error("SCOPE_NOT_CURRENT",
-                              f"{len(result['items'])} item(s) in scope are not "
-                              "current — run the scope, then evaluate",
-                              http=409, details={"items": result["items"]})
+            # The act refused, nothing recorded — one 409 shape, the code
+            # naming WHY (AUD-014): an empty scope, a non-current scope
+            # (Step 2), a scope that could not be read, or no active policy.
+            reason = result.get("reason") or "policy_unavailable"
+            if reason == "scope_not_current":
+                return json_error("SCOPE_NOT_CURRENT",
+                                  f"{len(result['items'])} item(s) in scope are not "
+                                  "current — run the scope, then evaluate",
+                                  http=409, details={"items": result["items"]})
+            if reason == "scope_empty":
+                sentence = result.get("sentence") or ""
+                if not sentence.startswith("Evaluate will refuse"):
+                    sentence = "Evaluate will refuse — " + sentence
+                return json_error("SCOPE_EMPTY", sentence,
+                                  http=409, details={"empty": result.get("empty"),
+                                                     "scope": result.get("scope")})
+            return json_error(reason.upper(), result.get("sentence") or reason, http=409)
         svc._log(request.user["tenant_id"], request.user["id"],
                  "release.decision.evaluated", release_id,
                  {"recommendation": result.get("recommendation")})

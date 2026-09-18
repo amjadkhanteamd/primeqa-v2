@@ -244,20 +244,43 @@ def _claim_test_ids(session, external_keys):
                 lambda: _claim_test_ids_uncached(session, external_keys))
 
 
-def _claim_test_ids_uncached(session, external_keys):
-    """The release's requirement keys → (ordered distinct claim test_ids,
-    ``{test_id: {requirement keys}}``) via the COVERAGE_LINK_KINDS links
-    (``generated_from`` + curated ``verifies``). ONE link query for all keys
-    (the batched coordinator read); iteration order — keys as given, matches
-    by ``(test_id, link_kind)`` within each — is the per-key read's exactly."""
+def _claim_matches(session, external_keys) -> dict:
+    """The COVERAGE_LINK_KINDS link matches for ``external_keys`` — ONE link
+    query for all keys (the batched coordinator read), ``{key: [matches]}``.
+    Memoised within a read scope on the SORTED key set, so a page's consoles
+    and the canonical scope read (AUD-014) share one query for one set."""
+    from primeqa.semantic.read_scope import memo
     from primeqa.test_representation.coordinator import (
         COVERAGE_LINK_KINDS,
         SemanticTransactionCoordinator,
     )
-    coord = SemanticTransactionCoordinator()
-    matches = coord.list_tests_by_requirements(
-        session, external_system="jira", external_keys=list(external_keys),
-        link_kind=COVERAGE_LINK_KINDS)
+    keys = tuple(sorted({k for k in (external_keys or ()) if k}))
+    if not keys:
+        return {}
+    return memo(session, ("claim_matches", keys),
+                lambda: SemanticTransactionCoordinator().list_tests_by_requirements(
+                    session, external_system="jira", external_keys=list(keys),
+                    link_kind=COVERAGE_LINK_KINDS))
+
+
+def _latest_claims(session, test_ids) -> dict:
+    """``coordinator.get_latest_claims`` memoised within a read scope on the
+    sorted id set — the scope read and the readiness read ask for the same
+    set on one page."""
+    from primeqa.semantic.read_scope import memo
+    from primeqa.test_representation.coordinator import SemanticTransactionCoordinator
+    ids = list(test_ids or [])
+    if not ids:
+        return {}
+    return memo(session, ("latest_claims", tuple(sorted(str(t) for t in ids))),
+                lambda: SemanticTransactionCoordinator().get_latest_claims(session, ids))
+
+
+def _claim_ids_from_matches(matches: dict, external_keys) -> tuple:
+    """PURE. ``matches`` (from :func:`_claim_matches`, any superset of the
+    keys) → (ordered distinct claim test_ids, ``{test_id: {requirement
+    keys}}``). Iteration order — keys as given, matches by ``(test_id,
+    link_kind)`` within each — is the per-key read's exactly."""
     test_ids, seen = [], set()
     keys_by_tid: dict[str, set] = {}               # D-237: claim → its requirement key(s)
     for key in external_keys:
@@ -268,6 +291,13 @@ def _claim_test_ids_uncached(session, external_keys):
                 seen.add(sid)
                 test_ids.append(m.test_id)
     return test_ids, keys_by_tid
+
+
+def _claim_test_ids_uncached(session, external_keys):
+    """The release's requirement keys → (ordered distinct claim test_ids,
+    ``{test_id: {requirement keys}}``) via the COVERAGE_LINK_KINDS links
+    (``generated_from`` + curated ``verifies``)."""
+    return _claim_ids_from_matches(_claim_matches(session, external_keys), external_keys)
 
 
 # The distinct environments the release's claims have run in — the per-env
@@ -290,6 +320,40 @@ _ACTIVE_ENVS_WITH_EVIDENCE_SQL = (
     "WHERE CAST(r.claim_test_id AS text) = ANY(:tids) "
     "  AND e.tenant_id = :tenant_id AND e.is_active "
     "ORDER BY r.environment_id")
+
+
+_ENVS_WITH_EVIDENCE_BY_CLAIM_SQL = (
+    "SELECT DISTINCT CAST(claim_test_id AS text), environment_id FROM s4_execution_runs "
+    "WHERE CAST(claim_test_id AS text) = ANY(:tids) "
+    "ORDER BY 1, 2")
+_ACTIVE_ENVS_WITH_EVIDENCE_BY_CLAIM_SQL = (
+    "SELECT DISTINCT CAST(r.claim_test_id AS text), r.environment_id FROM s4_execution_runs r "
+    "JOIN public.environments e ON e.id = r.environment_id "
+    "WHERE CAST(r.claim_test_id AS text) = ANY(:tids) "
+    "  AND e.tenant_id = :tenant_id AND e.is_active "
+    "ORDER BY 1, 2")
+
+
+def _environments_with_evidence_by_claim(session, test_ids, *, tenant_id=None) -> dict:
+    """:func:`_environments_with_evidence` per claim, in ONE query for many
+    claims: ``{test_id_str: [environment ids, ascending]}`` — the same
+    active-environment filter (D-485's interim) when ``tenant_id`` is given.
+    The bulk scope and readiness reads (AUD-014) split it per release."""
+    if not test_ids:
+        return {}
+    from primeqa.semantic.read_scope import memo
+    tids = sorted({str(t) for t in test_ids})
+
+    def _read():
+        sql = _ENVS_WITH_EVIDENCE_BY_CLAIM_SQL if tenant_id is None else _ACTIVE_ENVS_WITH_EVIDENCE_BY_CLAIM_SQL
+        params = {"tids": tids}
+        if tenant_id is not None:
+            params["tenant_id"] = int(tenant_id)
+        out: dict = {}
+        for tid, env in session.execute(text(sql), params).fetchall():
+            out.setdefault(tid, []).append(int(env))
+        return out
+    return memo(session, ("envs_with_evidence_by_claim", tuple(tids), tenant_id), _read)
 
 
 def _environments_with_evidence(session, test_ids, *, tenant_id=None) -> list[int]:
@@ -1053,68 +1117,110 @@ def get_release_substrate_decision(tenant_id: int, external_keys,
 # items; "Run the scope" is one click away. Best-effort wrapper discipline.
 # ---------------------------------------------------------------------------
 
+_EMPTY_READINESS = {"available": True, "items": [], "non_current": 0,
+                    "environments": [], "claim_count": 0}
+
+
+def release_scope_readiness_bulk(session, tenant_id, keys_by_release: dict) -> dict:
+    """The canonical readiness read for MANY releases in one pass —
+    ``{release_id: {available, items, non_current, environments,
+    claim_count}}``, each entry byte-identical to what
+    :func:`release_scope_readiness` returns for that release alone (which is
+    this function on one entry). One links query, one latest-claims read, one
+    evidence-environments query, one bulk readiness resolution (D-489) for
+    every (claim, environment) pair on the page. The release board calls it
+    (AUD-014, item 2): the list derives "will refuse" from the same call the
+    Evaluate act makes. Raises on failure — the per-release wrapper is the
+    best-effort layer."""
+    from primeqa.sync.readiness import resolve_run_readiness_bulk
+
+    clean = {rid: [k for k in (ks or []) if k] for rid, ks in keys_by_release.items()}
+    out = {rid: dict(_EMPTY_READINESS) for rid in clean}
+    all_keys = sorted({k for ks in clean.values() for k in ks})
+    if not all_keys:
+        return out
+    matches = _claim_matches(session, all_keys)
+    ids_by_release = {rid: _claim_ids_from_matches(matches, ks) for rid, ks in clean.items() if ks}
+    all_tids, seen = [], set()
+    for tids, _ in ids_by_release.values():
+        for t in tids:
+            if t not in seen:
+                seen.add(t); all_tids.append(t)
+    if not all_tids:
+        return out
+    latest = _latest_claims(session, all_tids)
+    # Step 5 (R6): a conformance claim (archetype ``ui``) never runs on the
+    # S4 lane — its contemporaneity is the browser plane's processing run,
+    # graded by the policy engine's conformance axis (a claim with no
+    # verdict on the latest run is UNGRADED there). The S4 readiness
+    # census — and the Evaluate refusal — read the functional lane only.
+    live_by_release = {
+        rid: [t for t in tids
+              if getattr(latest.get(t), "status", None) != "deprecated"
+              and getattr(latest.get(t), "archetype", None) != "ui"]
+        for rid, (tids, _) in ids_by_release.items()}
+    all_live = [t for live in live_by_release.values() for t in live]
+    envs_by_claim = _environments_with_evidence_by_claim(session, all_live, tenant_id=tenant_id)
+    envs_by_release = {rid: sorted({e for t in live for e in envs_by_claim.get(str(t), ())})
+                       for rid, live in live_by_release.items()}
+    pairs, seen_pairs = [], set()
+    for rid, live in live_by_release.items():
+        for t in live:
+            for e in envs_by_release[rid]:
+                if (str(t), int(e)) not in seen_pairs:
+                    seen_pairs.add((str(t), int(e))); pairs.append((t, e))
+    ready = resolve_run_readiness_bulk(session, pairs) if pairs else {}
+    for rid, live in live_by_release.items():
+        keys_by_tid = ids_by_release[rid][1]
+        envs = envs_by_release[rid]
+        items = []
+        if not envs:
+            for t in live:
+                items.append({"test_id": str(t),
+                              "external_keys": sorted(keys_by_tid.get(str(t), ())),
+                              "environment_id": None, "state": "NEVER_RUN",
+                              "reason": None, "sentence": "No run in any environment.",
+                              "stamp_seq": None, "current_seq": None})
+        else:
+            for t in live:
+                for e in envs:
+                    r = ready[(str(t), int(e))]
+                    items.append({"test_id": str(t),
+                                  "external_keys": sorted(keys_by_tid.get(str(t), ())),
+                                  "environment_id": int(e), "state": r.state,
+                                  "reason": r.reason, "sentence": r.sentence,
+                                  "stamp_seq": r.stamp_seq,
+                                  "current_seq": r.current_seq})
+        non_current = [i for i in items if i["state"] != "CURRENT"]
+        out[rid] = {"available": True, "items": items,
+                    "non_current": len(non_current), "environments": envs,
+                    "claim_count": len(live)}
+    return out
+
+
 def release_scope_readiness(tenant_id: int, external_keys, *, session=None) -> dict:
     """``{available, items: [{test_id, external_keys, environment_id, state,
     reason, sentence, stamp_seq, current_seq}], non_current: n, environments:
     [ids], claim_count}``. Zero environments with evidence = every claim
-    NEVER_RUN once (environment None) so the refusal still names them."""
+    NEVER_RUN once (environment None) so the refusal still names them.
+    The one-release form of :func:`release_scope_readiness_bulk`; best-effort
+    about the READ (``available: False`` when it fails — the composer refuses
+    on that, AUD-014)."""
     keys = [k for k in (external_keys or []) if k]
     if not keys:
-        return {"available": True, "items": [], "non_current": 0,
-                "environments": [], "claim_count": 0}
+        return dict(_EMPTY_READINESS)
     try:
         from contextlib import nullcontext
 
         from sqlalchemy.orm import Session
 
         from primeqa.semantic.connection import get_tenant_connection
-        from primeqa.sync.readiness import resolve_run_readiness_bulk
         shared = session
         with (nullcontext(None) if shared is not None
               else get_tenant_connection(tenant_id)) as conn:
             session = shared if shared is not None else Session(bind=conn)
             try:
-                test_ids, keys_by_tid = _claim_test_ids(session, keys)
-                if not test_ids:
-                    return {"available": True, "items": [], "non_current": 0,
-                            "environments": [], "claim_count": 0}
-                from primeqa.test_representation.coordinator import (
-                    SemanticTransactionCoordinator,
-                )
-                latest = SemanticTransactionCoordinator().get_latest_claims(session, test_ids)
-                # Step 5 (R6): a conformance claim (archetype ``ui``) never runs on the
-                # S4 lane — its contemporaneity is the browser plane's processing run,
-                # graded by the policy engine's conformance axis (a claim with no
-                # verdict on the latest run is UNGRADED there). The S4 readiness
-                # census — and the Evaluate refusal — read the functional lane only.
-                live = [t for t in test_ids
-                        if getattr(latest.get(t), "status", None) != "deprecated"
-                        and getattr(latest.get(t), "archetype", None) != "ui"]
-                envs = _environments_with_evidence(session, live, tenant_id=tenant_id)
-                items = []
-                if not envs:
-                    for t in live:
-                        items.append({"test_id": str(t),
-                                      "external_keys": sorted(keys_by_tid.get(str(t), ())),
-                                      "environment_id": None, "state": "NEVER_RUN",
-                                      "reason": None, "sentence": "No run in any environment.",
-                                      "stamp_seq": None, "current_seq": None})
-                else:
-                    ready = resolve_run_readiness_bulk(
-                        session, [(t, e) for t in live for e in envs])
-                    for t in live:
-                        for e in envs:
-                            r = ready[(str(t), int(e))]
-                            items.append({"test_id": str(t),
-                                          "external_keys": sorted(keys_by_tid.get(str(t), ())),
-                                          "environment_id": int(e), "state": r.state,
-                                          "reason": r.reason, "sentence": r.sentence,
-                                          "stamp_seq": r.stamp_seq,
-                                          "current_seq": r.current_seq})
-                non_current = [i for i in items if i["state"] != "CURRENT"]
-                return {"available": True, "items": items,
-                        "non_current": len(non_current), "environments": envs,
-                        "claim_count": len(live)}
+                return release_scope_readiness_bulk(session, tenant_id, {0: keys})[0]
             finally:
                 session.close()
     except Exception as exc:

@@ -30,7 +30,7 @@
             <form method="POST" action="/releases/{{ release.id }}/evaluate-decision">
             {{ csrf_input | safe }}
                 <button type="submit" class="rounded-md bg-purple-600 px-3 py-2 text-sm font-semibold text-white hover:bg-purple-500"
-                        {% if scope_readiness and scope_readiness.available and scope_readiness.non_current %}title="Refuses: {{ scope_readiness.non_current }} item(s) in scope are not current"{% endif %}>Evaluate GO/NO-GO</button>
+                        {% if quality and quality.available and quality.reason == 'scope_empty' %}title="Refuses: {{ quality.empty.sentence }}"{% elif scope_readiness and scope_readiness.available and scope_readiness.non_current %}title="Refuses: {{ scope_readiness.non_current }} item(s) in scope are not current"{% endif %}>Evaluate GO/NO-GO</button>
             </form>
             {# Step 4 (LLD_STEP_4 §d): "Run the scope" becomes PLAN — the recorded
                plan, then the PLAN view, then "Run this plan" (Fork 5). #}
