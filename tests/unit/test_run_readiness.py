@@ -105,11 +105,17 @@ def test_composer_refuses_non_current_scope_and_records_nothing(monkeypatch):
         def list_requirements(self, rid, tenant_id=None): return [{"id": 1, "jira_key": "SQ-1"}]
         def create_decision(self, **kw): self.decisions.append(kw); return kw
 
-    monkeypatch.setattr(sd, "release_scope_readiness", lambda t, k: {
+    # AUD-014: the composer reads its two pre-conditions (the scope, then the
+    # readiness) through one seam; a NON-EMPTY scope lets the currency check speak
+    import primeqa.release.decision_composer as dc
+    readiness = {
         "available": True, "non_current": 1, "environments": [59], "claim_count": 1,
         "items": [{"test_id": "t1", "external_keys": ["SQ-1"], "environment_id": 59,
                    "state": "NEVER_RUN", "reason": None, "sentence": "No run in this environment.",
-                   "stamp_seq": None, "current_seq": None}]})
+                   "stamp_seq": None, "current_seq": None}]}
+    scope = {"keys": ["SQ-1"], "requirement_count": 1, "functional_ids": ["t1"], "conformance_ids": [],
+             "targets": [59], "targets_source": "declared", "active_targets": [59], "checks": 1, "empty": None}
+    monkeypatch.setattr(dc, "_resolve_scope_and_readiness", lambda t, r, k: (scope, readiness, None))
     called = []
     monkeypatch.setattr(sd, "get_release_substrate_decision",
                         lambda *a, **k: called.append(1) or {"available": True, "applicable": True})
@@ -134,9 +140,11 @@ def test_composer_proceeds_when_the_scope_is_current(monkeypatch):
         def list_requirements(self, rid, tenant_id=None): return []
         def create_decision(self, **kw): self.decisions.append(kw); return kw
 
-    monkeypatch.setattr(sd, "release_scope_readiness",
-                        lambda t, k: {"available": True, "non_current": 0, "items": [],
-                                      "environments": [], "claim_count": 0})
+    import primeqa.release.decision_composer as dc
+    scope = {"keys": ["SQ-1"], "requirement_count": 1, "functional_ids": ["t1"], "conformance_ids": [],
+             "targets": [59], "targets_source": "declared", "active_targets": [59], "checks": 1, "empty": None}
+    monkeypatch.setattr(dc, "_resolve_scope_and_readiness", lambda t, r, k: (
+        scope, {"available": True, "non_current": 0, "items": [], "environments": [59], "claim_count": 1}, None))
     monkeypatch.setattr(sd, "get_release_substrate_decision", lambda *a, **k: {
         "available": True, "applicable": True, "recommendation": "go", "confidence": 0.95,
         "reasoning": [], "criteria_met": {}, "metrics": {}, "risk": {"score": 0, "level": "low"}})

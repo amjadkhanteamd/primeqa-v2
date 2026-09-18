@@ -83,7 +83,10 @@ class ReleaseService:
         return {
             **self._release_dict(r),
             "requirements": [{
-                "id": req.id, "jira_key": req.jira_key,
+                # AUD-014: the identity key the composer evaluates over — without
+                # it the page derived "req-<id>" for a manual requirement and
+                # previewed GO over an empty scope the act refused.
+                "id": req.id, "jira_key": req.jira_key, "external_key": req.external_key,
                 "jira_summary": req.jira_summary, "is_stale": req.is_stale,
             } for req in requirements],
             "test_plan": [],  # D-221 R4: v1 test plans retired — the plan IS the requirements' claims

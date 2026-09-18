@@ -58,16 +58,33 @@ def _policy_decision(recommendation="go", confidence=0.95, **over):
     return {"ok": True, "decision": d}
 
 
+def _scope(**over):
+    """A NON-EMPTY resolved scope (the AUD-014 pre-condition's input)."""
+    sc = {"keys": ["SQ-1"], "requirement_count": 1, "functional_ids": ["t1"], "conformance_ids": [],
+          "targets": [59], "targets_source": "declared", "active_targets": [59], "checks": 1, "empty": None}
+    sc.update(over)
+    return sc
+
+
+def _ready(**over):
+    r = {"available": True, "items": [], "non_current": 0, "environments": [59], "claim_count": 1}
+    r.update(over)
+    return r
+
+
 @pytest.fixture
 def stub(monkeypatch):
     import primeqa.release.decision_composer as dc
-    state = {"substrate": _substrate(), "calls": [], "policy": _policy_decision()}
+    state = {"substrate": _substrate(), "calls": [], "policy": _policy_decision(),
+             "scope": _scope(), "readiness": _ready(), "scope_error": None}
 
     def _fake(tenant_id, keys, criteria=None):
         state["calls"].append({"keys": keys, "criteria": criteria})
         return state["substrate"]
     monkeypatch.setattr(sd, "get_release_substrate_decision", _fake)
     monkeypatch.setattr(dc, "_grade_under_policy", lambda tenant_id, release_id, keys: state["policy"])
+    monkeypatch.setattr(dc, "_resolve_scope_and_readiness",
+                        lambda tenant_id, release_id, keys: (state["scope"], state["readiness"], state["scope_error"]))
     return state
 
 
@@ -133,3 +150,83 @@ def test_cannot_determine_is_recorded_verbatim_never_mapped(stub):
     assert env["confidence"] == 0.0
     assert repo.decisions[0]["recommendation"] == "cannot_determine"
     assert env["reasoning"][-1]["check"] == "grading" and env["reasoning"][-1]["status"] == "fail"
+
+
+# --- AUD-014: a decision requires a non-empty graded scope ---------------------
+
+def test_an_empty_scope_refuses_before_readiness_and_before_the_policy(stub):
+    # no requirement: the refusal names it, no row, and NEITHER the readiness
+    # verdict nor the policy grading is consulted (order: empty -> current -> policy)
+    stub["scope"] = _scope(keys=[], requirement_count=0, functional_ids=[], targets=[], active_targets=[], checks=0,
+                           empty={"reason": "no_requirement", "sentence": "no requirement is in scope — nothing to grade"})
+    stub["readiness"] = _ready(non_current=3, items=[{"state": "NEVER_RUN"}] * 3)   # would refuse too — must not be the reason
+    stub["policy"] = _policy_decision("go")                                        # would record GO — must not run
+    repo = _Repo()
+    env = evaluate_and_record(None, _Release(), 1, release_repo=repo)
+    assert env["refused"] is True and env["reason"] == "scope_empty"
+    assert env["empty"]["reason"] == "no_requirement"
+    assert "no requirement is in scope" in env["sentence"]
+    assert env["recommendation"] is None and repo.decisions == []
+    assert env["reasoning"] == [{"check": "scope", "status": "fail", "detail": env["sentence"]}]
+    assert env["criteria_met"] == {"scope": False}
+    assert stub["calls"] == []                                                     # the substrate was not even read
+
+
+def test_an_inactive_only_target_refuses_naming_the_environment(stub):
+    stub["scope"] = _scope(targets=[78], active_targets=[], checks=0,
+                           empty={"reason": "no_active_target", "targets": [78],
+                                  "sentence": "every declared target environment is inactive (Prod RO) — no active environment is in scope"})
+    repo = _Repo()
+    env = evaluate_and_record(None, _Release(), 1, release_repo=repo)
+    assert env["refused"] and env["reason"] == "scope_empty" and env["empty"]["reason"] == "no_active_target"
+    assert "Prod RO" in env["sentence"] and repo.decisions == []
+
+
+def test_a_scope_that_cannot_be_read_refuses_instead_of_grading(stub):
+    # unknown is not satisfied: a failed scope read is a refusal, never a pass-through
+    stub["scope"], stub["scope_error"] = None, "OperationalError: connection refused"
+    repo = _Repo()
+    env = evaluate_and_record(None, _Release(), 1, release_repo=repo)
+    assert env["refused"] and env["reason"] == "scope_unavailable"
+    assert "connection refused" in env["sentence"] and repo.decisions == []
+
+
+def test_an_unavailable_readiness_read_refuses_instead_of_grading(stub):
+    stub["readiness"] = {"available": False, "items": [], "non_current": 0, "environments": [], "claim_count": 0}
+    repo = _Repo()
+    env = evaluate_and_record(None, _Release(), 1, release_repo=repo)
+    assert env["refused"] and env["reason"] == "scope_unavailable"
+    assert repo.decisions == [] and stub["calls"] == []
+
+
+def test_a_non_current_scope_still_refuses_second_with_its_items(stub):
+    stub["readiness"] = _ready(non_current=1, items=[
+        {"test_id": "t1", "external_keys": ["SQ-1"], "environment_id": 59, "state": "NEVER_RUN",
+         "reason": None, "sentence": "No run in this environment.", "stamp_seq": None, "current_seq": 5},
+        {"test_id": "t2", "external_keys": ["SQ-1"], "environment_id": 59, "state": "CURRENT",
+         "reason": None, "sentence": "Current.", "stamp_seq": 5, "current_seq": 5}])
+    repo = _Repo()
+    env = evaluate_and_record(None, _Release(), 1, release_repo=repo)
+    assert env["refused"] and env["reason"] == "scope_not_current"
+    assert [i["test_id"] for i in env["items"]] == ["t1"]
+    assert env["reasoning"][0]["check"] == "readiness" and env["criteria_met"] == {"readiness": False}
+    assert repo.decisions == []
+
+
+def test_the_engines_own_emptiness_refusal_is_carried_verbatim(stub):
+    # the engine refuses by construction too (quality_decision_console.grade_release);
+    # should the scope change between the two reads, its refusal is the envelope
+    stub["policy"] = {"ok": False, "reason": "scope_empty", "sentence": "Evaluate will refuse — no requirement is in scope — nothing to grade",
+                      "empty": {"reason": "no_requirement", "sentence": "no requirement is in scope — nothing to grade"}}
+    repo = _Repo()
+    env = evaluate_and_record(None, _Release(), 1, release_repo=repo)
+    assert env["refused"] and env["reason"] == "scope_empty" and env["empty"]["reason"] == "no_requirement"
+    assert env["reasoning"][0]["check"] == "scope" and repo.decisions == []
+
+
+def test_external_keys_builder_prefers_the_identity_key_the_page_now_carries():
+    # AUD-014 defect 2: the page's dicts carry external_key now; a manual
+    # requirement (no jira_key) resolves to its identity, not to req-<id>
+    keys = external_keys_for_requirements(
+        [{"id": 3, "jira_key": None, "external_key": "AUD14-REQ"}, {"id": 4, "jira_key": "SQ-2", "external_key": "SQ-2"}])
+    assert keys == ["AUD14-REQ", "SQ-2"]

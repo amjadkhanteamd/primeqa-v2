@@ -47,8 +47,12 @@ def test_decision_tab_renders_the_quality_decision_card(release):
     assert r.status_code == 200
     html = r.data.decode()
     assert 'data-testid="quality-decision-card"' in html
-    # either the preview (an active policy on scratch) or the ruling-3 refusal — never a silent default
-    assert ('data-testid="quality-policy-line"' in html) or ("No active quality policy" in html)
+    # never a silent default: this fixture release has NO requirement, so the card
+    # carries the AUD-014 emptiness refusal (before the policy — active or not — is
+    # even consulted), the same sentence the release board shows for it
+    assert 'data-testid="quality-refusal"' in html
+    assert "Evaluate will refuse — no requirement is in scope — nothing to grade" in html
+    assert 'data-recommendation="none"' in html
     assert 'data-testid="waiver-form"' in html and "never an adjudication" in html
 
 

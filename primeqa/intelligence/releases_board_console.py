@@ -95,89 +95,64 @@ def _public_reads(tenant_id: int, ids, db):
 def _tenant_reads(tenant_id, ids, keys_by_release, decisions, rows, session) -> None:
     """Readiness + the functional/conformance split + the newest run, for every
     release on the page, over ONE tenant session."""
-    from sqlalchemy.orm import Session
-
-    from primeqa.semantic.connection import get_tenant_connection
-
     def _run(s):
-        from primeqa.intelligence.substrate_decision import _claim_test_ids
-        from primeqa.sync.readiness import resolve_run_readiness_bulk
-        all_keys = sorted({k for ks in keys_by_release.values() for k in ks})
-        claims_by_key: dict = {}
-        archetype: dict = {}
+        from primeqa.intelligence.quality_evidence import resolve_release_scopes
+        from primeqa.intelligence.substrate_decision import release_scope_readiness_bulk
+
+        # AUD-014 (item 2): the board derives "will refuse" from the SAME
+        # calls the Evaluate act makes — the canonical scope read (empty?)
+        # and Step 2's readiness read (current?), each in its bulk form. The
+        # list must not contradict the page it links to (D-491): before this
+        # the board counted readiness from RUNS, so a test case that ran on
+        # one of two evidence environments was one NEVER_RUN item on the page
+        # and none here.
+        scopes = resolve_release_scopes(s, tenant_id=tenant_id, keys_by_release=keys_by_release)
+        readiness = release_scope_readiness_bulk(s, tenant_id, keys_by_release)
+
+        # the newest run per functional claim, on the environments the
+        # readiness read admits — for STALE ("recorded before the latest run")
         newest_run: dict = {}
-        if all_keys:
-            for key, tid, arch in s.execute(text("""
-                SELECT l.external_key, CAST(l.test_id AS text), c.archetype
-                FROM test_requirement_links l
-                JOIN test_claims c ON c.test_id = l.test_id AND c.valid_to IS NULL
-                WHERE l.external_key = ANY(:keys)
-                  AND l.link_kind IN ('generated_from', 'verifies')
-                  AND c.status <> 'deprecated'
-            """), {"keys": all_keys}).fetchall():
-                claims_by_key.setdefault(key, set()).add(tid)
-                archetype[tid] = arch
-        functional_ids = sorted({t for t, a in archetype.items() if a != "ui"})
-        # The SAME environment filter the canonical scope read uses (D-485's
-        # active-environment interim). Without it this board counts evidence on
-        # an INACTIVE environment — env 78 on production — and a release reads
-        # "15 items not current" beside its own page saying the scope is clean.
-        # The list must not contradict the page it links to.
-        allowed_envs = None
-        if functional_ids:
-            from primeqa.intelligence.substrate_decision import _environments_with_evidence
-            from uuid import UUID
-            allowed_envs = set(_environments_with_evidence(
-                s, [UUID(t) for t in functional_ids], tenant_id=tenant_id))
-        pairs, envs_by_claim = [], {}
-        if functional_ids:
+        allowed = {rid: set(readiness[rid]["environments"]) for rid in ids}
+        functional_all = sorted({t for rid in ids for t in scopes[rid]["functional_ids"]})
+        if functional_all:
+            env_ok = {(t, e) for rid in ids for t in scopes[rid]["functional_ids"] for e in allowed[rid]}
             for tid, env, finished in s.execute(text("""
                 SELECT DISTINCT ON (CAST(claim_test_id AS text), environment_id)
                        CAST(claim_test_id AS text), environment_id, finished_at
                 FROM s4_execution_runs
                 WHERE CAST(claim_test_id AS text) = ANY(:ids)
                 ORDER BY CAST(claim_test_id AS text), environment_id, finished_at DESC
-            """), {"ids": functional_ids}).fetchall():
-                if allowed_envs is not None and int(env) not in allowed_envs:
+            """), {"ids": functional_all}).fetchall():
+                if (tid, int(env)) not in env_ok:
                     continue                      # inactive environment — not in scope
-                envs_by_claim.setdefault(tid, set()).add(int(env))
-                pairs.append((tid, int(env)))
                 if finished and (tid not in newest_run or finished > newest_run[tid]):
                     newest_run[tid] = finished
-        ready = resolve_run_readiness_bulk(s, pairs) if pairs else {}
 
         for rid in ids:
             keys = keys_by_release.get(rid, [])
-            tids = {t for k in keys for t in claims_by_key.get(k, ())}
-            fn = sorted(t for t in tids if archetype.get(t) != "ui")
-            cf = sorted(t for t in tids if archetype.get(t) == "ui")
+            sc, rd = scopes[rid], readiness[rid]
+            fn, cf = sc["functional_ids"], sc["conformance_ids"]
             # TWO counts, and they count different things — so each says which.
-            #  * the REFUSAL count is per (claim, environment) ITEM, because
-            #    that is exactly what release_scope_readiness reports and what
-            #    Evaluate will name when it refuses (D-484). A claim that ran in
-            #    two environments is two items.
+            #  * the REFUSAL count is per (claim, environment) ITEM — exactly
+            #    what release_scope_readiness reports and what Evaluate names
+            #    when it refuses (D-484). A claim that ran in two environments
+            #    is two items.
             #  * the EVIDENCE count is per CLAIM, worst-of across its
             #    environments, because "3 of 4 checks current" is a statement
             #    about checks. Mixing the two made a release read "1 item not
             #    current" beside "1 of 1 check current" — both true, together
             #    nonsense.
-            item_states = [r.state for r in
-                           (ready.get((t, e)) for t in fn for e in envs_by_claim.get(t, ()))
-                           if r is not None]
-            never_run_claims = [t for t in fn if not envs_by_claim.get(t)]
-            non_current = (sum(1 for w in item_states if w != "CURRENT")
-                           + len(never_run_claims))
-            current = 0
-            for t in fn:
-                envs = envs_by_claim.get(t, ())
-                words = [r.state for r in (ready.get((t, e)) for e in envs) if r is not None]
-                if words and all(w == "CURRENT" for w in words):
-                    current += 1
+            non_current = rd["non_current"]
+            words_by_claim: dict = {}
+            for it in rd["items"]:
+                words_by_claim.setdefault(it["test_id"], []).append(it["state"])
+            current = sum(1 for t in fn
+                          if words_by_claim.get(t) and all(w == "CURRENT" for w in words_by_claim[t]))
             latest_run = max((newest_run[t] for t in fn if t in newest_run), default=None)
             d = decisions.get(rid)
 
-            if not keys:
-                state, sentence = NOT_EVALUATED, "no requirement in scope"
+            if sc["empty"]:
+                state, sentence = REFUSES, "Evaluate will refuse — " + sc["empty"]["sentence"]
             elif non_current:
                 state = REFUSES
                 sentence = (f"Evaluate will refuse — {non_current} item"
@@ -196,18 +171,21 @@ def _tenant_reads(tenant_id, ids, keys_by_release, decisions, rows, session) -> 
                 "release_id": rid, "available": True, "state": state, "sentence": sentence,
                 "requirements": len(keys), "functional": len(fn), "conformance": len(cf),
                 "current": current, "non_current": non_current,
+                "empty": (sc["empty"] or {}).get("reason"),
                 "latest_run_at": _iso(latest_run), "decision": d,
                 "evidence_sentence": _evidence_sentence(len(keys), len(fn), len(cf), current),
             }
 
     if session is not None:
         _run(session); return
-    with get_tenant_connection(tenant_id) as conn:
-        s = Session(bind=conn)
-        try:
-            _run(s)
-        finally:
-            s.close()
+    # One read scope for the board's own session: the scope read and the
+    # readiness read share the links, latest-claims and evidence-environment
+    # reads through the close-2 memo instead of each asking again.
+    from primeqa.semantic.read_scope import read_scope
+    with read_scope(tenant_id) as s:
+        if s is None:
+            raise RuntimeError("read scope unavailable")
+        _run(s)
 
 
 def _evidence_sentence(requirements: int, functional: int, conformance: int, current: int) -> str:

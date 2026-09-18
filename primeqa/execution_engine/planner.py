@@ -121,11 +121,25 @@ class EnvInfo:
     execution_policy: str
 
 
-def read_env_info(session: Session, tenant_id: int) -> Callable[[int], Optional[EnvInfo]]:
+def _env_info_row(r) -> EnvInfo:
+    return EnvInfo(id=r[0], name=r[1] or f"env {r[0]}", is_active=bool(r[2]),
+                   is_production=bool(r[3]), execution_policy=r[4] or "full")
+
+
+def read_env_info(session: Session, tenant_id: int, *, warm=None) -> Callable[[int], Optional[EnvInfo]]:
     """The default environment reader: ``public.environments`` for the
     tenant (the tenant session's search_path includes public). Tests inject
-    their own reader — the tenant-only harness carries no such table."""
+    their own reader — the tenant-only harness carries no such table.
+    ``warm`` (env ids) pre-reads those in ONE query (the bulk scope read)."""
     cache: dict = {}
+    ids = sorted({int(e) for e in (warm or [])})
+    if ids:
+        found = {r[0]: _env_info_row(r) for r in session.execute(text(
+            "SELECT id, name, is_active, is_production, execution_policy "
+            "FROM public.environments WHERE id = ANY(:ids) AND tenant_id = :t"),
+            {"ids": ids, "t": int(tenant_id)}).fetchall()}
+        for e in ids:
+            cache[e] = found.get(e)
 
     def _read(env_id: int) -> Optional[EnvInfo]:
         if env_id in cache:
@@ -139,6 +153,12 @@ def read_env_info(session: Session, tenant_id: int) -> Callable[[int], Optional[
                                  execution_policy=r[4] or "full") if r else None)
         return cache[env_id]
     return _read
+
+
+def read_env_info_many(session: Session, tenant_id: int, env_ids) -> Callable[[int], Optional[EnvInfo]]:
+    """:func:`read_env_info` warmed with ONE query for ``env_ids``; the reader
+    it returns answers those from its cache and reads any other on demand."""
+    return read_env_info(session, tenant_id, warm=env_ids)
 
 
 def _iso(v):

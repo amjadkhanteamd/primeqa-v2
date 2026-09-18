@@ -47,6 +47,48 @@ def _grade_under_policy(tenant_id, release_id, keys) -> dict:
                 "sentence": f"The quality policy could not grade this release: {str(exc)[:200]}"}
 
 
+def _resolve_scope_and_readiness(tenant_id, release_id, keys) -> tuple:
+    """The Evaluate act's two pre-conditions, read over ONE tenant session:
+    the canonical scope (AUD-014 — empty?) and Step 2's readiness (D-484 —
+    current?). A failed scope read is returned AS a failure (``scope=None``),
+    never swallowed: the caller refuses on it."""
+    from sqlalchemy.orm import Session
+
+    from primeqa.intelligence.quality_evidence import release_scope
+    from primeqa.intelligence.substrate_decision import release_scope_readiness
+    from primeqa.semantic.connection import get_tenant_connection
+    scope, readiness, error = None, None, None
+    try:
+        with get_tenant_connection(tenant_id) as conn:
+            s = Session(bind=conn)
+            try:
+                scope = release_scope(s, tenant_id=tenant_id, release_id=release_id, keys=keys)
+                readiness = release_scope_readiness(tenant_id, keys, session=s)
+            finally:
+                s.close()
+    except Exception as exc:  # noqa: BLE001 — a pre-condition that cannot be read refuses
+        error = f"{type(exc).__name__}: {str(exc)[:200]}"
+    return scope, readiness, error
+
+
+def _refusal(reason, sentence, *, scope=None, items=None, substrate=None, mode="policy", extra=None) -> dict:
+    """The refused envelope — no row written, the reason and the sentence
+    naming why. ``items`` carries Step 2's non-current items."""
+    out = {
+        "refused": True, "reason": reason, "sentence": sentence,
+        "recommendation": None, "confidence": None,
+        "reasoning": [{"check": ("readiness" if reason in ("scope_not_current", "scope_unavailable")
+                                 else "scope" if reason == "scope_empty" else "policy"),
+                       "status": "fail", "detail": sentence}],
+        "criteria_met": {("readiness" if reason in ("scope_not_current", "scope_unavailable")
+                          else "scope" if reason == "scope_empty" else "policy"): False},
+        "metrics": None, "mode": mode, "recommendation_source": mode,
+        "v1": None, "substrate": substrate, "scope": scope, "items": items or [],
+    }
+    out.update(extra or {})
+    return out
+
+
 def external_keys_for_requirements(requirements) -> list:
     """The requirement→IDENTITY key convention — one builder for the views
     panel + the composer so the two call sites can't drift. Step 1: the
@@ -76,28 +118,41 @@ def evaluate_and_record(db, release, tenant_id, *, release_repo) -> dict:
     # recommendation_source, v1, substrate} keys so the ledger / CI / template
     # render uniformly across old and new rows (v1 is None on new rows).
     criteria = release.decision_criteria or {}
-    from primeqa.intelligence.substrate_decision import (
-        get_release_substrate_decision,
-        release_scope_readiness,
-    )
+    from primeqa.intelligence.substrate_decision import get_release_substrate_decision
     keys = external_keys_for_requirements(
         release_repo.list_requirements(release.id, tenant_id=tenant_id))
+    # The act's pre-conditions, in order — emptiness, then currency, then the
+    # policy — each a refusal that names its TRUE reason (a non-current scope
+    # presupposes a scope; D-494's lesson was refusals for the wrong reason).
+    #
+    # AUD-014: a decision requires a NON-EMPTY graded scope. Zero checks — no
+    # requirement, no live test case, no active target, everything excluded —
+    # refuses here, before Step 2 and before the engine (which refuses too, by
+    # construction: quality_decision_console.grade_release). A scope that
+    # cannot be READ refuses as well: unknown is not satisfied.
+    resolved, scope, error = _resolve_scope_and_readiness(tenant_id, release.id, keys)
+    if resolved is None:
+        return _refusal("scope_unavailable",
+                        f"the release's scope could not be read — evaluate refused ({error})",
+                        mode="substrate")
+    if resolved.get("empty"):
+        empty = resolved["empty"]
+        return _refusal("scope_empty", empty["sentence"], mode="substrate",
+                        scope={k: resolved[k] for k in ("keys", "requirement_count", "functional_ids",
+                                                         "conformance_ids", "targets", "targets_source",
+                                                         "active_targets", "checks")},
+                        extra={"empty": empty})
     # Step 2 (§c): the Evaluate ACT refuses a non-current scope — a readiness
-    # FACT, named item by item, with no decision row written. (The policy
-    # object that will make this configurable is Step 5.)
-    scope = release_scope_readiness(tenant_id, keys)
-    if scope.get("available") and scope.get("non_current"):
+    # FACT, named item by item, with no decision row written.
+    if not scope.get("available"):
+        return _refusal("scope_unavailable",
+                        "the scope's readiness could not be read — evaluate refused",
+                        mode="substrate", scope=scope)
+    if scope.get("non_current"):
         items = [i for i in scope["items"] if i["state"] != "CURRENT"]
-        return {
-            "refused": True, "reason": "scope_not_current",
-            "recommendation": None, "confidence": None,
-            "reasoning": [{"check": "readiness", "status": "fail",
-                           "detail": f"{len(items)} item(s) in scope are not "
-                                     "current — evaluate refused"}],
-            "criteria_met": {"readiness": False}, "metrics": None,
-            "mode": "substrate", "recommendation_source": "substrate",
-            "v1": None, "substrate": None, "scope": scope, "items": items,
-        }
+        return _refusal("scope_not_current",
+                        f"{len(items)} item(s) in scope are not current — evaluate refused",
+                        mode="substrate", scope=scope, items=items)
     # Step 5 (LLD_STEP_5 §b): the RECOMMENDATION is the policy engine's — the
     # active tenant policy over the six evidence axes; gate logic lives only
     # there. The substrate block keeps riding along for CI / the ledger
@@ -105,16 +160,12 @@ def evaluate_and_record(db, release, tenant_id, *, release_repo) -> dict:
     substrate = get_release_substrate_decision(tenant_id, keys, criteria)
     graded = _grade_under_policy(tenant_id, release.id, keys)
     if not graded.get("ok"):
-        # Ruling 3: no active policy → a refusal, never a silent default.
-        return {
-            "refused": True, "reason": graded.get("reason") or "policy_unavailable",
-            "sentence": graded.get("sentence"),
-            "recommendation": None, "confidence": None,
-            "reasoning": [{"check": "policy", "status": "fail", "detail": graded.get("sentence")}],
-            "criteria_met": {"policy": False}, "metrics": None,
-            "mode": "policy", "recommendation_source": "policy",
-            "v1": None, "substrate": substrate, "scope": scope, "items": [],
-        }
+        # Ruling 3: no active policy → a refusal, never a silent default. (The
+        # engine's own emptiness refusal lands here too, should the scope
+        # change between the pre-condition read and the grade.)
+        return _refusal(graded.get("reason") or "policy_unavailable", graded.get("sentence"),
+                        mode="policy", substrate=substrate, scope=scope,
+                        extra=({"empty": graded["empty"]} if graded.get("empty") else None))
     decision = graded["decision"]
     combined = {
         "recommendation": decision["recommendation"],

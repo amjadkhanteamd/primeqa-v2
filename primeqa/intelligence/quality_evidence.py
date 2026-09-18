@@ -100,6 +100,196 @@ def _plan_admission(plan: Optional[dict]) -> tuple[dict, dict]:
 
 
 # --------------------------------------------------------------------------
+# the SCOPE — the canonical read (AUD-014 containment), bulk by construction
+# --------------------------------------------------------------------------
+# A decision requires a non-empty graded scope. The scope of a release is its
+# live test cases (latest version not deprecated), split by lane, x its target
+# environments (the DECLARED targets, else the ACTIVE environments holding a
+# run for the scope), minus the pairs the latest EXECUTED plan excluded by
+# reason. A CHECK is one (functional test case, active target) pair the plan
+# did not exclude, or one conformance test case (graded on the browser plane,
+# target-independent). Zero checks = an EMPTY scope, and emptiness is a
+# pre-condition of evaluation, never a rule outcome: the engine refuses
+# before the policy runs (quality_decision_console.grade_release), the
+# composer refuses before Step 2's currency check, and the release board
+# reads "will refuse" from THIS function — the same call the act makes.
+
+EMPTY_NO_REQUIREMENT = "no_requirement"
+EMPTY_NO_TEST_CASE = "no_test_case"
+EMPTY_NO_ACTIVE_TARGET = "no_active_target"
+EMPTY_ALL_EXCLUDED = "all_excluded"
+
+_LATEST_EXECUTED_PLANS_SQL = """
+    SELECT DISTINCT ON (scope_ref) scope_ref, CAST(id AS text)
+    FROM run_plans
+    WHERE scope_kind = 'release' AND scope_ref = ANY(:refs) AND executed_at IS NOT NULL
+    ORDER BY scope_ref, executed_at DESC
+"""
+_DECLARED_TARGETS_SQL = """
+    SELECT release_id, environment_id FROM release_targets
+    WHERE release_id = ANY(:ids) AND active
+    ORDER BY environment_id, declared_at
+"""
+
+
+def scope_emptiness(scope: dict) -> Optional[dict]:
+    """PURE. ``None`` for a scope with at least one check; else ``{reason,
+    sentence, ...}`` naming what is empty. The sentence is the one every
+    surface shows (the board prefixes "Evaluate will refuse — ")."""
+    keys = scope.get("keys") or []
+    functional = scope.get("functional_ids") or []
+    conformance = scope.get("conformance_ids") or []
+    if not keys:
+        return {"reason": EMPTY_NO_REQUIREMENT,
+                "sentence": "no requirement is in scope — nothing to grade"}
+    if not functional and not conformance:
+        n = len(keys)
+        return {"reason": EMPTY_NO_TEST_CASE, "requirements": n,
+                "sentence": (f"{n} requirement{'' if n == 1 else 's'} in scope "
+                             f"hold{'s' if n == 1 else ''} no current test case — nothing to grade")}
+    if functional:
+        active = scope.get("active_targets") or []
+        if not active:
+            if scope.get("targets_source") == "declared":
+                names = ", ".join(t["name"] for t in scope.get("target_rows") or [])
+                return {"reason": EMPTY_NO_ACTIVE_TARGET, "targets": list(scope.get("targets") or []),
+                        "sentence": (f"every declared target environment is inactive ({names}) — "
+                                     "no active environment is in scope")}
+            return {"reason": EMPTY_NO_ACTIVE_TARGET, "targets": [],
+                    "sentence": ("no target environment — none is declared, and no active "
+                                 "environment holds a run for this scope")}
+        if scope.get("checks", 0) == 0 and not conformance:
+            return {"reason": EMPTY_ALL_EXCLUDED, "targets": list(active),
+                    "sentence": ("the plan excludes every test case on every target — "
+                                 "no check remains to grade")}
+    return None
+
+
+def resolve_release_scopes(session: Session, *, tenant_id: Optional[int], keys_by_release: dict,
+                           env_reader: Optional[Callable] = None, evidence_envs: Optional[Callable] = None,
+                           targets: Optional[dict] = None, plans: Optional[dict] = None) -> dict:
+    """The canonical scope read for every release in ``keys_by_release``
+    (``{release_id: [identity keys]}``) in ONE pass: one links query, one
+    latest-claims read, one declared-targets query, one evidence-environments
+    query, one latest-plans query (+ one plan read per release that has one).
+    Returns ``{release_id: scope}`` where scope is::
+
+        {release_id, keys, requirement_count, test_ids, keys_by_tid, latest,
+         live_ids, functional_ids, conformance_ids,
+         targets, targets_source, target_rows, active_targets,
+         plan, admitted_by_env, excluded_by_env, checks, empty}
+
+    ``targets`` (``{release_id: [env ids]}``) and ``plans`` (``{release_id:
+    plan}``) are the assembler's seams (a named target set; the tenant-only
+    harness); ``env_reader`` / ``evidence_envs`` are the planner's."""
+    from primeqa.execution_engine import planner
+    from primeqa.intelligence.substrate_decision import (
+        _claim_ids_from_matches, _claim_matches, _environments_with_evidence_by_claim, _latest_claims,
+    )
+
+    own_reader = env_reader is None
+    env_reader = env_reader or planner.read_env_info(session, tenant_id)
+    clean = {rid: [k for k in (ks or []) if k] for rid, ks in keys_by_release.items()}
+    all_keys = sorted({k for ks in clean.values() for k in ks})
+    matches = _claim_matches(session, all_keys) if all_keys else {}
+    per_release_ids = {rid: _claim_ids_from_matches(matches, ks) for rid, ks in clean.items()}
+    all_tids = []
+    seen: set = set()
+    for tids, _ in per_release_ids.values():
+        for t in tids:
+            if t not in seen:
+                seen.add(t); all_tids.append(t)
+    latest = _latest_claims(session, all_tids)
+
+    # per release: the live split
+    scopes: dict = {}
+    for rid, ks in clean.items():
+        test_ids, keys_by_tid = per_release_ids[rid]
+        live = [t for t in test_ids if getattr(latest.get(t), "status", None) != "deprecated"]
+        conformance_ids = [str(t) for t in live if getattr(latest.get(t), "archetype", None) == _UI_ARCHETYPE]
+        functional_ids = [str(t) for t in live if str(t) not in set(conformance_ids)]
+        scopes[rid] = {"release_id": rid, "keys": ks, "requirement_count": len(ks),
+                       "test_ids": test_ids, "keys_by_tid": keys_by_tid,
+                       "latest": {t: latest.get(t) for t in test_ids},
+                       "live_ids": live, "functional_ids": functional_ids,
+                       "conformance_ids": conformance_ids}
+
+    # the declared targets (one query) and the evidence environments (one query)
+    real_ids = [rid for rid in clean if rid is not None]
+    declared_by_release: dict = {rid: [] for rid in clean}
+    if real_ids:
+        for rid, env in session.execute(text(_DECLARED_TARGETS_SQL), {"ids": [int(r) for r in real_ids]}).fetchall():
+            declared_by_release[int(rid)].append(int(env))
+    need_evidence = [rid for rid, sc in scopes.items()
+                     if not (targets and rid in targets) and not declared_by_release.get(rid) and sc["functional_ids"]]
+    envs_by_claim: dict = {}
+    if need_evidence and evidence_envs is None:
+        # over EVERY functional claim on the page (not only the fallback
+        # releases'): the readiness read asks for the same set, and the
+        # close-2 memo then serves both from one query
+        envs_by_claim = _environments_with_evidence_by_claim(
+            session, [UUID(t) for sc in scopes.values() for t in sc["functional_ids"]],
+            tenant_id=tenant_id)
+
+    # the latest executed plan per release (one query + one read per plan)
+    plan_by_release: dict = dict(plans or {})
+    want_plan = [rid for rid in real_ids if rid not in plan_by_release]
+    if want_plan:
+        for ref, pid in session.execute(text(_LATEST_EXECUTED_PLANS_SQL),
+                                        {"refs": [str(r) for r in want_plan]}).fetchall():
+            plan_by_release[int(ref)] = planner.get_plan(session, pid)
+
+    if own_reader and tenant_id is not None:
+        # one query for every target environment on the page, warming the
+        # planner's per-environment reader instead of one query per environment
+        want = sorted({int(e) for rid in scopes for e in (
+            (targets or {}).get(rid) or declared_by_release.get(rid)
+            or ([e for t in scopes[rid]["functional_ids"] for e in envs_by_claim.get(t, ())]))})
+        if want:
+            env_reader = planner.read_env_info_many(session, tenant_id, want)
+
+    for rid, sc in scopes.items():
+        if targets and rid in targets:
+            source, tg = "named", list(targets[rid])
+        elif declared_by_release.get(rid):
+            source, tg = "declared", declared_by_release[rid]
+        elif evidence_envs is not None:
+            source, tg = "fallback:evidence-active", evidence_envs([UUID(t) for t in sc["functional_ids"]])
+        else:
+            source = "fallback:evidence-active"
+            tg = sorted({e for t in sc["functional_ids"] for e in envs_by_claim.get(t, ())})
+        tg = sorted({int(e) for e in tg})
+        rows = []
+        for env in tg:
+            info = env_reader(env)
+            rows.append({"environment_id": env, "name": (info.name if info else f"env {env}"),
+                         "is_active": (bool(info.is_active) if info else False)})
+        active = [r["environment_id"] for r in rows if r["is_active"]]
+        plan = plan_by_release.get(rid)
+        admitted_by_env, excluded_by_env = _plan_admission(plan)
+        checks = sum(1 for t in sc["functional_ids"] for e in active
+                     if t not in excluded_by_env.get(e, {}))
+        sc.update({"targets": tg, "targets_source": source, "target_rows": rows,
+                   "active_targets": active, "plan": plan,
+                   "admitted_by_env": admitted_by_env, "excluded_by_env": excluded_by_env,
+                   "checks": checks + len(sc["conformance_ids"])})
+        sc["empty"] = scope_emptiness(sc)
+    return scopes
+
+
+def release_scope(session: Session, *, tenant_id: Optional[int], release_id: Optional[int], keys,
+                  env_reader: Optional[Callable] = None, evidence_envs: Optional[Callable] = None,
+                  targets: Optional[list] = None, plan: Optional[dict] = None) -> dict:
+    """The one-release form of :func:`resolve_release_scopes` — the engine's,
+    the composer's and the page's read."""
+    return resolve_release_scopes(
+        session, tenant_id=tenant_id, keys_by_release={release_id: list(keys or [])},
+        env_reader=env_reader, evidence_envs=evidence_envs,
+        targets=({release_id: targets} if targets is not None else None),
+        plans=({release_id: plan} if plan is not None else None))[release_id]
+
+
+# --------------------------------------------------------------------------
 # the assembly
 # --------------------------------------------------------------------------
 
@@ -107,56 +297,47 @@ def assemble(session: Session, *, tenant_id: int, keys, release_id: Optional[int
              targets: Optional[list] = None, env_reader: Optional[Callable] = None,
              evidence_envs: Optional[Callable] = None, plan: Optional[dict] = None,
              rule_levels: Optional[dict] = None, user_name: Optional[Callable] = None,
-             now: Optional[datetime] = None) -> dict:
+             now: Optional[datetime] = None, scope: Optional[dict] = None) -> dict:
     """The evidence for ``keys`` (the release's requirement identity keys).
 
     ``targets`` (env ids) overrides the DECLARED targets read; ``env_reader``
     / ``evidence_envs`` are the planner's seams (the tenant-only harness has
     no ``public.environments``); ``plan`` overrides the latest-executed-plan
     read; ``rule_levels`` (rule id → level) overrides the ACTIVE map set read
-    (public tables the harness lacks). Returns the evidence dict the engine grades (see the module doc)."""
+    (public tables the harness lacks); ``scope`` is the canonical scope
+    already resolved by the caller (:func:`release_scope`) — the engine
+    resolves it once, refuses on emptiness, then hands it here. Returns the
+    evidence dict the engine grades (see the module doc)."""
     from primeqa.execution_engine import planner
-    from primeqa.intelligence.substrate_decision import (
-        _assemble_claim_evidence, _claim_test_ids, _environments_with_evidence,
-    )
+    from primeqa.intelligence.substrate_decision import _assemble_claim_evidence
     from primeqa.sync.credentials import get_connected_org_for_environment
     from primeqa.test_representation import surface_links
-    from primeqa.test_representation.coordinator import SemanticTransactionCoordinator
 
     now = now or datetime.now(timezone.utc)
     keys = [k for k in (keys or []) if k]
     env_reader = env_reader or planner.read_env_info(session, tenant_id)
     user_name = user_name or _user_name_reader(session, tenant_id)
-    evidence_envs = evidence_envs or (lambda tids: _environments_with_evidence(session, tids, tenant_id=tenant_id))
     conn = session.connection()
     ev: dict = {"keys": keys, "release_id": release_id, "assembled_at": now.isoformat()}
 
-    # -- the scope: live claims, split by lane ------------------------------
-    test_ids, keys_by_tid = _claim_test_ids(session, keys) if keys else ([], {})
-    coord = SemanticTransactionCoordinator()
-    latest = coord.get_latest_claims(session, list(test_ids)) if test_ids else {}
-    live = [t for t in test_ids if getattr(latest.get(t), "status", None) != "deprecated"]
-    conformance_ids = [str(t) for t in live if getattr(latest.get(t), "archetype", None) == _UI_ARCHETYPE]
-    functional_ids = [str(t) for t in live if str(t) not in set(conformance_ids)]
+    # -- the scope: the canonical read (live claims by lane, the plan, the targets)
+    if scope is None:
+        scope = release_scope(session, tenant_id=tenant_id, release_id=release_id, keys=keys,
+                              env_reader=env_reader, evidence_envs=evidence_envs, targets=targets, plan=plan)
+    keys_by_tid = scope["keys_by_tid"]
+    live = scope["live_ids"]
+    conformance_ids = scope["conformance_ids"]
+    functional_ids = scope["functional_ids"]
     ev["scope"] = {"claim_count": len(live), "functional": len(functional_ids), "conformance": len(conformance_ids)}
 
     # -- the plan (ruling 6) + the targets -----------------------------------
-    if plan is None and release_id is not None:
-        plan = latest_executed_plan(session, release_id=release_id)
+    plan = scope["plan"]
     ev["plan"] = ({"id": plan["id"], "executed_at": plan.get("executed_at"), "planned_at": plan.get("planned_at"),
                    "job_count": ((plan.get("resolution") or {}).get("manifests") or {}).get("functional", {}).get("job_count"),
                    "targets_source": (plan.get("inputs") or {}).get("targets_source")}
                   if plan else None)
-    admitted_by_env, excluded_by_env = _plan_admission(plan)
-    if targets is None:
-        declared = planner.list_targets(session, release_id) if release_id is not None else []
-        if declared:
-            targets_source, targets = "declared", [t["environment_id"] for t in declared]
-        else:
-            targets_source, targets = "fallback:evidence-active", evidence_envs([UUID(t) for t in functional_ids])
-    else:
-        targets_source = "named"
-    targets = sorted({int(e) for e in targets})
+    admitted_by_env, excluded_by_env = scope["admitted_by_env"], scope["excluded_by_env"]
+    targets_source, targets = scope["targets_source"], list(scope["targets"])
 
     # -- waivers (§c) ---------------------------------------------------------
     from primeqa.intelligence import quality_policy as qp
