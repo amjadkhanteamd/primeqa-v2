@@ -264,3 +264,34 @@ Empty at grading: 0. Near-empty (fewer than three counted runs): 0. Nothing alte
 **Item 4 — decision 72's preview, byte-identical.** `preview_release_decision(1, 16, keys)` and `release_scope_readiness(1, keys)` captured from `main` @6d09603 (a worktree) and from the branch on the live rows: **identical** (GO 0.95, "no rule blocked, reviewed or conditioned", plan 9ea0c522, 19 items CURRENT on env 59). The page's keys equal the act's keys on both (five Jira rows).
 
 **The board on production** (25 releases): no row's counts moved (the bulk readiness equals the old census on every production release); 13 rows moved from `not_evaluated` "no requirement in scope" to `refuses` "Evaluate will refuse — no requirement is in scope — nothing to grade" — which is what the act now does to them.
+
+## h. Post-merge transcript (2026-09-18) — D-496
+
+**Pre-flight.** Trees clean; `main` unmoved since the branch point (6d09603, 0 commits ahead); WRITE-FREE re-proven (0 migration/alembic files, 0 DDL/write verbs in the added lines of `primeqa/`); the window proven against the deployed tree with `git grep origin/main` — the four replaced shapes present once each, the five new names absent; the two other `"jira_key": req.jira_key` dict sites in `views.py` feed requirement pages that derive their key from the ORM row (`_requirement_to_ref`), not the dict. Production probes: health 200, `error_rate 0.0`.
+
+**Pre-merge baseline on production** (GETs only, a ten-minute tester token minted by a script reading the secret from stdin): release 106 (no requirement) — board card `not_evaluated` "no requirement in scope"; decision page card **`data-recommendation="go"`**, no refusal (the live defect). Release 16 — GO under Plimsol default v1, plan 9ea0c522, no Step 2 block.
+
+**Merge.** `bbd943f` (`--no-ff`, parents 6d09603 + 38df0cf), pushed 16:55:00Z. Deploy watch on the merge commit:
+
+| service | SUCCESS at |
+|---|---|
+| primeqa-v2 (web) | 16:56Z |
+| scheduler | 16:56Z |
+| worker | 16:57Z |
+| browser-worker | 16:58Z |
+
+Health after: 200, `error_rate 0.0`. Logs: gunicorn boot on the web service, `worker_lifecycle=start` on the worker, the known once-per-process stale-tenant warnings on the scheduler and browser-worker; zero tracebacks, zero error-class lines.
+
+**The production proof.** Read-only guard proven first (CREATE TABLE / INSERT / UPDATE each refused with `ReadOnlySqlTransaction`).
+
+| step | result |
+|---|---|
+| `GET /releases` — card 106 | `refuses` · "Evaluate will refuse — no requirement is in scope — nothing to grade" |
+| `GET /releases/106?tab=decision` | card `data-recommendation="none"`, `quality-refusal` = the same sentence |
+| `GET /releases/16?tab=decision` | unchanged: GO, "Policy Plimsol default v1 · plan 9ea0c522 run 2026-09-10T10:17", no Step 2 block |
+| `POST /api/releases/106/evaluate-decision` (Bearer, attempted only after the page proved the new code live) | **409 `SCOPE_EMPTY`**, `empty.reason = no_requirement` |
+| decision rows on 106 / on all releases | 0 → 0 / 2 → 2 |
+
+The act was attempted on the one production release where the pre-condition refuses before any write, and its refusal was proven by the attempt — the standing rule for a safety control.
+
+**Closure.** D-496 appended; branch `fix-empty-scope-decision` deleted locally and on origin; scratch left as found (residue 0, the seed policy's state untouched).
