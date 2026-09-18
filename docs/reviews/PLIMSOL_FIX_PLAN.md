@@ -931,3 +931,60 @@
   secret printed.** Read secrets into a script FILE's stdin, never into an
   interpreter reading its program from stdin. The production JWT_SECRET was
   printed once this way and must be rotated.
+
+## Added 2026-09-18 — from the AUD-014 containment (a decision requires a non-empty graded scope)
+
+- **CLASS — "absence read as compliance."** The product's recurring failure
+  mode, named once so the next instance is recognised: a control that
+  iterates over what it HAS and reports the result as if it had covered what
+  it SHOULD have — zero inputs, zero failures, therefore green. The
+  arithmetic is always locally correct (no rule fired; all groundings that
+  exist are intact; every criterion the engine knows is covered) and the
+  conclusion is always wrong, because the denominator was the evidence at
+  hand, not the scope. Members so far:
+  - **AUD-014 (critical; CLOSED here).** The quality policy graded an EMPTY
+    input as satisfied on every axis — a release with no requirement, or
+    scoped only to an inactive environment, previewed GO and Evaluate
+    RECORDED it. Closed by making emptiness a first-class pre-condition of
+    evaluation (`quality_evidence.release_scope` / `scope_emptiness`; the
+    engine refuses before the policy runs; the composer refuses before Step
+    2's currency check; the board and the page derive "will refuse" from the
+    same call). Two members hid inside it: the page previewed over
+    `req-<id>` keys because the release service's requirement dicts carried
+    no `external_key` (the page's scope was empty; the act's was not), and
+    an UNAVAILABLE readiness read let the act through (unknown was read as
+    current). Both closed here.
+  - **The D-484 grounding item (HIGH; CLOSED 2026-09-08, entry of
+    2026-09-07 above).** `grounding_integrity` read "All claim groundings
+    intact and current" over claims that HAD no grounding row — the
+    comprehensions counted `broken` / `drifted` / `stale` only over rows
+    with a verdict. Closed by D9: a claim without a verdict for the org is
+    an UNGRADED input, and ungraded inputs block GO.
+  - **The Phase 4 census denominator (Medium; OPEN, entry of 2026-08-31
+    above).** A standard's NOT_COVERED denominator is the vendored engine's
+    tag census — a criterion no rule addresses cannot render NOT_COVERED.
+    The view says `denominator_complete: false`; a report still cannot say
+    "N of M criteria". Remedy unchanged: a ratified criterion catalogue.
+  - **Recognition rule for the next one:** wherever a count, a rate, or a
+    verdict is computed over a collection, ask what the collection was
+    SUPPOSED to hold and whether zero-of-zero can reach the green branch. A
+    green over nothing is this class; it needs an explicit emptiness (or
+    unknown-ness) refusal BEFORE the arithmetic, never a rule after it.
+- **Low: the API's evaluate route answered every refusal as
+  `SCOPE_NOT_CURRENT`** — a no-active-policy refusal read "0 item(s) in
+  scope are not current". CLOSED here: one 409 shape, the code naming the
+  reason (`SCOPE_EMPTY`, `SCOPE_NOT_CURRENT`, `SCOPE_UNAVAILABLE`,
+  `NO_ACTIVE_POLICY` / `POLICY_UNAVAILABLE`).
+- **Low: the release board's currency count came from RUNS, the page's
+  from the canonical read.** A test case that ran on one of two evidence
+  environments was one NEVER_RUN item on the page and none on the board.
+  CLOSED here: the board calls `release_scope_readiness_bulk`, whose entries
+  are the per-release read's byte for byte. Production at merge pre-flight:
+  no board row's counts moved (the shape did not occur there); 13 rows moved
+  from "not evaluated · no requirement in scope" to "Evaluate will refuse —
+  no requirement is in scope", which is what the act now does.
+- **Low: the board costs four more queries per page (12 → 16 on a four-release
+  page), all constant in the number of releases** — the declared targets,
+  the latest executed plans, the environments' activity, and the
+  evidence-environments read the scope needs. The decision tab's own count is
+  unchanged (the scope read and the assembly share one reader and one memo).
