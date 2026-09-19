@@ -71,7 +71,7 @@
                 <p class="mt-1 text-xs text-gray-600">Final decision: <span class="font-medium">{{ release.latest_decision.final_decision|replace('_', ' ')|upper }}</span></p>
                 {% endif %}
             </div>
-            <a href="/releases/{{ release.id }}/decision" class="text-sm font-medium text-indigo-600 hover:text-indigo-800">View Reasoning →</a>
+            <a href="/releases/{{ release.id }}?tab=decision" class="text-sm font-medium text-indigo-600 hover:text-indigo-800">View Reasoning →</a>
         </div>
     </div>
     {% endif %}

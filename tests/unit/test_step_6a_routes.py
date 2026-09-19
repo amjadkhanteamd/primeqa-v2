@@ -3,7 +3,6 @@ template links anywhere that neither resolves nor redirects."""
 from __future__ import annotations
 
 import pathlib
-import re
 
 import pytest
 
@@ -53,22 +52,20 @@ def test_the_rehomed_surfaces_exist():
 
 
 def test_no_template_links_to_a_path_that_does_not_answer():
-    """The dead-link sweep: every internal href in a template must match a
-    route, a redirect or a static asset. Anything else is a dead link."""
-    from primeqa.app import app
-    rules = list(app.url_map.iter_rules())
-    literal = {str(r.rule) for r in rules if "<" not in str(r.rule)}
-    patterns = [re.compile("^" + re.sub(r"<[^>]+>", "[^/]+", str(r.rule)) + "$")
-                for r in rules if "<" in str(r.rule)]
-    href = re.compile(r'href="(/[^"{}\s]*)"')
-    dead = []
-    for path in sorted(TEMPLATES.rglob("*.html")):
-        for i, line in enumerate(path.read_text().splitlines(), 1):
-            for url in href.findall(line):
-                clean = url.split("?")[0].split("#")[0].rstrip("/") or "/"
-                if clean.startswith("/static"):
-                    continue
-                if clean in literal or any(p.match(clean) for p in patterns):
-                    continue
-                dead.append(f"{path.relative_to(TEMPLATES)}:{i}: {url}")
-    assert dead == [], "dead internal links:\n  " + "\n  ".join(dead)
+    """The dead-link sweep. Its first form matched `href="(/[^"{}\\s]*)"` and
+    so excluded every href carrying a Jinja expression by construction — the
+    release page's "View Reasoning" pointed at a route that never existed and
+    this test stayed green (AUD-002/AUD-003). The sweep now lives in
+    `scripts/deadlinks_gate.py` (every attribute, htmx verb, form action,
+    url_for and JS literal, Jinja collapsed to wildcard segments, the method
+    checked) and is proven able to fail in `tests/unit/test_no_dead_links.py`
+    before the repo is judged. This test delegates to it so the 6a gate and
+    the merge gate can never disagree."""
+    import sys
+    sys.path.insert(0, str(TEMPLATES.parents[1] / "scripts"))
+    import deadlinks_gate as dl
+    rep = dl.sweep_repo()
+    d = rep.as_dict()
+    assert d["targets"] > 200, "the sweep collected almost nothing — it is not reading the tree"
+    assert rep.dead == [], "dead internal targets:\n  " + "\n  ".join(
+        f"{x['where']} [{x['kind']}] {x['target']} — {x['reason']}" for x in d["dead_list"])

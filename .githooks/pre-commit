@@ -1,13 +1,15 @@
 #!/bin/sh
-# Blocks a commit that stages a decision-number collision in the ledger
-# (the D-302 / D-448 race — two workstreams taking the same next number).
-# Checks the STAGED content, not the working tree.
-#
-# Activate once per clone:  git config core.hooksPath .githooks
-# The backstop is the unit gate suite (test_real_ledger_is_clean), which
-# fails on the same collision even where this hook is not activated.
+# Pre-commit gates. Each step checks the STAGED content, not the working
+# tree, and each has a backstop in the unit gate suite for clones where the
+# hook is not activated (git config core.hooksPath .githooks).
 # --no-verify is prohibited by the working agreement (docs/CONVENTIONS.md).
+#
+# Ordering note (triage batch, 2026-09-19): this file once ended its first
+# step with `exit 0`, so the undefined-name step below it never ran — a gate
+# that reported a check it did not make. Every step now falls through; the
+# single exit is the last line.
 
+# 1. Decision-number collision in the ledger (the D-302 / D-448 race).
 if git diff --cached --name-only | grep -q '^docs/architecture/DECISIONS_LOG\.md$'; then
     tmp=$(mktemp) || exit 1
     git show :docs/architecture/DECISIONS_LOG.md > "$tmp" || { rm -f "$tmp"; exit 1; }
@@ -20,11 +22,10 @@ if git diff --cached --name-only | grep -q '^docs/architecture/DECISIONS_LOG\.md
         exit 1
     fi
 fi
-exit 0
 
-# Undefined-name gate (AUD-006/008/009/010): a call site that outlived its
-# definition must not reach the ledger. Checks the STAGED Python only; the
-# backstop is tests/unit/test_no_undefined_names.py over the whole package.
+# 2. Undefined-name gate (AUD-006/008/009/010): a call site that outlived its
+# definition must not reach the ledger. Staged Python only; the backstop is
+# tests/unit/test_no_undefined_names.py over the whole package.
 staged_py=$(git diff --cached --name-only --diff-filter=ACM | grep '^primeqa/.*\.py$')
 if [ -n "$staged_py" ]; then
     if ! python3 -c "import pyflakes" 2>/dev/null; then
@@ -38,3 +39,20 @@ if [ -n "$staged_py" ]; then
         exit 1
     fi
 fi
+
+# 3. Dead-link gate (AUD-002/003/004): every internal target in templates and
+# static JS must resolve against the LIVE url_map, with its method. Runs when
+# a template, a static JS file or a route module is staged; the backstop is
+# tests/unit/test_no_dead_links.py (which also proves the sweep can fail).
+staged_ui=$(git diff --cached --name-only --diff-filter=ACMD | grep -E '^primeqa/(templates/|static/.*\.js$|.*routes\.py$|views\.py$|app\.py$)')
+if [ -n "$staged_ui" ]; then
+    py=python3; [ -x venv/bin/python ] && py=venv/bin/python
+    if ! JWT_SECRET="${JWT_SECRET:-0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef}" \
+         CREDENTIAL_ENCRYPTION_KEY="${CREDENTIAL_ENCRYPTION_KEY:-abababababababababababababababababababababababababababababababab}" \
+         "$py" scripts/deadlinks_gate.py 2>/dev/null; then
+        echo "pre-commit: dead-link sweep FAILED (see above) — fix the target or the route; --no-verify is prohibited." >&2
+        exit 1
+    fi
+fi
+
+exit 0

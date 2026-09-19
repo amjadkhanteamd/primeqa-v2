@@ -43,7 +43,7 @@
         </div>
         {% if user.role in ['admin', 'tester', 'superadmin'] %}
         <div class="flex items-center gap-3 ml-4 flex-shrink-0">
-          <a href="/test-cases?section_id={{ node.id }}" class="text-xs text-indigo-600 hover:text-indigo-800">View TCs</a>
+          <a href="/requirements?section_id={{ node.id }}" class="text-xs text-indigo-600 hover:text-indigo-800">View requirements</a>
           <button type="button"
                   data-rename-section="{{ node.id }}"
                   data-section-name="{{ node.name | e }}"
