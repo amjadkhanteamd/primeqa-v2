@@ -143,12 +143,14 @@ def declare_target(tenant_id: int, *, release_id: int, environment_id: int, user
 
 
 def remove_target(tenant_id: int, *, release_id: int, environment_id: int, user_id: int, reason: str = "",
-                  session=None) -> dict:
+                  session=None, actor_is_admin: bool = False) -> dict:
     from primeqa.execution_engine import planner
     try:
         return _with_session(tenant_id, session, lambda s: {"ok": True, **planner.remove_target(
             s, tenant_id=tenant_id, release_id=release_id, environment_id=environment_id,
-            actor_user_id=user_id, reason=reason)})
+            actor_user_id=user_id, reason=reason, actor_is_admin=actor_is_admin)})
+    except planner.TargetAuthorityError as exc:
+        return {"ok": False, "refused": True, "sentence": str(exc)}
     except Exception as exc:  # noqa: BLE001
         log.warning("remove_target failed: %s", exc)
         return {"ok": False, "sentence": "Could not remove the target right now."}

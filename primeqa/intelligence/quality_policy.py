@@ -407,16 +407,26 @@ def record_waiver(session: Session, *, release_id: Optional[int], item_kind: str
 
 
 def revoke_waiver(session: Session, *, waiver_id: str, user_id: int, reason: str = "",
-                  tenant_id: Optional[int] = None) -> dict:
+                  tenant_id: Optional[int] = None, actor_is_admin: bool = False) -> dict:
+    """The RULE (AUD-020, triage 2026-09-19): a waiver is a named human accepting
+    a known state (D-488); its withdrawal is the same kind of act — the reviewer
+    who accepted it, the person who recorded it, or an admin may withdraw it,
+    and every withdrawal says why. The reason is refused empty HERE and at the
+    table (``ck_quality_waivers_revocation_reason``); the authority is refused
+    here and at the route."""
     w = get_waiver(session, waiver_id)
     if w is None:
         raise PolicyError(f"no waiver {waiver_id}")
     if w["revoked_at"] is not None:
         raise PolicyError("that waiver is already revoked")
+    if not (reason or "").strip():
+        raise PolicyError("a revocation carries its reason — say why the waiver no longer holds")
+    if not actor_is_admin and int(user_id) not in (int(w["reviewer_user_id"]), int(w["created_by"])):
+        raise PolicyError("only the waiver's reviewer, the person who recorded it, or an admin may revoke it")
     session.execute(text("""
         UPDATE quality_waivers SET revoked_by = :u, revoked_at = :t, revocation_reason = :r
         WHERE id = CAST(:w AS uuid)
-    """), {"u": user_id, "t": datetime.now(timezone.utc), "r": reason or None, "w": str(waiver_id)})
+    """), {"u": user_id, "t": datetime.now(timezone.utc), "r": reason.strip(), "w": str(waiver_id)})
     _audit(session, tenant_id=tenant_id, user_id=user_id, action="quality_waiver.revoke",
            details={"waiver_id": str(waiver_id), "reason": reason})
     session.flush()

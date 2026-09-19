@@ -2753,9 +2753,12 @@ def release_target_remove(release_id, environment_id):
     from flask import flash
 
     from primeqa.intelligence.run_plan_console import remove_target
+    # AUD-023: the declarer or an admin, with a reason (refused in the planner
+    # and at the table; the route only says who is asking).
     res = remove_target(request.user["tenant_id"], release_id=release_id,
                         environment_id=environment_id, user_id=request.user["id"],
-                        reason=(request.form.get("reason") or "").strip())
+                        reason=(request.form.get("reason") or "").strip(),
+                        actor_is_admin=rank(request.user.get("role")) >= Tier.ADMIN)
     flash("Target removed — the next plan re-resolves." if res.get("ok") and res.get("removed")
           else (res.get("sentence") or "That target was not active."),
           "success" if res.get("ok") and res.get("removed") else "error")
@@ -5063,8 +5066,11 @@ def release_waiver_revoke(release_id, waiver_id):
     from flask import flash
 
     from primeqa.intelligence.quality_decision_console import revoke_waiver
+    # AUD-020: reviewer, recorder or admin, with a reason (refused in the
+    # service and at the table; the route only says who is asking).
     res = revoke_waiver(request.user["tenant_id"], waiver_id=str(waiver_id), user_id=request.user["id"],
-                        reason=(request.form.get("reason") or "").strip())
+                        reason=(request.form.get("reason") or "").strip(),
+                        actor_is_admin=rank(request.user.get("role")) >= Tier.ADMIN)
     flash("Waiver revoked — the item counts again." if res.get("ok")
           else (res.get("sentence") or "Could not revoke the waiver."),
           "success" if res.get("ok") else "error")
@@ -5074,14 +5080,19 @@ def release_waiver_revoke(release_id, waiver_id):
 # --- Step 6b §b: Release quality — the two ACTING pages -------------------
 
 @views_bp.route("/settings/quality-policy/activate", methods=["POST"])
-@require_tier(Tier.MEMBER)
+@require_tier(Tier.ADMIN)
 @login_required
 def settings_policy_activate():
     """ACTIVATE a draft policy — the control AK had to reach for a CLI to use.
 
     It calls ``quality_policy.activate`` exactly as the CLI does, so the act is
     ONE code path: draft → active, the previous active retired, both audited
-    with the real actor. Rule EDITING stays CLI in v1 (§f)."""
+    with the real actor. Rule EDITING stays CLI in v1 (§f).
+
+    THE RULE (AUD-019, triage 2026-09-19): ADMIN. Activation decides what
+    grades every release the tenant evaluates from then on — governance, not
+    a member's act — and the Settings surface that offers it is admin's. The
+    gate sat at MEMBER, below the surface (a tester's POST reached the act)."""
     from flask import flash
 
     from primeqa.intelligence import quality_policy as qp
@@ -5173,9 +5184,11 @@ def settings_waiver_revoke(waiver_id):
     from flask import flash
 
     from primeqa.intelligence.quality_decision_console import revoke_waiver
+    # AUD-020: reviewer, recorder or admin, with a reason (see release_waiver_revoke).
     res = revoke_waiver(request.user["tenant_id"], waiver_id=str(waiver_id),
                         user_id=request.user["id"],
-                        reason=(request.form.get("reason") or "").strip())
+                        reason=(request.form.get("reason") or "").strip(),
+                        actor_is_admin=rank(request.user.get("role")) >= Tier.ADMIN)
     flash("Waiver revoked — the item counts again." if res.get("ok")
           else (res.get("sentence") or "Could not revoke the waiver."),
           "success" if res.get("ok") else "error")

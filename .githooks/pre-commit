@@ -9,11 +9,15 @@
 # that reported a check it did not make. Every step now falls through; the
 # single exit is the last line.
 
+# The project's interpreter: the venv when present (pyflakes lives there),
+# else the system python3.
+py=python3; [ -x venv/bin/python ] && py=venv/bin/python
+
 # 1. Decision-number collision in the ledger (the D-302 / D-448 race).
 if git diff --cached --name-only | grep -q '^docs/architecture/DECISIONS_LOG\.md$'; then
     tmp=$(mktemp) || exit 1
     git show :docs/architecture/DECISIONS_LOG.md > "$tmp" || { rm -f "$tmp"; exit 1; }
-    python3 scripts/check_decision_numbers.py --file "$tmp"
+    "$py" scripts/check_decision_numbers.py --file "$tmp"
     status=$?
     rm -f "$tmp"
     if [ "$status" -ne 0 ]; then
@@ -28,11 +32,11 @@ fi
 # tests/unit/test_no_undefined_names.py over the whole package.
 staged_py=$(git diff --cached --name-only --diff-filter=ACM | grep '^primeqa/.*\.py$')
 if [ -n "$staged_py" ]; then
-    if ! python3 -c "import pyflakes" 2>/dev/null; then
+    if ! "$py" -c "import pyflakes" 2>/dev/null; then
         echo "pre-commit: pyflakes is not installed (pip install -r requirements-dev.txt)." >&2
         exit 1
     fi
-    hits=$(echo "$staged_py" | xargs python3 -m pyflakes 2>&1 | grep 'undefined name')
+    hits=$(echo "$staged_py" | xargs "$py" -m pyflakes 2>&1 | grep 'undefined name')
     if [ -n "$hits" ]; then
         echo "pre-commit: undefined names in staged Python — fix before committing; --no-verify is prohibited." >&2
         echo "$hits" >&2
@@ -46,7 +50,6 @@ fi
 # tests/unit/test_no_dead_links.py (which also proves the sweep can fail).
 staged_ui=$(git diff --cached --name-only --diff-filter=ACMD | grep -E '^primeqa/(templates/|static/.*\.js$|.*routes\.py$|views\.py$|app\.py$)')
 if [ -n "$staged_ui" ]; then
-    py=python3; [ -x venv/bin/python ] && py=venv/bin/python
     if ! JWT_SECRET="${JWT_SECRET:-0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef}" \
          CREDENTIAL_ENCRYPTION_KEY="${CREDENTIAL_ENCRYPTION_KEY:-abababababababababababababababababababababababababababababababab}" \
          "$py" scripts/deadlinks_gate.py 2>/dev/null; then
