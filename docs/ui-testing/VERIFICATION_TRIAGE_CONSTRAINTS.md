@@ -154,3 +154,57 @@ insert is the point.
 4. `alembic -x mode=tenant -x tenant_id=1 upgrade tenant@head` against production, DSN from `.env`, never printed; read back the three constraints and the trigger.
 5. Prove the constraints on production by attempting the forbidden writes inside rolled-back transactions (the same harness as scratch, prechecks included).
 6. Merge `--no-ff`, push, four-service watch, logs, health, read-only proof (the release page's "View Reasoning" now lands on the decision tab; a member's activate POST redirected home).
+
+## Post-merge transcript (2026-09-19) — D-497
+
+**Pre-flight.** Trees clean; `main` unmoved since the branch point
+(b7d3976, 0 commits); one tenant migration in the diff, zero DDL/write verbs
+in the added runtime lines (REJECTING); the window proven against the
+deployed tree — the MEMBER gate on activation, the old `remove_target`
+signature and both dead hrefs present on origin/main, the new names absent;
+deployed = b7d3976.
+
+**AUD-027 proven before trusted.** With `this_name_is_not_defined_anywhere`
+planted in a staged file, the revived hook exits 1 naming the file, line and
+name; on the clean file it exits 0; **main's hook, run on the same planted
+name, exits 0** — the decorative gate, demonstrated.
+
+**Dump first.** `pg_dump` of the four tables to
+`/Users/mdamjadkhan/plimsol_dumps/pre_20260919_0010_20260919T081023Z.sql`
+(2,116,017 bytes): `s6_interpretations` 3,913 rows, `repair_proposals` 140,
+`quality_waivers` 0, `release_targets` 0.
+
+**Zero violations re-checked** immediately before applying (read-only, guard
+proven): orphans 0 of 3,913; empty reasons 0 of 0 and 0 of 0; five
+approved/applied proposals that are not DERIVED+grounded are history, untouched
+by a trigger that judges transitions only.
+
+**Applied.** `alembic … upgrade tenant@head` on production tenant_1,
+08:12:18Z–08:12:34Z, head `20260912_0010` → `20260919_0010`; read-back: the
+three constraints with their definitions, the trigger enabled, the FK
+`convalidated = true`.
+
+**Proven ON production.** The same harness as scratch — fixtures planted
+under the replica role inside one transaction, the attempt under the origin
+role, everything rolled back, prechecks matching real rows: **14 refusals,
+4 allowances**, exactly as on scratch; probe ids and fixture rows absent
+afterwards; row counts unchanged (3,913 / 0 / 0 / 140).
+
+**Merge.** f28b531 (`--no-ff`, parents b7d3976 + b678237), pushed 08:15:03Z.
+All four services SUCCESS (web, worker, scheduler at once; browser-worker
+built through 08:18Z). Health 200, `error_rate 0.0`; zero error-class lines
+in the four logs.
+
+**Deployed proof** (tester token minted by a script reading the secret from
+stdin; one POST, refused before any body):
+
+| step | result |
+|---|---|
+| `GET /releases/16` — "View Reasoning" href | `/releases/16?tab=decision`; followed → 200 with the decision card |
+| `GET /sections` | 3 "View requirements" links, 0 `/test-cases` |
+| `POST /settings/quality-policy/activate` as TESTER | **302 → `/`** (the tier deny); policy audit rows 1 → 1; policies by status unchanged, counted under the proven read-only guard |
+| `GET /settings/quality-policy` as tester | 200 — the page reads; the act is admin's |
+
+**Closure.** D-497 appended; branch `triage-constraints` deleted locally and on
+origin; scratch left as found (tenant_1 at the new head, settings dormant,
+residue 0).
