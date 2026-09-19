@@ -22,6 +22,12 @@ from primeqa.interpretation.model import Cause, Interpretation
 from primeqa.interpretation.result_store import persist_interpretation
 
 
+
+def _persist(session, interp):
+    """AUD-026: a verdict cannot exist without its run — seed the run first."""
+    from ._fixtures import persist_interpretation_with_run
+    return persist_interpretation_with_run(session, interp)
+
 def _interp(*, recipe_id, claim_test_id, outcome, verdict,
             cause_kind=None, vr_name=None) -> Interpretation:
     cause = Cause(cause_kind=cause_kind, vr_name=vr_name) if cause_kind else None
@@ -62,17 +68,16 @@ def _seed_full(session, grounding_org) -> None:
         it = _interp(recipe_id=rid, claim_test_id=uuid4(), outcome="failed",
                      verdict="prohibition_not_enforced",
                      cause_kind="enforcement_gap", vr_name="VR_A")
-        persist_interpretation(session, it)
         interps.append(it)
     ct = uuid4()                                          # flapping: same CT, 2 outcomes
     for outcome, verdict in [("passed", "asserted_metadata_present"),
                              ("failed", "asserted_metadata_absent")]:
         it = _interp(recipe_id=rid, claim_test_id=ct, outcome=outcome, verdict=verdict)
-        persist_interpretation(session, it)
         interps.append(it)
-    for n, it in enumerate(interps):                      # an S4 run per interpretation
+    for n, it in enumerate(interps):                      # an S4 run per interpretation — FIRST (AUD-026)
         _seed_run(session, it.run_id, outcome=it.outcome,
                   finished_at="2026-06-0%dT10:00:00+00:00" % (n + 1))
+        _persist(session, it)
     persist_grounding_validity(session, connected_org_id=grounding_org, test_id=uuid4(), version_seq=1,
                                evaluated_at_version_seq=5, validity=_gv(overall="drifted"))
     persist_grounding_validity(session, connected_org_id=grounding_org, test_id=uuid4(), version_seq=1,
@@ -115,9 +120,9 @@ def test_recent_runs_shape(session, grounding_org):
     it = _interp(recipe_id=uuid4(), claim_test_id=uuid4(), outcome="failed",
                  verdict="prohibition_not_enforced",
                  cause_kind="enforcement_gap", vr_name="VR_B")
-    persist_interpretation(session, it)
     _seed_run(session, it.run_id, outcome="failed",
-              finished_at="2026-06-01T10:00:00+00:00")
+              finished_at="2026-06-01T10:00:00+00:00")           # the run FIRST (AUD-026)
+    _persist(session, it)
     session.flush()
     row = _assemble_insights(session, limit=50)["recent_runs"][0]
     assert row["outcome"] == "failed"

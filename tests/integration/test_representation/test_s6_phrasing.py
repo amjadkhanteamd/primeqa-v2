@@ -17,6 +17,12 @@ from primeqa.interpretation.result_store import (
     S6Interpretation, persist_interpretation, set_phrasing)
 
 
+
+def _persist(session, interp):
+    """AUD-026: a verdict cannot exist without its run — seed the run first."""
+    from ._fixtures import persist_interpretation_with_run
+    return persist_interpretation_with_run(session, interp)
+
 def _interp() -> Interpretation:
     return Interpretation(
         run_id=uuid4(), recipe_id=uuid4(), claim_test_id=uuid4(),
@@ -38,7 +44,7 @@ _PATCH = "primeqa.intelligence.interpretation_phrasing.llm_call"
 
 def test_set_phrasing_writes_the_column(session):
     i = _interp()
-    persist_interpretation(session, i)
+    _persist(session, i)
     set_phrasing(session, i.run_id,
                  {"headline": "H", "explanation": "E", "model": "m"})
     session.flush()
@@ -48,7 +54,7 @@ def test_set_phrasing_writes_the_column(session):
 
 def test_get_or_phrase_cache_miss_phrases_and_caches(session):
     i = _interp()
-    persist_interpretation(session, i)
+    _persist(session, i)
     session.flush()
     with patch(_PATCH, return_value=_fake_resp(_GOOD)) as spy:
         out = ip.get_or_phrase(session, i, tenant_id=1, api_key="k")
@@ -60,7 +66,7 @@ def test_get_or_phrase_cache_miss_phrases_and_caches(session):
 
 def test_get_or_phrase_cache_hit_skips_llm(session):
     i = _interp()
-    persist_interpretation(session, i)
+    _persist(session, i)
     set_phrasing(session, i.run_id, {"headline": "cached", "explanation": "e"})
     session.flush()
     with patch(_PATCH) as spy:
@@ -71,7 +77,7 @@ def test_get_or_phrase_cache_hit_skips_llm(session):
 
 def test_get_or_phrase_failure_caches_nothing(session):
     i = _interp()
-    persist_interpretation(session, i)
+    _persist(session, i)
     session.flush()
     with patch(_PATCH, return_value=_fake_resp("not a dict")):
         out = ip.get_or_phrase(session, i, tenant_id=1, api_key="k")
