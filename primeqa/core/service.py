@@ -50,6 +50,12 @@ def _caller_role(caller):
     return getattr(caller, "role", None)
 
 
+class LastSuperadminError(ValueError):
+    """Deactivating the last active superadmin of a tenant is refused on
+    every path (it would lock admin-only routes behind a user who can no
+    longer log in)."""
+
+
 class AuthService:
     def __init__(self, user_repo, token_repo):
         self.user_repo = user_repo
@@ -186,6 +192,15 @@ class AuthService:
         if not ok:
             raise AuthorizationError(reason)
 
+        # AUD-038 (D-499): THE deactivation path — every route that turns a
+        # user off comes through here, so the last-superadmin guard (once
+        # inline in the API route only) holds on every path, and the
+        # refresh-token revocation below always runs.
+        if updates.get("is_active") is False and old.is_active and old.role == "superadmin":
+            others = self.user_repo.count_active_superadmins(caller_tenant, exclude_user_id=user_id)
+            if others == 0:
+                raise LastSuperadminError("Cannot deactivate the last active superadmin in this tenant.")
+
         user = self.user_repo.update_user(user_id, updates, tenant_id=caller_tenant)
         if not user:
             raise ValueError("User not found")
@@ -202,10 +217,12 @@ class AuthService:
                 self.token_repo.revoke_all_user_tokens(user_id)
             elif updates.get("is_active") is False:
                 self.token_repo.revoke_all_user_tokens(user_id)
-        except Exception:
-            # Don't block the user-update on a revocation failure —
-            # the row change already committed.
-            pass
+        except Exception as exc:  # noqa: BLE001
+            # The row change already committed; a revocation failure is
+            # LOGGED, never silent (AUD-038) — the per-request flag check in
+            # core/auth.py is what actually ends the session either way.
+            logging.getLogger("primeqa.auth").error(
+                "refresh-token revocation failed after user %s update %s: %s", user_id, sorted(updates), exc)
         return self._user_dict(user)
 
     def list_users(self, tenant_id):

@@ -302,7 +302,9 @@ def remove(manifest_path):
             run(conn, "DELETE FROM claim_set_members WHERE claim_set_id = CAST(:c AS uuid)", {"c": cs})
             run(conn, "DELETE FROM claim_sets WHERE id = CAST(:c AS uuid)", {"c": cs})
         for v in M["inventory_versions"]:
-            run(conn, "DELETE FROM logical_versions WHERE version_seq = :v", {"v": v})
+            # the inventory cut mints an S1 checkpoint NAMED after the inventory
+            # version; the number is the inventory's, never a logical_versions seq
+            run(conn, "DELETE FROM logical_versions WHERE version_name = :n", {"n": "surface-materialization-inv%s" % v})
         for pid in M["proposals"]:
             run(conn, "DELETE FROM repair_proposals WHERE id = :p", {"p": pid})
         for o in M.get("orphans", []):

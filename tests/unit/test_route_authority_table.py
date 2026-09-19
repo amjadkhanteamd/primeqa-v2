@@ -73,6 +73,15 @@ def test_every_row_names_a_live_route():
         assert hit, f"{method} {path} matches no route — the table is stale"
 
 
+@pytest.fixture(autouse=True)
+def _active_account(monkeypatch):
+    # D-499: every authenticated request now reads users.is_active at the auth
+    # chokepoint; this gate judges the TIER, so the account is stubbed active
+    # (a user 99 exists in no database — without the stub the chokepoint refuses first)
+    from primeqa.core import auth as A
+    monkeypatch.setattr(A, "session_is_active", lambda uid, tid: True)
+
+
 @pytest.mark.parametrize("method,path,tier", TABLE, ids=[f"{m} {p}" for m, p, _ in TABLE])
 def test_one_tier_below_is_refused_by_the_gate(method, path, tier):
     c, hdr = _client(BELOW[tier])

@@ -77,6 +77,13 @@ class UserRepository:
     # than 500 should migrate to ListQuery pagination.
     _HARD_LIMIT = 500
 
+    def count_active_superadmins(self, tenant_id, *, exclude_user_id=None) -> int:
+        q = self.db.query(func.count(User.id)).filter(
+            User.tenant_id == tenant_id, User.role == "superadmin", User.is_active == True)
+        if exclude_user_id is not None:
+            q = q.filter(User.id != exclude_user_id)
+        return int(q.scalar() or 0)
+
     def list_users(self, tenant_id):
         return self.db.query(User).filter(
             User.tenant_id == tenant_id,
