@@ -20,6 +20,44 @@ def _get_jwt_secret():
     return get_jwt_secret()
 
 
+INACTIVE_REASON = "account_inactive"
+
+
+def session_is_active(user_id, tenant_id) -> bool:
+    """THE CHOKEPOINT (AUD-038, D-499): the account's ``is_active`` flag is
+    read on EVERY authenticated request — one indexed SELECT — so a
+    deactivation takes effect on the deactivated user's next request,
+    whatever their token still says. Before this, the flag was read only at
+    login and at refresh: a deactivated session read and wrote for the access
+    token's 30-minute life.
+
+    Fail closed: a missing row, an inactive row, or a read that fails all
+    answer False (unknown is not active). Memoised per request on ``g`` so
+    the web and API decorators, when both run, read once."""
+    from flask import g
+    key = "_plimsol_session_active"
+    cached = getattr(g, key, None)
+    if cached is not None and cached[0] == (user_id, tenant_id):
+        return cached[1]
+    active = False
+    try:
+        from sqlalchemy import text
+
+        from primeqa import db as dbm
+        with dbm.engine.connect() as conn:
+            row = conn.execute(text(
+                "SELECT is_active FROM users WHERE id = :u AND tenant_id = :t"),
+                {"u": int(user_id), "t": int(tenant_id)}).first()
+        active = bool(row and row[0])
+    except Exception as exc:  # noqa: BLE001 — unknown is not active
+        import logging
+        logging.getLogger("primeqa.auth").warning(
+            "session activity check failed for user %s tenant %s: %s — refusing", user_id, tenant_id, exc)
+        active = False
+    setattr(g, key, ((user_id, tenant_id), active))
+    return active
+
+
 def require_auth(f):
     @wraps(f)
     def decorated(*args, **kwargs):
@@ -60,6 +98,9 @@ def require_auth(f):
             }
         except (ValueError, TypeError):
             return json_error("UNAUTHORIZED", "Malformed token", http=401)
+        # AUD-038: a deactivated account is refused HERE, before the view.
+        if not session_is_active(request.user["id"], request.user["tenant_id"]):
+            return json_error("ACCOUNT_INACTIVE", "This account is deactivated.", http=401)
         return f(*args, **kwargs)
     return decorated
 

@@ -66,6 +66,14 @@ def login_required(f):
         user = get_current_user()
         if not user:
             return redirect("/login")
+        # AUD-038 (D-499): the account's active flag is read on every request
+        # at the ONE chokepoint core/auth.py shares with the API decorator; a
+        # deactivated user's next request is refused and their cookie cleared.
+        from primeqa.core.auth import session_is_active
+        if not session_is_active(user["id"], user["tenant_id"]):
+            resp = redirect("/login?reason=inactive")
+            resp.delete_cookie("access_token")
+            return resp
         request.user = user
         return f(*args, **kwargs)
     return decorated
@@ -1360,64 +1368,41 @@ def settings_user_detail(user_id):
 @require_tier_api(Tier.ADMIN)
 @_require_auth_api
 def api_deactivate_user(user_id):
-    """Deactivate a user. Blocks self-deactivation + last-superadmin lockout."""
-    from primeqa.core.models import User
-
-    def _do():
-        if user_id == request.user["id"] and request.user.get("role") != "superadmin":
-            return ({"error": {"code": "SELF_DEACTIVATE",
-                               "message": "Cannot deactivate your own account."}}, 400)
-        db = next(get_db())
-        try:
-            u = db.query(User).filter_by(id=user_id).first()
-            if u is None or u.tenant_id != request.user["tenant_id"]:
-                return ({"error": {"code": "NOT_FOUND", "message": "User not found"}}, 404)
-            # Task 7: last-superadmin guard. Even superadmins (who
-            # bypass the SELF_DEACTIVATE check) can't deactivate the
-            # last active superadmin in a tenant — that would lock
-            # admin-only routes behind a user who can no longer log in.
-            if u.role == "superadmin" and u.is_active:
-                other_supers = (db.query(User)
-                                .filter(User.tenant_id == u.tenant_id,
-                                        User.role == "superadmin",
-                                        User.is_active == True,
-                                        User.id != u.id)
-                                .count())
-                if other_supers == 0:
-                    return ({"error": {
-                        "code": "LAST_SUPERADMIN",
-                        "message": ("Cannot deactivate the last active "
-                                    "superadmin in this tenant."),
-                    }}, 400)
-            u.is_active = False
-            db.commit()
-            return ("", 204)
-        finally:
-            db.close()
-
-    return _do()
+    """Deactivate a user — through the SERVICE (AUD-038, D-499), the one
+    deactivation path: tenant-scoped, tier-checked, the last-superadmin guard,
+    and the refresh-token revocation that this route once skipped by
+    committing the column directly. Self-deactivation stays refused here."""
+    if user_id == request.user["id"] and request.user.get("role") != "superadmin":
+        return ({"error": {"code": "SELF_DEACTIVATE",
+                           "message": "Cannot deactivate your own account."}}, 400)
+    return _set_user_active(user_id, False)
 
 
 @views_bp.route("/api/users/<int:user_id>/activate", methods=["POST"])
 @require_tier_api(Tier.ADMIN)
 @_require_auth_api
 def api_activate_user(user_id):
-    """Re-activate a user."""
-    from primeqa.core.models import User
+    """Re-activate a user — through the same service path."""
+    return _set_user_active(user_id, True)
 
-    def _do():
-        db = next(get_db())
-        try:
-            u = db.query(User).filter_by(id=user_id).first()
-            if u is None or u.tenant_id != request.user["tenant_id"]:
-                return ({"error": {"code": "NOT_FOUND", "message": "User not found"}}, 404)
-            u.is_active = True
-            db.commit()
-            return ("", 204)
-        finally:
-            db.close()
 
-    return _do()
+def _set_user_active(user_id, active: bool):
+    from primeqa.core.service import LastSuperadminError
+    db = next(get_db())
+    try:
+        svc = AuthService(UserRepository(db), RefreshTokenRepository(db))
+        svc.update_user(user_id, request.user, is_active=active)
+        return ("", 204)
+    except LastSuperadminError as exc:
+        return ({"error": {"code": "LAST_SUPERADMIN", "message": str(exc)}}, 400)
+    except AuthorizationError as exc:
+        return ({"error": {"code": "FORBIDDEN", "message": str(exc)}}, 403)
+    except ValueError as exc:
+        if "not found" in str(exc).lower():
+            return ({"error": {"code": "NOT_FOUND", "message": "User not found"}}, 404)
+        return ({"error": {"code": "VALIDATION_ERROR", "message": str(exc)}}, 400)
+    finally:
+        db.close()
 
 
 # --- Connections ---
