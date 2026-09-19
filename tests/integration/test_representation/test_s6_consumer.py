@@ -31,6 +31,12 @@ from primeqa.interpretation.result_store import (
     persist_interpretation,
 )
 
+
+def _persist(session, interp):
+    """AUD-026: a verdict cannot exist without its run — seed the run first."""
+    from ._fixtures import persist_interpretation_with_run
+    return persist_interpretation_with_run(session, interp)
+
 _PATCH = "primeqa.intelligence.interpretation_phrasing.llm_call"
 
 
@@ -64,7 +70,7 @@ def test_read_interpretation_round_trips_with_cause_and_refs(session):
         outcome="failed", verdict="prohibition_not_enforced",
         refs=(EvidenceRef(step_id="create-record", detail="create succeeded (http 201)"),),
         cause_kind="enforcement_gap", vr_name="Lead.RequireReason")
-    persist_interpretation(session, i)
+    _persist(session, i)
     session.flush()
 
     read = read_interpretation(session, i.run_id)
@@ -89,7 +95,7 @@ def test_read_interpretation_absent_is_none(session):
 
 def test_read_interpretation_no_cause_hydrates_none(session):
     i = _interp(outcome="passed", verdict="asserted_metadata_present")
-    persist_interpretation(session, i)
+    _persist(session, i)
     session.flush()
     read = read_interpretation(session, i.run_id)
     assert read.cause is None and read.evidence_refs == ()
@@ -106,7 +112,7 @@ def test_list_interpretations_scopes_by_recipe(session):
     b = _interp(recipe_id=rid, verdict="value_not_persisted", outcome="failed")
     c = _interp(recipe_id=other, verdict="value_persisted", outcome="passed")
     for i in (a, b, c):
-        persist_interpretation(session, i)
+        _persist(session, i)
     session.flush()
 
     got = list_interpretations(session, recipe_id=rid)
@@ -118,7 +124,7 @@ def test_list_interpretations_scopes_by_recipe(session):
 def test_list_interpretations_honors_limit(session):
     rid = uuid4()
     for _ in range(3):
-        persist_interpretation(session, _interp(recipe_id=rid))
+        _persist(session, _interp(recipe_id=rid))
     session.flush()
     assert len(list_interpretations(session, recipe_id=rid, limit=2)) == 2
 
@@ -127,8 +133,8 @@ def test_list_interpretations_scopes_by_claim(session):
     rid, ct = uuid4(), uuid4()
     keep = _interp(recipe_id=rid, claim_test_id=ct)
     drop = _interp(recipe_id=rid, claim_test_id=uuid4())
-    persist_interpretation(session, keep)
-    persist_interpretation(session, drop)
+    _persist(session, keep)
+    _persist(session, drop)
     session.flush()
     got = list_interpretations(session, recipe_id=rid, claim_test_id=ct)
     assert [r.run_id for r in got] == [keep.run_id]
@@ -140,7 +146,7 @@ def test_list_interpretations_scopes_by_claim(session):
 
 def test_read_and_phrase_enabled_attaches_and_caches(session):
     i = _interp(cause_kind="enforcement_gap", vr_name="VR_A")
-    persist_interpretation(session, i)
+    _persist(session, i)
     session.flush()
 
     with patch(_PATCH, return_value=_fake_resp(_GOOD)) as spy:
@@ -156,7 +162,7 @@ def test_read_and_phrase_enabled_attaches_and_caches(session):
 
 def test_read_and_phrase_disabled_is_unphrased_no_llm(session):
     i = _interp()
-    persist_interpretation(session, i)
+    _persist(session, i)
     session.flush()
     with patch(_PATCH, return_value=_fake_resp(_GOOD)) as spy:
         out = ip.read_and_phrase(
@@ -169,7 +175,7 @@ def test_read_and_phrase_disabled_is_unphrased_no_llm(session):
 
 def test_read_and_phrase_failure_is_unphrased(session):
     i = _interp()
-    persist_interpretation(session, i)
+    _persist(session, i)
     session.flush()
     # a non-dict parsed_content makes the enricher return None (best-effort).
     with patch(_PATCH, return_value=_fake_resp("not a dict")):
@@ -219,7 +225,7 @@ def test_phrasing_enabled_fails_closed_on_error():
 def test_clustering_recurring_cause_via_reexported_surface(session):
     rid = uuid4()
     for _ in range(2):
-        persist_interpretation(session, _interp(
+        _persist(session, _interp(
             recipe_id=rid, outcome="failed", verdict="prohibition_not_enforced",
             cause_kind="enforcement_gap", vr_name="VR_A"))
     session.flush()

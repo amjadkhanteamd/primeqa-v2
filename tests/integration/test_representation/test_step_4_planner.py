@@ -270,7 +270,14 @@ def test_release_targets_declare_and_remove_with_provenance(session):
     assert d["created"] and P.declare_target(session, tenant_id=None, release_id=16, environment_id=ENV_SANDBOX,
                                              actor_user_id=1)["created"] is False
     assert [t["environment_id"] for t in P.list_targets(session, 16)] == [ENV_SANDBOX]
-    P.remove_target(session, tenant_id=None, release_id=16, environment_id=ENV_SANDBOX, actor_user_id=2, reason="moved")
+    # Triage 2026-09-19 (AUD-023): a target is removed by its declarer or an admin,
+    # with a reason — a stranger is refused, an empty reason is refused
+    with pytest.raises(P.TargetAuthorityError):
+        P.remove_target(session, tenant_id=None, release_id=16, environment_id=ENV_SANDBOX, actor_user_id=2, reason="moved")
+    with pytest.raises(P.TargetAuthorityError):
+        P.remove_target(session, tenant_id=None, release_id=16, environment_id=ENV_SANDBOX, actor_user_id=1, reason="")
+    P.remove_target(session, tenant_id=None, release_id=16, environment_id=ENV_SANDBOX, actor_user_id=2, reason="moved",
+                    actor_is_admin=True)
     assert P.list_targets(session, 16) == []
     hist = P.list_targets(session, 16, include_inactive=True)
     assert hist[0]["active"] is False and hist[0]["deactivated_by"] == 2 and hist[0]["deactivation_reason"] == "moved"

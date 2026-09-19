@@ -132,10 +132,12 @@ def record_waiver(tenant_id: int, *, release_id: int, item_kind: str, item_ref: 
         return {"ok": False, "sentence": f"Could not record the waiver: {str(exc)[:160]}"}
 
 
-def revoke_waiver(tenant_id: int, *, waiver_id: str, user_id: int, reason: str = "", session=None) -> dict:
+def revoke_waiver(tenant_id: int, *, waiver_id: str, user_id: int, reason: str = "", session=None,
+                  actor_is_admin: bool = False) -> dict:
     try:
         return _with_session(tenant_id, session, lambda s: {"ok": True, "waiver": qp.revoke_waiver(
-            s, waiver_id=waiver_id, user_id=user_id, reason=reason, tenant_id=tenant_id)})
+            s, waiver_id=waiver_id, user_id=user_id, reason=reason, tenant_id=tenant_id,
+            actor_is_admin=actor_is_admin)})
     except qp.PolicyError as exc:
         return {"ok": False, "sentence": str(exc)}
     except Exception as exc:  # noqa: BLE001

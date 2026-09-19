@@ -31,7 +31,8 @@ def _interp(*, recipe_id, claim_test_id, outcome, verdict,
 
 
 def _seed(session, interp) -> Interpretation:
-    persist_interpretation(session, interp)
+    from ._fixtures import persist_interpretation_with_run
+    persist_interpretation_with_run(session, interp)          # AUD-026: a verdict needs its run
     return interp
 
 

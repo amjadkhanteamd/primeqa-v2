@@ -202,7 +202,6 @@ reintroduce permission sets, `require_permission`, or `check_environment_policy`
 - **`breadcrumbs.html`** — `breadcrumbs([(label, href), ...])`. Every detail/edit page should call this.
 - **`pagination.html`** — `render_pagination`, `render_search`, `sort_header`, `per_page_selector`, `render_meta_pagination`.
 - **`confirm_modal.html`** + `static/js/confirm.js` — attribute-driven `data-confirm`, `data-confirm-form`, `data-confirm-variant`, `data-confirm-type-to`. Never use native `confirm()`.
-- **`feedback_modal.html`** + `static/js/tc_feedback.js` — thumbs feedback on AI-generated TCs.
 - **`static/js/loading.js`** — global listener that disables submit buttons + adds `aria-busy` during in-flight actions. Opt out via `data-no-loading`.
 
 **Rule**: every new page checks in with the component kit. If you find yourself writing `<button class="rounded-md bg-...">` or `<div ...No X yet...>`, you're doing it wrong.

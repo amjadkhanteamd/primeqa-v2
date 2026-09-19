@@ -197,14 +197,32 @@ def declare_target(session: Session, *, tenant_id: int, release_id: int,
     return {"id": tid, "created": True}
 
 
+class TargetAuthorityError(ValueError):
+    """AUD-023 (triage 2026-09-19): a declared target is removed by its declarer
+    or an admin, with a reason — the declaration recorded its actor (D-486)
+    for exactly this."""
+
+
 def remove_target(session: Session, *, tenant_id: int, release_id: int,
-                  environment_id: int, actor_user_id: int, reason: str = "") -> dict:
+                  environment_id: int, actor_user_id: int, reason: str = "",
+                  actor_is_admin: bool = False) -> dict:
+    why = (reason or "").strip()
+    if not why:
+        raise TargetAuthorityError("a removal carries its reason — say why this environment is no longer a target")
+    declared_by = session.execute(text("""
+        SELECT declared_by FROM release_targets
+        WHERE release_id = :r AND environment_id = :e AND active
+    """), {"r": int(release_id), "e": int(environment_id)}).scalar()
+    if declared_by is None:
+        return {"removed": False}
+    if not actor_is_admin and int(declared_by) != int(actor_user_id):
+        raise TargetAuthorityError("only the person who declared this target, or an admin, may remove it")
     n = session.execute(text("""
         UPDATE release_targets
         SET active = FALSE, deactivated_by = :u, deactivated_at = now(),
             deactivation_reason = :why
         WHERE release_id = :r AND environment_id = :e AND active
-    """), {"u": int(actor_user_id), "why": (reason or "").strip() or None,
+    """), {"u": int(actor_user_id), "why": why,
            "r": int(release_id), "e": int(environment_id)}).rowcount
     if n:
         _audit(session, tenant_id=tenant_id, user_id=actor_user_id, action="s4.release_target.remove",

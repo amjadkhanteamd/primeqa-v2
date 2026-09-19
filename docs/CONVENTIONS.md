@@ -212,13 +212,24 @@ For PostgreSQL on macOS Homebrew:
   must take an unused number, or carry a continuation marker
   (`(close)` / `CLOSE` / `(design)` / `Result` / `REALIZED` / `(cont.)`)
   when they extend an existing decision — enforced by
-  Undefined-name gate: `tests/unit/test_no_undefined_names.py` runs pyflakes
+  `scripts/check_decision_numbers.py` (runs in the unit gate suite;
+  commit-time via `git config core.hooksPath .githooks`, once per clone).
+- **Undefined-name gate**: `tests/unit/test_no_undefined_names.py` runs pyflakes
   over `primeqa/` and fails on any F821 — and fails, never skips, when
   pyflakes is absent (`pip install -r requirements-dev.txt`). The pre-commit
   hook runs the same check on staged Python. Origin: the v1 retirement
   deleted definitions and left callers behind (audit 2026-09, AUD-006/8/9/10).
-  `scripts/check_decision_numbers.py` (runs in the unit gate suite;
-  commit-time via `git config core.hooksPath .githooks`, once per clone).
+- **Dead-link gate**: `scripts/deadlinks_gate.py` resolves every internal
+  target in `primeqa/templates` and `primeqa/static` — href, form action,
+  hx-* verbs, `url_for(...)` with its arguments, JS fetch/location literals —
+  against the LIVE url_map, with the method, Jinja collapsed to wildcard
+  segments. `tests/unit/test_no_dead_links.py` first proves the sweep CAN
+  fail (it plants dead targets of every kind and asserts each is reported),
+  then judges the repo; the pre-commit hook runs it when a template, static
+  JS or route module is staged. Origin: the first sweep's regex excluded
+  every parameterised href by construction (audit 2026-09, AUD-002/003/004).
+  The hook's steps fall through to one final exit — its first form ended
+  step 1 with `exit 0`, so the pyflakes step never ran.
 - **`EVOLUTION.md`** (per substrate) is append-only.
 - **`PHASE_N_PLAN.md`** documents are locked planning artifacts;
   corrections tracked in `PHASE_N_PLAN_corrections.md`.

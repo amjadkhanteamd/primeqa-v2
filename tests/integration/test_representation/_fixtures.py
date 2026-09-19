@@ -410,3 +410,29 @@ def make_minimal_execution_environment(
             for kind in (infra_kinds or [])
         ],
     )
+
+
+def persist_interpretation_with_run(session, interpretation, *, environment_id: int = 7,
+                                    finished_at=None):
+    """Seed the RUN an interpretation belongs to, then persist the interpretation.
+
+    Triage 2026-09-19 (AUD-026): ``s6_interpretations.run_id`` is a foreign key
+    to ``s4_execution_runs`` — a verdict cannot exist without the run it
+    interprets. Fixtures that seeded a verdict for a made-up run id were the
+    exact shape the constraint refuses; they now seed the run first (a minimal
+    row: the interpretation's own ids, one environment, the same outcome)."""
+    from primeqa.interpretation.result_store import persist_interpretation
+    exists = session.execute(text(
+        "SELECT 1 FROM s4_execution_runs WHERE run_id = CAST(:r AS uuid)"),
+        {"r": str(interpretation.run_id)}).first()
+    if not exists:
+        session.execute(text(
+            "INSERT INTO s4_execution_runs (run_id, recipe_id, recipe_version_seq, "
+            "claim_test_id, environment_id, outcome, started_at, finished_at, evidence) "
+            "VALUES (CAST(:r AS uuid), CAST(:rec AS uuid), 1, CAST(:t AS uuid), :e, "
+            "CAST(:o AS run_outcome), COALESCE(CAST(:f AS timestamptz), now()), "
+            "COALESCE(CAST(:f AS timestamptz), now()), CAST('{}' AS jsonb))"),
+            {"r": str(interpretation.run_id), "rec": str(interpretation.recipe_id),
+             "t": str(interpretation.claim_test_id), "e": int(environment_id),
+             "o": interpretation.outcome, "f": finished_at})
+    return persist_interpretation(session, interpretation)

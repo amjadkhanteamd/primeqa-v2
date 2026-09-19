@@ -677,7 +677,25 @@ def _apply_recipe_edit(tenant_id: int, row, *, decided_by: Optional[int] = None)
 
 
 def _apply(tenant_id: int, row, *, decided_by: Optional[int] = None) -> dict:
-    """Execute one approved proposal. Returns the payload to stamp."""
+    """Execute one approved proposal. Returns the payload to stamp.
+
+    THE CHOKEPOINT REFUSES FIRST (triage 2026-09-19, pass-4 attack #5): the
+    two callers (``decide_proposal``, ``auto_apply_proposals``) checked the
+    gate verdict before calling here, but this function did not — called
+    directly with a SPECULATIVE row it wrote a new recipe version, promoted
+    it and queued a re-verify run, and only the STAMP was refused (by the
+    table's trigger). A guard that lives in the caller is a convention; the
+    apply itself now re-reads the switch, the verdict, the grounding source
+    and the claim/recipe applicability and refuses before any write — the
+    D-494 shape. The callers' checks stay (they give the operator the reason
+    before anything is attempted); the table's trigger stays (the record).
+    """
+    from primeqa.semantic.connection import get_tenant_connection
+    with get_tenant_connection(tenant_id) as conn:
+        appl = _applicability(conn, row)
+    refusal = _apply_refusal(_repair_settings(tenant_id), row, **appl)
+    if refusal:
+        return {"action": row.get("proposal_kind"), "error": refusal, "refused": True}
     if row["proposal_kind"] == "recipe_edit":
         return _apply_recipe_edit(tenant_id, row, decided_by=decided_by)
     if row["proposal_kind"] == "rerun":
