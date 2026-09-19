@@ -315,7 +315,12 @@ def remove(manifest_path):
         for rel, env in M["targets"]:
             run(conn, "DELETE FROM release_targets WHERE release_id = :r AND environment_id = :e", {"r": rel, "e": env})
         for lid in M["surface_links"]:
-            run(conn, "DELETE FROM requirement_surface_declarations WHERE CAST(link_id AS text) = :l", {"l": lid})
+            run(conn, "DELETE FROM requirement_surface_link_claims WHERE CAST(link_id AS text) = :l", {"l": lid})
+            run(conn, "DELETE FROM requirement_surface_links WHERE CAST(id AS text) = :l", {"l": lid})
+        run(conn, "DELETE FROM requirement_surface_links WHERE requirement_key = ANY(:k)", {"k": keys})
+        for v in M["inventory_versions"]:
+            run(conn, "DELETE FROM ui_surface_inventory_members WHERE inventory_version = :v", {"v": v})
+            run(conn, "DELETE FROM ui_surface_inventories WHERE inventory_version = :v", {"v": v})
         run(conn, "DELETE FROM test_requirement_links WHERE external_key = ANY(:k)", {"k": keys})
         run(conn, "DELETE FROM requirement_identities WHERE external_key = ANY(:k)", {"k": keys})
         if M["claims"]:
