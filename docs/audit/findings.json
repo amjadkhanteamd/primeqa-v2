@@ -653,9 +653,12 @@
   "expected": "deactivation ends the session: the flag is read at the auth chokepoint (one indexed read per request, or a short-lived cache), and every deactivate path revokes refresh tokens",
   "observed": "an offboarded user acts for up to 30 minutes, and via the API route their refresh tokens are left live (harmless only because refresh re-checks the flag)",
   "proposed_fix": "read users.is_active in require_auth/login_required (fail closed); route the API deactivate through the service; a guard test that a deactivated session is refused on the next request",
-  "status": "open",
+  "status": "closed",
   "fix_plan_ref": null,
-  "discovered_at": "2026-09-19T08:57:45+00:00"
+  "discovered_at": "2026-09-19T08:57:45+00:00",
+  "closed_at": "2026-09-19T11:24:37+00:00",
+  "closed_by": "D-499 (merge 75747fd)",
+  "closure": "users.is_active read at the one auth chokepoint every request passes (fail closed); the API deactivate/activate routes go through the service; the last-superadmin guard in the service; the revocation failure logged; the AST guard test_deactivation_paths.py"
  },
  {
   "id": "AUD-039",

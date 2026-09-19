@@ -64,3 +64,20 @@ env 4 deactivated, tenant 1's requirements/groups/connections deleted, the
 audit admin deactivated, and three checkpoint rows the old remover deleted by
 the wrong key (a logical_versions seq instead of the checkpoint's NAME) —
 each restored or repaired, and the remover fixed, before the gate read true.
+
+## Post-merge transcript (2026-09-19) — D-499
+
+Pre-flight: trees clean, main unmoved since the branch point, WRITE-FREE
+(no migration, zero write verbs, one SELECT per request), the two direct
+commits present on origin/main and the five new names absent. Merge 75747fd
+pushed 11:21:19Z; four services SUCCESS by 11:22:58Z; health 200, zero
+error-class log lines.
+
+| deployed proof (GETs only; no user deactivated) | result |
+|---|---|
+| active tester (user 1): `/requirements`, `/api/releases` | 200, 200 |
+| a validly signed token for an account that exists in no tenant: `/requirements` | **302 `/login?reason=inactive`, cookie cleared** |
+| the same token on `/api/releases` | **401 `ACCOUNT_INACTIVE`** |
+
+Before this merge the signature alone was the door. Branch deleted; D-499
+appended.
