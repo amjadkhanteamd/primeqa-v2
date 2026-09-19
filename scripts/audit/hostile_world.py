@@ -163,7 +163,8 @@ def plant(manifest_path, ids_path):
         # a SUPERSEDED inventory version (two versions for one org; the first is superseded by the second)
         from primeqa.test_representation.claim_sets import create_inventory_version
         org = conn.execute(text("SELECT CAST(id AS text) FROM connected_orgs LIMIT 1")).scalar()
-        members = [{"surface_key": conn.execute(text("SELECT sf_api_name FROM entities WHERE entity_type='Surface' AND valid_to_seq IS NULL LIMIT 1")).scalar()}]
+        # the five v1 identity fields a member carries (site, path, persona_scope + optional)
+        members = [{"site": "aud-superseded.example.com", "path": "/aud", "persona_scope": "aud"}]
         try:
             v1 = create_inventory_version(s, members=members, created_by=ADMIN, notes="AUD inventory v1", connected_org_id=org)
             v2 = create_inventory_version(s, members=members, created_by=ADMIN, notes="AUD inventory v2 (supersedes v1)", connected_org_id=org)
@@ -183,7 +184,20 @@ def plant(manifest_path, ids_path):
         # a SURFACE declared then UNLINKED
         s.flush(); s.close()
     from primeqa.intelligence.requirement_surface_console import declare_surface, unlink_surface
-    d = declare_surface(T, requirement_key="AUD-SURF", surface_key=members[0]["surface_key"], user_id=ADMIN)
+    # a surface can only be declared from the ACTIVE inventory (the highest version
+    # with an approved claim set): pick one of its members
+    with get_tenant_connection(T) as conn:
+        active_member = conn.execute(text(
+            "SELECT surface_key FROM ui_surface_inventory_members WHERE inventory_version = "
+            "(SELECT MAX(inventory_version) FROM claim_sets WHERE status = 'approved') LIMIT 1")).scalar()
+    # the link needs an ESTABLISHED identity for the requirement key (Step 1)
+    from primeqa.test_representation.identity import establish_for_key
+    with get_tenant_connection(T) as conn:
+        try:
+            establish_for_key(conn, "AUD-SURF", established_by=ADMIN)
+        except Exception as exc:  # noqa: BLE001
+            M["notes"].append("identity for AUD-SURF not established: %s: %s" % (type(exc).__name__, str(exc)[:120]))
+    d = declare_surface(T, requirement_key="AUD-SURF", surface_key=active_member or "none", user_id=ADMIN)
     link_id = (d.get("link") or {}).get("link_id") or d.get("link_id")
     if link_id:
         u = unlink_surface(T, link_id=str(link_id), requirement_key="AUD-SURF", user_id=ADMIN, reason="audit: unlinked")
@@ -205,6 +219,48 @@ def plant(manifest_path, ids_path):
         with get_tenant_connection(T) as conn:
             for (jid,) in conn.execute(text("SELECT id FROM s4_execution_jobs WHERE CAST(plan_id AS text) = :p"), {"p": p_twice["plan_id"]}).all():
                 M.setdefault("jobs", []).append(jid); ids["job_id"] = jid
+    # RUN 2 — a requirement whose IDENTITY is a non-Jira key (the AUD-014 latent shape):
+    # source 'jira' with a jira_key, DECORATED with a different external_key (the
+    # decorate affordance, views.py POST /requirements external_key=). Readers that
+    # derive the key from jira_key look under the wrong key.
+    rident = db.execute(text("INSERT INTO requirements (tenant_id, section_id, source, created_by, jira_summary, external_key, jira_key) "
+                             "VALUES (1, :s, 'jira', :u, 'identity decorated: external_key differs from jira_key', 'AUD-IDENT', 'AUD-JK-1') RETURNING id"),
+                        {"s": sid, "u": ADMIN}).scalar()
+    M["requirements"].append(rident); ids["req_ident"] = rident
+    rel_ident = rel("AUD-release-ident", [rident]); ids["release_ident"] = rel_ident
+    db.commit()
+    with get_tenant_connection(T) as conn:
+        s = Session(bind=conn)
+        for _ in range(2):
+            cr = coord.write_claim(s, actor="s3", test_id=None, archetype="data_behavior", claim_kind="value-claim",
+                                   asserted_truth=make_value_claim(value="Tech"), semantic_conditions=empty_conditions())
+            coord.promote_claim_to_approved(s, actor="human", test_id=cr.test_id, version_seq=cr.version_seq)
+            coord.link_requirement(s, actor="s3", test_id=cr.test_id, external_system="jira", external_key="AUD-IDENT", link_kind="generated_from")
+            M["claims"].append(str(cr.test_id)); M["links"].append([str(cr.test_id), "AUD-IDENT"])
+        s.flush(); s.close()
+        # RUN 2 — ORPHAN run_id rows (the AUD-028 shape) in the three sibling tables that
+        # carry a run_id with no foreign key; s6_interpretations itself now refuses (D-497)
+        orphan = str(uuid4()); ids["orphan_run_id"] = orphan
+        conn.execute(text("INSERT INTO s4_created_records (run_id, sobject, record_id, created_seq, cleaned, created_at, environment_id) "
+                          "VALUES (CAST(:r AS uuid), 'Lead', 'AUD-ORPHAN-REC', 1, false, now(), :e)"), {"r": orphan, "e": ENV})
+        conn.execute(text("INSERT INTO s6_reinterpretations (run_id, reinterpreted_at, code_version, verdict, envelope_reconstructed) "
+                          "VALUES (CAST(:r AS uuid), now(), 'audit', 'passed', false)"), {"r": orphan})
+        opid = conn.execute(text("INSERT INTO repair_proposals (run_id, claim_test_id, environment_id, verdict, proposal_kind, gate_verdict) "
+                                 "VALUES (CAST(:r AS uuid), CAST(:c AS uuid), :e, 'creation_rejected', 'recipe_edit', 'SPECULATIVE') RETURNING id"),
+                            {"r": orphan, "c": str(nocov.test_id), "e": ENV}).scalar()   # one ACTIVE proposal per (claim, kind): a different kind
+        M["proposals"].append(opid); ids["orphan_proposal_id"] = opid
+        M.setdefault("orphans", []).append(orphan)
+        M["notes"].append("orphan run_id %s planted in s4_created_records, s6_reinterpretations, repair_proposals (no FK on any of the three; AUD-028)" % orphan[:8])
+        try:
+            conn.execute(text("SAVEPOINT s6o"))
+            conn.execute(text("INSERT INTO s6_interpretations (run_id, recipe_id, claim_test_id, outcome, verdict, detail) "
+                              "VALUES (CAST(:r AS uuid), CAST(:rc AS uuid), CAST(:c AS uuid), CAST('passed' AS run_outcome), 'passed', '{}'::jsonb)"),
+                         {"r": orphan, "rc": str(uuid4()), "c": str(nocov.test_id)})
+            conn.execute(text("RELEASE SAVEPOINT s6o"))
+            M["notes"].append("s6_interpretations ACCEPTED an orphan verdict — the D-497 FK is missing on this database")
+        except Exception as exc:  # noqa: BLE001
+            conn.execute(text("ROLLBACK TO SAVEPOINT s6o"))
+            M["notes"].append("s6_interpretations refused the orphan verdict (%s) — the D-497 FK holds" % type(exc).__name__)
     ids["user_id"] = ADMIN
     db.close()
     json.dump(M, open(manifest_path, "w"), indent=1, default=str)
@@ -215,59 +271,90 @@ def plant(manifest_path, ids_path):
 
 
 def remove(manifest_path):
-    from primeqa.semantic.connection import get_tenant_connection
+    """Statement by statement in AUTOCOMMIT under the replica role — a failed
+    statement can no longer poison the rest (the September trap: one Postgres
+    transaction, `except: pass` per table, nothing committed)."""
+    from sqlalchemy import create_engine
     M = json.load(open(manifest_path))
-    with get_tenant_connection(T) as conn:
-        conn.execute(text("SET LOCAL session_replication_role = replica"))
+    eng = create_engine(os.environ["DATABASE_URL"], isolation_level="AUTOCOMMIT")
+    done, failed = 0, []
+
+    def run(conn, sql, params=None):
+        nonlocal done
+        try:
+            conn.execute(text(sql), params or {}); done += 1
+        except Exception as exc:  # noqa: BLE001
+            failed.append("%s: %s" % (sql[:60], type(exc).__name__))
+    keys = ["AUD-79", "AUD-DEP", "AUD-NOCOV", "AUD-SURF", "AUD-500", "AUD-IDENT"]
+    with eng.connect() as conn:
+        conn.execute(text("SET session_replication_role = replica"))
+        conn.execute(text("SET search_path TO tenant_%d, public" % T))
         if M.get("jobs"):
-            conn.execute(text("DELETE FROM s4_execution_jobs WHERE id = ANY(:j)"), {"j": M["jobs"]})
+            run(conn, "DELETE FROM s4_execution_jobs WHERE id = ANY(:j)", {"j": M["jobs"]})
         for pid in M["plans"]:
-            conn.execute(text("DELETE FROM run_plans WHERE id = CAST(:p AS uuid)"), {"p": pid})
+            run(conn, "DELETE FROM run_plans WHERE id = CAST(:p AS uuid)", {"p": pid})
         for w in M["waivers"]:
-            conn.execute(text("DELETE FROM quality_waivers WHERE id = CAST(:w AS uuid)"), {"w": w})
+            run(conn, "DELETE FROM quality_waivers WHERE id = CAST(:w AS uuid)", {"w": w})
         for p in M["policies"]:
-            conn.execute(text("DELETE FROM quality_policies WHERE id = CAST(:p AS uuid)"), {"p": p})
+            run(conn, "DELETE FROM quality_policy_rules WHERE policy_id = CAST(:p AS uuid)", {"p": p})
+            run(conn, "DELETE FROM quality_policies WHERE id = CAST(:p AS uuid)", {"p": p})
         for cs in M["claim_sets"]:
-            conn.execute(text("DELETE FROM claim_set_members WHERE claim_set_id = CAST(:c AS uuid)"), {"c": cs})
-            conn.execute(text("DELETE FROM claim_sets WHERE id = CAST(:c AS uuid)"), {"c": cs})
+            run(conn, "DELETE FROM claim_set_members WHERE claim_set_id = CAST(:c AS uuid)", {"c": cs})
+            run(conn, "DELETE FROM claim_sets WHERE id = CAST(:c AS uuid)", {"c": cs})
         for v in M["inventory_versions"]:
-            conn.execute(text("DELETE FROM logical_versions WHERE version_seq = :v"), {"v": v})
+            run(conn, "DELETE FROM logical_versions WHERE version_seq = :v", {"v": v})
         for pid in M["proposals"]:
-            conn.execute(text("DELETE FROM repair_proposals WHERE id = :p"), {"p": pid})
+            run(conn, "DELETE FROM repair_proposals WHERE id = :p", {"p": pid})
+        for o in M.get("orphans", []):
+            run(conn, "DELETE FROM s4_created_records WHERE run_id = CAST(:r AS uuid)", {"r": o})
+            run(conn, "DELETE FROM s6_reinterpretations WHERE run_id = CAST(:r AS uuid)", {"r": o})
+            run(conn, "DELETE FROM s6_interpretations WHERE run_id = CAST(:r AS uuid)", {"r": o})
         for r in M["runs"]:
-            conn.execute(text("DELETE FROM s6_interpretations WHERE run_id = CAST(:r AS uuid)"), {"r": r})
-            conn.execute(text("DELETE FROM s4_execution_runs WHERE run_id = CAST(:r AS uuid)"), {"r": r})
+            run(conn, "DELETE FROM s6_interpretations WHERE run_id = CAST(:r AS uuid)", {"r": r})
+            run(conn, "DELETE FROM s4_execution_runs WHERE run_id = CAST(:r AS uuid)", {"r": r})
         for rel, env in M["targets"]:
-            conn.execute(text("DELETE FROM release_targets WHERE release_id = :r AND environment_id = :e"), {"r": rel, "e": env})
+            run(conn, "DELETE FROM release_targets WHERE release_id = :r AND environment_id = :e", {"r": rel, "e": env})
         for lid in M["surface_links"]:
-            conn.execute(text("DELETE FROM requirement_surface_declarations WHERE CAST(link_id AS text) = :l"), {"l": lid})
-        keys = ["AUD-79", "AUD-DEP", "AUD-NOCOV", "AUD-SURF", "AUD-500"]
-        conn.execute(text("DELETE FROM test_requirement_links WHERE external_key = ANY(:k)"), {"k": keys})
-        conn.execute(text("DELETE FROM requirement_identities WHERE external_key = ANY(:k)"), {"k": keys})
-        for tid in M["claims"]:
-            for tbl in ("test_claim_coverage", "test_provenance", "s8_grounding_validity", "test_recipes", "test_claims"):
-                try:
-                    conn.execute(text("DELETE FROM %s WHERE %s = CAST(:t AS uuid)" % (tbl, "claim_test_id" if tbl in ("test_recipes", "test_claim_coverage") else "test_id")), {"t": tid})
-                except Exception:  # noqa: BLE001 — a table without that column
-                    pass
-    db = _pub()
-    for did in M["decisions"]:
-        db.execute(text("DELETE FROM release_decisions WHERE id = :d"), {"d": did})
-    for rid in M["releases"]:
-        db.execute(text("DELETE FROM release_requirements WHERE release_id = :r"), {"r": rid})
-        db.execute(text("DELETE FROM releases WHERE id = :r"), {"r": rid})
-    for rid in M["requirements"]:
-        db.execute(text("DELETE FROM requirements WHERE id = :r"), {"r": rid})
-    for gid in M["groups"]:
-        db.execute(text("DELETE FROM groups WHERE id = :g"), {"g": gid})
-    for cid in M["connections"]:
-        db.execute(text("DELETE FROM connections WHERE id = :c"), {"c": cid})
-    for eid in M["environments"]:
-        db.execute(text("DELETE FROM environments WHERE id = :e"), {"e": eid})
-    for sid in M["sections"]:
-        db.execute(text("DELETE FROM sections WHERE id = :s"), {"s": sid})
-    db.commit(); db.close()
-    print("removed")
+            run(conn, "DELETE FROM requirement_surface_link_claims WHERE CAST(link_id AS text) = :l", {"l": lid})
+            run(conn, "DELETE FROM requirement_surface_links WHERE CAST(id AS text) = :l", {"l": lid})
+        run(conn, "DELETE FROM requirement_surface_links WHERE requirement_key = ANY(:k)", {"k": keys})
+        for v in M["inventory_versions"]:
+            run(conn, "DELETE FROM ui_surface_inventory_members WHERE inventory_version = :v", {"v": v})
+            run(conn, "DELETE FROM ui_surface_inventories WHERE inventory_version = :v", {"v": v})
+        run(conn, "DELETE FROM test_requirement_links WHERE external_key = ANY(:k)", {"k": keys})
+        run(conn, "DELETE FROM requirement_identities WHERE external_key = ANY(:k)", {"k": keys})
+        if M["claims"]:
+            run(conn, "DELETE FROM s4_execution_jobs WHERE CAST(test_id AS text) = ANY(:c)", {"c": M["claims"]})
+            run(conn, "DELETE FROM test_claim_coverage WHERE CAST(claim_test_id AS text) = ANY(:c)", {"c": M["claims"]})
+            run(conn, "DELETE FROM test_recipes WHERE CAST(claim_test_id AS text) = ANY(:c)", {"c": M["claims"]})
+            run(conn, "DELETE FROM test_provenance WHERE CAST(claim_test_id AS text) = ANY(:c)", {"c": M["claims"]})
+            run(conn, "DELETE FROM s8_grounding_validity WHERE CAST(test_id AS text) = ANY(:c)", {"c": M["claims"]})
+            run(conn, "DELETE FROM test_claims WHERE CAST(test_id AS text) = ANY(:c)", {"c": M["claims"]})
+        for did in M["decisions"]:
+            run(conn, "DELETE FROM public.release_decisions WHERE id = :d", {"d": did})
+        for rid in M["releases"]:
+            run(conn, "DELETE FROM public.release_decisions WHERE release_id = :r", {"r": rid})
+            run(conn, "DELETE FROM public.release_requirements WHERE release_id = :r", {"r": rid})
+            run(conn, "DELETE FROM public.releases WHERE id = :r", {"r": rid})
+        for rid in M["requirements"]:
+            run(conn, "DELETE FROM public.requirements WHERE id = :r", {"r": rid})
+        for gid in M["groups"]:
+            run(conn, "DELETE FROM public.group_environments WHERE group_id = :g", {"g": gid})
+            run(conn, "DELETE FROM public.groups WHERE id = :g", {"g": gid})
+        for cid in M["connections"]:
+            run(conn, "DELETE FROM public.connections WHERE id = :c", {"c": cid})
+        for eid in M["environments"]:
+            run(conn, "DELETE FROM public.environments WHERE id = :e", {"e": eid})
+        for sid in M["sections"]:
+            run(conn, "DELETE FROM public.sections WHERE id = :s", {"s": sid})
+        residue = {
+            "links": conn.execute(text("SELECT count(*) FROM test_requirement_links WHERE external_key = ANY(:k)"), {"k": keys}).scalar(),
+            "claims": conn.execute(text("SELECT count(*) FROM test_claims WHERE CAST(test_id AS text) = ANY(:c)"), {"c": M["claims"] or ["x"]}).scalar(),
+            "requirements": conn.execute(text("SELECT count(*) FROM public.requirements WHERE external_key LIKE 'AUD-%'")).scalar(),
+            "releases": conn.execute(text("SELECT count(*) FROM public.releases WHERE name LIKE 'AUD-%'")).scalar(),
+            "orphans": conn.execute(text("SELECT count(*) FROM s4_created_records WHERE record_id = 'AUD-ORPHAN-REC'")).scalar(),
+        }
+    print("removed: %d statements ok, %d failed %s; residue %s" % (done, len(failed), failed[:5], residue))
 
 
 if __name__ == "__main__":
