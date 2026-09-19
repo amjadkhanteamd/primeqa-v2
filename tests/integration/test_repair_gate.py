@@ -398,6 +398,12 @@ def _plant_proposal(claim, run_id, *, kind="recipe_edit", verdict, grounding,
                     status="proposed", confidence=None, field_changes=None,
                     auto_applied=False, payload=None):
     with _conn() as conn:
+        if status in ("applied", "approved"):
+            # planted HISTORY (a July-shaped row applied before the gate existed):
+            # the table's apply guard (migration 20260919_0010) refuses such an
+            # insert for a non-DERIVED row, as it must — history is planted
+            # under the replica role, the way every never-delete fixture is
+            conn.execute(text("SET LOCAL session_replication_role = replica"))
         pid = conn.execute(text(
             "INSERT INTO repair_proposals (run_id, claim_test_id, environment_id, "
             "verdict, cause_kind, proposal_kind, payload, confidence, "
@@ -510,6 +516,52 @@ def test_c2_the_route_refuses_an_apply_post_for_a_speculative_row(world):
 # ---------------------------------------------------------------------------
 # d. the auto pass: confidence is never a gate; DERIVED applies under all flags
 # ---------------------------------------------------------------------------
+
+def test_c4_the_internal_apply_refuses_first_and_the_table_refuses_the_stamp(world):
+    """Triage 2026-09-19 (pass-4 attack #5): the two callers checked the gate
+    verdict; ``_apply`` itself did not — called directly with a SPECULATIVE
+    row it wrote a new recipe version, promoted it and queued a re-verify
+    run on scratch, and only the stamp was refused. The chokepoint now
+    refuses BEFORE any write, and the table's trigger refuses the stamp
+    should any path ever get past it."""
+    import sqlalchemy.exc
+    from primeqa.intelligence import repair_agent as RA
+    claim, recipe, seq = world["A"]
+    with _conn() as conn:
+        run = _plant_run(conn, claim_id=claim, recipe_id=recipe, recipe_seq=seq,
+                         outcome="failed", verdict="creation_rejected",
+                         cause_kind="platform_constraint",
+                         error={"message": "bad value for Loan_Type__c", "error_fields": ["Loan_Type__c"]})
+    spec = _plant_proposal(claim, run, verdict="SPECULATIVE", grounding=None,
+                           field_changes={"Loan_Type__c": "Home"})
+    _settings(repair_gate_apply_enabled=True)
+    try:
+        with _conn() as conn:
+            row = dict(conn.execute(text(
+                "SELECT id, run_id, claim_test_id, environment_id, proposal_kind, status, "
+                "gate_verdict, grounding_source FROM repair_proposals WHERE id = :p"),
+                {"p": spec}).mappings().first())
+            versions_before = conn.execute(text(
+                "SELECT COUNT(*) FROM test_recipes WHERE recipe_id = CAST(:r AS uuid)"), {"r": str(recipe)}).scalar()
+        out = RA._apply(TENANT, row, decided_by=1)
+        assert out.get("refused") is True and out["error"].startswith("SPECULATIVE: not applicable")
+        with _conn() as conn:
+            assert conn.execute(text(
+                "SELECT COUNT(*) FROM test_recipes WHERE recipe_id = CAST(:r AS uuid)"), {"r": str(recipe)}).scalar() == versions_before
+            assert conn.execute(text(
+                "SELECT COUNT(*) FROM s4_execution_jobs WHERE CAST(test_id AS text) = :c AND status = 'queued'"),
+                {"c": str(claim)}).scalar() == 0
+        # the record: the table refuses the stamp for a non-DERIVED row
+        with pytest.raises(sqlalchemy.exc.DBAPIError) as ex:
+            RA._stamp(TENANT, spec, "applied", 1, {"action": "recipe_edit"})
+        assert "only DERIVED applies" in str(ex.value)
+        with _conn() as conn:
+            assert conn.execute(text("SELECT status FROM repair_proposals WHERE id = :p"), {"p": spec}).scalar() == "proposed"
+    finally:
+        _settings(repair_gate_apply_enabled=False)
+        with _conn() as conn:
+            conn.execute(text("UPDATE repair_proposals SET status = 'rejected' WHERE id = :p"), {"p": spec})
+
 
 def test_d1_planted_099_speculative_never_auto_applies(world):
     from primeqa.intelligence.repair_agent import auto_apply_proposals
@@ -889,7 +941,15 @@ def test_z_a_legacy_run_without_a_plan_is_refused_with_the_plan_named(world):
         run = _plant_run(conn, claim_id=claim, recipe_id=recipe, recipe_seq=seq,
                          outcome="failed", verdict="creation_rejected",
                          cause_kind="validation_rule", plan_id=None)
-    out = _apply(TENANT, {"proposal_kind": "rerun", "claim_test_id": str(claim),
-                          "environment_id": ENV, "run_id": str(run)}, decided_by=1)
+    # Triage 2026-09-19: _apply is a chokepoint that refuses first (switch,
+    # verdict, grounding, applicability) — so a row that passes every apply
+    # rule is handed in, and the plan refusal is then the intake's own.
+    _settings(repair_gate_apply_enabled=True)
+    try:
+        out = _apply(TENANT, {"id": 0, "proposal_kind": "rerun", "claim_test_id": str(claim),
+                              "environment_id": ENV, "run_id": str(run), "status": "proposed",
+                              "gate_verdict": "DERIVED", "grounding_source": {"rule": "K"}}, decided_by=1)
+    finally:
+        _settings(repair_gate_apply_enabled=False)
     assert "no plan" in (out.get("error") or ""), out
     assert "D-486" in out["error"]
