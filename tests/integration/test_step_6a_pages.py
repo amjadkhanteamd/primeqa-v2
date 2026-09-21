@@ -131,9 +131,14 @@ def test_the_old_paths_are_retired(retired):
 
 
 def test_the_conformance_run_view_lives_at_its_new_home():
+    """The view lives at /runs/conformance/<uuid>; the nil uuid names no run,
+    so the page answers with its own not-found state as a 404 (AUD-016,
+    triage round 2) — the old home stays gone, and the new one is not the
+    router's 404 (it carries the page's words)."""
     job = "00000000-0000-0000-0000-000000000000"
     assert _client().get(f"/ui-report/runs/{job}", follow_redirects=False).status_code == 404
-    assert _client().get(f"/runs/conformance/{job}").status_code == 200
+    r = _client().get(f"/runs/conformance/{job}")
+    assert r.status_code == 404 and "no conformance run matches this id" in r.data.decode()
 
 
 # --- §e the permission matrix ------------------------------------------------

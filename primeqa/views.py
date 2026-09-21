@@ -112,6 +112,16 @@ def ctx(**kwargs):
     return {**kwargs, "user": getattr(request, "user", None)}
 
 
+def _miss_status(read: dict) -> int:
+    """A MISS IS A 404 (AUD-024): a console read that answers ``found=False``
+    while the store is available renders the page's own not-found template
+    with a 404 status — never a 200 that says 'not found' in prose. A read
+    that answers ``available=False`` is an outage, not a miss (503)."""
+    if not read.get("available", True):
+        return 503
+    return 404 if read.get("found") is False else 200
+
+
 # --- Auth ---
 
 @views_bp.route("/login", methods=["GET"])
@@ -816,7 +826,7 @@ def environments_detail(env_id):
     try:
         env = EnvironmentRepository(db).get_environment(env_id, request.user["tenant_id"])
         if not env:
-            return redirect("/environments")
+            abort(404)                                   # a miss is a 404 (AUD-024)
         env_data = {
             "id": env.id, "name": env.name, "env_type": env.env_type,
             "sf_instance_url": env.sf_instance_url, "sf_api_version": env.sf_api_version,
@@ -876,7 +886,7 @@ def environments_sync_substrate(env_id):
     try:
         env = EnvironmentRepository(db).get_environment(env_id, request.user["tenant_id"])
         if not env:
-            return redirect("/environments")
+            abort(404)                                   # a miss is a 404 (AUD-024)
         res = trigger_s1_sync(
             request.user["tenant_id"], env_id, env.sf_instance_url,
             created_by=request.user.get("id"))
@@ -894,6 +904,12 @@ def environments_sync_substrate_status(env_id):
     """JSON S1-sync status for the env (D-164, 1b) — polled by the panel while a
     sync runs. Best-effort; always 200 with the status dict."""
     from primeqa.metadata_bridge.s1_sync_console import read_s1_sync_status
+    db = next(get_db())
+    try:
+        if EnvironmentRepository(db).get_environment(env_id, request.user["tenant_id"]) is None:
+            abort(404)                                   # a miss is a 404 (AUD-024)
+    finally:
+        db.close()
     return jsonify(read_s1_sync_status(request.user["tenant_id"], env_id))
 
 
@@ -966,7 +982,7 @@ def environments_run_detail(env_id, run_id):
     try:
         env = EnvironmentRepository(db).get_environment(env_id, request.user["tenant_id"])
         if not env:
-            return redirect("/environments")
+            abort(404)                                   # a miss is a 404 (AUD-024)
         env_name = env.name
     finally:
         db.close()
@@ -1023,7 +1039,7 @@ def environments_edit(env_id):
     try:
         env = EnvironmentRepository(db).get_environment(env_id, request.user["tenant_id"])
         if not env:
-            return redirect("/environments")
+            abort(404)                                   # a miss is a 404 (AUD-024)
         env_data = {
             "id": env.id, "name": env.name, "env_type": env.env_type,
             "capture_mode": env.capture_mode, "execution_policy": env.execution_policy,
@@ -1218,7 +1234,7 @@ def users_edit(user_id):
         user_repo = UserRepository(db)
         edit_user = user_repo.get_user_by_id(user_id)
         if not edit_user or edit_user.tenant_id != request.user["tenant_id"]:
-            return redirect("/users")
+            abort(404)                                   # a miss is a 404 (AUD-024)
         user_data = {
             "id": edit_user.id, "email": edit_user.email,
             "full_name": edit_user.full_name, "role": edit_user.role,
@@ -1354,8 +1370,7 @@ def settings_user_detail(user_id):
         try:
             u = db.query(User).filter_by(id=user_id).first()
             if u is None or u.tenant_id != request.user["tenant_id"]:
-                flash("User not found.", "error")
-                return redirect("/settings/users")
+                abort(404)                               # a miss is a 404 (AUD-024)
 
             is_self = (u.id == request.user["id"])
 
@@ -1494,7 +1509,7 @@ def connections_detail(conn_id):
         svc = ConnectionService(ConnectionRepository(db))
         conn = svc.get_connection(conn_id, request.user["tenant_id"])
         if not conn:
-            return redirect("/connections")
+            abort(404)                                   # a miss is a 404 (AUD-024)
         # `conn` is a dict (ConnectionService.get_connection returns
         # get_connection_decrypted which returns a dict, not an ORM
         # object). Prior use of `conn.name` AttributeError'd.
@@ -1552,7 +1567,7 @@ def connections_edit(conn_id):
         svc = ConnectionService(ConnectionRepository(db))
         conn = svc.get_connection(conn_id, request.user["tenant_id"])
         if not conn:
-            return redirect("/connections")
+            abort(404)                                   # a miss is a 404 (AUD-024)
         return render_template("connections/edit.html", **ctx(
             active_page="settings_connections", settings_page="connections", conn=conn, error=None,
         ))
@@ -1569,7 +1584,7 @@ def connections_update(conn_id):
         svc = ConnectionService(repo)
         conn = repo.get_connection(conn_id, request.user["tenant_id"])
         if not conn:
-            return redirect("/connections")
+            abort(404)                                   # a miss is a 404 (AUD-024)
 
         updates = {"name": request.form.get("name", conn.name)}
         old_config = dict(conn.config) if conn.config else {}
@@ -1688,7 +1703,7 @@ def groups_edit(group_id):
         svc = GroupService(GroupRepository(db))
         group = svc.get_group_detail(group_id, request.user["tenant_id"])
         if not group:
-            return redirect("/groups")
+            abort(404)                                   # a miss is a 404 (AUD-024)
         return render_template("groups/edit.html", **ctx(
             active_page="settings_groups", settings_page="groups",
             breadcrumb_section="Groups", breadcrumb_item=f"Edit {group['name']}",
@@ -1727,7 +1742,7 @@ def groups_detail(group_id):
         svc = GroupService(GroupRepository(db))
         group = svc.get_group_detail(group_id, request.user["tenant_id"])
         if not group:
-            return redirect("/groups")
+            abort(404)                                   # a miss is a 404 (AUD-024)
 
         member_ids = {m["id"] for m in group["members"]}
         all_users = UserRepository(db).list_users(request.user["tenant_id"])
@@ -2877,7 +2892,7 @@ def requirements_detail(req_id):
         req_repo = RequirementRepository(db)
         req = req_repo.get_requirement(req_id, tid, include_deleted=True)
         if not req:
-            return redirect("/requirements")
+            abort(404)                                   # a miss is a 404 (AUD-024)
 
         # Prompt 16: track this view for the /run Tickets picker's
         # "Recent tickets" list. Best-effort — failures never break
@@ -3231,7 +3246,7 @@ def requirements_test_plan_status(req_id):
     status_ctx = _test_plan_status_context(req_id)
     if status_ctx is None:
         return render_template("requirements/_test_plan_status.html", **ctx(
-            req_id=req_id, tests=[], any_active=False, active_count=0))
+            req_id=req_id, tests=[], any_active=False, active_count=0)), 404      # a miss is a 404 (AUD-024)
     return render_template("requirements/_test_plan_status.html",
                            **ctx(**status_ctx))
 
@@ -3316,7 +3331,7 @@ def requirements_generation_run_detail(req_id, request_id):
         req = RequirementRepository(db).get_requirement(
             req_id, tid, include_deleted=True)
         if not req:
-            return redirect("/requirements")
+            abort(404)                                   # a miss is a 404 (AUD-024)
         from primeqa.intelligence.s3_enqueue import _requirement_to_ref
         req_key = _requirement_to_ref(req)["key"]
         req_data = {"id": req.id, "jira_key": req.jira_key,
@@ -3460,7 +3475,7 @@ def claims_detail(test_id):
         active_page="test_library", detail=detail, siblings=siblings,
         runs=runs, environments=envs_data, quarantine=quarantine_state,
         requirement=requirement, readable_phrasing=readable_phrasing,
-        plan_nav=plan_nav))
+        plan_nav=plan_nav)), (404 if (detail or {}).get("found") is False else 200)
 
 
 def _claim_panel_context(tid, test_id):
@@ -3497,8 +3512,8 @@ def claims_panel(test_id):
     plan) so the workspace stays lazy; skips the flag-gated LLM phrasing
     (deterministic + fast). Fragments never flash()."""
     tid = request.user["tenant_id"]
-    return render_template("claims/_panel.html", **ctx(
-        **_claim_panel_context(tid, test_id)))
+    panel = _claim_panel_context(tid, test_id)
+    return render_template("claims/_panel.html", **ctx(**panel)), (404 if (panel.get("detail") or {}).get("found") is False else 200)
 
 
 _MAX_FIELD_OVERRIDES = 50
@@ -3668,7 +3683,7 @@ def claims_run_status(test_id, job_id):
     if job is None or str(job.test_id) != str(test_id):
         return render_template("claims/_run_status.html", **ctx(
             state="refused", message="Run not found.", tone="error",
-            test_id=str(test_id)))
+            test_id=str(test_id))), 404                    # a miss is a 404 (AUD-024)
     if job.status in ("queued", "claimed", "running"):
         return render_template("claims/_run_status.html", **ctx(
             state="active",
@@ -4233,7 +4248,7 @@ def s4_run_detail(run_id):
         readiness=readiness,
         repair_gate_apply_enabled=repair_gate_on,
         environment=environment, requirement=requirement,
-        readable_run_phrasing=readable_run_phrasing, plan_nav=plan_nav))
+        readable_run_phrasing=readable_run_phrasing, plan_nav=plan_nav)), (404 if (detail or {}).get("found") is False else 200)
 
 
 @views_bp.route("/requirements/<int:req_id>/edit", methods=["POST"])
@@ -4957,7 +4972,7 @@ def releases_evaluate_decision(release_id):
         repo = ReleaseRepository(db)
         release = repo.get_release(release_id, request.user["tenant_id"])
         if not release:
-            return redirect("/releases")
+            abort(404)                                   # a miss is a 404 (AUD-024)
         result = evaluate_and_record(
             db, release, request.user["tenant_id"], release_repo=repo)
         if result.get("refused"):
@@ -5020,7 +5035,7 @@ def release_decision_final(release_id, decision_id):
         repo = ReleaseRepository(db)
         release = repo.get_release(release_id, request.user["tenant_id"])
         if not release:
-            return redirect("/releases")
+            abort(404)                                   # a miss is a 404 (AUD-024)
         from primeqa.release.models import ReleaseDecision
         d = db.query(ReleaseDecision).filter(ReleaseDecision.id == decision_id,
                                              ReleaseDecision.release_id == release_id).first()
@@ -5295,7 +5310,7 @@ def releases_detail(release_id):
         svc = ReleaseService(ReleaseRepository(db))
         release = svc.get_release_detail(release_id, request.user["tenant_id"])
         if not release:
-            return redirect("/releases")
+            abort(404)                                   # a miss is a 404 (AUD-024)
         tab = request.args.get("tab", "requirements")
 
         # Picker data for the "+ Add" modals on Requirements and Test Plan
@@ -5435,11 +5450,15 @@ def result_detail_redirect(run_id):
     return redirect("/runs/substrate")
 
 
-@views_bp.route("/runs/conformance/<job_id>")
+@views_bp.route("/runs/conformance/<uuid:job_id>")
 @require_tier(Tier.VIEWER)
 def conformance_run(job_id):
+    """AUD-016: the id is a uuid at the router (a non-uuid is a 404 there); a
+    run that does not exist is a 404 with the page's own not-found state; the
+    'store unavailable' sentence is for a store error only (503)."""
     from primeqa.intelligence.ui_report_console import run_report
     standard = request.args.get("standard", "WCAG22")
+    job_id = str(job_id)
     data = run_report(
         request.user["tenant_id"], job_id,
         standard=standard,
@@ -5450,7 +5469,7 @@ def conformance_run(job_id):
         active_page="results", job_id=job_id, data=data,
         standard=standard,
         f_verdict=request.args.get("verdict", ""),
-        f_surface=request.args.get("surface", "")))
+        f_surface=request.args.get("surface", ""))), _miss_status(data)
 
 
 @views_bp.route("/ui-report/evidence")
@@ -5519,4 +5538,6 @@ def tickets_redirect():
 @views_bp.route("/suites/<int:suite_id>")
 @login_required
 def suites_redirect(suite_id=None):
-    return redirect("/claims")
+    # AUD-032: /claims was retired in 6a (a 302 that landed on a 404); the
+    # claims live under Requirements
+    return redirect("/requirements")

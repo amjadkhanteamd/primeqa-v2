@@ -203,7 +203,15 @@ def run_report(tenant_id: int, job_id: str, *, standard: str = "WCAG22",
         counts = dict(session.execute(text(
             "SELECT verdict, COUNT(*) FROM s6_ui_verdicts "
             "WHERE job_id = :j GROUP BY 1"), {"j": str(job_id)}).fetchall())
+        # AUD-016: a run id that names nothing is a MISS (found=False), told
+        # apart from an outage (available=False) and from a run with no
+        # verdicts yet — the job or its processing run must exist.
+        found = bool(session.execute(text(
+            "SELECT 1 WHERE EXISTS (SELECT 1 FROM s4_ui_inspection_jobs WHERE id = CAST(:j AS uuid)) "
+            "OR EXISTS (SELECT 1 FROM s6_ui_processing_runs WHERE job_id = CAST(:j AS uuid))"),
+            {"j": str(job_id)}).scalar())
         return {
+            "found": found,
             "header": header, "header_error": header_error,
             "denominator": denominator,
             "standards": available_standards(session),

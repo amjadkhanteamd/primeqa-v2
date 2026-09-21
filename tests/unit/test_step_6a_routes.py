@@ -39,7 +39,7 @@ def test_the_older_redirects_keep_their_own_cycles():
 
 def test_what_replaced_them_is_there():
     rules = {str(r.rule) for r in _rules().iter_rules()}
-    for path in ("/requirements", "/runs/substrate", "/runs/conformance/<job_id>",
+    for path in ("/requirements", "/runs/substrate", "/runs/conformance/<uuid:job_id>",   # typed since AUD-016
                  "/releases", "/releases/compare", "/settings/standards/coverage",
                  "/claims/<uuid:test_id>"):
         assert path in rules, f"{path} is missing — the replacement must exist"
@@ -47,7 +47,7 @@ def test_what_replaced_them_is_there():
 
 def test_the_rehomed_surfaces_exist():
     rules = {str(r.rule) for r in _rules().iter_rules()}
-    assert "/runs/conformance/<job_id>" in rules
+    assert "/runs/conformance/<uuid:job_id>" in rules          # typed since AUD-016 (triage round 2)
     assert "/requirements" in rules and "/runs/substrate" in rules
 
 

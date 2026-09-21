@@ -285,9 +285,12 @@
   "expected": "404 for an id that names nothing; the store's unavailability said only when the store is unavailable",
   "observed": "a bad link reads as an outage; the cast error is swallowed into the same message, so the log and the page disagree about what happened",
   "proposed_fix": "type the parameter <uuid:job_id> so a non-uuid is a 404 at the router; 404 on a miss; keep the 'store unavailable' sentence for a store error only",
-  "status": "open",
+  "status": "closed",
   "fix_plan_ref": null,
-  "discovered_at": "2026-09-15T11:59:40+00:00"
+  "discovered_at": "2026-09-15T11:59:40+00:00",
+  "closed_at": "2026-09-21T05:33:06+00:00",
+  "closed_by": "triage-round2 batch 3 (a miss is a 404), 2026-09-21",
+  "closure": "GET /runs/conformance/<uuid:job_id> — the id is typed at the router (a non-uuid is a 404 there, no cast error reaches the log); ui_report_console.run_report answers found=False when neither an inspection job nor a processing run carries the id, and the page renders its own not-found state ('Run not found — no conformance run matches this id') as a 404; 'The report store is unavailable right now' is rendered for a store error only (available=False) and as a 503. Proven DB-real on scratch (abc / 161 / a fresh uuid); RED on the pre-change tree (200 + the outage sentence for all three). The 6a page test that expected 200 for the nil uuid now expects the page's 404"
  },
  {
   "id": "AUD-017",
@@ -425,9 +428,12 @@
   "expected": "404 for a miss, so monitors, crawlers and CI tell a dead link from a page",
   "observed": "a 200 that says 'not found' in prose",
   "proposed_fix": "return 404 with the same template (the shared-dashboard route already does this for a bad token)",
-  "status": "open",
+  "status": "closed",
   "fix_plan_ref": null,
-  "discovered_at": "2026-09-15T12:09:40+00:00"
+  "discovered_at": "2026-09-15T12:09:40+00:00",
+  "closed_at": "2026-09-21T05:33:06+00:00",
+  "closed_by": "triage-round2 batch 3 (a miss is a 404), 2026-09-21",
+  "closure": "a miss is a 404 with the page's own template: /claims/<uuid> (detail), /claims/<uuid>/panel, /claims/<uuid>/run-status/<job>, /runs/<uuid> render their existing not-found state with status 404 (found=False from the console reads; the store's unavailability is not a miss). The same rule applied to every other id-taking page route of the url_map — the detail/edit pages that silently redirected to their list on a miss (connections, environments, groups, releases, requirements, settings/users, users) now answer the themed 404, and the two status fragments (/environments/<id>/sync-substrate/status, /requirements/<id>/test-plan-status) answer 404 for an unknown subject. THE GUARD tests/integration/test_miss_is_404.py: generated from the url_map, every id-taking page route (22) fetched with an id that names nothing must answer 404 — RED on the pre-change tree with 19 of 22 not 404 (five 200s in prose, twelve silent 302s, two 200 fragments); GREEN now, 11 tests. The three retired v1 id spaces (/results/<int>, /runs/<int>, /suites/<int>) are named as redirects to their live successor and asserted to land on a 200"
  },
  {
   "id": "AUD-025",
@@ -566,9 +572,12 @@
   "expected": "a retired path redirects to its live successor or answers 410",
   "observed": "a chain that ends on the 404 page",
   "proposed_fix": "redirect /suites to /requirements (the claims live there since 6a); drop the dead paths from navigation.py",
-  "status": "open",
+  "status": "closed",
   "fix_plan_ref": null,
-  "discovered_at": "2026-09-19T08:57:45+00:00"
+  "discovered_at": "2026-09-19T08:57:45+00:00",
+  "closed_at": "2026-09-21T05:33:06+00:00",
+  "closed_by": "triage-round2 batch 3 (a miss is a 404), 2026-09-21",
+  "closure": "/suites and /suites/<id> redirect to /requirements (the claims' home since 6a) and the successor answers 200; navigation.py's landing-page map drops /run, /runs/new and /suites (a preferred landing page naming one would land on a redirect chain) — /claims stays as a highlight PREFIX because /claims/<uuid> is the live claim detail page (6a ruling 6), /tickets and /results stay as redirect prefixes (6a: 'including the redirected ones'). THE GUARD tests/unit/test_navigation_paths.py: every landing path is a rule whose view renders, every highlight prefix names a rule that answers, every rendered nav url renders (the two never-rendered placeholders named), the suites redirect targets /requirements, and a planted retired path fails the gate — RED on main (2 of 5), GREEN now"
  },
  {
   "id": "AUD-033",
