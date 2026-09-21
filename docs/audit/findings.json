@@ -193,9 +193,12 @@
   "expected": "400 with a message naming the field; nothing reaches the database",
   "observed": "an unhandled DataError; the server log carries a stack for every oversize submission; the user sees 'Something went wrong'",
   "proposed_fix": "validate name/description length and integer ids in ReleaseService (create_section already does this for sections — copy that shape); a boundary test that POSTs 20k-char and wrong-type bodies to every create/update route and asserts 4xx",
-  "status": "open",
+  "status": "closed",
   "fix_plan_ref": null,
-  "discovered_at": "2026-09-15T07:24:06+00:00"
+  "discovered_at": "2026-09-15T07:24:06+00:00",
+  "closed_at": "2026-09-21T05:07:36+00:00",
+  "closed_by": "triage-round2 batch 2 (boundary validation), 2026-09-21",
+  "closure": "primeqa/shared/validation.py — the create_section shape lifted: columns(model, values) checks every value against its COLUMN (String(n) length, integer range, boolean, date, JSON shape, NUL-free) BEFORE any row is built, refusing with a ValueError that names the field (→ 400); applied in ReleaseService (create/update/add_requirement), TestManagementService (create/update requirement, update section, import-jira), GroupService (create/add member/add environment), EnvironmentService (create/update/store_credentials), ConnectionService (create/update); the web release and connection forms re-render with the reason as a 400, the group and requirement-edit forms flash it (the requirement edit now goes through the service, not the repo). THE GUARD tests/integration/test_boundary_gate.py: generated from the url_map, every body-reading write route (69) x {empty, maximal 20k, wrong-type incl. NUL} as the table's minimum tier — RED on the pre-change tree with 24 route x body rows at 500 across 15 routes (the audit's seven plus /api/groups, /api/groups/<id>/environments|members, /api/environments/<id>/credentials, /api/requirements, /api/requirements/import-jira, /groups, /connections/<id>/edit, /requirements/<id>/edit) — GREEN now: 207 requests, 0 at 500, every /api/* answer to an oversize or mistyped body a 4xx, residue 0"
  },
  {
   "id": "AUD-012",
@@ -209,9 +212,12 @@
   "expected": "only the release owner or an admin can expose a release's decision status to an unauthenticated poller, or invalidate the token CI already holds",
   "observed": "every member of the tenant can do both, for every release; the act is logged but not gated",
   "proposed_fix": "gate at Tier.ADMIN or add the owner check (release.created_by == request.user['id']); correct CLAUDE.md or the code so they agree; add the route to the authz inventory's expected-tier table",
-  "status": "open",
+  "status": "closed",
   "fix_plan_ref": null,
-  "discovered_at": "2026-09-15T07:24:06+00:00"
+  "discovered_at": "2026-09-15T07:24:06+00:00",
+  "closed_at": "2026-09-21T04:34:43+00:00",
+  "closed_by": "triage-round2 batch 1 (authority completion), 2026-09-21",
+  "closure": "release/routes.py _release_owner_or_admin: mint, rotate and revoke of the status-poll token are refused (403) unless the caller is the release's creator (releases.created_by) or an admin; CLAUDE.md's security-posture line now states the rule the code enforces and names the route-authority table; proven DB-real on scratch (member 14 on 15's release: 201 before on main @9fbe2e2, 403 after; the owner and the admin still mint and revoke) — tests/integration/test_authority_triage.py"
  },
  {
   "id": "AUD-013",
@@ -279,9 +285,12 @@
   "expected": "404 for an id that names nothing; the store's unavailability said only when the store is unavailable",
   "observed": "a bad link reads as an outage; the cast error is swallowed into the same message, so the log and the page disagree about what happened",
   "proposed_fix": "type the parameter <uuid:job_id> so a non-uuid is a 404 at the router; 404 on a miss; keep the 'store unavailable' sentence for a store error only",
-  "status": "open",
+  "status": "closed",
   "fix_plan_ref": null,
-  "discovered_at": "2026-09-15T11:59:40+00:00"
+  "discovered_at": "2026-09-15T11:59:40+00:00",
+  "closed_at": "2026-09-21T05:33:06+00:00",
+  "closed_by": "triage-round2 batch 3 (a miss is a 404), 2026-09-21",
+  "closure": "GET /runs/conformance/<uuid:job_id> — the id is typed at the router (a non-uuid is a 404 there, no cast error reaches the log); ui_report_console.run_report answers found=False when neither an inspection job nor a processing run carries the id, and the page renders its own not-found state ('Run not found — no conformance run matches this id') as a 404; 'The report store is unavailable right now' is rendered for a store error only (available=False) and as a 503. Proven DB-real on scratch (abc / 161 / a fresh uuid); RED on the pre-change tree (200 + the outage sentence for all three). The 6a page test that expected 200 for the nil uuid now expects the page's 404"
  },
  {
   "id": "AUD-017",
@@ -365,9 +374,12 @@
   "expected": "a plan needs a stated environment (or the resolved default named back) and the empty form is refused; a missing environment is one of the planner's own refusal reasons",
   "observed": "the tenant-wide and per-scope plan forms record on nothing; the ledger fills with plans nobody asked for",
   "proposed_fix": "require environment_id at the route (400 / flash) before planner.plan; keep the planner's own refusals for the resolved shape",
-  "status": "open",
+  "status": "closed",
   "fix_plan_ref": null,
-  "discovered_at": "2026-09-15T12:06:51+00:00"
+  "discovered_at": "2026-09-15T12:06:51+00:00",
+  "closed_at": "2026-09-21T05:07:36+00:00",
+  "closed_by": "triage-round2 batch 2 (boundary validation), 2026-09-21",
+  "closure": "CORRECTED SCOPE on reproduction (D-490, sweep before believing): at the audited tree the tenant-wide POST /plans and POST /requirements/<id>/plan ALREADY refused an empty or wrong-typed environment at the route (302 back with 'Pick an environment you have access to.', no row) — the recorded garbage came from POST /releases/<id>/plan, which takes no environment field and recorded a plan for EVERY body when the release had no declared target and no evidence to fall back on (targets_source fallback:evidence-active resolving to []): an immutable never-deleted row with zero targets and zero jobs. Fixed where the shape is known — the planner refuses a release plan whose targets resolve to nothing (REFUSE_NO_TARGET, 'This release has no target environment — declare a target first.') before any row is written; the route flashes the sentence. Proven DB-real: a release with no target and no evidence records no run_plans row on any of the three doors; RED on the pre-change tree (a row per POST)"
  },
  {
   "id": "AUD-022",
@@ -416,9 +428,12 @@
   "expected": "404 for a miss, so monitors, crawlers and CI tell a dead link from a page",
   "observed": "a 200 that says 'not found' in prose",
   "proposed_fix": "return 404 with the same template (the shared-dashboard route already does this for a bad token)",
-  "status": "open",
+  "status": "closed",
   "fix_plan_ref": null,
-  "discovered_at": "2026-09-15T12:09:40+00:00"
+  "discovered_at": "2026-09-15T12:09:40+00:00",
+  "closed_at": "2026-09-21T05:33:06+00:00",
+  "closed_by": "triage-round2 batch 3 (a miss is a 404), 2026-09-21",
+  "closure": "a miss is a 404 with the page's own template: /claims/<uuid> (detail), /claims/<uuid>/panel, /claims/<uuid>/run-status/<job>, /runs/<uuid> render their existing not-found state with status 404 (found=False from the console reads; the store's unavailability is not a miss). The same rule applied to every other id-taking page route of the url_map — the detail/edit pages that silently redirected to their list on a miss (connections, environments, groups, releases, requirements, settings/users, users) now answer the themed 404, and the two status fragments (/environments/<id>/sync-substrate/status, /requirements/<id>/test-plan-status) answer 404 for an unknown subject. THE GUARD tests/integration/test_miss_is_404.py: generated from the url_map, every id-taking page route (22) fetched with an id that names nothing must answer 404 — RED on the pre-change tree with 19 of 22 not 404 (five 200s in prose, twelve silent 302s, two 200 fragments); GREEN now, 11 tests. The three retired v1 id spaces (/results/<int>, /runs/<int>, /suites/<int>) are named as redirects to their live successor and asserted to land on a 200"
  },
  {
   "id": "AUD-025",
@@ -557,9 +572,12 @@
   "expected": "a retired path redirects to its live successor or answers 410",
   "observed": "a chain that ends on the 404 page",
   "proposed_fix": "redirect /suites to /requirements (the claims live there since 6a); drop the dead paths from navigation.py",
-  "status": "open",
+  "status": "closed",
   "fix_plan_ref": null,
-  "discovered_at": "2026-09-19T08:57:45+00:00"
+  "discovered_at": "2026-09-19T08:57:45+00:00",
+  "closed_at": "2026-09-21T05:33:06+00:00",
+  "closed_by": "triage-round2 batch 3 (a miss is a 404), 2026-09-21",
+  "closure": "/suites and /suites/<id> redirect to /requirements (the claims' home since 6a) and the successor answers 200; navigation.py's landing-page map drops /run, /runs/new and /suites (a preferred landing page naming one would land on a redirect chain) — /claims stays as a highlight PREFIX because /claims/<uuid> is the live claim detail page (6a ruling 6), /tickets and /results stay as redirect prefixes (6a: 'including the redirected ones'). THE GUARD tests/unit/test_navigation_paths.py: every landing path is a rule whose view renders, every highlight prefix names a rule that answers, every rendered nav url renders (the two never-rendered placeholders named), the suites redirect targets /requirements, and a planted retired path fails the gate — RED on main (2 of 5), GREEN now"
  },
  {
   "id": "AUD-033",
@@ -605,9 +623,12 @@
   "expected": "409 'the section still holds N requirements' before the DELETE",
   "observed": "an unhandled DataError and the generic 500 page",
   "proposed_fix": "count the children first; refuse with the count",
-  "status": "open",
+  "status": "closed",
   "fix_plan_ref": null,
-  "discovered_at": "2026-09-19T08:57:45+00:00"
+  "discovered_at": "2026-09-19T08:57:45+00:00",
+  "closed_at": "2026-09-21T05:07:36+00:00",
+  "closed_by": "triage-round2 batch 2 (boundary validation), 2026-09-21",
+  "closure": "TestManagementService.purge_section counts the requirements still referencing the section FIRST (live and soft-deleted alike — both still reference it) and refuses with the count as a 409 CONFLICT ('The section still holds N requirement(s) — move or purge them first.', details.requirements = N) before any DELETE; proven DB-real (a planted section with one requirement: 409, the section still there); RED on the pre-change tree (500 ForeignKeyViolation)"
  },
  {
   "id": "AUD-036",
@@ -621,9 +642,12 @@
   "expected": "one minimum tier for the act, wherever it is offered (the route-authority table of D-497 is where it belongs)",
   "observed": "the answer depends on which door the member uses",
   "proposed_fix": "decide the rule (member records the human decision? admin only?) and put both routes in the authority table",
-  "status": "open",
+  "status": "closed",
   "fix_plan_ref": null,
-  "discovered_at": "2026-09-19T08:57:45+00:00"
+  "discovered_at": "2026-09-19T08:57:45+00:00",
+  "closed_at": "2026-09-21T04:34:43+00:00",
+  "closed_by": "triage-round2 batch 1 (authority completion), 2026-09-21",
+  "closure": "ONE minimum tier for finalisation: ADMIN on both doors — views.py release_decision_final moves from Tier.MEMBER to Tier.ADMIN (the more-permissive-needs-a-reason rule retained), the API route was already admin; the final-decision form is rendered for admin/superadmin only; both routes carry an entry in tests/unit/test_route_authority_table.py, which was RED on the pre-change tree for the web row (a member passed the gate) and is GREEN now; proven DB-real (member 14 refused on both doors, row unchanged)"
  },
  {
   "id": "AUD-037",
@@ -637,9 +661,12 @@
   "expected": "declarer-or-admin, with a reason — the rule D-497 gave targets and waivers",
   "observed": "any member undoes any declaration",
   "proposed_fix": "the D-497 shape: refuse in the service, pass rank(role) >= ADMIN from the route, add the route to the authority table",
-  "status": "open",
+  "status": "closed",
   "fix_plan_ref": null,
-  "discovered_at": "2026-09-19T08:57:45+00:00"
+  "discovered_at": "2026-09-19T08:57:45+00:00",
+  "closed_at": "2026-09-21T04:34:43+00:00",
+  "closed_by": "triage-round2 batch 1 (authority completion), 2026-09-21",
+  "closure": "the D-497 shape: surface_links.unlink refuses a non-declarer non-admin (not_declarer) and an empty reason (no_reason) BEFORE any write; the console returns the typed refusal; the route passes rank(role) >= ADMIN; the reason is stored trimmed; migration 20260921_0010 adds ck_requirement_surface_links_deactivation_reason (REJECTING — proven: without the CHECK an empty-reason deactivation LANDED in a rolled-back transaction, with it CheckViolation); proven DB-real on scratch (member 14 unlinked 15's surface on main @9fbe2e2 — 'Unlinked /x — 72 conformance checks removed' — and is refused now); unit + integration + table-level tests"
  },
  {
   "id": "AUD-038",
@@ -668,14 +695,17 @@
   "pass": "run2",
   "surface": "views.py:528 api_dashboard_share_revoke @require_tier_api(MEMBER): `if link is None or link.tenant_id != request.user['tenant_id']: 404` — no created_by check; the listing GET /api/dashboard/share returns every link in the tenant to any member (created_by visible, token never serialised)",
   "reproduction": "code read; production GET /api/dashboard/share as tester -> 200 with the tenant's links (metadata only)",
-  "evidence": "UNPROVEN by attempt — recorded from the route's body",
+  "evidence": "run 2: recorded from the route's body; triage round 2 batch 1: PROVEN by attempt on scratch — member 14 revoked 15's link (200) on the pre-change tree, 403 after the fix",
   "expected": "the creator or an admin revokes; a member sees their own links",
   "observed": "any member revokes anyone's link",
   "proposed_fix": "creator-or-admin on revoke; scope the listing to the caller unless admin; the authority table",
-  "status": "open",
+  "status": "closed",
   "fix_plan_ref": null,
   "discovered_at": "2026-09-19T08:57:45+00:00",
-  "verdict": "UNPROVEN (code read)"
+  "verdict": "PROVEN by attempt (before: 200 on main @9fbe2e2; after: 403)",
+  "closed_at": "2026-09-21T04:34:43+00:00",
+  "closed_by": "triage-round2 batch 1 (authority completion), 2026-09-21",
+  "closure": "PROVEN BY ATTEMPT on scratch (the table planted from production's DDL, read-only): on main @9fbe2e2 member 14 revoked admin 15's share link (200) and saw it in the listing; after the fix the revoke is 403 'Only the link's creator or an admin may revoke it', the listing is scoped to the caller's own links unless admin, the creator revokes their own and the admin revokes any — views.py api_dashboard_share_revoke / api_dashboard_share_list; both routes carry an entry in the route-authority table; tests/integration/test_authority_triage.py"
  },
  {
   "id": "AUD-040",

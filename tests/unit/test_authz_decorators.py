@@ -26,8 +26,13 @@ class TestRequireTierWeb:
 
     def _gated(self, monkeypatch, role, min_tier):
         import primeqa.views as views
+        from primeqa.core import auth as core_auth
         monkeypatch.setattr(views, "get_current_user",
                             lambda: {"id": 1, "tenant_id": 1, "role": role})
+        # D-499: login_required reads the account's active flag at the auth
+        # chokepoint (fail closed) — this test is about the TIER, so the
+        # chokepoint answers "active" (test_deactivation_paths.py proves it).
+        monkeypatch.setattr(core_auth, "session_is_active", lambda uid, tid: True)
 
         @views.require_tier(min_tier)
         def protected():

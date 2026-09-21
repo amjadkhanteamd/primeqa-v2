@@ -403,6 +403,8 @@ def create_group():
     try:
         return jsonify(svc.create_group(request.user["tenant_id"], data["name"],
                                         request.user["id"], data.get("description"))), 201
+    except ValueError as e:
+        return json_error("VALIDATION_ERROR", str(e), http=400)
     finally:
         db.close()
 

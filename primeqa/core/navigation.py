@@ -70,6 +70,9 @@ SIDEBAR_ITEMS: list[dict] = [
         "url": "/requirements",
         # /claims/<uuid> is the claim DETAIL page, which never moved (6a ruling
         # 6); the /claims and /reviews REDIRECTS were retired after their cycle.
+        # AUD-032: a prefix here must match a rule that answers — /claims/<uuid>
+        # renders, /tickets redirects to /requirements (6a: "including the
+        # redirected ones"); tests/unit/test_navigation_paths.py holds it.
         "active_also_for": ("/claims", "/tickets"),
         "permission": "view_requirements",
         "section": "primary",
@@ -214,16 +217,14 @@ def build_sidebar(user_permissions: set, current_path: str = "/",
 # Defensive: if a user had a preference for a URL they've since lost access
 # to, we fall back to the computed default so they don't bounce between
 # 403s and redirects.
+# AUD-032: every key names a LIVE page (a preference for a retired path — /run,
+# /runs/new, /suites — would land a user on a redirect chain); the guard
+# tests/unit/test_navigation_paths.py holds this against the url_map.
 _LANDING_PAGE_PERMISSION: dict[str, Iterable[str]] = {
     "/":              ("view_dashboard",),
     "/requirements":  ("view_requirements", "run_single_ticket"),
-    "/run":           ("run_sprint", "run_suite"),
-    "/runs/new":      ("run_sprint", "run_suite"),  # legacy — wizard
-    "/runs":          ("view_results", "view_own_results", "view_all_results"),
     "/runs/substrate": ("view_results", "view_own_results", "view_all_results"),
-    "/results":       ("view_results", "view_own_results", "view_all_results"),
     "/releases":      ("view_releases", "approve_release", "view_dashboard"),
-    "/suites":        ("manage_test_suites", "view_suite_quality_gates"),
     "/settings":      (),  # special: any manage_* permission
 }
 
@@ -250,7 +251,7 @@ def get_landing_page(user_permissions: set,
     Priority:
       1. Explicit `preferred` if set AND the caller still has access.
       2. Developer-only (run_single_ticket but no bulk-run / sprint) → /requirements
-      3. Tester / Release Owner with run_sprint or run_suite → /runs/new
+      3. Tester / Release Owner with run_sprint or run_suite → /requirements (D-218)
       4. view_dashboard but no run_* perms → / (dashboard)
       5. Any manage_* perm (admin-only) → / (dashboard)
       6. Fallback → / if they can view_dashboard else /requirements.

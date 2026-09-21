@@ -106,7 +106,8 @@
         {% else %}<div class="text-gray-500 italic">pending — the recommendation stands alone</div>{% endif %}
       </div>
     </div>
-    {% if user.role in ['ba', 'tester', 'admin', 'superadmin'] %}
+    {# AUD-036: the final decision is an admin's act (the form follows the gate; the gate is the control) #}
+    {% if user.role in ['admin', 'superadmin'] %}
     <form method="POST" action="/releases/{{ release.id }}/decisions/{{ ld.id }}/final" class="mt-3 flex flex-wrap items-end gap-2" data-testid="final-decision-form">
       {{ csrf_input | safe }}
       <label class="text-xs text-gray-600">Record final decision

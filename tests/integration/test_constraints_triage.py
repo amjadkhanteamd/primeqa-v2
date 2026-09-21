@@ -196,3 +196,34 @@ def test_a_speculative_proposal_may_still_be_rejected(eng, fx):
 def test_a_row_inserted_directly_as_applied_faces_the_same_guard(eng, fx):
     sql, p = fx["prop"](990003, "SPECULATIVE", "applied")
     assert _attempt(eng, sql, p, setup=[fx["RUN"]]) == "RaiseException"
+
+
+# --- triage round 2 (AUD-037): an unlinked surface says why, at the table ---------------------
+
+@pytest.fixture(scope="module")
+def link_fx(eng):
+    with eng.connect() as c:
+        c.execute(text(f"SET search_path TO {SCHEMA}, public"))
+        member = c.execute(text("SELECT surface_key, inventory_version FROM ui_surface_inventory_members ORDER BY inventory_version DESC LIMIT 1")).first()
+    if not member:
+        pytest.skip("scratch needs one inventory member")
+    lid = str(uuid.uuid4())
+    # the link references an identity (FK): plant one, under the replica role, in the same rolled-back transaction
+    ident = ("INSERT INTO requirement_identities (external_system, external_key, origin, origin_evidence, established_at, established_by, classifier_version) "
+             "VALUES ('jira', 'GATE-SURF', 'manual', '{}'::jsonb, now(), 15, 'gate') ON CONFLICT DO NOTHING", {})
+    link = ("INSERT INTO requirement_surface_links (id, external_system, requirement_key, surface_key, inventory_version, source, declared_by, declared_at, active) "
+            "VALUES (CAST(:l AS uuid), 'jira', 'GATE-SURF', :s, :v, 'DECLARED', 15, now(), true)", {"l": lid, "s": member[0], "v": member[1]})
+    return {"lid": lid, "LINK": link, "IDENT": ident}
+
+
+@pytest.mark.parametrize("why", ["", "  ", None])
+def test_a_surface_unlink_with_an_empty_reason_is_refused_at_the_table(eng, link_fx, why):
+    assert _attempt(eng, "UPDATE requirement_surface_links SET active = FALSE, deactivated_by = 14, deactivated_at = now(), deactivation_reason = :why WHERE id = CAST(:l AS uuid)",
+                    {"l": link_fx["lid"], "why": why}, setup=[link_fx["IDENT"], link_fx["LINK"]],
+                    precheck="SELECT count(*) FROM requirement_surface_links WHERE id = CAST(:l AS uuid) AND active") == "CheckViolation"
+
+
+def test_a_surface_unlink_with_a_reason_is_allowed(eng, link_fx):
+    assert _attempt(eng, "UPDATE requirement_surface_links SET active = FALSE, deactivated_by = 14, deactivated_at = now(), deactivation_reason = 'retired' WHERE id = CAST(:l AS uuid)",
+                    {"l": link_fx["lid"]}, setup=[link_fx["IDENT"], link_fx["LINK"]],
+                    precheck="SELECT count(*) FROM requirement_surface_links WHERE id = CAST(:l AS uuid) AND active") is None

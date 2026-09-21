@@ -9,6 +9,9 @@
 
   {% if not data.available %}
     <p class="text-sm text-gray-500">The report store is unavailable right now.</p>
+  {% elif data.found is sameas false %}
+    {# AUD-016: a miss is a 404 with this page's own words — never an outage #}
+    <p class="text-sm text-gray-500" data-testid="run-not-found">Run not found &mdash; no conformance run matches this id.</p>
   {% else %}
 
   {% if data.header %}{{ honesty_header(data.header, data.denominator) }}

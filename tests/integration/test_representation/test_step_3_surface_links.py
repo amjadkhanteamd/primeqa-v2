@@ -188,8 +188,11 @@ def test_unlink_deactivates_with_provenance_and_removes_only_its_own_links(sessi
     assert created[w["a"][0]] is False                # …but this one pre-existed
     assert created[w["a"][1]] is True and created[w["a"][2]] is True
 
+    # AUD-037 (triage round 2): the undo is the declarer's or an admin's —
+    # user 7 did not declare it, so 7 acts as an admin here (the stranger
+    # case is tests/unit/test_authority_rules.py + test_authority_triage.py)
     out = sl.unlink(session, link_id=res.link_id, actor_user_id=7,
-                    reason="declared on the wrong surface")
+                    reason="declared on the wrong surface", actor_is_admin=True)
     assert (out.removed_links, out.kept_links, out.already_inactive) == (2, 1, False)
     row = session.execute(text(
         "SELECT active, deactivated_by, deactivated_at IS NOT NULL, deactivation_reason "

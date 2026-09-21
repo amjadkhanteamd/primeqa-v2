@@ -112,6 +112,16 @@ def ctx(**kwargs):
     return {**kwargs, "user": getattr(request, "user", None)}
 
 
+def _miss_status(read: dict) -> int:
+    """A MISS IS A 404 (AUD-024): a console read that answers ``found=False``
+    while the store is available renders the page's own not-found template
+    with a 404 status — never a 200 that says 'not found' in prose. A read
+    that answers ``available=False`` is an outage, not a miss (503)."""
+    if not read.get("available", True):
+        return 503
+    return 404 if read.get("found") is False else 200
+
+
 # --- Auth ---
 
 @views_bp.route("/login", methods=["GET"])
@@ -549,6 +559,11 @@ def api_dashboard_share_revoke(link_id):
             if link is None or link.tenant_id != request.user["tenant_id"]:
                 return ({"error": {"code": "NOT_FOUND",
                                    "message": "Link not found"}}, 404)
+            # AUD-039: the creator or an admin revokes — the D-497 rule for the
+            # undo of a declared act (the route checked the tenant only)
+            if rank(request.user.get("role")) < Tier.ADMIN and int(link.created_by or 0) != int(request.user["id"]):
+                return ({"error": {"code": "FORBIDDEN",
+                                   "message": "Only the link's creator or an admin may revoke it."}}, 403)
             if link.revoked_at is not None:
                 return ({"link_id": link.id, "status": "already_revoked",
                          "revoked_at": link.revoked_at.isoformat()}, 200)
@@ -573,8 +588,11 @@ def api_dashboard_share_list():
     def _do():
         db = next(get_db())
         try:
-            rows = (db.query(SharedDashboardLink)
-                    .filter_by(tenant_id=request.user["tenant_id"])
+            # AUD-039: a member sees their OWN links; an admin sees the tenant's
+            q = db.query(SharedDashboardLink).filter_by(tenant_id=request.user["tenant_id"])
+            if rank(request.user.get("role")) < Tier.ADMIN:
+                q = q.filter(SharedDashboardLink.created_by == request.user["id"])
+            rows = (q
                     .order_by(SharedDashboardLink.created_at.desc())
                     .limit(50).all())
             return ({"links": [{
@@ -808,7 +826,7 @@ def environments_detail(env_id):
     try:
         env = EnvironmentRepository(db).get_environment(env_id, request.user["tenant_id"])
         if not env:
-            return redirect("/environments")
+            abort(404)                                   # a miss is a 404 (AUD-024)
         env_data = {
             "id": env.id, "name": env.name, "env_type": env.env_type,
             "sf_instance_url": env.sf_instance_url, "sf_api_version": env.sf_api_version,
@@ -868,7 +886,7 @@ def environments_sync_substrate(env_id):
     try:
         env = EnvironmentRepository(db).get_environment(env_id, request.user["tenant_id"])
         if not env:
-            return redirect("/environments")
+            abort(404)                                   # a miss is a 404 (AUD-024)
         res = trigger_s1_sync(
             request.user["tenant_id"], env_id, env.sf_instance_url,
             created_by=request.user.get("id"))
@@ -886,6 +904,12 @@ def environments_sync_substrate_status(env_id):
     """JSON S1-sync status for the env (D-164, 1b) — polled by the panel while a
     sync runs. Best-effort; always 200 with the status dict."""
     from primeqa.metadata_bridge.s1_sync_console import read_s1_sync_status
+    db = next(get_db())
+    try:
+        if EnvironmentRepository(db).get_environment(env_id, request.user["tenant_id"]) is None:
+            abort(404)                                   # a miss is a 404 (AUD-024)
+    finally:
+        db.close()
     return jsonify(read_s1_sync_status(request.user["tenant_id"], env_id))
 
 
@@ -958,7 +982,7 @@ def environments_run_detail(env_id, run_id):
     try:
         env = EnvironmentRepository(db).get_environment(env_id, request.user["tenant_id"])
         if not env:
-            return redirect("/environments")
+            abort(404)                                   # a miss is a 404 (AUD-024)
         env_name = env.name
     finally:
         db.close()
@@ -1015,7 +1039,7 @@ def environments_edit(env_id):
     try:
         env = EnvironmentRepository(db).get_environment(env_id, request.user["tenant_id"])
         if not env:
-            return redirect("/environments")
+            abort(404)                                   # a miss is a 404 (AUD-024)
         env_data = {
             "id": env.id, "name": env.name, "env_type": env.env_type,
             "capture_mode": env.capture_mode, "execution_policy": env.execution_policy,
@@ -1210,7 +1234,7 @@ def users_edit(user_id):
         user_repo = UserRepository(db)
         edit_user = user_repo.get_user_by_id(user_id)
         if not edit_user or edit_user.tenant_id != request.user["tenant_id"]:
-            return redirect("/users")
+            abort(404)                                   # a miss is a 404 (AUD-024)
         user_data = {
             "id": edit_user.id, "email": edit_user.email,
             "full_name": edit_user.full_name, "role": edit_user.role,
@@ -1346,8 +1370,7 @@ def settings_user_detail(user_id):
         try:
             u = db.query(User).filter_by(id=user_id).first()
             if u is None or u.tenant_id != request.user["tenant_id"]:
-                flash("User not found.", "error")
-                return redirect("/settings/users")
+                abort(404)                               # a miss is a 404 (AUD-024)
 
             is_self = (u.id == request.user["id"])
 
@@ -1486,7 +1509,7 @@ def connections_detail(conn_id):
         svc = ConnectionService(ConnectionRepository(db))
         conn = svc.get_connection(conn_id, request.user["tenant_id"])
         if not conn:
-            return redirect("/connections")
+            abort(404)                                   # a miss is a 404 (AUD-024)
         # `conn` is a dict (ConnectionService.get_connection returns
         # get_connection_decrypted which returns a dict, not an ORM
         # object). Prior use of `conn.name` AttributeError'd.
@@ -1544,7 +1567,7 @@ def connections_edit(conn_id):
         svc = ConnectionService(ConnectionRepository(db))
         conn = svc.get_connection(conn_id, request.user["tenant_id"])
         if not conn:
-            return redirect("/connections")
+            abort(404)                                   # a miss is a 404 (AUD-024)
         return render_template("connections/edit.html", **ctx(
             active_page="settings_connections", settings_page="connections", conn=conn, error=None,
         ))
@@ -1561,7 +1584,7 @@ def connections_update(conn_id):
         svc = ConnectionService(repo)
         conn = repo.get_connection(conn_id, request.user["tenant_id"])
         if not conn:
-            return redirect("/connections")
+            abort(404)                                   # a miss is a 404 (AUD-024)
 
         updates = {"name": request.form.get("name", conn.name)}
         old_config = dict(conn.config) if conn.config else {}
@@ -1619,9 +1642,10 @@ def connections_update(conn_id):
         return redirect(f"/connections/{conn_id}")
     except ValueError as e:
         conn_data = svc.get_connection(conn_id, request.user["tenant_id"])
+        # AUD-011: a refused form re-renders WITH its reason, as a 400
         return render_template("connections/edit.html", **ctx(
             active_page="settings_connections", settings_page="connections", conn=conn_data, error=str(e),
-        ))
+        )), 400
     finally:
         db.close()
 
@@ -1655,12 +1679,16 @@ def groups_new():
 def groups_create():
     db = next(get_db())
     try:
-        svc = GroupService(GroupRepository(db))
-        svc.create_group(
-            request.user["tenant_id"], request.form["name"],
-            request.user["id"], request.form.get("description"),
-        )
         from flask import flash
+        svc = GroupService(GroupRepository(db))
+        try:
+            svc.create_group(
+                request.user["tenant_id"], request.form.get("name"),
+                request.user["id"], request.form.get("description"),
+            )
+        except ValueError as e:                       # AUD-011: the refusal names the field
+            flash(str(e), "error")
+            return redirect("/groups")
         flash("Group created successfully", "success")
         return redirect("/groups")
     finally:
@@ -1675,7 +1703,7 @@ def groups_edit(group_id):
         svc = GroupService(GroupRepository(db))
         group = svc.get_group_detail(group_id, request.user["tenant_id"])
         if not group:
-            return redirect("/groups")
+            abort(404)                                   # a miss is a 404 (AUD-024)
         return render_template("groups/edit.html", **ctx(
             active_page="settings_groups", settings_page="groups",
             breadcrumb_section="Groups", breadcrumb_item=f"Edit {group['name']}",
@@ -1714,7 +1742,7 @@ def groups_detail(group_id):
         svc = GroupService(GroupRepository(db))
         group = svc.get_group_detail(group_id, request.user["tenant_id"])
         if not group:
-            return redirect("/groups")
+            abort(404)                                   # a miss is a 404 (AUD-024)
 
         member_ids = {m["id"] for m in group["members"]}
         all_users = UserRepository(db).list_users(request.user["tenant_id"])
@@ -2654,9 +2682,12 @@ def requirement_surface_unlink(req_id, link_id):
     finally:
         db.close()
     back = f"/requirements/{req_id}#conformance-surfaces"
+    # AUD-037: declarer-or-admin, with a reason (refused in the service and at
+    # the table; the route only says who is asking)
     res = unlink_surface(request.user["tenant_id"], link_id=str(link_id),
                          requirement_key=req_key, user_id=request.user["id"],
-                         reason=(request.form.get("reason") or "").strip())
+                         reason=(request.form.get("reason") or "").strip(),
+                         actor_is_admin=rank(request.user.get("role")) >= Tier.ADMIN)
     if not res.get("ok"):
         if res.get("reason") == "unknown_link":
             abort(404)
@@ -2861,7 +2892,7 @@ def requirements_detail(req_id):
         req_repo = RequirementRepository(db)
         req = req_repo.get_requirement(req_id, tid, include_deleted=True)
         if not req:
-            return redirect("/requirements")
+            abort(404)                                   # a miss is a 404 (AUD-024)
 
         # Prompt 16: track this view for the /run Tickets picker's
         # "Recent tickets" list. Best-effort — failures never break
@@ -3215,7 +3246,7 @@ def requirements_test_plan_status(req_id):
     status_ctx = _test_plan_status_context(req_id)
     if status_ctx is None:
         return render_template("requirements/_test_plan_status.html", **ctx(
-            req_id=req_id, tests=[], any_active=False, active_count=0))
+            req_id=req_id, tests=[], any_active=False, active_count=0)), 404      # a miss is a 404 (AUD-024)
     return render_template("requirements/_test_plan_status.html",
                            **ctx(**status_ctx))
 
@@ -3300,7 +3331,7 @@ def requirements_generation_run_detail(req_id, request_id):
         req = RequirementRepository(db).get_requirement(
             req_id, tid, include_deleted=True)
         if not req:
-            return redirect("/requirements")
+            abort(404)                                   # a miss is a 404 (AUD-024)
         from primeqa.intelligence.s3_enqueue import _requirement_to_ref
         req_key = _requirement_to_ref(req)["key"]
         req_data = {"id": req.id, "jira_key": req.jira_key,
@@ -3444,7 +3475,7 @@ def claims_detail(test_id):
         active_page="test_library", detail=detail, siblings=siblings,
         runs=runs, environments=envs_data, quarantine=quarantine_state,
         requirement=requirement, readable_phrasing=readable_phrasing,
-        plan_nav=plan_nav))
+        plan_nav=plan_nav)), (404 if (detail or {}).get("found") is False else 200)
 
 
 def _claim_panel_context(tid, test_id):
@@ -3481,8 +3512,8 @@ def claims_panel(test_id):
     plan) so the workspace stays lazy; skips the flag-gated LLM phrasing
     (deterministic + fast). Fragments never flash()."""
     tid = request.user["tenant_id"]
-    return render_template("claims/_panel.html", **ctx(
-        **_claim_panel_context(tid, test_id)))
+    panel = _claim_panel_context(tid, test_id)
+    return render_template("claims/_panel.html", **ctx(**panel)), (404 if (panel.get("detail") or {}).get("found") is False else 200)
 
 
 _MAX_FIELD_OVERRIDES = 50
@@ -3652,7 +3683,7 @@ def claims_run_status(test_id, job_id):
     if job is None or str(job.test_id) != str(test_id):
         return render_template("claims/_run_status.html", **ctx(
             state="refused", message="Run not found.", tone="error",
-            test_id=str(test_id)))
+            test_id=str(test_id))), 404                    # a miss is a 404 (AUD-024)
     if job.status in ("queued", "claimed", "running"):
         return render_template("claims/_run_status.html", **ctx(
             state="active",
@@ -4217,7 +4248,7 @@ def s4_run_detail(run_id):
         readiness=readiness,
         repair_gate_apply_enabled=repair_gate_on,
         environment=environment, requirement=requirement,
-        readable_run_phrasing=readable_run_phrasing, plan_nav=plan_nav))
+        readable_run_phrasing=readable_run_phrasing, plan_nav=plan_nav)), (404 if (detail or {}).get("found") is False else 200)
 
 
 @views_bp.route("/requirements/<int:req_id>/edit", methods=["POST"])
@@ -4241,11 +4272,20 @@ def requirements_edit(req_id):
         if request.form.get("is_stale") == "0":
             updates["is_stale"] = False
 
-        _req, result = repo.update_requirement(req_id, tid, updates)
-        if result == "not_found":
+        # AUD-011: through the SERVICE (the column bounds live there), never the repo
+        from primeqa.core.repository import ActivityLogRepository
+        from primeqa.shared.api import ConflictError, NotFoundError
+        from primeqa.test_management.repository import SectionRepository
+        from primeqa.test_management.service import TestManagementService
+        svc = TestManagementService(SectionRepository(db), repo, ActivityLogRepository(db))
+        try:
+            svc.update_requirement(req_id, tid, updates, user_id=request.user["id"])
+        except NotFoundError:
             flash("Requirement not found", "error")
-        elif result == "conflict":
+        except ConflictError:
             flash("Conflict: someone edited this requirement \u2014 please refresh", "error")
+        except ValueError as e:
+            flash(str(e), "error")
         else:
             flash("Requirement updated", "success")
         return redirect(f"/requirements/{req_id}")
@@ -4833,7 +4873,8 @@ def releases_create():
         flash(f"Release '{result['name']}' created", "success")
         return redirect(f"/releases/{result['id']}")
     except ValueError as e:
-        return render_template("releases/new.html", **ctx(active_page="releases", error=str(e)))
+        # AUD-011: a refused form re-renders WITH its reason, as a 400
+        return render_template("releases/new.html", **ctx(active_page="releases", error=str(e))), 400
     finally:
         db.close()
 
@@ -4931,7 +4972,7 @@ def releases_evaluate_decision(release_id):
         repo = ReleaseRepository(db)
         release = repo.get_release(release_id, request.user["tenant_id"])
         if not release:
-            return redirect("/releases")
+            abort(404)                                   # a miss is a 404 (AUD-024)
         result = evaluate_and_record(
             db, release, request.user["tenant_id"], release_repo=repo)
         if result.get("refused"):
@@ -4970,9 +5011,18 @@ _FINAL_RANK = {"no_go": 0, "cannot_determine": 1, "conditional_go": 2, "go": 3}
 
 
 @views_bp.route("/releases/<int:release_id>/decisions/<int:decision_id>/final", methods=["POST"])
-@require_tier(Tier.MEMBER)
+@require_tier(Tier.ADMIN)
 @login_required
 def release_decision_final(release_id, decision_id):
+    """Record the HUMAN final decision beside the recommendation.
+
+    THE RULE (AUD-036, triage round 2): ADMIN — on this route and on the API's
+    `finalize` alike, so the act cannot depend on which door is used. Recording
+    the final ship/no-ship word for a release is governance, the same rank as
+    activating the policy that grades it (AUD-019, D-497); a member records
+    evidence and waivers, an admin records the decision. The
+    more-permissive-needs-a-reason rule below stays (an admin overriding a
+    NO GO must say why)."""
     from flask import flash
     final = (request.form.get("final_decision") or "").strip()
     reason = (request.form.get("override_reason") or "").strip()
@@ -4985,7 +5035,7 @@ def release_decision_final(release_id, decision_id):
         repo = ReleaseRepository(db)
         release = repo.get_release(release_id, request.user["tenant_id"])
         if not release:
-            return redirect("/releases")
+            abort(404)                                   # a miss is a 404 (AUD-024)
         from primeqa.release.models import ReleaseDecision
         d = db.query(ReleaseDecision).filter(ReleaseDecision.id == decision_id,
                                              ReleaseDecision.release_id == release_id).first()
@@ -5260,7 +5310,7 @@ def releases_detail(release_id):
         svc = ReleaseService(ReleaseRepository(db))
         release = svc.get_release_detail(release_id, request.user["tenant_id"])
         if not release:
-            return redirect("/releases")
+            abort(404)                                   # a miss is a 404 (AUD-024)
         tab = request.args.get("tab", "requirements")
 
         # Picker data for the "+ Add" modals on Requirements and Test Plan
@@ -5400,11 +5450,15 @@ def result_detail_redirect(run_id):
     return redirect("/runs/substrate")
 
 
-@views_bp.route("/runs/conformance/<job_id>")
+@views_bp.route("/runs/conformance/<uuid:job_id>")
 @require_tier(Tier.VIEWER)
 def conformance_run(job_id):
+    """AUD-016: the id is a uuid at the router (a non-uuid is a 404 there); a
+    run that does not exist is a 404 with the page's own not-found state; the
+    'store unavailable' sentence is for a store error only (503)."""
     from primeqa.intelligence.ui_report_console import run_report
     standard = request.args.get("standard", "WCAG22")
+    job_id = str(job_id)
     data = run_report(
         request.user["tenant_id"], job_id,
         standard=standard,
@@ -5415,7 +5469,7 @@ def conformance_run(job_id):
         active_page="results", job_id=job_id, data=data,
         standard=standard,
         f_verdict=request.args.get("verdict", ""),
-        f_surface=request.args.get("surface", "")))
+        f_surface=request.args.get("surface", ""))), _miss_status(data)
 
 
 @views_bp.route("/ui-report/evidence")
@@ -5484,4 +5538,6 @@ def tickets_redirect():
 @views_bp.route("/suites/<int:suite_id>")
 @login_required
 def suites_redirect(suite_id=None):
-    return redirect("/claims")
+    # AUD-032: /claims was retired in 6a (a 302 that landed on a 404); the
+    # claims live under Requirements
+    return redirect("/requirements")
