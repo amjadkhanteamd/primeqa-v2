@@ -47,10 +47,21 @@ REPO = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 ATTRS = ("href", "action", "formaction", "hx-get", "hx-post", "hx-put", "hx-patch", "hx-delete",
          "data-url", "data-href", "data-confirm-form")
 ATTR_RX = re.compile(r'\b(' + "|".join(re.escape(a) for a in ATTRS) + r')\s*=\s*"([^"]*)"')
+#: ANY data-* attribute whose value is a path. Round 3, part E: the graph named
+#: three data attributes by hand, so a URL parked in a fourth (a script reads
+#: `el.dataset.whatever` and fetches it) was invisible — the audit found its two
+#: JS-built cases by eye, which is not a graph. A path in a data attribute is a
+#: target; the attribute's name does not matter.
+DATA_ATTR_RX = re.compile(r'\b(data-[a-z][a-z0-9-]*)\s*=\s*"(/[^"]*)"')
 # what each attribute submits with; href/data-* follow as GET, the verbs as themselves
 ATTR_METHOD = {"hx-post": "POST", "hx-put": "PUT", "hx-patch": "PATCH", "hx-delete": "DELETE"}
 FORM_METHOD_RX = re.compile(r'\bmethod\s*=\s*"([A-Za-z]+)"')
 JS_RX = re.compile(r"""(?:fetch|open|location\.href\s*=|window\.location\s*=|location\.assign)\s*\(?\s*['"`](/[^'"`]*)['"`]""")
+#: htmx's programmatic call: htmx.ajax('GET', '/claims/' + id + '/panel', ...).
+#: The drawer uses exactly this, and the audit found it by hand (AUD-025 noted
+#: /claims/<id>/panel as "reached by a JS-built URL and not an orphan") — found
+#: by eye, not by the graph. The verb is the method.
+HTMX_AJAX_RX = re.compile(r"""htmx\.ajax\s*\(\s*['"]([A-Za-z]+)['"]\s*,\s*['"`](/[^'"`]*)['"`]""")
 JS_METHOD_RX = re.compile(r"""method\s*:\s*['"]([A-Za-z]+)['"]""")
 URL_FOR_RX = re.compile(r"""url_for\(\s*['"]([A-Za-z0-9_.]+)['"]\s*(?:,\s*([^)]*))?\)""")
 KWARG_RX = re.compile(r"\b([A-Za-z_][A-Za-z0-9_]*)\s*=")
@@ -129,6 +140,12 @@ def collect(templates_dir: str, static_dir: str | None) -> list:
                 for value in JS_RX.findall(line):
                     m = JS_METHOD_RX.search(line)
                     out.append(Target("js", value, f"{rel}:{i + 1}", (m.group(1).upper() if m else "GET")))
+                for verb, value in HTMX_AJAX_RX.findall(line):
+                    out.append(Target("htmx-ajax", value, f"{rel}:{i + 1}", verb.upper()))
+                for attr, value in DATA_ATTR_RX.findall(line):
+                    if attr in ATTRS or URL_FOR_RX.search(value):
+                        continue                  # already collected above
+                    out.append(Target(attr, value, f"{rel}:{i + 1}", "GET"))
     if static_dir and os.path.isdir(static_dir):
         for root, _, files in os.walk(static_dir):
             for f in sorted(files):
@@ -140,6 +157,8 @@ def collect(templates_dir: str, static_dir: str | None) -> list:
                     for value in JS_RX.findall(line):
                         m = JS_METHOD_RX.search(line)
                         out.append(Target("js", value, f"{rel}:{i + 1}", (m.group(1).upper() if m else "GET")))
+                    for verb, value in HTMX_AJAX_RX.findall(line):
+                        out.append(Target("htmx-ajax", value, f"{rel}:{i + 1}", verb.upper()))
     return out
 
 
@@ -277,7 +296,7 @@ class Resolver:
                 # every segment is Jinja — nothing literal to resolve against
                 return "unresolvable", "every segment is dynamic"
             why = self._match(path, t.method)
-            if why and t.kind == "js" and raw.rstrip("?#").endswith("/"):
+            if why and t.kind in ("js", "htmx-ajax") and raw.rstrip("?#").endswith("/"):
                 # a JS literal ending in "/" is a PREFIX the code appends an id
                 # to (fetch('/api/x/' + id)): judge it with one more segment
                 why = self._match(path + "/" + WILD, t.method)

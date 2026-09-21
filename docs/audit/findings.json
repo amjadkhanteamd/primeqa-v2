@@ -469,7 +469,8 @@
   "proposed_fix": "link /sections from Settings or retire it; retire POST /plans or give it a form; keep the five aliases but mark them as redirect-only in the inventory",
   "status": "open",
   "fix_plan_ref": null,
-  "discovered_at": "2026-09-15T12:10:36+00:00"
+  "discovered_at": "2026-09-15T12:10:36+00:00",
+  "note": "round 3 part D: traced/measured read-only and written up with options and a defended lean in docs/audit/DECISION_MEMO.md — AK decides."
  },
  {
   "id": "AUD-026",
@@ -524,7 +525,7 @@
   "status": "open",
   "fix_plan_ref": null,
   "discovered_at": "2026-09-19T06:35:37+00:00",
-  "note": "named in the run_id census ledger (tests/integration/test_constraints_triage.py::RUN_ID_WITHOUT_FK) so the gate stays honest until they are closed"
+  "note": "named in the run_id census ledger (tests/integration/test_constraints_triage.py::RUN_ID_WITHOUT_FK) so the gate stays honest until they are closed | round 3 part D: traced/measured read-only and written up with options and a defended lean in docs/audit/DECISION_MEMO.md — AK decides."
  },
  {
   "id": "AUD-029",
@@ -578,7 +579,8 @@
   "proposed_fix": "link it from Settings (it manages the requirement tree) or retire it",
   "status": "open",
   "fix_plan_ref": null,
-  "discovered_at": "2026-09-19T08:57:45+00:00"
+  "discovered_at": "2026-09-19T08:57:45+00:00",
+  "note": "round 3 part D: traced/measured read-only and written up with options and a defended lean in docs/audit/DECISION_MEMO.md — AK decides."
  },
  {
   "id": "AUD-032",
@@ -613,7 +615,8 @@
   "proposed_fix": "retire both, or give the tenant-wide plan its surface",
   "status": "open",
   "fix_plan_ref": null,
-  "discovered_at": "2026-09-19T08:57:45+00:00"
+  "discovered_at": "2026-09-19T08:57:45+00:00",
+  "note": "round 3 part D: traced/measured read-only and written up with options and a defended lean in docs/audit/DECISION_MEMO.md — AK decides."
  },
  {
   "id": "AUD-034",
@@ -629,7 +632,8 @@
   "proposed_fix": "name the consumer (CI? a future SDK?) and prune the rest — or freeze the list as the public contract and gate-test it as a table",
   "status": "open",
   "fix_plan_ref": null,
-  "discovered_at": "2026-09-19T08:57:45+00:00"
+  "discovered_at": "2026-09-19T08:57:45+00:00",
+  "note": "round 3 part D: traced/measured read-only and written up with options and a defended lean in docs/audit/DECISION_MEMO.md — AK decides."
  },
  {
   "id": "AUD-035",
@@ -779,7 +783,8 @@
   "proposed_fix": "unescape the org's message once at the read (html.unescape) and build the flaky sequence with the character, never the entity; a template test over a message carrying an entity",
   "status": "open",
   "fix_plan_ref": null,
-  "discovered_at": "2026-09-21T09:08:36+00:00"
+  "discovered_at": "2026-09-21T09:08:36+00:00",
+  "note": "round 3 part E: reproduced OFF production — the shape is planted in the hostile tenant and the truth asserted, marked xfail(strict) against this finding, so it cannot pass quietly while the defect stands and cannot stay marked once it is fixed (tests/unit/test_template_escaping.py, tests/integration/test_round3_pages.py)"
  },
  {
   "id": "AUD-043",
@@ -795,7 +800,8 @@
   "proposed_fix": "render $relative_date values in the title phrasing (the anchor and the offset in words); a unit test over a relative-date asserted value",
   "status": "open",
   "fix_plan_ref": null,
-  "discovered_at": "2026-09-21T09:08:36+00:00"
+  "discovered_at": "2026-09-21T09:08:36+00:00",
+  "note": "round 3 part E: reproduced OFF production — the shape is planted in the hostile tenant and the truth asserted, marked xfail(strict) against this finding, so it cannot pass quietly while the defect stands and cannot stay marked once it is fixed (tests/unit/test_template_escaping.py, tests/integration/test_round3_pages.py)"
  },
  {
   "id": "AUD-044",

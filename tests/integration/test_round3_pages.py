@@ -313,6 +313,54 @@ def test_aud_017_a_run_dated_before_step_2_carries_the_legacy_clause(world):
     assert "predates run-level stamping" in html, "the legacy clause belongs on a run dated before Step 2's deploy"
 
 
+# --- Part E: the two observations only PRODUCTION data reached, planted here ----------------
+
+@pytest.fixture(scope="module")
+def relative_date_claim(world):
+    """A claim whose asserted value carries a ``$relative_date`` object — the
+    shape that made a production landing-page title read
+    ``Automatically sets PLS FB Order SLA Deadline to {'$relative_date':
+    {'anchor': 'RUN_DATE', 'offset_days': 5}}`` (AUD-043). It existed only on
+    production, so the audit could not reproduce it; it exists on scratch now."""
+    from sqlalchemy.orm import Session
+    from primeqa.semantic.connection import get_tenant_connection
+    from primeqa.test_representation import SemanticTransactionCoordinator
+    from tests.integration.test_representation._fixtures import empty_conditions, make_value_claim
+
+    coord = SemanticTransactionCoordinator()
+    with get_tenant_connection(1) as conn:
+        s = Session(bind=conn)
+        truth = make_value_claim(value={"$relative_date": {"anchor": "RUN_DATE", "offset_days": 5}})
+        cr = coord.write_claim(s, actor="s3", test_id=None, archetype="data_behavior",
+                               claim_kind="value-claim", asserted_truth=truth,
+                               semantic_conditions=empty_conditions())
+        coord.promote_claim_to_approved(s, actor="human", test_id=cr.test_id, version_seq=cr.version_seq)
+        coord.link_requirement(s, actor="s3", test_id=cr.test_id, external_system="jira",
+                               external_key=KEY_MIX, link_kind="generated_from")
+        s.flush()
+        world["claims"].append(str(cr.test_id))
+    return str(cr.test_id)
+
+
+@pytest.mark.xfail(strict=True, reason="AUD-043 is open: a $relative_date value renders as its Python repr")
+def test_aud_043_a_relative_date_value_renders_as_a_date_not_a_dict(relative_date_claim):
+    status, html = _get(MEMBER, "tester", f"/claims/{relative_date_claim}")
+    assert status == 200
+    assert "$relative_date" not in html and "offset_days" not in html, \
+        "the claim's title/value shows the value object's repr"
+
+
+def test_aud_043_the_shape_is_really_planted(relative_date_claim):
+    """The plant itself is proven, so the xfail above is evidence about the
+    RENDER and not about a fixture that quietly did nothing."""
+    from sqlalchemy import create_engine
+    with create_engine(DB).connect() as c:
+        c.execute(text("SET search_path TO tenant_1, public"))
+        truth = c.execute(text("SELECT CAST(asserted_truth AS text) FROM test_claims WHERE CAST(test_id AS text) = :t AND valid_to IS NULL"),
+                          {"t": relative_date_claim}).scalar()
+    assert "$relative_date" in (truth or ""), truth
+
+
 # --- THE GUARD for the class: every list page over the hostile shapes, counts shown == planted --
 
 @pytest.mark.parametrize("path,user,role,tenant", [

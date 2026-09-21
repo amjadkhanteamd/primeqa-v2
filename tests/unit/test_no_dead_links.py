@@ -63,6 +63,19 @@ CONVERTER_LIVE_PLANT = {
     "conv_real_uuid.html": '<a href="/claims/00000000-0000-4000-8000-000000000000">open</a>',
 }
 
+#: Round 3, part E: the graph reads URLs built in JS through htmx's programmatic
+#: call and URLs parked in ANY data attribute. Both kinds were previously found
+#: by eye (the audit's two "JS-built URL" notes), which is not a graph.
+BUILT_URL_DEAD_PLANT = {
+    "htmx_ajax_literal_dead.html": "<script>htmx.ajax('GET', '/no/such/panel', '#x')</script>",
+    "htmx_ajax_verb_dead.html": "<script>htmx.ajax('DELETE', '/releases/' + r + '/', '#x')</script>",
+    "data_attr_dead.html": '<div data-poll-url="/requirements/{{ r.id }}/no-such-status"></div>',
+}
+BUILT_URL_LIVE_PLANT = {
+    "htmx_ajax_live.html": "<script>htmx.ajax('GET', '/claims/' + id + '/panel', '#x')</script>",
+    "data_attr_live.html": '<div data-poll-url="/requirements/{{ r.id }}/test-plan-status"></div>',
+}
+
 DEAD_PLANT = {
     "aud003.html": '<a href="/releases/{{ release.id }}/decision">View Reasoning →</a>',
     "aud004.html": '<a href="/test-cases?section_id={{ node.id }}">View TCs</a>',
@@ -118,6 +131,34 @@ def test_a_converter_satisfying_target_is_alive(url_map):
     resolves."""
     rep = dl.sweep(url_map, _plant(CONVERTER_LIVE_PLANT), None)
     assert rep.dead == [], rep.as_dict()["dead_list"]
+
+
+def test_a_url_built_in_js_or_parked_in_a_data_attribute_is_judged(url_map):
+    """AUD-025's two 'JS-built URL' notes were found by eye. They are graph
+    members now: an htmx.ajax target and any data-* path resolve like any other,
+    with the htmx verb as the method.
+
+    A CONCATENATED URL ('/claims/' + id + '/panel') exposes only its prefix to
+    any static reader, so the graph judges the prefix and says so — that is the
+    honest limit, and the live plant below pins it."""
+    rep = dl.sweep(url_map, _plant(BUILT_URL_DEAD_PLANT), None)
+    dead_by_file = {t.where.split("/")[-1].split(":")[0]: why for t, why in rep.dead}
+    for f in BUILT_URL_DEAD_PLANT:
+        assert f in dead_by_file, f"{f} was NOT reported dead: {rep.as_dict()}"
+    assert "no route matches" in dead_by_file["htmx_ajax_literal_dead.html"]
+    assert "not for DELETE" in dead_by_file["htmx_ajax_verb_dead.html"]      # the verb is the method
+    rep = dl.sweep(url_map, _plant(BUILT_URL_LIVE_PLANT), None)
+    assert rep.dead == [], rep.as_dict()["dead_list"]
+    assert {t.kind for t in rep.alive} == {"htmx-ajax", "data-poll-url"}
+
+
+def test_the_drawers_panel_call_is_in_the_graph():
+    """The concrete case: the requirement workspace's drawer fetches
+    /claims/<uuid>/panel through htmx.ajax in static/js/drawer.js."""
+    rep = dl.sweep_repo()
+    hits = [t for t in rep.alive + rep.unresolvable if t.kind == "htmx-ajax"]
+    assert hits, "the graph sees no htmx.ajax target at all"
+    assert any("/claims/" in t.raw for t in hits), [t.raw for t in hits]
 
 
 def test_the_sweep_does_not_cry_wolf(url_map):
