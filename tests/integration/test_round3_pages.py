@@ -52,6 +52,31 @@ def _get(user_id, role, path, tenant=1):
     return r.status_code, r.get_data(as_text=True)
 
 
+def _sweep_markers():
+    """Round 3, part C: an aborted earlier run never reaches its remover, and
+    its leftovers collide with the next plant. Remove this module's own markers
+    before planting, so the module is runnable twice in one process."""
+    from sqlalchemy import create_engine
+    auto = create_engine(DB, isolation_level="AUTOCOMMIT")
+    with auto.connect() as c:
+        c.execute(text("SET session_replication_role = replica"))
+        c.execute(text("SET search_path TO tenant_1, public"))
+        for sql in (
+            "DELETE FROM quality_waivers WHERE item_ref LIKE 'round3-%'",
+            "DELETE FROM requirement_surface_links WHERE requirement_key LIKE 'R3-%'",
+            "DELETE FROM test_requirement_links WHERE external_key LIKE 'R3-%'",
+            "DELETE FROM requirement_identities WHERE external_key LIKE 'R3-%'",
+            "DELETE FROM public.release_decisions WHERE release_id IN (SELECT id FROM public.releases WHERE name LIKE 'round3-%')",
+            "DELETE FROM public.release_requirements WHERE release_id IN (SELECT id FROM public.releases WHERE name LIKE 'round3-%')",
+            "DELETE FROM public.releases WHERE name LIKE 'round3-%'",
+            "DELETE FROM public.requirements WHERE external_key LIKE 'R3-%'",
+        ):
+            try:
+                c.execute(text(sql))
+            except Exception as exc:  # noqa: BLE001 — named, never silent
+                print("pre-plant sweep: %s -> %s" % (sql[:60], type(exc).__name__))
+
+
 def plant_world() -> dict:
     """The hostile shapes, planted in tenant 1: five claims all deprecated on
     one requirement; two approved + one deprecated on another; one claim with
@@ -66,6 +91,7 @@ def plant_world() -> dict:
     from primeqa.test_representation import SemanticTransactionCoordinator
     from tests.integration.test_representation._fixtures import empty_conditions, make_value_claim
 
+    _sweep_markers()                       # round 3: start from a clean slate
     eng = create_engine(DB)
     w: dict = {"claims": [], "runs": []}
     with eng.begin() as c:

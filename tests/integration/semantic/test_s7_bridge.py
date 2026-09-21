@@ -10,6 +10,7 @@ from __future__ import annotations
 import contextlib
 from uuid import uuid4
 
+from sqlalchemy import text
 from sqlalchemy.orm import Session
 
 from primeqa.conversation import QuestionContext
@@ -25,9 +26,26 @@ def _stub_phrase(ret="Two runs failed on VR_A."):
     return lambda q, ev: {"answer": ret, "cited_ids": [ev.items[0].citation_id]}
 
 
-def _interp(rid):
+def _seed_run(session, recipe_id, claim_test_id):
+    """A real ``s4_execution_runs`` row for the verdict to hang on. D-497's
+    ``fk_s6_interpretations_run`` (AUD-026: a verdict cannot exist without its
+    run) refuses an invented run id — these suites used to plant one, and the
+    foreign key turned them red the day it landed."""
+    run_id = uuid4()
+    session.execute(text(
+        "INSERT INTO s4_execution_runs (run_id, recipe_id, recipe_version_seq, claim_test_id, "
+        "claim_version_seq, environment_id, outcome, started_at, finished_at, evidence) "
+        "VALUES (CAST(:r AS uuid), CAST(:p AS uuid), 1, CAST(:c AS uuid), 1, 4, "
+        "CAST('failed' AS run_outcome), now(), now(), '{}'::jsonb)"),
+        {"r": str(run_id), "p": str(recipe_id), "c": str(claim_test_id)})
+    return run_id
+
+
+def _interp(rid, session=None):
+    claim_test_id = uuid4()
+    run_id = _seed_run(session, rid, claim_test_id) if session is not None else uuid4()
     return Interpretation(
-        run_id=uuid4(), recipe_id=rid, claim_test_id=uuid4(), outcome="failed",
+        run_id=run_id, recipe_id=rid, claim_test_id=claim_test_id, outcome="failed",
         verdict="prohibition_not_enforced", attribution="seeded",
         cause=Cause(cause_kind="enforcement_gap", vr_name="VR_A"))
 
@@ -36,7 +54,7 @@ def test_answered_failure_cause_over_seeded_s6(conn, seed):
     session = Session(bind=conn)
     rid = uuid4()
     for _ in range(2):
-        persist_interpretation(session, _interp(rid))
+        persist_interpretation(session, _interp(rid, session))
     session.flush()
     out = _answer(None, session, question="why did these tests fail?",
                   ctx=_CTX, phrase_fn=_stub_phrase())
@@ -79,7 +97,7 @@ def test_null_phrase_degrades_to_refused_with_citations(conn, seed):
     session = Session(bind=conn)
     rid = uuid4()
     for _ in range(2):
-        persist_interpretation(session, _interp(rid))
+        persist_interpretation(session, _interp(rid, session))
     session.flush()
     out = _answer(None, session, question="why did these fail?",
                   ctx=_CTX, phrase_fn=lambda q, ev: None)

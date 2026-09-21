@@ -11,6 +11,7 @@ from __future__ import annotations
 
 from uuid import uuid4
 
+from sqlalchemy import text
 from sqlalchemy.orm import Session
 
 from primeqa.conversation import QuestionContext
@@ -28,9 +29,24 @@ from primeqa.semantic.query import SemanticOrgModel
 _CTX = QuestionContext(tenant_id=1)
 
 
-def _interp(*, recipe_id, claim_test_id, outcome, verdict, cause_kind=None, vr_name=None):
+def _seed_run(session, recipe_id, claim_test_id, outcome):
+    """A real ``s4_execution_runs`` row for the verdict to hang on — D-497's
+    ``fk_s6_interpretations_run`` (AUD-026: a verdict cannot exist without its
+    run) refuses an invented run id."""
+    run_id = uuid4()
+    session.execute(text(
+        "INSERT INTO s4_execution_runs (run_id, recipe_id, recipe_version_seq, claim_test_id, "
+        "claim_version_seq, environment_id, outcome, started_at, finished_at, evidence) "
+        "VALUES (CAST(:r AS uuid), CAST(:p AS uuid), 1, CAST(:c AS uuid), 1, 4, "
+        "CAST(:o AS run_outcome), now(), now(), '{}'::jsonb)"),
+        {"r": str(run_id), "p": str(recipe_id), "c": str(claim_test_id), "o": outcome})
+    return run_id
+
+
+def _interp(*, recipe_id, claim_test_id, outcome, verdict, cause_kind=None, vr_name=None, session=None):
     cause = Cause(cause_kind=cause_kind, vr_name=vr_name) if cause_kind else None
-    return Interpretation(run_id=uuid4(), recipe_id=recipe_id,
+    run_id = _seed_run(session, recipe_id, claim_test_id, outcome) if session is not None else uuid4()
+    return Interpretation(run_id=run_id, recipe_id=recipe_id,
                           claim_test_id=claim_test_id, outcome=outcome,
                           verdict=verdict, attribution="seeded", cause=cause)
 
@@ -48,7 +64,7 @@ def test_failure_cause_surfaces_interpretations_and_clusters(conn, seed):
         persist_interpretation(session, _interp(
             recipe_id=rid, claim_test_id=uuid4(), outcome="failed",
             verdict="prohibition_not_enforced",
-            cause_kind="enforcement_gap", vr_name="VR_A"))
+            cause_kind="enforcement_gap", vr_name="VR_A", session=session))
     session.flush()
     items = retrieve_failure_cause(None, session, _CTX)
     kinds = {it.kind for it in items}

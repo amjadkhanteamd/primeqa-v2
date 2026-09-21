@@ -208,8 +208,15 @@ def test_3_the_vocabulary_carries_its_sentences(session):
     assert r.state == R.READY_NEVER_RUN and r.sentence == "No run in this environment."
     r = resolve_run_readiness(session, claim_test_id=unst.test_id, environment_id=ENV_A)
     assert r.state == R.READY_CANNOT_DETERMINE and r.reason == "unstamped"
+    # AUD-017: the sentence states the FACT and adds the legacy clause only when
+    # the run's own date predates Step 2's deploy — this fixture's run is dated
+    # 2026-09-06, two days before it, so the clause belongs here. (The
+    # clause-less form is asserted on a run dated today in
+    # tests/integration/test_round3_pages.py and tests/unit/test_run_readiness.py.)
+    assert r.predates_stamping
     assert r.sentence == ("Freshness unknown — this run carries no environment "
-                          "stamp. Run again to establish current readiness.")     # AUD-017: the fact, not a cause
+                          "stamp: it predates run-level stamping. Run again to "
+                          "establish current readiness.")
     r = resolve_run_readiness(session, claim_test_id=nocov.test_id, environment_id=ENV_A)
     assert r.state == R.READY_CANNOT_DETERMINE and r.reason == "no_coverage"
     assert "reads are not recorded" in r.sentence

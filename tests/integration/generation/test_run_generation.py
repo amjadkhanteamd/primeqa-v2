@@ -105,8 +105,13 @@ def test_run_generation_binds_routed_model_to_gateway(
     req.semantic_context.archetype_hint = archetype
     captured = {}
 
-    def _spy(*, tenant_id, api_key, model, task, max_tokens=2048):
+    def _spy(*, tenant_id, api_key, model, task, max_tokens=2048, **provenance):
+        # Round 3, part C: the real build_tool_turn_fn grew provenance keywords
+        # (user_id, environment_id, request_id, requirement_key). A spy that
+        # pins the old signature turns red on a change it does not judge — this
+        # test is about the MODEL the router binds, so the rest is absorbed.
         captured["model"] = model
+        captured["provenance"] = provenance
         return FakeToolTurn([propose_turn(_grounded_rel()), _emit_draft_turn()])
 
     monkeypatch.setattr("primeqa.generation.run.build_tool_turn_fn", _spy)

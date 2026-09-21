@@ -22,9 +22,14 @@ _ASSIGN = re.compile(r"\{%\s*set\s+\w+\s*=\s*['\"](BLOCK|REVIEW|CONDITIONAL|ALLO
 
 # The decision surfaces: where a release's recommendation and effects render.
 # The metric-vs-number check runs THERE; four pre-existing colour bands on
-# pass-rate figures (dashboard.html:50/176/179, runs/s4_list.html:45 — a text
-# colour, not an effect) are presentation on non-decision pages and stay.
+# pass-rate figures (three on the dashboard's cards, one text colour in the
+# runs list) are presentation on non-decision pages and stay.
 DECISION_SURFACES = ("releases", "plans", "settings/quality_policy.html", "components/_readiness.html")
+
+#: The known colour bands, keyed by FILE and counted — never by line number,
+#: which any edit above them shifts (round 3: the AUD-007 empty state moved all
+#: three dashboard bands and turned this gate red for a change it does not judge).
+KNOWN_COLOUR_BANDS = {"dashboard.html": 3, "runs/s4_list.html": 1}
 
 
 def _hits(pattern, only_decision_surfaces=False):
@@ -44,9 +49,12 @@ def test_no_decision_surface_compares_a_metric_to_a_number():
 
 
 def test_the_only_metric_comparisons_anywhere_are_the_known_colour_bands():
+    import collections
     hits = _hits(_COMPARE) + _hits(_COMPARE_REV)
-    assert sorted(h.split(":")[0] + ":" + h.split(":")[1] for h in hits) == sorted(
-        ["dashboard.html:50", "dashboard.html:176", "dashboard.html:179", "runs/s4_list.html:45"])
+    by_file = collections.Counter(h.split(":")[0] for h in hits)
+    assert dict(by_file) == KNOWN_COLOUR_BANDS, (
+        "a metric-vs-number comparison appeared in a template, or a known colour "
+        f"band was removed: {hits}")
 
 
 def test_no_template_reads_a_criteria_threshold():
