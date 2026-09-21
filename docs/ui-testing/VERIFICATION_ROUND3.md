@@ -70,3 +70,70 @@ the landing page's flaky list shows `&middot;` literally); **AUD-043** — a
 claim title on the landing page carries a raw relative-date object
 (`{'$relative_date': {'anchor': 'RUN_DATE', 'offset_days': 5}}`) instead of
 a rendered value.
+
+## Part B — housekeeping
+
+| Finding | What changed | Proof |
+|---|---|---|
+| AUD-001 | `scripts/authz_inventory.py` derives every gate from the RUNNING app: it walks each endpoint's `__wrapped__` chain and closure cells and recognises a gate by the CODE OBJECT its decorator produces, never by a name (which `wraps` copies and an alias hides). Census: 211 rules, 129 `login_required`, 91 web ladder gates, 72 API, 52 auth-only, 9 anonymous | the three aliased routes report `require_auth`; RED on main, where they read "(none — auth/login only or open)" |
+| AUD-044 (new) | the dead-link sweep matched `[^/]+` for every rule parameter, so `/claims/inbox` matched `/claims/<uuid:test_id>` and two links on the landing page were called alive while the router 404s them. The resolver walks a target against a rule segment by segment, each parameter tested with its own converter; both links point at `/requirements?tab=needs-review` | the repo sweep: 0 dead before (blind), 2 dead after the fix, 0 after the repair; the live 404 |
+| AUD-005 | four templates nothing renders deleted; the dead bulk-generate half of `requirements_list.js` deleted (no element it names has existed since D-165; it called a route retired in 7fd518f) | the sweep's target count drops with them; the row-actions half stays and is used by the requirement page |
+| AUD-040 | already corrected in round 2 (D-500) | the contract asserted against the live app |
+
+Guards, each proven red first: `tests/unit/test_authz_oracle.py` (5),
+`tests/unit/test_no_dead_links.py` (+2 converter plants), and
+`tests/unit/test_documented_contracts.py` (5 — every `primeqa/...` path
+CLAUDE.md names exists, every component the kit lists is rendered, and the
+status endpoint answers what the doc claims). RED on the audited tree 8990025.
+
+**No UI change here needs a screenshot except the dashboard's two repointed
+links, which are shown in Part A's `landing_zero_run_tenant.png` (the card now
+reads "Pending Reviews" and lands on the Requirements "Needs review" tab).**
+
+## Part C — zero known reds
+
+| | before | after |
+|---|---|---|
+| unit | 1 red | 0 (5,516 passed, 1 xfail) |
+| harness (`tests/test_*.py`) | 7 reds (2 collection errors) | 0 (112 passed) |
+| integration, one process | 150 reds | 0 (1,055 passed, 185 skipped) |
+| **total** | **157** | **0** |
+
+The contamination was measured, not guessed: after the generation suite the
+tenant engine was still bound to `primeqa_test_governance_main_22184` with 0
+approved claim sets, against 369 on scratch. Both suites now restore the ambient
+binding after every test. Fixtures whose setup failed left residue that collided
+with the next plant, so the round-2 and round-3 worlds sweep their own markers
+first.
+
+**The proof AK asked for:** identical results twice in one process — two
+`pytest.main` runs in one Python process, 1,055 passed / 185 skipped / exit 0
+both times. **Zero residue is NOT met**: six suites leak on every pass (~540
+claims, 10 claim sets, 9 inventories, 12 entities, 1 release), measured per file
+and recorded as AUD-052.
+
+61 tests are quarantined in 18 registry entries against 8 findings
+(AUD-045..AUD-051), each skipped with its finding, owner and mechanism printed.
+`tests/unit/test_quarantine_registry.py` holds the list honest.
+
+## Part D — the decision memo
+
+`docs/audit/DECISION_MEMO.md`, read-only throughout. AUD-028's seven rows are
+two named incidents (a deploy SIGTERM between provisioning and finalize; a July
+deletion that did not cascade). AUD-034 cannot be answered from evidence that
+exists — there is no CI configuration and no access log — so the lean is to log
+first. AUD-031 link it, AUD-033 retire both, AUD-025 keep the aliases.
+
+## Part E — the audit's own coverage gaps
+
+The link graph reads `htmx.ajax` targets and any `data-*` path (267 targets, 0
+dead; the drawer's `/claims/<uuid>/panel` is in the graph by name now). The two
+defects only production data reached are planted in the hostile tenant and
+asserted, marked `xfail(strict=True)` against AUD-042 and AUD-043.
+`AUDIT_2026-09.md` carries a round-3 coverage statement.
+
+## The screens AK is being asked to approve
+
+Nine fixture screenshots and six production-data renders, all in
+`docs/ui-testing/round3-fixtures/`, listed in Part A's two tables above. The
+merge is gated on **"screens approved"**.
