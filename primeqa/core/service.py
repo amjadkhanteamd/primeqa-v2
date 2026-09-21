@@ -328,6 +328,15 @@ class EnvironmentService:
         self.conn_repo = conn_repo
 
     def create_environment(self, tenant_id, name, env_type, sf_instance_url=None, sf_api_version=None, **kwargs):
+        from primeqa.core.models import Environment
+        from primeqa.shared.validation import columns, text_value
+        # AUD-011: every value is checked against its column before the row;
+        # the instance URL and API version are checked after the connection
+        # may have supplied them (below).
+        clean = columns(Environment, {"name": name, "env_type": env_type, **kwargs}, required=("name", "env_type"))
+        name, env_type, kwargs = clean.pop("name"), clean.pop("env_type"), clean
+        sf_instance_url = text_value(sf_instance_url, "sf_instance_url", max_chars=500)
+        sf_api_version = text_value(sf_api_version, "sf_api_version", max_chars=10)
         if env_type not in VALID_ENV_TYPES:
             raise ValueError(f"Invalid env_type. Must be one of: {', '.join(VALID_ENV_TYPES)}")
         ep = kwargs.get("execution_policy", "full")
@@ -355,7 +364,8 @@ class EnvironmentService:
         # 400 at the route.
         from primeqa.integrations.sf_url import validate_sf_instance_url
         validate_sf_instance_url(sf_instance_url)
-        sf_api_version = sf_api_version or "59.0"
+        sf_instance_url = text_value(sf_instance_url, "sf_instance_url", max_chars=500, required=True)
+        sf_api_version = text_value(sf_api_version or "59.0", "sf_api_version", max_chars=10, required=True)
 
         if env_type == "production":
             kwargs.setdefault("cleanup_mandatory", True)
@@ -385,6 +395,11 @@ class EnvironmentService:
         return self._env_dict(env)
 
     def update_environment(self, environment_id, tenant_id, updates, actor_user_id=None):
+        from primeqa.core.models import Environment
+        from primeqa.shared.validation import columns
+        updates = columns(Environment, updates)                  # AUD-011: the column is the bound
+        if "env_type" in updates and updates["env_type"] not in VALID_ENV_TYPES:
+            raise ValueError(f"Invalid env_type. Must be one of: {', '.join(VALID_ENV_TYPES)}")
         if "execution_policy" in updates and updates["execution_policy"] not in VALID_EXECUTION_POLICIES:
             raise ValueError(f"Invalid execution_policy. Must be one of: {', '.join(VALID_EXECUTION_POLICIES)}")
         if "capture_mode" in updates and updates["capture_mode"] not in VALID_CAPTURE_MODES:
@@ -462,6 +477,11 @@ class EnvironmentService:
         return self._env_dict(env)
 
     def store_credentials(self, environment_id, tenant_id, client_id, client_secret, access_token=None, refresh_token=None):
+        from primeqa.shared.validation import text_value
+        client_id = text_value(client_id, "client_id", required=True)                          # AUD-011: text, never an int
+        client_secret = text_value(client_secret, "client_secret", required=True)
+        access_token = text_value(access_token, "access_token")
+        refresh_token = text_value(refresh_token, "refresh_token")
         env = self.env_repo.get_environment(environment_id, tenant_id)
         if not env:
             raise ValueError("Environment not found")
@@ -556,6 +576,11 @@ class ConnectionService:
         self.conn_repo = conn_repo
 
     def create_connection(self, tenant_id, connection_type, name, config, created_by):
+        from primeqa.core.models import Connection
+        from primeqa.shared.validation import columns
+        clean = columns(Connection, {"name": name, "connection_type": connection_type, "config": config},
+                        required=("name", "connection_type", "config"))                       # AUD-011
+        name, connection_type, config = clean["name"], clean["connection_type"], clean["config"]
         if connection_type not in VALID_CONNECTION_TYPES:
             raise ValueError(f"Invalid connection_type. Must be one of: {', '.join(VALID_CONNECTION_TYPES)}")
         required = REQUIRED_CONFIG.get(connection_type, [])
@@ -566,6 +591,9 @@ class ConnectionService:
         return self._conn_dict(conn)
 
     def update_connection(self, connection_id, tenant_id, updates):
+        from primeqa.core.models import Connection
+        from primeqa.shared.validation import columns
+        updates = columns(Connection, updates)                   # AUD-011: the column is the bound
         conn = self.conn_repo.update_connection(connection_id, tenant_id, updates)
         if not conn:
             raise ValueError("Connection not found")
@@ -707,6 +735,10 @@ class GroupService:
         self.group_repo = group_repo
 
     def create_group(self, tenant_id, name, created_by, description=None):
+        from primeqa.core.models import Group
+        from primeqa.shared.validation import columns
+        clean = columns(Group, {"name": name, "description": description}, required=("name",))   # AUD-011
+        name, description = clean["name"], clean["description"]
         group = self.group_repo.create_group(tenant_id, name, created_by, description)
         return self._group_dict(group)
 
@@ -742,6 +774,8 @@ class GroupService:
 
     def add_member(self, group_id, tenant_id, user_id, added_by):
         from primeqa.core.models import User
+        from primeqa.shared.validation import int_value
+        user_id = int_value(user_id, "user_id", required=True, positive=True)                  # AUD-011
         group = self.group_repo.get_group(group_id, tenant_id)
         if not group:
             raise ValueError("Group not found")
@@ -765,6 +799,8 @@ class GroupService:
 
     def add_environment(self, group_id, tenant_id, environment_id, added_by):
         from primeqa.core.models import Environment
+        from primeqa.shared.validation import int_value
+        environment_id = int_value(environment_id, "environment_id", required=True, positive=True)   # AUD-011
         group = self.group_repo.get_group(group_id, tenant_id)
         if not group:
             raise ValueError("Group not found")

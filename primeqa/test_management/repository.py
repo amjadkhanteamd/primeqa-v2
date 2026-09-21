@@ -265,6 +265,13 @@ class RequirementRepository:
         self.db.refresh(req)
         return req, "ok"
 
+    def count_in_section(self, section_id, tenant_id):
+        """Every requirement row still referencing the section — live or
+        soft-deleted — since either blocks the section's purge (AUD-035)."""
+        return self.db.query(Requirement.id).filter(
+            Requirement.tenant_id == tenant_id, Requirement.section_id == section_id,
+        ).count()
+
     def find_by_external_key(self, tenant_id, external_key):
         """Step 1: the LIVE row decorating this identity, or None. The
         partial UNIQUE index guarantees at most one."""

@@ -120,6 +120,9 @@ class TestManagementService:
         return page, self._section_dict
 
     def update_section(self, section_id, tenant_id, updates, expected_version=None, user_id=None):
+        from primeqa.shared.validation import columns
+        from primeqa.test_management.models import Section
+        updates = columns(Section, updates)                      # AUD-011: the column is the bound
         s, result = self.section_repo.update_section(
             section_id, tenant_id, updates, expected_version,
         )
@@ -147,6 +150,18 @@ class TestManagementService:
         return self._section_dict(s)
 
     def purge_section(self, section_id, tenant_id, user_id):
+        # AUD-035: the children are counted FIRST and the refusal carries the
+        # count — the foreign key was the validator (a 500 on a section that
+        # still held requirements). Live and soft-deleted requirements alike:
+        # both still reference the section.
+        section = self.section_repo.get_section(section_id, tenant_id, include_deleted=True)
+        if not section:
+            raise NotFoundError("Section not found")
+        held = self.requirement_repo.count_in_section(section_id, tenant_id)
+        if held:
+            raise ConflictError(
+                f"The section still holds {held} requirement{'' if held == 1 else 's'} — move or purge them first.",
+                details={"section_id": section_id, "requirements": held})
         if not self.section_repo.purge_section(section_id, tenant_id):
             raise NotFoundError("Section not found")
         self._log(tenant_id, user_id, "purge", "section", section_id)
@@ -154,6 +169,14 @@ class TestManagementService:
     # ---- Requirements --------------------------------------------------------
 
     def create_requirement(self, tenant_id, section_id, source, created_by, **kwargs):
+        # AUD-011: every value is checked against its column BEFORE the
+        # collision read and the row (section_id an id, jira_key <= 50,
+        # jira_summary <= 500, ...); the refusal names the field.
+        from primeqa.shared.validation import columns, int_value
+        from primeqa.test_management.models import Requirement
+        section_id = int_value(section_id, "section_id", required=True, positive=True)
+        clean = columns(Requirement, {"source": source, **kwargs}, required=("source",))
+        source, kwargs = clean.pop("source"), clean
         # Step 1: a typed key must not collide with a live row's identity —
         # the hole the Jira-import path checked and this one never did.
         self._refuse_key_collision(
@@ -168,6 +191,10 @@ class TestManagementService:
 
     def import_jira_requirement(self, tenant_id, section_id, jira_base_url,
                                 jira_key, created_by, jira_auth=None):
+        from primeqa.shared.validation import int_value, text_value
+        section_id = int_value(section_id, "section_id", required=True, positive=True)      # AUD-011
+        jira_key = text_value(jira_key, "jira_key", max_chars=50, required=True)
+        jira_base_url = text_value(jira_base_url, "jira_base_url", max_chars=500, required=True)
         existing = self.requirement_repo.find_by_jira_key(tenant_id, jira_key)
         if existing:
             raise ValidationError(f"Requirement for {jira_key} already exists")
@@ -244,6 +271,9 @@ class TestManagementService:
 
     def update_requirement(self, requirement_id, tenant_id, updates,
                            expected_version=None, user_id=None):
+        from primeqa.shared.validation import columns
+        from primeqa.test_management.models import Requirement
+        updates = columns(Requirement, updates)                  # AUD-011: the column is the bound
         req, result = self.requirement_repo.update_requirement(
             requirement_id, tenant_id, updates, expected_version,
         )

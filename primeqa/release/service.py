@@ -32,6 +32,13 @@ class ReleaseService:
                 "release activity-log write failed (%s): %s", action, e)
 
     def create_release(self, tenant_id, name, created_by, **kwargs):
+        # AUD-011: every value is checked against its column BEFORE the row is
+        # built (name <= 255, version_tag <= 100, target_date a date, ...);
+        # the refusal names the field and the route answers 400.
+        from primeqa.release.models import Release
+        from primeqa.shared.validation import columns
+        clean = columns(Release, {"name": name, **kwargs}, required=("name",))
+        name, kwargs = clean.pop("name"), clean
         if kwargs.get("status") and kwargs["status"] not in VALID_STATUSES:
             raise ValueError(f"Invalid status. Must be one of: {', '.join(VALID_STATUSES)}")
         criteria = kwargs.get("decision_criteria")
@@ -42,6 +49,9 @@ class ReleaseService:
 
     def update_release(self, release_id, tenant_id, updates,
                        expected_updated_at=None):
+        from primeqa.release.models import Release
+        from primeqa.shared.validation import columns
+        updates = columns(Release, updates)                      # AUD-011: the column is the bound
         if "status" in updates and updates["status"] not in VALID_STATUSES:
             raise ValueError(f"Invalid status. Must be one of: {', '.join(VALID_STATUSES)}")
         r, result = self.release_repo.update_release(
@@ -112,6 +122,8 @@ class ReleaseService:
 
     def add_requirement(self, release_id, tenant_id, requirement_id, added_by):
         from primeqa.test_management.models import Requirement
+        from primeqa.shared.validation import int_value
+        requirement_id = int_value(requirement_id, "requirement_id", required=True, positive=True)   # AUD-011
         r = self.release_repo.get_release(release_id, tenant_id)
         if not r:
             raise ValueError("Release not found")

@@ -88,6 +88,7 @@ SEAMS = {
 
 REFUSE_NO_AUTHORITY = "no_authorising_user"
 REFUSE_NO_ENVIRONMENT = "no_environment"
+REFUSE_NO_TARGET = "no_target_environment"
 REFUSE_UNKNOWN_SCOPE = "unknown_scope"
 REFUSE_UNKNOWN_SCHEDULE = "unknown_schedule"
 REFUSE_UNKNOWN_RELEASE = "unknown_release"
@@ -97,6 +98,7 @@ REFUSE_UNKNOWN_PLAN = "unknown_plan"
 REFUSAL_SENTENCES = {
     REFUSE_NO_AUTHORITY: "No authorising user — claim this schedule before it can fire.",
     REFUSE_NO_ENVIRONMENT: "Name an environment to plan against.",
+    REFUSE_NO_TARGET: "This release has no target environment — declare a target first.",
     REFUSE_UNKNOWN_SCOPE: "Unknown plan scope.",
     REFUSE_UNKNOWN_SCHEDULE: "Unknown schedule.",
     REFUSE_UNKNOWN_RELEASE: "Unknown release.",
@@ -471,6 +473,12 @@ def plan(session: Session, *, tenant_id: int, scope: dict,
             raise PlanRefused(REFUSE_NO_ENVIRONMENT, inner_kind)
         target_ids = [int(inner["environment_id"])]
     target_ids = sorted(set(int(e) for e in target_ids))
+    if not target_ids:
+        # AUD-021: a plan needs a stated environment or a resolved default
+        # named back; a release with no declared target and no evidence to
+        # fall back on resolves to NOTHING — refused here, no row written
+        # (run_plans is immutable and never deleted, D-486).
+        raise PlanRefused(REFUSE_NO_TARGET, f"release {inner.get('release_id')} ({targets_source})")
     # every environment holding evidence for the scope that is NOT a target — named
     for e in _evidence_envs_unfiltered(session, functional_ids):
         if e not in target_ids:

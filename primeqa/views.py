@@ -1627,9 +1627,10 @@ def connections_update(conn_id):
         return redirect(f"/connections/{conn_id}")
     except ValueError as e:
         conn_data = svc.get_connection(conn_id, request.user["tenant_id"])
+        # AUD-011: a refused form re-renders WITH its reason, as a 400
         return render_template("connections/edit.html", **ctx(
             active_page="settings_connections", settings_page="connections", conn=conn_data, error=str(e),
-        ))
+        )), 400
     finally:
         db.close()
 
@@ -1663,12 +1664,16 @@ def groups_new():
 def groups_create():
     db = next(get_db())
     try:
-        svc = GroupService(GroupRepository(db))
-        svc.create_group(
-            request.user["tenant_id"], request.form["name"],
-            request.user["id"], request.form.get("description"),
-        )
         from flask import flash
+        svc = GroupService(GroupRepository(db))
+        try:
+            svc.create_group(
+                request.user["tenant_id"], request.form.get("name"),
+                request.user["id"], request.form.get("description"),
+            )
+        except ValueError as e:                       # AUD-011: the refusal names the field
+            flash(str(e), "error")
+            return redirect("/groups")
         flash("Group created successfully", "success")
         return redirect("/groups")
     finally:
@@ -4252,11 +4257,20 @@ def requirements_edit(req_id):
         if request.form.get("is_stale") == "0":
             updates["is_stale"] = False
 
-        _req, result = repo.update_requirement(req_id, tid, updates)
-        if result == "not_found":
+        # AUD-011: through the SERVICE (the column bounds live there), never the repo
+        from primeqa.core.repository import ActivityLogRepository
+        from primeqa.shared.api import ConflictError, NotFoundError
+        from primeqa.test_management.repository import SectionRepository
+        from primeqa.test_management.service import TestManagementService
+        svc = TestManagementService(SectionRepository(db), repo, ActivityLogRepository(db))
+        try:
+            svc.update_requirement(req_id, tid, updates, user_id=request.user["id"])
+        except NotFoundError:
             flash("Requirement not found", "error")
-        elif result == "conflict":
+        except ConflictError:
             flash("Conflict: someone edited this requirement \u2014 please refresh", "error")
+        except ValueError as e:
+            flash(str(e), "error")
         else:
             flash("Requirement updated", "success")
         return redirect(f"/requirements/{req_id}")
@@ -4844,7 +4858,8 @@ def releases_create():
         flash(f"Release '{result['name']}' created", "success")
         return redirect(f"/releases/{result['id']}")
     except ValueError as e:
-        return render_template("releases/new.html", **ctx(active_page="releases", error=str(e)))
+        # AUD-011: a refused form re-renders WITH its reason, as a 400
+        return render_template("releases/new.html", **ctx(active_page="releases", error=str(e))), 400
     finally:
         db.close()
 

@@ -193,9 +193,12 @@
   "expected": "400 with a message naming the field; nothing reaches the database",
   "observed": "an unhandled DataError; the server log carries a stack for every oversize submission; the user sees 'Something went wrong'",
   "proposed_fix": "validate name/description length and integer ids in ReleaseService (create_section already does this for sections — copy that shape); a boundary test that POSTs 20k-char and wrong-type bodies to every create/update route and asserts 4xx",
-  "status": "open",
+  "status": "closed",
   "fix_plan_ref": null,
-  "discovered_at": "2026-09-15T07:24:06+00:00"
+  "discovered_at": "2026-09-15T07:24:06+00:00",
+  "closed_at": "2026-09-21T05:07:36+00:00",
+  "closed_by": "triage-round2 batch 2 (boundary validation), 2026-09-21",
+  "closure": "primeqa/shared/validation.py — the create_section shape lifted: columns(model, values) checks every value against its COLUMN (String(n) length, integer range, boolean, date, JSON shape, NUL-free) BEFORE any row is built, refusing with a ValueError that names the field (→ 400); applied in ReleaseService (create/update/add_requirement), TestManagementService (create/update requirement, update section, import-jira), GroupService (create/add member/add environment), EnvironmentService (create/update/store_credentials), ConnectionService (create/update); the web release and connection forms re-render with the reason as a 400, the group and requirement-edit forms flash it (the requirement edit now goes through the service, not the repo). THE GUARD tests/integration/test_boundary_gate.py: generated from the url_map, every body-reading write route (69) x {empty, maximal 20k, wrong-type incl. NUL} as the table's minimum tier — RED on the pre-change tree with 24 route x body rows at 500 across 15 routes (the audit's seven plus /api/groups, /api/groups/<id>/environments|members, /api/environments/<id>/credentials, /api/requirements, /api/requirements/import-jira, /groups, /connections/<id>/edit, /requirements/<id>/edit) — GREEN now: 207 requests, 0 at 500, every /api/* answer to an oversize or mistyped body a 4xx, residue 0"
  },
  {
   "id": "AUD-012",
@@ -368,9 +371,12 @@
   "expected": "a plan needs a stated environment (or the resolved default named back) and the empty form is refused; a missing environment is one of the planner's own refusal reasons",
   "observed": "the tenant-wide and per-scope plan forms record on nothing; the ledger fills with plans nobody asked for",
   "proposed_fix": "require environment_id at the route (400 / flash) before planner.plan; keep the planner's own refusals for the resolved shape",
-  "status": "open",
+  "status": "closed",
   "fix_plan_ref": null,
-  "discovered_at": "2026-09-15T12:06:51+00:00"
+  "discovered_at": "2026-09-15T12:06:51+00:00",
+  "closed_at": "2026-09-21T05:07:36+00:00",
+  "closed_by": "triage-round2 batch 2 (boundary validation), 2026-09-21",
+  "closure": "CORRECTED SCOPE on reproduction (D-490, sweep before believing): at the audited tree the tenant-wide POST /plans and POST /requirements/<id>/plan ALREADY refused an empty or wrong-typed environment at the route (302 back with 'Pick an environment you have access to.', no row) — the recorded garbage came from POST /releases/<id>/plan, which takes no environment field and recorded a plan for EVERY body when the release had no declared target and no evidence to fall back on (targets_source fallback:evidence-active resolving to []): an immutable never-deleted row with zero targets and zero jobs. Fixed where the shape is known — the planner refuses a release plan whose targets resolve to nothing (REFUSE_NO_TARGET, 'This release has no target environment — declare a target first.') before any row is written; the route flashes the sentence. Proven DB-real: a release with no target and no evidence records no run_plans row on any of the three doors; RED on the pre-change tree (a row per POST)"
  },
  {
   "id": "AUD-022",
@@ -608,9 +614,12 @@
   "expected": "409 'the section still holds N requirements' before the DELETE",
   "observed": "an unhandled DataError and the generic 500 page",
   "proposed_fix": "count the children first; refuse with the count",
-  "status": "open",
+  "status": "closed",
   "fix_plan_ref": null,
-  "discovered_at": "2026-09-19T08:57:45+00:00"
+  "discovered_at": "2026-09-19T08:57:45+00:00",
+  "closed_at": "2026-09-21T05:07:36+00:00",
+  "closed_by": "triage-round2 batch 2 (boundary validation), 2026-09-21",
+  "closure": "TestManagementService.purge_section counts the requirements still referencing the section FIRST (live and soft-deleted alike — both still reference it) and refuses with the count as a 409 CONFLICT ('The section still holds N requirement(s) — move or purge them first.', details.requirements = N) before any DELETE; proven DB-real (a planted section with one requirement: 409, the section still there); RED on the pre-change tree (500 ForeignKeyViolation)"
  },
  {
   "id": "AUD-036",
