@@ -209,9 +209,12 @@
   "expected": "only the release owner or an admin can expose a release's decision status to an unauthenticated poller, or invalidate the token CI already holds",
   "observed": "every member of the tenant can do both, for every release; the act is logged but not gated",
   "proposed_fix": "gate at Tier.ADMIN or add the owner check (release.created_by == request.user['id']); correct CLAUDE.md or the code so they agree; add the route to the authz inventory's expected-tier table",
-  "status": "open",
+  "status": "closed",
   "fix_plan_ref": null,
-  "discovered_at": "2026-09-15T07:24:06+00:00"
+  "discovered_at": "2026-09-15T07:24:06+00:00",
+  "closed_at": "2026-09-21T04:34:43+00:00",
+  "closed_by": "triage-round2 batch 1 (authority completion), 2026-09-21",
+  "closure": "release/routes.py _release_owner_or_admin: mint, rotate and revoke of the status-poll token are refused (403) unless the caller is the release's creator (releases.created_by) or an admin; CLAUDE.md's security-posture line now states the rule the code enforces and names the route-authority table; proven DB-real on scratch (member 14 on 15's release: 201 before on main @9fbe2e2, 403 after; the owner and the admin still mint and revoke) — tests/integration/test_authority_triage.py"
  },
  {
   "id": "AUD-013",
@@ -621,9 +624,12 @@
   "expected": "one minimum tier for the act, wherever it is offered (the route-authority table of D-497 is where it belongs)",
   "observed": "the answer depends on which door the member uses",
   "proposed_fix": "decide the rule (member records the human decision? admin only?) and put both routes in the authority table",
-  "status": "open",
+  "status": "closed",
   "fix_plan_ref": null,
-  "discovered_at": "2026-09-19T08:57:45+00:00"
+  "discovered_at": "2026-09-19T08:57:45+00:00",
+  "closed_at": "2026-09-21T04:34:43+00:00",
+  "closed_by": "triage-round2 batch 1 (authority completion), 2026-09-21",
+  "closure": "ONE minimum tier for finalisation: ADMIN on both doors — views.py release_decision_final moves from Tier.MEMBER to Tier.ADMIN (the more-permissive-needs-a-reason rule retained), the API route was already admin; the final-decision form is rendered for admin/superadmin only; both routes carry an entry in tests/unit/test_route_authority_table.py, which was RED on the pre-change tree for the web row (a member passed the gate) and is GREEN now; proven DB-real (member 14 refused on both doors, row unchanged)"
  },
  {
   "id": "AUD-037",
@@ -637,9 +643,12 @@
   "expected": "declarer-or-admin, with a reason — the rule D-497 gave targets and waivers",
   "observed": "any member undoes any declaration",
   "proposed_fix": "the D-497 shape: refuse in the service, pass rank(role) >= ADMIN from the route, add the route to the authority table",
-  "status": "open",
+  "status": "closed",
   "fix_plan_ref": null,
-  "discovered_at": "2026-09-19T08:57:45+00:00"
+  "discovered_at": "2026-09-19T08:57:45+00:00",
+  "closed_at": "2026-09-21T04:34:43+00:00",
+  "closed_by": "triage-round2 batch 1 (authority completion), 2026-09-21",
+  "closure": "the D-497 shape: surface_links.unlink refuses a non-declarer non-admin (not_declarer) and an empty reason (no_reason) BEFORE any write; the console returns the typed refusal; the route passes rank(role) >= ADMIN; the reason is stored trimmed; migration 20260921_0010 adds ck_requirement_surface_links_deactivation_reason (REJECTING — proven: without the CHECK an empty-reason deactivation LANDED in a rolled-back transaction, with it CheckViolation); proven DB-real on scratch (member 14 unlinked 15's surface on main @9fbe2e2 — 'Unlinked /x — 72 conformance checks removed' — and is refused now); unit + integration + table-level tests"
  },
  {
   "id": "AUD-038",
@@ -668,14 +677,17 @@
   "pass": "run2",
   "surface": "views.py:528 api_dashboard_share_revoke @require_tier_api(MEMBER): `if link is None or link.tenant_id != request.user['tenant_id']: 404` — no created_by check; the listing GET /api/dashboard/share returns every link in the tenant to any member (created_by visible, token never serialised)",
   "reproduction": "code read; production GET /api/dashboard/share as tester -> 200 with the tenant's links (metadata only)",
-  "evidence": "UNPROVEN by attempt — recorded from the route's body",
+  "evidence": "run 2: recorded from the route's body; triage round 2 batch 1: PROVEN by attempt on scratch — member 14 revoked 15's link (200) on the pre-change tree, 403 after the fix",
   "expected": "the creator or an admin revokes; a member sees their own links",
   "observed": "any member revokes anyone's link",
   "proposed_fix": "creator-or-admin on revoke; scope the listing to the caller unless admin; the authority table",
-  "status": "open",
+  "status": "closed",
   "fix_plan_ref": null,
   "discovered_at": "2026-09-19T08:57:45+00:00",
-  "verdict": "UNPROVEN (code read)"
+  "verdict": "PROVEN by attempt (before: 200 on main @9fbe2e2; after: 403)",
+  "closed_at": "2026-09-21T04:34:43+00:00",
+  "closed_by": "triage-round2 batch 1 (authority completion), 2026-09-21",
+  "closure": "PROVEN BY ATTEMPT on scratch (the table planted from production's DDL, read-only): on main @9fbe2e2 member 14 revoked admin 15's share link (200) and saw it in the listing; after the fix the revoke is 403 'Only the link's creator or an admin may revoke it', the listing is scoped to the caller's own links unless admin, the creator revokes their own and the admin revokes any — views.py api_dashboard_share_revoke / api_dashboard_share_list; both routes carry an entry in the route-authority table; tests/integration/test_authority_triage.py"
  },
  {
   "id": "AUD-040",

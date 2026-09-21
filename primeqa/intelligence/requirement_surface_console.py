@@ -182,7 +182,7 @@ def declare_surface(tenant_id: int, *, requirement_key: str, surface_key: str,
 
 
 def unlink_surface(tenant_id: int, *, link_id: str, requirement_key: str,
-                   user_id: int, reason: str, session=None) -> dict:
+                   user_id: int, reason: str, session=None, actor_is_admin: bool = False) -> dict:
     """Deactivate one of THIS requirement's declarations (a link of another
     requirement is refused as unknown). Never raises."""
     from primeqa.test_representation import surface_links as sl
@@ -193,13 +193,17 @@ def unlink_surface(tenant_id: int, *, link_id: str, requirement_key: str,
                 return {"ok": False, "reason": "unknown_link",
                         "sentence": "That surface link does not belong to this requirement."}
             res = sl.unlink(session, link_id=link_id, actor_user_id=user_id,
-                            reason=reason, tenant_id=tenant_id)
+                            reason=reason, tenant_id=tenant_id, actor_is_admin=actor_is_admin)
             return {"ok": True, "link_id": res.link_id,
                     "removed_links": res.removed_links,
                     "kept_links": res.kept_links,
                     "already_inactive": res.already_inactive,
                     "display_name": link.display_name or link.path}
         return _with_session(tenant_id, session, _act)
+    except sl.SurfaceLinkError as exc:
+        # a refusal (not the declarer; no reason) is an answer, never an error
+        return {"ok": False, "refused": True, "reason": exc.reason,
+                "sentence": sl.REASON_SENTENCES.get(exc.reason, str(exc))}
     except Exception as exc:  # noqa: BLE001
         log.warning("unlink_surface failed for tenant %s link %s: %s",
                     tenant_id, link_id, exc)

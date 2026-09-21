@@ -350,19 +350,32 @@ def public_release_status(release_id):
         db.close()
 
 
+def _release_owner_or_admin(release):
+    """THE RULE (AUD-012): the public status-poll token is the Release Owner's
+    or an admin's to mint, rotate or revoke — CLAUDE.md said so; the routes
+    gated at MEMBER and checked nothing. ``None`` when allowed, else the 403."""
+    from primeqa.core.authz import Tier, rank
+    if rank(request.user.get("role")) >= Tier.ADMIN or int(release.created_by or 0) == int(request.user["id"]):
+        return None
+    return json_error("FORBIDDEN", "Only the release's owner or an admin may mint, rotate or revoke its status token.", http=403)
+
+
 @release_bp.route("/api/releases/<int:release_id>/status-token", methods=["POST"])
 @require_role("admin", "tester")
 def mint_status_token(release_id):
     """Mint (or rotate) the opaque polling token for this release's public
     /status endpoint. Returns the raw token ONCE — only its SHA-256 hash is
     stored, so it can't be retrieved again; re-POST to rotate. Tenant-scoped
-    via get_release so a caller can only mint for their own releases."""
+    via get_release; owner-or-admin (AUD-012)."""
     import secrets
     svc, db = _get_service()
     try:
         release = svc.release_repo.get_release(release_id, request.user["tenant_id"])
         if not release:
             return json_error("NOT_FOUND", "Release not found", http=404)
+        denied = _release_owner_or_admin(release)
+        if denied is not None:
+            return denied
         raw = secrets.token_urlsafe(32)
         release.status_poll_token_hash = _hash_poll_token(raw)
         db.commit()
@@ -393,6 +406,9 @@ def revoke_status_token(release_id):
         release = svc.release_repo.get_release(release_id, request.user["tenant_id"])
         if not release:
             return json_error("NOT_FOUND", "Release not found", http=404)
+        denied = _release_owner_or_admin(release)
+        if denied is not None:
+            return denied
         release.status_poll_token_hash = None
         db.commit()
         svc._log(request.user["tenant_id"], request.user["id"],

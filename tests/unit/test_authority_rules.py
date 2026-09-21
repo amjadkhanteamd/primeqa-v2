@@ -34,6 +34,9 @@ class _Session:
 
             def fetchone(self_inner):
                 return None
+
+            def fetchall(self_inner):
+                return []
         return _R()
 
     def flush(self):
@@ -124,3 +127,39 @@ def test_the_declarer_or_an_admin_removes_with_a_reason(planner, user, admin):
 def test_no_active_target_is_not_an_authority_question(planner):
     s = _Session(scalar=None)
     assert planner.remove_target(s, tenant_id=1, release_id=1, environment_id=59, actor_user_id=14, reason="x") == {"removed": False}
+
+
+# --- AUD-037 (triage round 2): a surface link's undo -----------------------------------------
+
+@pytest.fixture
+def sl(monkeypatch):
+    from primeqa.test_representation import surface_links as sl
+
+    class _Link:
+        active = True; declared_by = 15; external_system = "jira"; requirement_key = "SQ-1"
+        surface_key = "s.example.com|/x|s|-|-"; display_name = "x"; path = "/x"; inventory_version = 1
+    monkeypatch.setattr(sl, "get_link", lambda session, link_id: _Link())
+    return sl
+
+
+def test_a_stranger_cannot_unlink_a_surface(sl):
+    s = _Session()
+    with pytest.raises(sl.SurfaceLinkError) as ex:
+        sl.unlink(s, link_id="l1", actor_user_id=14, reason="not mine", tenant_id=1)
+    assert ex.value.reason == "not_declarer" and s.executed == []
+
+
+@pytest.mark.parametrize("why", ["", "  ", None])
+def test_an_empty_unlink_reason_is_refused_even_for_the_declarer(sl, why):
+    s = _Session()
+    with pytest.raises(sl.SurfaceLinkError) as ex:
+        sl.unlink(s, link_id="l1", actor_user_id=15, reason=why, tenant_id=1)
+    assert ex.value.reason == "no_reason" and s.executed == []
+
+
+@pytest.mark.parametrize("user,admin", [(15, False), (14, True)])
+def test_the_declarer_or_an_admin_unlinks_with_a_reason(sl, user, admin):
+    s = _Session()
+    sl.unlink(s, link_id="l1", actor_user_id=user, reason=" retired ", tenant_id=1, actor_is_admin=admin)
+    upd = [p for st, p in s.executed if "UPDATE requirement_surface_links" in st]
+    assert upd and upd[0]["r"] == "retired"

@@ -549,6 +549,11 @@ def api_dashboard_share_revoke(link_id):
             if link is None or link.tenant_id != request.user["tenant_id"]:
                 return ({"error": {"code": "NOT_FOUND",
                                    "message": "Link not found"}}, 404)
+            # AUD-039: the creator or an admin revokes — the D-497 rule for the
+            # undo of a declared act (the route checked the tenant only)
+            if rank(request.user.get("role")) < Tier.ADMIN and int(link.created_by or 0) != int(request.user["id"]):
+                return ({"error": {"code": "FORBIDDEN",
+                                   "message": "Only the link's creator or an admin may revoke it."}}, 403)
             if link.revoked_at is not None:
                 return ({"link_id": link.id, "status": "already_revoked",
                          "revoked_at": link.revoked_at.isoformat()}, 200)
@@ -573,8 +578,11 @@ def api_dashboard_share_list():
     def _do():
         db = next(get_db())
         try:
-            rows = (db.query(SharedDashboardLink)
-                    .filter_by(tenant_id=request.user["tenant_id"])
+            # AUD-039: a member sees their OWN links; an admin sees the tenant's
+            q = db.query(SharedDashboardLink).filter_by(tenant_id=request.user["tenant_id"])
+            if rank(request.user.get("role")) < Tier.ADMIN:
+                q = q.filter(SharedDashboardLink.created_by == request.user["id"])
+            rows = (q
                     .order_by(SharedDashboardLink.created_at.desc())
                     .limit(50).all())
             return ({"links": [{
@@ -2654,9 +2662,12 @@ def requirement_surface_unlink(req_id, link_id):
     finally:
         db.close()
     back = f"/requirements/{req_id}#conformance-surfaces"
+    # AUD-037: declarer-or-admin, with a reason (refused in the service and at
+    # the table; the route only says who is asking)
     res = unlink_surface(request.user["tenant_id"], link_id=str(link_id),
                          requirement_key=req_key, user_id=request.user["id"],
-                         reason=(request.form.get("reason") or "").strip())
+                         reason=(request.form.get("reason") or "").strip(),
+                         actor_is_admin=rank(request.user.get("role")) >= Tier.ADMIN)
     if not res.get("ok"):
         if res.get("reason") == "unknown_link":
             abort(404)
@@ -4970,9 +4981,18 @@ _FINAL_RANK = {"no_go": 0, "cannot_determine": 1, "conditional_go": 2, "go": 3}
 
 
 @views_bp.route("/releases/<int:release_id>/decisions/<int:decision_id>/final", methods=["POST"])
-@require_tier(Tier.MEMBER)
+@require_tier(Tier.ADMIN)
 @login_required
 def release_decision_final(release_id, decision_id):
+    """Record the HUMAN final decision beside the recommendation.
+
+    THE RULE (AUD-036, triage round 2): ADMIN — on this route and on the API's
+    `finalize` alike, so the act cannot depend on which door is used. Recording
+    the final ship/no-ship word for a release is governance, the same rank as
+    activating the policy that grades it (AUD-019, D-497); a member records
+    evidence and waivers, an admin records the decision. The
+    more-permissive-needs-a-reason rule below stays (an admin overriding a
+    NO GO must say why)."""
     from flask import flash
     final = (request.form.get("final_decision") or "").strip()
     reason = (request.form.get("override_reason") or "").strip()

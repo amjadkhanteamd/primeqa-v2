@@ -67,6 +67,8 @@ REASON_SENTENCES = {
     REASON_NOT_IN_ACTIVE_INVENTORY: "That surface is not a member of the active inventory.",
     REASON_RECORD_CONTEXT: "Record-context surfaces cannot be declared (the record-context revision is a separate step).",
     REASON_NO_IDENTITY: "This requirement has no established identity — decorate it first.",
+    "not_declarer": "Only the person who declared this surface, or an admin, may unlink it.",
+    "no_reason": "An unlink carries its reason — say why this surface no longer applies.",
     REASON_SOURCE_NOT_WRITABLE: "Only DECLARED links can be written at v1; DERIVED is reserved.",
 }
 
@@ -439,11 +441,20 @@ def rematerialise(session: Session, *, actor_user_id: int,
     return total
 
 
+REASON_NOT_DECLARER = "not_declarer"
+REASON_NO_REASON = "no_reason"
+
+
 def unlink(session: Session, *, link_id: str, actor_user_id: int, reason: str,
-           tenant_id: Optional[int] = None) -> UnlinkResult:
+           tenant_id: Optional[int] = None, actor_is_admin: bool = False) -> UnlinkResult:
     """Deactivate a declaration with provenance and remove the S2
     ``verifies`` rows THIS declaration created (through S2's own API);
-    pre-existing rows are left. Idempotent on an inactive link."""
+    pre-existing rows are left. Idempotent on an inactive link.
+
+    THE RULE (AUD-037, the D-497 rule for every declared act): the undo of a
+    declaration is the declarer's or an admin's, with a reason — refused
+    here before any write, and the empty reason refused again at the table
+    (``ck_requirement_surface_links_deactivation_reason``)."""
     from primeqa.test_representation.coordinator import (
         SemanticTransactionCoordinator,
     )
@@ -453,12 +464,17 @@ def unlink(session: Session, *, link_id: str, actor_user_id: int, reason: str,
     if not link.active:
         return UnlinkResult(link_id=link_id, removed_links=0, kept_links=0,
                             already_inactive=True)
+    why = (reason or "").strip()
+    if not why:
+        raise SurfaceLinkError(REASON_NO_REASON, link_id)
+    if not actor_is_admin and int(link.declared_by) != int(actor_user_id):
+        raise SurfaceLinkError(REASON_NOT_DECLARER, link_id)
     session.execute(text("""
         UPDATE requirement_surface_links
         SET active = FALSE, deactivated_by = :u, deactivated_at = now(),
             deactivation_reason = :r
         WHERE id = CAST(:i AS uuid)
-    """), {"u": actor_user_id, "r": (reason or "").strip() or None, "i": link_id})
+    """), {"u": actor_user_id, "r": why, "i": link_id})
     coord = SemanticTransactionCoordinator()
     rows = session.execute(text("""
         SELECT CAST(test_id AS text), created_link
