@@ -168,9 +168,47 @@ def _normalise(target: str) -> str:
     return (t.rstrip("/") or "/") if t != "/" else "/"
 
 
-def _rule_regex(rule: str):
-    parts = re.split(r"<[^>]+>", rule)
-    return re.compile("^" + "[^/]+".join(re.escape(p) for p in parts) + "$")
+#: What each Flask converter accepts at the router, as a per-SEGMENT test.
+#: AUD-044 (round 3): the first form replaced every ``<...>`` with ``[^/]+``,
+#: so a literal segment a converter refuses — ``inbox`` against
+#: ``<uuid:test_id>`` — matched a rule the live router 404s on, and the sweep
+#: called a dead link alive. The converter decides now.
+_CONVERTER_RX = {
+    "int": re.compile(r"^-?\d+$"),
+    "float": re.compile(r"^-?\d+(?:\.\d+)?$"),
+    "uuid": re.compile(r"^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$"),
+    "string": re.compile(r"^[^/]+$"),
+    "any": re.compile(r"^[^/]+$"),
+}
+_PARAM_RX = re.compile(r"^<(?:([a-z]+)(?:\([^)]*\))?:)?([^>]+)>$")
+
+
+def _rule_segments(rule: str) -> tuple:
+    """``([(kind, value), ...], has_path_tail)`` — ``kind`` is 'lit' for a
+    literal segment or the converter name for a parameter."""
+    segs, tail = [], False
+    for seg in (rule.rstrip("/") or "/").split("/"):
+        m = _PARAM_RX.match(seg)
+        if m is None:
+            segs.append(("lit", seg))
+            continue
+        conv = m.group(1) or "string"
+        if conv == "path":
+            tail = True
+        segs.append((conv, m.group(2)))
+    return segs, tail
+
+
+def _segment_ok(kind: str, value: str, seg: str) -> bool:
+    """Does the target's segment satisfy this rule segment? A Jinja wildcard
+    segment stands for a value the template renders, so it satisfies any
+    parameter and (conservatively, never crying wolf) any literal too."""
+    if seg == WILD:
+        return True
+    if kind == "lit":
+        return seg == value
+    rx = _CONVERTER_RX.get(kind)
+    return True if rx is None else bool(rx.match(seg))
 
 
 class Resolver:
@@ -182,13 +220,30 @@ class Resolver:
         for r in url_map.iter_rules():
             rule = str(r.rule)
             methods = {m for m in (r.methods or set()) if m not in ("HEAD", "OPTIONS")}
-            self.rules.append((_rule_regex(rule.rstrip("/") or "/"), rule, methods))
+            segs, tail = _rule_segments(rule)
+            self.rules.append((segs, tail, rule, methods))
             self.endpoints.setdefault(r.endpoint, []).append(set(r.arguments))
+
+    def _hits(self, path: str):
+        """Every rule whose segments accept this target path (AUD-044)."""
+        want = (path.rstrip("/") or "/").split("/")
+        out = []
+        for segs, tail, rule, methods in self.rules:
+            if tail:
+                if len(want) < len(segs):
+                    continue
+                pairs = list(zip(segs, want[:len(segs) - 1] + ["/".join(want[len(segs) - 1:])]))
+            else:
+                if len(want) != len(segs):
+                    continue
+                pairs = list(zip(segs, want))
+            if all(_segment_ok(k, v, seg) for (k, v), seg in pairs):
+                out.append((rule, methods))
+        return out
 
     def _match(self, path: str, method: str) -> str | None:
         """None when alive; else the reason."""
-        probe = path.replace(WILD, "1")
-        hit = [(rule, methods) for rx, rule, methods in self.rules if rx.match(probe)]
+        hit = self._hits(path)
         if not hit:
             return "no route matches"
         if any(method in methods for _, methods in hit):

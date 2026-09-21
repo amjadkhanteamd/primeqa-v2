@@ -11,9 +11,12 @@
   "expected": "the oracle names the gate that actually runs on every route",
   "observed": "any alias of a gate is invisible to it; the oracle can be green while a route is open, or red while it is gated — its report is not evidence of either",
   "proposed_fix": "derive gates from the live app (walk __wrapped__ / closure args) or resolve import aliases in the AST; add a guard asserting the oracle and the live map agree",
-  "status": "open",
+  "status": "closed",
   "fix_plan_ref": null,
-  "discovered_at": "2026-09-15T06:56:34+00:00"
+  "discovered_at": "2026-09-15T06:56:34+00:00",
+  "closed_at": "2026-09-21T10:45:54+00:00",
+  "closed_by": "round3 part B (housekeeping), 2026-09-21",
+  "closure": "scripts/authz_inventory.py rebuilt: it imports the LIVE app and derives every gate by walking each endpoint's __wrapped__ chain AND its closure cells, recognising a gate by the CODE OBJECT its decorator produces — never by a name, which functools.wraps copies and an alias hides. The Tier is read from the closure cell that holds it; rows carry {endpoint, methods, rule, file:line, gates, min_tier}. The three aliased routes now report require_auth. GUARD tests/unit/test_authz_oracle.py (5): the oracle and the live url_map agree row for row and gate for gate; the three aliased routes report their gate (RED on main: '(none — auth/login only or open)'); the set of routes with NO gate is exactly the nine named anonymous ones, so a route that drops to open fails the day it does; a planted app proves an aliased gate is read, a tiered gate reports its Tier, and an open route is reported open"
  },
  {
   "id": "AUD-002",
@@ -84,10 +87,12 @@
   "expected": "CLAUDE.md describes components that exist in the running product",
   "observed": "a documented component is dead code calling a dead endpoint",
   "proposed_fix": "delete the six templates and tc_feedback.js; correct the CLAUDE.md component kit list",
-  "status": "open (narrowed)",
+  "status": "closed",
   "fix_plan_ref": null,
   "discovered_at": "2026-09-15T06:56:35+00:00",
-  "closure": "triage-constraints @4da6e32 removed the three orphans that carried DEAD targets (claims/list.html, components/feedback_modal.html, static/js/tc_feedback.js) and the CLAUDE.md component-kit line; claims/inbox.html, components/_legacy_banner.html, dashboard_release.html and run/index.html are still rendered by nothing — not this batch's class, unfixed"
+  "closure": "the four templates still rendered by nothing are deleted (claims/inbox.html, components/_legacy_banner.html, dashboard_release.html, run/index.html); the other two the audit named (claims/list.html, components/feedback_modal.html) and static/js/tc_feedback.js had already gone with an earlier slice, and CLAUDE.md's component kit no longer names them (verified against the file). Also deleted: the dead bulk-generate half of static/js/requirements_list.js — no element it named has existed in the template since D-165 and it called POST /api/requirements/bulk-generate, retired with the v1 model layer (7fd518f); the row delete/restore/purge half is live and stays. GUARD tests/unit/test_documented_contracts.py: every primeqa path CLAUDE.md names exists, and every component the kit lists is rendered or imported by something",
+  "closed_at": "2026-09-21T10:45:54+00:00",
+  "closed_by": "round3 part B (housekeeping), 2026-09-21"
  },
  {
   "id": "AUD-006",
@@ -719,8 +724,30 @@
   "expected": "one documented contract",
   "observed": "two answers, one documented",
   "proposed_fix": "fix the doc (401 reveals nothing about the id; the oracle concern holds)",
-  "status": "open",
+  "status": "closed",
   "fix_plan_ref": null,
-  "discovered_at": "2026-09-19T08:57:45+00:00"
+  "discovered_at": "2026-09-19T08:57:45+00:00",
+  "closed_at": "2026-09-21T10:45:54+00:00",
+  "closed_by": "round3 part B (housekeeping), 2026-09-21",
+  "closure": "already corrected in round 2 (D-500 batch 1): CLAUDE.md reads 'no token → 401, wrong token → 404 (neither reveals whether the id exists)' and names releases.created_by as the owner rule. GUARD tests/unit/test_documented_contracts.py asserts the documented contract against the LIVE app (a missing token → 401, a wrong token → 404) and that the owner sentence names the column the routes read — RED on the audited tree 8990025"
+ },
+ {
+  "id": "AUD-044",
+  "title": "the dead-link sweep ignores converter types, so a literal segment the router refuses matched a parameterised rule — it called the dashboard's two 'Pending Reviews' links alive while /claims/inbox 404s",
+  "class": "self-reporting control (the eighth): a sweep whose green is not evidence — the AUD-002 repair was incomplete",
+  "severity": "medium",
+  "pass": "round3",
+  "surface": "scripts/deadlinks_gate.py::_rule_regex — every <...> became [^/]+, so '/claims/inbox' matched '/claims/<uuid:test_id>'; primeqa/templates/dashboard.html:59 and :69 link to /claims/inbox (the v1 review inbox, retired in 6a)",
+  "reproduction": "GET /claims/inbox as admin on scratch → 404 (no rule under /claims is parameterless); the repo sweep on main reports 0 dead; with converters honoured it reports both dashboard links dead",
+  "evidence": "the sweep's own report before and after (266 targets: 0 dead before, 2 dead after, 0 after the repair); the live 404",
+  "expected": "a sweep whose alive means the router will answer; a landing-page card that reaches the reviews",
+  "observed": "two dead links on the first screen after login, hidden by the gate that exists to find them",
+  "proposed_fix": "match segment by segment with the converter's own pattern; repoint the links at the Requirements 'Needs review' tab",
+  "status": "closed",
+  "fix_plan_ref": null,
+  "discovered_at": "2026-09-21T10:45:54+00:00",
+  "closed_at": "2026-09-21T10:45:54+00:00",
+  "closed_by": "round3 part B (housekeeping), 2026-09-21",
+  "closure": "deadlinks_gate resolves a target against a rule SEGMENT BY SEGMENT, each parameter tested with its converter's pattern (int, float, uuid, path, string) and a Jinja wildcard satisfying any of them — so a rule mixing an int and a uuid still resolves and nothing cries wolf; the dashboard's two links point at /requirements?tab=needs-review (200). GUARD: two plants in tests/unit/test_no_dead_links.py — a converter-refused literal of each kind must be reported dead (RED on main), and mixed-converter / real-uuid / real-int targets must stay alive. The repo sweep: 266 targets, 0 dead"
  }
 ]

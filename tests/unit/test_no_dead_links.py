@@ -48,6 +48,21 @@ def _plant(files: dict) -> str:
     return t
 
 
+#: AUD-044 (round 3): a literal segment the rule's CONVERTER refuses is a dead
+#: target the router 404s on — the sweep matched `[^/]+` for every parameter and
+#: called two live dashboard links alive for months. These plants hold the fix.
+CONVERTER_PLANT = {
+    "conv_uuid.html": '<a href="/claims/inbox">Review inbox</a>',
+    "conv_int.html": '<a href="/releases/latest">Latest release</a>',
+    "conv_int_mid.html": '<a href="/releases/abc/decisions/7/final">x</a>',
+}
+CONVERTER_LIVE_PLANT = {
+    "conv_mixed.html": '<form method="POST" action="/releases/{{ r.id }}/waivers/{{ w.id }}/revoke"><button>x</button></form>',
+    "conv_uuid_ok.html": '<a href="/claims/{{ c.test_id }}">open</a>',
+    "conv_int_ok.html": '<a href="/releases/16">release 16</a>',
+    "conv_real_uuid.html": '<a href="/claims/00000000-0000-4000-8000-000000000000">open</a>',
+}
+
 DEAD_PLANT = {
     "aud003.html": '<a href="/releases/{{ release.id }}/decision">View Reasoning →</a>',
     "aud004.html": '<a href="/test-cases?section_id={{ node.id }}">View TCs</a>',
@@ -85,6 +100,24 @@ def test_the_sweep_reports_every_planted_dead_target(url_map):
     # a dead branch of an {% if %} is dead
     assert "no route matches" in dead_by_file["branch.html"]
     assert rep.alive == [] or all(t.raw.startswith("/static") for t in rep.alive)
+
+
+def test_a_literal_the_converter_refuses_is_dead(url_map):
+    """AUD-044: /claims/inbox cannot reach /claims/<uuid:test_id>; /releases/latest
+    cannot reach /releases/<int:release_id>. The old sweep called both alive."""
+    rep = dl.sweep(url_map, _plant(CONVERTER_PLANT), None)
+    dead_by_file = {t.where.split("/")[-1].split(":")[0]: why for t, why in rep.dead}
+    for f in CONVERTER_PLANT:
+        assert f in dead_by_file, f"{f} was NOT reported dead: {rep.as_dict()}"
+        assert "no route matches" in dead_by_file[f]
+
+
+def test_a_converter_satisfying_target_is_alive(url_map):
+    """And the fix does not cry wolf: a Jinja wildcard satisfies any converter,
+    including a rule that MIXES an int and a uuid, and a real uuid or int literal
+    resolves."""
+    rep = dl.sweep(url_map, _plant(CONVERTER_LIVE_PLANT), None)
+    assert rep.dead == [], rep.as_dict()["dead_list"]
 
 
 def test_the_sweep_does_not_cry_wolf(url_map):
