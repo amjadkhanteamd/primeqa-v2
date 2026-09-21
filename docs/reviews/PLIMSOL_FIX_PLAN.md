@@ -988,3 +988,41 @@
   the latest executed plans, the environments' activity, and the
   evidence-environments read the scope needs. The decision tab's own count is
   unchanged (the scope read and the assembly share one reader and one memo).
+
+## Added 2026-09-21 — from triage round 2 (D-500)
+
+- **HIGH (test infrastructure): the integration tree is NOT a gate when run in
+  one process.** `pytest tests/integration` as a single run cross-contaminates
+  its modules and leaves residue on scratch. Observed at the batch-2 gate:
+  module-level state from earlier files (a re-pointed engine, a changed
+  `DATABASE_URL`, session-level caches) made the tenant reads of later files
+  answer "no active inventory" for a world that plainly existed, so 50
+  fixture setups ERRORED, their teardowns never ran, and the run left seven
+  claim sets (inventories 319–324), 361 orphan claims, planted public rows
+  and two share links behind — all removed by hand, the max approved
+  inventory restored to 318. The same files pass one process each. RULE
+  until it is isolated: the DB-real gate is the batch's own files plus the
+  named suites, **one pytest process per file**; the unit gate keeps its
+  established shape (no `DATABASE_URL`, three live-DB tests deselected).
+  Remedy (its own slice): find the modules that mutate process state at
+  import or in module fixtures (grep `init_db(`, `os.environ["DATABASE_URL"]
+  =`, module-scoped engines) and make each module restore what it changed;
+  then make every world fixture's remover run even when its own setup fails
+  (plant inside try/finally, remove by marker); then the tree can be a gate.
+- **Medium: five reds pre-exist on main, none touched by D-500** —
+  test_release_run_prod_gate (the non-admin production run is no longer
+  blocked by the SEC-4 message the test expects; the plan requirement of
+  D-494 answers first), test_r2_superadmin (a custom runner, `run_tests()`
+  False), test_phase5_authoring (asserts one tenant; scratch holds tenant 2
+  since the audit), test_step_5_policy (2: "a waiver's expiry lies in the
+  future"), test_ci_webhook (the D-494 fork: 409 PLAN_REQUIRED until the
+  webhook is taught to plan). Each needs a ruling: update the expectation to
+  the current design, or fix the design; none is a defect D-500 introduced.
+- **Low: two bounds on a section's name.** `create_section` keeps its own
+  inline rule from audit fix C-3 (200 characters / 500 bytes), while
+  `update_section` now uses `columns()`, which bounds by the column (255
+  characters, no byte bound — Postgres `varchar(n)` counts characters, so
+  that is exact). A 230-character name is refused at create and accepted at
+  update. Remedy: route `create_section` through `columns()` too and retire
+  the inline rule (one bound, the column's); if a byte bound is ever wanted,
+  add it to the validator once, not per service.
