@@ -208,8 +208,8 @@ def test_3_the_vocabulary_carries_its_sentences(session):
     assert r.state == R.READY_NEVER_RUN and r.sentence == "No run in this environment."
     r = resolve_run_readiness(session, claim_test_id=unst.test_id, environment_id=ENV_A)
     assert r.state == R.READY_CANNOT_DETERMINE and r.reason == "unstamped"
-    assert r.sentence == ("Freshness unknown — this run predates run-level environment "
-                          "stamping. Run again to establish current readiness.")
+    assert r.sentence == ("Freshness unknown — this run carries no environment "
+                          "stamp. Run again to establish current readiness.")     # AUD-017: the fact, not a cause
     r = resolve_run_readiness(session, claim_test_id=nocov.test_id, environment_id=ENV_A)
     assert r.state == R.READY_CANNOT_DETERMINE and r.reason == "no_coverage"
     assert "reads are not recorded" in r.sentence

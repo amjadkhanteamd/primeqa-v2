@@ -486,7 +486,7 @@ def count_enrichment_progress(session, connected_org_id) -> dict:
 # ---------------------------------------------------------------------
 
 from dataclasses import dataclass  # noqa: E402  (section-local import)
-from datetime import datetime  # noqa: E402
+from datetime import datetime, timezone  # noqa: E402
 
 SEQ_CURRENT = "CURRENT"
 SEQ_CANNOT_DETERMINE = "CANNOT_DETERMINE"
@@ -583,10 +583,17 @@ READINESS_STATES = (READY_NEVER_RUN, READY_STALE, READY_CURRENT,
 REASON_UNSTAMPED = "unstamped"
 REASON_NO_COVERAGE = "no_coverage"
 
-#: The TA's Fork-3 sentence, verbatim — it carries the action.
-SENTENCE_UNSTAMPED = ("Freshness unknown — this run predates run-level "
-                      "environment stamping. Run again to establish current "
-                      "readiness.")
+#: The TA's Fork-3 sentence carries the action. AUD-017: it states the FACT
+#: (the run carries no stamp) and asserts a cause only when the run's own date
+#: shows it predates run-level stamping — Step 2's deploy (D-484, merge
+#: 0fe6848, 2026-09-08 06:14Z). A stamp lost for any other reason is not
+#: described as legacy.
+STAMPING_DEPLOYED_AT = datetime(2026, 9, 8, 6, 14, 12, tzinfo=timezone.utc)
+SENTENCE_UNSTAMPED = ("Freshness unknown — this run carries no environment "
+                      "stamp. Run again to establish current readiness.")
+SENTENCE_UNSTAMPED_LEGACY = ("Freshness unknown — this run carries no environment "
+                             "stamp: it predates run-level stamping. Run again to "
+                             "establish current readiness.")
 SENTENCE_NO_COVERAGE = ("This test's reads are not recorded, so its currency "
                         "cannot be determined.")
 SENTENCE_NEVER_RUN = "No run in this environment."
@@ -605,6 +612,12 @@ class ReadinessResolution:
     connected_org_id: Optional[str] = None
     changed_reads: tuple = ()
     reason: Optional[str] = None
+    run_at: Optional[datetime] = None          # the run's own date (AUD-017)
+
+    @property
+    def predates_stamping(self) -> bool:
+        """True only when the run's date is known and earlier than Step 2's deploy."""
+        return self.run_at is not None and self.run_at < STAMPING_DEPLOYED_AT
 
     @property
     def sentence(self) -> str:
@@ -612,7 +625,7 @@ class ReadinessResolution:
             return SENTENCE_NEVER_RUN
         if self.state == READY_CANNOT_DETERMINE:
             if self.reason == REASON_UNSTAMPED:
-                return SENTENCE_UNSTAMPED
+                return SENTENCE_UNSTAMPED_LEGACY if self.predates_stamping else SENTENCE_UNSTAMPED
             if self.reason == REASON_NO_COVERAGE:
                 return SENTENCE_NO_COVERAGE
             return ("Freshness unknown — the org's current sequence could not "
@@ -632,7 +645,9 @@ class ReadinessResolution:
                 "current_seq": self.current_seq,
                 "connected_org_id": self.connected_org_id,
                 "changed_reads": [list(c) for c in self.changed_reads],
-                "reason": self.reason, "sentence": self.sentence}
+                "reason": self.reason, "sentence": self.sentence,
+                "run_at": self.run_at.isoformat() if self.run_at else None,
+                "predates_stamping": self.predates_stamping}
 
 
 _CHANGED_READS_SQL = """
@@ -705,10 +720,18 @@ def _has_coverage(session, claim_test_id) -> bool:
         "LIMIT 1"), {"c": str(claim_test_id)}).scalar())
 
 
+def _aware(ts):
+    """The run's timestamp as an aware UTC datetime; ``None`` stays ``None``."""
+    if ts is None or not isinstance(ts, datetime):
+        return None
+    return ts if ts.tzinfo else ts.replace(tzinfo=timezone.utc)
+
+
 def _latest_run(session, claim_test_id, environment_id):
     return session.execute(text(
         "SELECT CAST(run_id AS text) AS run_id, org_version_seq, "
-        "       CAST(connected_org_id AS text) AS connected_org_id "
+        "       CAST(connected_org_id AS text) AS connected_org_id, "
+        "       COALESCE(finished_at, started_at) AS run_at "
         "FROM s4_execution_runs "
         "WHERE claim_test_id = CAST(:c AS uuid) AND environment_id = :e "
         "ORDER BY finished_at DESC LIMIT 1"),
@@ -735,7 +758,8 @@ def resolve_run_readiness(session, *, claim_test_id, environment_id,
         return ReadinessResolution(state=READY_NEVER_RUN)
     if run["org_version_seq"] is None or run["connected_org_id"] is None:
         return ReadinessResolution(state=READY_CANNOT_DETERMINE,
-                                   run_id=run["run_id"], reason=REASON_UNSTAMPED)
+                                   run_id=run["run_id"], reason=REASON_UNSTAMPED,
+                                   run_at=_aware(run.get("run_at")))
     org = connected_org_id or run["connected_org_id"]
     cur = resolve_current_sequence(session, connected_org_id=org)
     if cur.state != SEQ_CURRENT:
@@ -767,7 +791,8 @@ _BULK_LATEST_RUN_SQL = """
     SELECT DISTINCT ON (r.claim_test_id, r.environment_id)
            CAST(r.claim_test_id AS text) AS claim, r.environment_id AS env,
            CAST(r.run_id AS text) AS run_id, r.org_version_seq,
-           CAST(r.connected_org_id AS text) AS connected_org_id
+           CAST(r.connected_org_id AS text) AS connected_org_id,
+           COALESCE(r.finished_at, r.started_at) AS run_at
     FROM s4_execution_runs r
     JOIN pairs p ON p.claim = r.claim_test_id AND p.env = r.environment_id
     ORDER BY r.claim_test_id, r.environment_id, r.finished_at DESC
@@ -856,7 +881,8 @@ def resolve_run_readiness_bulk(session, pairs) -> dict:
         if run["org_version_seq"] is None or run["connected_org_id"] is None:
             out[key] = ReadinessResolution(state=READY_CANNOT_DETERMINE,
                                            run_id=run["run_id"],
-                                           reason=REASON_UNSTAMPED)
+                                           reason=REASON_UNSTAMPED,
+                                           run_at=_aware(run.get("run_at")))
             continue
         graded.append((key, run))
 

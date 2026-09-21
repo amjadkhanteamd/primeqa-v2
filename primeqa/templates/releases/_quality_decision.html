@@ -147,7 +147,8 @@
           {% elif w.state == 'revoked' %}<span class="ml-1 inline-flex px-1.5 py-0.5 rounded text-[11px] bg-gray-100 text-gray-600">revoked</span>
           {% else %}<span class="ml-1 inline-flex px-1.5 py-0.5 rounded text-[11px] bg-green-100 text-green-800">active</span>{% endif %}</span>
         {% if w.state == 'active' and user.role in ['ba', 'tester', 'admin', 'superadmin'] %}
-        <form method="POST" action="/releases/{{ release.id }}/waivers/{{ w.id }}/revoke" class="inline">{{ csrf_input | safe }}<input type="hidden" name="reason" value=""><button type="submit" class="text-xs text-rose-700 hover:underline">Revoke</button></form>
+        {# a revocation carries its reason (AUD-020, D-497) — the field is the form's, never a hidden blank #}
+        <form method="POST" action="/releases/{{ release.id }}/waivers/{{ w.id }}/revoke" class="inline-flex items-center gap-1" data-testid="revoke-waiver">{{ csrf_input | safe }}<input type="text" name="reason" required minlength="3" placeholder="why it no longer holds" aria-label="Reason for revoking" class="w-36 rounded-md border border-gray-300 px-2 py-0.5 text-xs"><button type="submit" class="text-xs text-rose-700 hover:underline">Revoke</button></form>
         {% endif %}
       </li>
       {% endfor %}

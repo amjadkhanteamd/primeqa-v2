@@ -83,7 +83,7 @@ def trigger_s3_generation(db, *, tenant_id: int, requirement_id: int,
 
 # --- read: the requirement's generated test plan (S2 claims + recipes) -------
 
-def _read_claims(session, requirement_key: str, labels=None) -> list[dict]:
+def _read_claims(session, requirement_key: str, labels=None, counts: dict | None = None) -> list[dict]:
     """Pure: the requirement's coverage test plan on an open S2 session —
     ``generated_from`` links plus human-curated ``verifies`` links
     (COVERAGE_LINK_KINDS). Directly testable on the semantic harness with
@@ -111,6 +111,8 @@ def _read_claims(session, requirement_key: str, labels=None) -> list[dict]:
         # (TODO: an optional ?include_deprecated toggle if a business view ever
         # needs the full set — not built this slice.)
         if claim.status == "deprecated":
+            if counts is not None:                        # AUD-022: the retirement is counted
+                counts["deprecated"] = counts.get("deprecated", 0) + 1
             continue
         recipes = coord.list_active_recipes(session, m.test_id)
         claims.append({
@@ -147,8 +149,10 @@ def read_requirement_claims(tenant_id: int, requirement_key: str) -> dict:
         with get_tenant_connection(tenant_id) as conn:
             session = Session(bind=conn)
             try:
-                return {"available": True,
-                        "claims": _read_claims(session, requirement_key, labels)}
+                counts: dict = {}
+                claims = _read_claims(session, requirement_key, labels, counts)
+                return {"available": True, "claims": claims,
+                        "deprecated": counts.get("deprecated", 0)}     # AUD-022
             finally:
                 session.close()
     except Exception as exc:
@@ -1064,7 +1068,6 @@ def _count_claims_by_requirement_status(conn, keys) -> dict:
         "       COUNT(DISTINCT l.test_id) AS n "
         "FROM test_requirement_links l "
         "JOIN test_claims c ON c.test_id = l.test_id AND c.valid_to IS NULL "
-        "  AND c.status::text <> 'deprecated' "
         # COVERAGE_LINK_KINDS: generated_from + human-curated verifies
         "WHERE l.external_system = 'jira' "
         "AND l.link_kind IN ('generated_from', 'verifies') "
@@ -1075,7 +1078,12 @@ def _count_claims_by_requirement_status(conn, keys) -> dict:
     for r in rows:
         g = out.setdefault(r["k"], {"total": 0})
         g[r["status"]] = g.get(r["status"], 0) + r["n"]
-        g["total"] += r["n"]
+        # AUD-022: a deprecated claim is counted under its own key and NEVER in
+        # the total — the total stays the live plan (D-219, D-269), and a
+        # requirement whose every claim was retired reads "no live test case ·
+        # N deprecated" instead of "no tests yet".
+        if r["status"] != "deprecated":
+            g["total"] += r["n"]
     return out
 
 
