@@ -80,8 +80,26 @@ def test_release_scope_records_policy_version_plan_and_the_final_decision_beside
     from primeqa.release import decision_composer as dc
     from primeqa.release.repository import ReleaseRepository
     s = tx; w = _world(s)
-    seed = next(p for p in qp.list_policies(s) if p.name == "Plimsol default" and p.version == 1)
-    assert seed.status == "draft" and seed.first_used_at is None            # the migration's seed, a DRAFT
+    # Round 3, part C: the suite OWNS the policy it exercises. It used to read
+    # the migration's seed and assume it was still a draft — so the first run
+    # that activated it left every later run red, and once a decision had been
+    # graded under it the table's immutability guard (D-488) made the old
+    # precondition unrecoverable. A fresh DRAFT version of the same rules is
+    # created here, inside the transaction the fixture rolls back, so the suite
+    # is idempotent and leaves the database exactly as it was found.
+    _seed_of_record = next(p for p in qp.list_policies(s) if p.name == "Plimsol default" and p.version == 1)
+    seed = qp.create_version(s, name=f"round3 step-5 scope {uuid4().hex[:8]}",
+                             rules=[r.__class__(**{**r.__dict__}) for r in _seed_of_record.rules],
+                             note="round3 part C: the suite's own draft", created_by=1, tenant_id=TENANT)
+    s.flush()
+    assert seed.status == "draft" and seed.first_used_at is None            # a DRAFT this suite made
+    # ...and step 1 needs NO active policy in the tenant: retire whatever a
+    # previous run (or a human) activated, through the service's own verb, still
+    # inside the rolled-back transaction.
+    for _p in qp.list_policies(s):
+        if _p.status == "active":
+            qp.retire(s, policy_id=_p.id, user_id=1, tenant_id=TENANT)
+    s.flush()
     # 1. no active policy → the preview refuses by sentence; nothing grades
     pv0 = preview_release_decision(TENANT, w["release"], [w["key"]], session=s)
     assert pv0["available"] and not pv0["ok"] and pv0["reason"] == "no_active_policy"

@@ -48,14 +48,29 @@ def test_never_run():
     assert r.source == "run_stamp" and r.axis == "org_sequence"
 
 
-def test_unstamped_run_is_cannot_determine_with_the_ta_sentence():
+def test_unstamped_run_is_cannot_determine_with_the_fact_not_a_cause():
+    """AUD-017: the sentence states the fact (no stamp) and never asserts why
+    unless the run's own date says so."""
     r = R.resolve_run_readiness(_Session(latest={**_RUN, "org_version_seq": None}),
                                 claim_test_id="c", environment_id=59)
     assert r.state == R.READY_CANNOT_DETERMINE and r.reason == R.REASON_UNSTAMPED
-    assert r.sentence == ("Freshness unknown — this run predates run-level "
-                          "environment stamping. Run again to establish current "
-                          "readiness.")
+    assert r.sentence == ("Freshness unknown — this run carries no environment "
+                          "stamp. Run again to establish current readiness.")
+    assert "predates" not in r.sentence and not r.predates_stamping
     assert r.run_id == "r1"
+
+
+def test_an_unstamped_run_dated_before_step_2_carries_the_legacy_clause():
+    from datetime import datetime, timezone
+    legacy = {**_RUN, "org_version_seq": None, "run_at": datetime(2026, 9, 1, 12, 0, tzinfo=timezone.utc)}
+    r = R.resolve_run_readiness(_Session(latest=legacy), claim_test_id="c", environment_id=59)
+    assert r.predates_stamping and r.sentence == R.SENTENCE_UNSTAMPED_LEGACY
+    assert "it predates run-level stamping" in r.sentence
+    # dated AFTER Step 2's deploy: no clause; a naive timestamp is read as UTC
+    recent = {**_RUN, "org_version_seq": None, "run_at": datetime(2026, 9, 21, 9, 0)}
+    r = R.resolve_run_readiness(_Session(latest=recent), claim_test_id="c", environment_id=59)
+    assert not r.predates_stamping and r.sentence == R.SENTENCE_UNSTAMPED
+    assert r.as_dict()["predates_stamping"] is False and r.as_dict()["run_at"].startswith("2026-09-21")
 
 
 def test_resolver_refusal_is_cannot_determine_with_its_reason():

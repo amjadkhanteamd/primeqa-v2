@@ -458,11 +458,22 @@ def get_waiver(session: Session, waiver_id: str, *, now: Optional[datetime] = No
 
 def waivers_for_release(session: Session, release_id: Optional[int], *, now: Optional[datetime] = None) -> list[dict]:
     """The release's waivers plus the tenant-wide ones (release_id NULL), every
-    state (the evidence line counts active ones and names the expired)."""
+    state (the evidence line counts active ones and names the expired).
+    With ``release_id`` None only the tenant-wide ones match — the register
+    page wants :func:`all_waivers` (AUD-015)."""
     now = now or datetime.now(timezone.utc)
     rows = session.execute(text(_WAIVER_SELECT + """
         WHERE release_id = :r OR release_id IS NULL ORDER BY created_at DESC
     """), {"r": release_id}).fetchall()
+    return [_waiver_row(r, now) for r in rows]
+
+
+def all_waivers(session: Session, *, now: Optional[datetime] = None) -> list[dict]:
+    """EVERY waiver in the tenant, every scope, every state — the register
+    (AUD-015: the page had listed the tenant-wide ones only, so a
+    release-scoped acceptance that lapsed read as 'no waivers')."""
+    now = now or datetime.now(timezone.utc)
+    rows = session.execute(text(_WAIVER_SELECT + " ORDER BY created_at DESC")).fetchall()
     return [_waiver_row(r, now) for r in rows]
 
 

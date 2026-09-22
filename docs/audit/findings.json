@@ -11,9 +11,12 @@
   "expected": "the oracle names the gate that actually runs on every route",
   "observed": "any alias of a gate is invisible to it; the oracle can be green while a route is open, or red while it is gated — its report is not evidence of either",
   "proposed_fix": "derive gates from the live app (walk __wrapped__ / closure args) or resolve import aliases in the AST; add a guard asserting the oracle and the live map agree",
-  "status": "open",
+  "status": "closed",
   "fix_plan_ref": null,
-  "discovered_at": "2026-09-15T06:56:34+00:00"
+  "discovered_at": "2026-09-15T06:56:34+00:00",
+  "closed_at": "2026-09-21T10:45:54+00:00",
+  "closed_by": "round3 part B (housekeeping), 2026-09-21",
+  "closure": "scripts/authz_inventory.py rebuilt: it imports the LIVE app and derives every gate by walking each endpoint's __wrapped__ chain AND its closure cells, recognising a gate by the CODE OBJECT its decorator produces — never by a name, which functools.wraps copies and an alias hides. The Tier is read from the closure cell that holds it; rows carry {endpoint, methods, rule, file:line, gates, min_tier}. The three aliased routes now report require_auth. GUARD tests/unit/test_authz_oracle.py (5): the oracle and the live url_map agree row for row and gate for gate; the three aliased routes report their gate (RED on main: '(none — auth/login only or open)'); the set of routes with NO gate is exactly the nine named anonymous ones, so a route that drops to open fails the day it does; a planted app proves an aliased gate is read, a tiered gate reports its Tier, and an open route is reported open"
  },
  {
   "id": "AUD-002",
@@ -84,10 +87,12 @@
   "expected": "CLAUDE.md describes components that exist in the running product",
   "observed": "a documented component is dead code calling a dead endpoint",
   "proposed_fix": "delete the six templates and tc_feedback.js; correct the CLAUDE.md component kit list",
-  "status": "open (narrowed)",
+  "status": "closed",
   "fix_plan_ref": null,
   "discovered_at": "2026-09-15T06:56:35+00:00",
-  "closure": "triage-constraints @4da6e32 removed the three orphans that carried DEAD targets (claims/list.html, components/feedback_modal.html, static/js/tc_feedback.js) and the CLAUDE.md component-kit line; claims/inbox.html, components/_legacy_banner.html, dashboard_release.html and run/index.html are still rendered by nothing — not this batch's class, unfixed"
+  "closure": "the four templates still rendered by nothing are deleted (claims/inbox.html, components/_legacy_banner.html, dashboard_release.html, run/index.html); the other two the audit named (claims/list.html, components/feedback_modal.html) and static/js/tc_feedback.js had already gone with an earlier slice, and CLAUDE.md's component kit no longer names them (verified against the file). Also deleted: the dead bulk-generate half of static/js/requirements_list.js — no element it named has existed in the template since D-165 and it called POST /api/requirements/bulk-generate, retired with the v1 model layer (7fd518f); the row delete/restore/purge half is live and stays. GUARD tests/unit/test_documented_contracts.py: every primeqa path CLAUDE.md names exists, and every component the kit lists is rendered or imported by something",
+  "closed_at": "2026-09-21T10:45:54+00:00",
+  "closed_by": "round3 part B (housekeeping), 2026-09-21"
  },
  {
   "id": "AUD-006",
@@ -120,9 +125,12 @@
   "expected": "a tenant with no runs sees a landing page with an empty pass-rate cell",
   "observed": "the themed 500 page; a brand-new tenant's first screen is an error",
   "proposed_fix": "coerce pass_rate to 0 (or render an empty state) in the stats builder, and render the legacy dashboard over a zero-run fixture in a page test",
-  "status": "open",
+  "status": "closed",
   "fix_plan_ref": null,
-  "discovered_at": "2026-09-15T07:04:08+00:00"
+  "discovered_at": "2026-09-15T07:04:08+00:00",
+  "closed_at": "2026-09-21T09:08:36+00:00",
+  "closed_by": "round3 part A (what a pilot client hits first), 2026-09-21",
+  "closure": "dashboard.html renders an empty state for the pass-rate card when the rate is None (no run) — '— · no run yet · the rate appears after the first run' — and the number with its colour only when a run exists; proven DB-real (tenant 2, no run: 200 with pass-rate-empty; RED on main: Unhandled TypeError on GET /); fixture screenshot landing_zero_run_tenant.png; production render PRODUCTION_landing.png (94.0%, the numeric branch)"
  },
  {
   "id": "AUD-008",
@@ -269,9 +277,12 @@
   "expected": "the waiver listed as expired (its item is no longer accepted, and a human should see that the acceptance lapsed and by whom it was given), or at least 'N expired' beside the active list",
   "observed": "the acceptance and its lapse are invisible; the page tells a reviewer there were never any waivers",
   "proposed_fix": "list expired waivers in their own section with the expiry date; the release decision tab's 'N pending, N waived by <actor> until <date>' line already has the vocabulary",
-  "status": "open",
+  "status": "closed",
   "fix_plan_ref": null,
-  "discovered_at": "2026-09-15T11:59:40+00:00"
+  "discovered_at": "2026-09-15T11:59:40+00:00",
+  "closed_at": "2026-09-21T09:08:36+00:00",
+  "closed_by": "round3 part A (what a pilot client hits first), 2026-09-21",
+  "closure": "ROOT CAUSE wider than recorded: /settings/waivers read waivers_for_release(s, None), whose WHERE release_id = NULL matches nothing, so the register listed tenant-wide waivers ONLY — a release-scoped acceptance, active or lapsed, was invisible (the planted one was release-scoped). quality_policy.all_waivers lists every scope and state; the page renders three sections — Active, Lapsed (accepted by whom, recorded by whom and when, lapsed on which date, 'not counted'), Revoked (by whom, when, why); proven DB-real (four planted states listed by state with names and dates; RED on main); screenshots settings_waivers_active_lapsed_revoked.png + PRODUCTION_settings_waivers.png (production holds 0 waivers — the honest render)"
  },
  {
   "id": "AUD-016",
@@ -304,9 +315,12 @@
   "expected": "the CANNOT_DETERMINE / unstamped state named without asserting when or why the stamp is missing",
   "observed": "a run that lost its stamp for any other reason is described as pre-dating the feature",
   "proposed_fix": "say 'this run carries no environment stamp' and, if the run predates Step 2's deploy, add 'it predates run-level stamping'; the date is on the row",
-  "status": "open",
+  "status": "closed",
   "fix_plan_ref": null,
-  "discovered_at": "2026-09-15T11:59:41+00:00"
+  "discovered_at": "2026-09-15T11:59:41+00:00",
+  "closed_at": "2026-09-21T09:08:36+00:00",
+  "closed_by": "round3 part A (what a pilot client hits first), 2026-09-21",
+  "closure": "readiness.py: SENTENCE_UNSTAMPED states the fact — 'this run carries no environment stamp' — and SENTENCE_UNSTAMPED_LEGACY adds 'it predates run-level stamping' only when the run's own timestamp (now carried on the resolution as run_at, from COALESCE(finished_at, started_at) in both resolvers) is earlier than STAMPING_DEPLOYED_AT = Step 2's deploy (D-484 merge 0fe6848, 2026-09-08 06:14:12Z); proven DB-real (a run dated today: no clause; a run dated 2026-09-01: the clause) and in the unit tests; RED on main (every unstamped run called legacy); screenshots run_detail_unstamped_today.png, run_detail_unstamped_legacy.png, PRODUCTION_run_detail_legacy_unstamped.png (run 562682d5 of 2026-08-04 carries the clause; production holds 0 unstamped runs after Step 2)"
  },
  {
   "id": "AUD-018",
@@ -320,9 +334,12 @@
   "expected": "either a service that revokes a whole set (audited, with a reason) or the dead branch removed",
   "observed": "a status that can only arrive by hand-editing the table",
   "proposed_fix": "add revoke_claim_set (all members + the set, one audited act) or delete the branch; either way, a test that every status value read has a writer",
-  "status": "open",
+  "status": "closed",
   "fix_plan_ref": null,
-  "discovered_at": "2026-09-15T11:59:41+00:00"
+  "discovered_at": "2026-09-15T11:59:41+00:00",
+  "closed_at": "2026-09-21T09:08:36+00:00",
+  "closed_by": "round3 part A (what a pilot client hits first), 2026-09-21",
+  "closure": "DECIDED with a lean: DELETE the branch. Members are revoked one by one through revoke_member, which deprecates the claim with a reason; a whole-set revoke would deprecate every claim of a set in one act — an act nobody asked for — and the state could only arrive by hand-editing the table. The dead read in approve_claim_set is deleted. GUARD tests/unit/test_status_vocabulary.py: every status literal the product reads on claim_sets and quality_policies (found by regex over the source, never listed) has a writer; a planted read of an unwritten value fails the gate; RED on main ('revoked' read, never written)"
  },
  {
   "id": "AUD-019",
@@ -393,9 +410,12 @@
   "expected": "the retirement is visible: 'no live test case · 5 deprecated' — a reviewer can tell never-tested from all-retired",
   "observed": "both read as never-tested",
   "proposed_fix": "carry a deprecated count into the board row and the page header (the D-219 exclusion stays for grading)",
-  "status": "open",
+  "status": "closed",
   "fix_plan_ref": null,
-  "discovered_at": "2026-09-15T12:06:52+00:00"
+  "discovered_at": "2026-09-15T12:06:52+00:00",
+  "closed_at": "2026-09-21T09:08:36+00:00",
+  "closed_by": "round3 part A (what a pilot client hits first), 2026-09-21",
+  "closure": "_count_claims_by_requirement_status counts deprecated claims under their own key and never in the total (the total stays the live plan, D-219/D-269); the board row reads 'no live test case · N deprecated' when everything is retired and shows an 'N deprecated' chip beside live chips otherwise; read_requirement_claims returns the deprecated count and the page header reads '(0 tests · 5 deprecated)' with the empty state 'No live test case · 5 deprecated (retired from the plan…)'; proven DB-real (an all-deprecated and a mixed requirement; RED on main: 'no tests yet'); screenshots requirements_board_all_deprecated.png, requirement_all_deprecated_header.png, requirement_mixed_header.png, PRODUCTION_requirements_board_deprecated_chips.png (req-320: 79 deprecated beside 33 live), PRODUCTION_requirement_320_header.png"
  },
  {
   "id": "AUD-023",
@@ -449,7 +469,8 @@
   "proposed_fix": "link /sections from Settings or retire it; retire POST /plans or give it a form; keep the five aliases but mark them as redirect-only in the inventory",
   "status": "open",
   "fix_plan_ref": null,
-  "discovered_at": "2026-09-15T12:10:36+00:00"
+  "discovered_at": "2026-09-15T12:10:36+00:00",
+  "note": "round 3 part D: traced/measured read-only and written up with options and a defended lean in docs/audit/DECISION_MEMO.md — AK decides."
  },
  {
   "id": "AUD-026",
@@ -504,7 +525,7 @@
   "status": "open",
   "fix_plan_ref": null,
   "discovered_at": "2026-09-19T06:35:37+00:00",
-  "note": "named in the run_id census ledger (tests/integration/test_constraints_triage.py::RUN_ID_WITHOUT_FK) so the gate stays honest until they are closed"
+  "note": "named in the run_id census ledger (tests/integration/test_constraints_triage.py::RUN_ID_WITHOUT_FK) so the gate stays honest until they are closed | round 3 part D: traced/measured read-only and written up with options and a defended lean in docs/audit/DECISION_MEMO.md — AK decides."
  },
  {
   "id": "AUD-029",
@@ -558,7 +579,8 @@
   "proposed_fix": "link it from Settings (it manages the requirement tree) or retire it",
   "status": "open",
   "fix_plan_ref": null,
-  "discovered_at": "2026-09-19T08:57:45+00:00"
+  "discovered_at": "2026-09-19T08:57:45+00:00",
+  "note": "round 3 part D: traced/measured read-only and written up with options and a defended lean in docs/audit/DECISION_MEMO.md — AK decides."
  },
  {
   "id": "AUD-032",
@@ -593,7 +615,8 @@
   "proposed_fix": "retire both, or give the tenant-wide plan its surface",
   "status": "open",
   "fix_plan_ref": null,
-  "discovered_at": "2026-09-19T08:57:45+00:00"
+  "discovered_at": "2026-09-19T08:57:45+00:00",
+  "note": "round 3 part D: traced/measured read-only and written up with options and a defended lean in docs/audit/DECISION_MEMO.md — AK decides."
  },
  {
   "id": "AUD-034",
@@ -609,7 +632,8 @@
   "proposed_fix": "name the consumer (CI? a future SDK?) and prune the rest — or freeze the list as the public contract and gate-test it as a table",
   "status": "open",
   "fix_plan_ref": null,
-  "discovered_at": "2026-09-19T08:57:45+00:00"
+  "discovered_at": "2026-09-19T08:57:45+00:00",
+  "note": "round 3 part D: traced/measured read-only and written up with options and a defended lean in docs/audit/DECISION_MEMO.md — AK decides."
  },
  {
   "id": "AUD-035",
@@ -719,8 +743,212 @@
   "expected": "one documented contract",
   "observed": "two answers, one documented",
   "proposed_fix": "fix the doc (401 reveals nothing about the id; the oracle concern holds)",
+  "status": "closed",
+  "fix_plan_ref": null,
+  "discovered_at": "2026-09-19T08:57:45+00:00",
+  "closed_at": "2026-09-21T10:45:54+00:00",
+  "closed_by": "round3 part B (housekeeping), 2026-09-21",
+  "closure": "already corrected in round 2 (D-500 batch 1): CLAUDE.md reads 'no token → 401, wrong token → 404 (neither reveals whether the id exists)' and names releases.created_by as the owner rule. GUARD tests/unit/test_documented_contracts.py asserts the documented contract against the LIVE app (a missing token → 401, a wrong token → 404) and that the owner sentence names the column the routes read — RED on the audited tree 8990025"
+ },
+ {
+  "id": "AUD-041",
+  "title": "both waiver Revoke buttons have been dead since D-497: the forms sent a hidden EMPTY reason, which the service refuses ('a revocation carries its reason') — no waiver could be revoked from the product",
+  "class": "a control that cannot be used (the D-497 rule closed the service; the forms were never taught the reason)",
+  "severity": "medium",
+  "pass": "round3",
+  "surface": "primeqa/templates/settings/waivers.html and primeqa/templates/releases/_quality_decision.html: <input type=\"hidden\" name=\"reason\" value=\"\"> on the revoke forms; views settings_waiver_revoke / release_waiver_revoke → quality_policy.revoke_waiver refuses the empty reason (AUD-020)",
+  "reproduction": "as admin on scratch: GET /settings/waivers → the revoke form's reason value is '' (proven 2026-09-21); submitting it → the flash 'a revocation carries its reason' and the row unchanged",
+  "evidence": "the register's rendered form (name=\"reason\" value=\"\"); the decision tab's identical form; quality_policy.revoke_waiver's refusal since D-497",
+  "expected": "a revocation with a reason a human types",
+  "observed": "a button that always fails",
+  "proposed_fix": "a required reason field on both forms",
+  "status": "closed",
+  "fix_plan_ref": null,
+  "discovered_at": "2026-09-21T09:08:36+00:00",
+  "closed_at": "2026-09-21T09:08:36+00:00",
+  "closed_by": "round3 part A (what a pilot client hits first), 2026-09-21",
+  "closure": "both forms carry a required reason input beside Revoke (no hidden blank); proven DB-real: a revocation through the register lands with its reason (revoked_by, revocation_reason); the form test fails on a hidden reason; RED on main; screenshots settings_waivers_active_lapsed_revoked.png, release_decision_revoke_with_reason.png"
+ },
+ {
+  "id": "AUD-042",
+  "title": "HTML entities double-escaped in two renders: the run page's 'Salesforce said' message shows &amp;#8377; where the org wrote &#8377; (the rupee sign); the landing page's flaky-test list shows '&middot;' literally between outcomes",
+  "class": "escaping: an entity built in Python is escaped again by the template",
+  "severity": "low",
+  "pass": "round3",
+  "surface": "GET /runs/562682d5-518e-4eaf-989c-ad0d23f91e92 (production, read-only render 2026-09-21): 'Loans over &amp;#8377;50,00,000 require Manager Approval'; GET / (production): 'errored &middot; errored &middot; passed …' under Flaky tests",
+  "reproduction": "render the two pages over production data (D-487 renders, docs/ui-testing/round3-fixtures/PRODUCTION_run_detail_legacy_unstamped.png and PRODUCTION_landing.png)",
+  "evidence": "the two screenshots",
+  "expected": "₹ and · rendered",
+  "observed": "the entity source text rendered",
+  "proposed_fix": "unescape the org's message once at the read (html.unescape) and build the flaky sequence with the character, never the entity; a template test over a message carrying an entity",
   "status": "open",
   "fix_plan_ref": null,
-  "discovered_at": "2026-09-19T08:57:45+00:00"
+  "discovered_at": "2026-09-21T09:08:36+00:00",
+  "note": "round 3 part E: reproduced OFF production — the shape is planted in the hostile tenant and the truth asserted, marked xfail(strict) against this finding, so it cannot pass quietly while the defect stands and cannot stay marked once it is fixed (tests/unit/test_template_escaping.py, tests/integration/test_round3_pages.py)"
+ },
+ {
+  "id": "AUD-043",
+  "title": "a claim title on the landing page carries a raw relative-date object: 'Automatically sets PLS FB Order SLA Deadline to {'$relative_date': {'anchor': 'RUN_DATE', 'offset_days': 5}}'",
+  "class": "a value object rendered as its Python repr",
+  "severity": "low",
+  "pass": "round3",
+  "surface": "GET / (production, read-only render 2026-09-21) — Recent Runs; the title comes from the claim's asserted value through claim_presentation",
+  "reproduction": "PRODUCTION_landing.png",
+  "evidence": "the screenshot",
+  "expected": "a rendered value ('run date + 5 days')",
+  "observed": "the dict's repr",
+  "proposed_fix": "render $relative_date values in the title phrasing (the anchor and the offset in words); a unit test over a relative-date asserted value",
+  "status": "open",
+  "fix_plan_ref": null,
+  "discovered_at": "2026-09-21T09:08:36+00:00",
+  "note": "round 3 part E: reproduced OFF production — the shape is planted in the hostile tenant and the truth asserted, marked xfail(strict) against this finding, so it cannot pass quietly while the defect stands and cannot stay marked once it is fixed (tests/unit/test_template_escaping.py, tests/integration/test_round3_pages.py)"
+ },
+ {
+  "id": "AUD-044",
+  "title": "the dead-link sweep ignores converter types, so a literal segment the router refuses matched a parameterised rule — it called the dashboard's two 'Pending Reviews' links alive while /claims/inbox 404s",
+  "class": "self-reporting control (the eighth): a sweep whose green is not evidence — the AUD-002 repair was incomplete",
+  "severity": "medium",
+  "pass": "round3",
+  "surface": "scripts/deadlinks_gate.py::_rule_regex — every <...> became [^/]+, so '/claims/inbox' matched '/claims/<uuid:test_id>'; primeqa/templates/dashboard.html:59 and :69 link to /claims/inbox (the v1 review inbox, retired in 6a)",
+  "reproduction": "GET /claims/inbox as admin on scratch → 404 (no rule under /claims is parameterless); the repo sweep on main reports 0 dead; with converters honoured it reports both dashboard links dead",
+  "evidence": "the sweep's own report before and after (266 targets: 0 dead before, 2 dead after, 0 after the repair); the live 404",
+  "expected": "a sweep whose alive means the router will answer; a landing-page card that reaches the reviews",
+  "observed": "two dead links on the first screen after login, hidden by the gate that exists to find them",
+  "proposed_fix": "match segment by segment with the converter's own pattern; repoint the links at the Requirements 'Needs review' tab",
+  "status": "closed",
+  "fix_plan_ref": null,
+  "discovered_at": "2026-09-21T10:45:54+00:00",
+  "closed_at": "2026-09-21T10:45:54+00:00",
+  "closed_by": "round3 part B (housekeeping), 2026-09-21",
+  "closure": "deadlinks_gate resolves a target against a rule SEGMENT BY SEGMENT, each parameter tested with its converter's pattern (int, float, uuid, path, string) and a Jinja wildcard satisfying any of them — so a rule mixing an int and a uuid still resolves and nothing cries wolf; the dashboard's two links point at /requirements?tab=needs-review (200). GUARD: two plants in tests/unit/test_no_dead_links.py — a converter-refused literal of each kind must be reported dead (RED on main), and mixed-converter / real-uuid / real-int targets must stay alive. The repo sweep: 266 targets, 0 dead"
+ },
+ {
+  "id": "AUD-045",
+  "severity": "medium",
+  "class": "quarantined test (round 3 part C): red, listed with its finding, owner and mechanism, never silently skipped",
+  "pass": "round3",
+  "title": "the generation suite's seeded governance world no longer yields drafts: 26 tests answer REFUSAL where they expect DRAFT",
+  "surface": "tests/integration/generation/test_automation_vertical.py (25), test_repair_agent.py (1) — the suite's own local governance database, seeded by its conftest",
+  "reproduction": "pytest tests/integration/generation/test_automation_vertical.py → 25 failed, 43 passed; every failure is OutcomeKind.REFUSAL == OutcomeKind.DRAFT",
+  "evidence": "fails identically alone and in the tree, and identically on main @2d18726 — not contamination, not introduced by round 3",
+  "expected": "either the seed grounds what the governance core now demands, or the refusals are correct and the expectations are stale",
+  "observed": "every archetype refuses",
+  "proposed_fix": "AK's call: re-seed the vertical, or accept the refusals and rewrite the expectations against the current grounding rules",
+  "status": "open",
+  "fix_plan_ref": null,
+  "discovered_at": "2026-09-21T12:06:08+00:00"
+ },
+ {
+  "id": "AUD-046",
+  "severity": "medium",
+  "class": "quarantined test (round 3 part C): red, listed with its finding, owner and mechanism, never silently skipped",
+  "pass": "round3",
+  "title": "the semantic suites' expectations drifted from the live schema: bitemporal intervals, enrichment counts and a rule's parse state (11 tests)",
+  "surface": "tests/integration/semantic/test_delta_reconcile_live.py (6: _valid_to() is None where a closed interval is expected), test_s1_sync_console.py (4: count_failed_enrichment 0 vs 1; a phase reads 'complete'), test_validation_rule_field_refs.py (1: 'partial' vs 'unparsed')",
+  "reproduction": "each file alone reproduces its failures",
+  "evidence": "identical on main @2d18726",
+  "expected": "expectations that match the schema and seed as they are",
+  "observed": "three drifts of the same kind",
+  "proposed_fix": "re-derive each expectation from the current behaviour, or fix the behaviour where the expectation is the contract",
+  "status": "open",
+  "fix_plan_ref": null,
+  "discovered_at": "2026-09-21T12:06:08+00:00"
+ },
+ {
+  "id": "AUD-047",
+  "severity": "medium",
+  "class": "quarantined test (round 3 part C): red, listed with its finding, owner and mechanism, never silently skipped",
+  "pass": "round3",
+  "title": "pgvector dimension mismatch on scratch: the column takes 1024 dimensions, the embedding the code produces is 1536 (6 tests)",
+  "surface": "tests/integration/test_phase2_summaries_smoke.py (4), test_phase2_entities_sync_ai_smoke.py (2)",
+  "reproduction": "pytest tests/integration/test_phase2_summaries_smoke.py → psycopg2.errors.DataException: expected 1024 dimensions, not 1536",
+  "evidence": "identical on main",
+  "expected": "one dimension across the column, the model and the fixtures",
+  "observed": "two",
+  "proposed_fix": "read PRODUCTION's vector dimension first (read-only): if production is 1536 this is a scratch-fidelity gap and scratch's column is repaired; if production is 1024 the embedding model changed under the schema and that is a product defect",
+  "status": "open",
+  "fix_plan_ref": null,
+  "discovered_at": "2026-09-21T12:06:08+00:00"
+ },
+ {
+  "id": "AUD-048",
+  "severity": "low",
+  "class": "quarantined test (round 3 part C): red, listed with its finding, owner and mechanism, never silently skipped",
+  "pass": "round3",
+  "title": "the staleness-pin suite expects GO where the policy now recommends CONDITIONAL_GO (4 tests)",
+  "surface": "tests/integration/test_representation/test_step_b_staleness_pin.py",
+  "reproduction": "pytest that file → assert 'conditional_go' == 'go' x4",
+  "evidence": "identical on main",
+  "expected": "the suite asserts the recommendation the current policy produces",
+  "observed": "the recommendation the policy produced before D-488/D-496",
+  "proposed_fix": "confirm CONDITIONAL_GO is right for the planted shape, then move the expectation",
+  "status": "open",
+  "fix_plan_ref": null,
+  "discovered_at": "2026-09-21T12:06:08+00:00"
+ },
+ {
+  "id": "AUD-049",
+  "severity": "low",
+  "class": "quarantined test (round 3 part C): red, listed with its finding, owner and mechanism, never silently skipped",
+  "pass": "round3",
+  "title": "the stranded-record cleanup counts 0 where the suite expects 1 and 2 (4 tests)",
+  "surface": "tests/integration/execution_engine/test_stranded_cleanup.py",
+  "reproduction": "pytest that file → assert 0 == 1, assert 0 == 2",
+  "evidence": "identical on main",
+  "expected": "the cleanup reclaims what the suite plants",
+  "observed": "it reclaims nothing — either the planted shape no longer matches the reaper's predicate, or the reaper stopped working",
+  "proposed_fix": "decide which, in that order; a reaper that reclaims nothing is a product question",
+  "status": "open",
+  "fix_plan_ref": null,
+  "discovered_at": "2026-09-21T12:06:08+00:00"
+ },
+ {
+  "id": "AUD-050",
+  "severity": "low",
+  "class": "quarantined test (round 3 part C): red, listed with its finding, owner and mechanism, never silently skipped",
+  "pass": "round3",
+  "title": "the two Step-5 suites cannot meet their preconditions on a database where the seed policy has been used (3 tests)",
+  "surface": "tests/integration/test_representation/test_step_5_policy.py (2: 'a waiver's expiry lies in the future'), test_step_5_scope.py (1)",
+  "reproduction": "pytest each file",
+  "evidence": "the seed policy on scratch was activated and first used on 2026-09-15; D-488's immutability trigger then refuses any change to it, so the old precondition ('the seed is a draft') is unrecoverable",
+  "expected": "a suite owns the policy it exercises",
+  "observed": "both borrowed the migration's seed",
+  "proposed_fix": "round 3 gave test_step_5_scope its own DRAFT version (it now reaches the composer, where recommendation is None instead of no_go — one step from green); test_step_5_policy needs the same treatment plus a waiver whose expiry the service accepts",
+  "status": "open",
+  "fix_plan_ref": null,
+  "discovered_at": "2026-09-21T12:06:08+00:00"
+ },
+ {
+  "id": "AUD-051",
+  "severity": "low",
+  "class": "quarantined test (round 3 part C): red, listed with its finding, owner and mechanism, never silently skipped",
+  "pass": "round3",
+  "title": "seven single-test reds of five unrelated kinds, each a stale expectation rather than a defect",
+  "surface": "test_release_run_prod_gate.py (D-494's plan refusal answers before the SEC-4 tier message the suite greps for), test_ci_webhook.py (409 PLAN_REQUIRED vs 400 — the D-494 fork AK ruled on), test_phase5_authoring.py (asserts tenant_1 only; scratch has carried tenant_2 since the audit), test_r2_superadmin.py + test_auth.py (a custom in-file runner returns False and names no assertion), test_report_slice.py::test_a_runs_list_carries_both_recorded_runs (the 50-row window artefact), test_step_1_identity.py::test_1b_every_row_key_equals_the_pre_072_derivation (a DECORATED requirement is a legitimate exception the assertion does not admit)",
+  "reproduction": "each file alone",
+  "evidence": "identical on main @2d18726",
+  "expected": "each expectation matches the product as it is",
+  "observed": "each predates a ruling that changed it",
+  "proposed_fix": "one small slice: move the four stale expectations, convert the two custom runners to pytest so they can say what failed, and page or scope the report-slice read",
+  "status": "open",
+  "fix_plan_ref": null,
+  "discovered_at": "2026-09-21T12:06:08+00:00"
+ },
+ {
+  "id": "AUD-052",
+  "severity": "medium",
+  "class": "a test suite that does not clean what it plants",
+  "pass": "round3",
+  "title": "six integration suites leak rows into the scratch tenant on every run: ~540 claims, 10 claim sets, 9 inventories, 12 entities and 1 release per pass",
+  "surface": "tests/integration/test_3a4_processor.py (claims 1, sets 1, inventories 1), test_3a5_entities.py (72/1/1 + 2 entities), test_phase7_comparison.py (144/2/2 + 4), test_prod_vault.py (144/2/2 + 2), test_tenant_isolation.py (1 release), test_ui_schedules.py (1 claim set)",
+  "reproduction": "snapshot tenant_1's counts, run each file, snapshot again (the deltas above, measured 2026-09-21); the whole tree twice in one process adds 1,083 claims, 20 claim sets, 18 inventories, 24 entities and 3 releases",
+  "evidence": "scratch's accumulated debris is the sum of every past run: 414 claim sets and 362 inventories for a tenant that has approved a handful",
+  "expected": "a suite leaves the database as it found it, so the tree's second run starts where the first did",
+  "observed": "each of the six plants an inventory, a claim set and its claims through the real services and removes only its S5 rules",
+  "proposed_fix": "a remover per suite (or one shared marker-based remover), mindful that some of these tables carry never-delete triggers by design — where a trigger refuses, the suite should plant inside a transaction it rolls back instead",
+  "note": "round 3 part C proved the OTHER half: the whole tree run twice in one process gives identical results (1055 passed, 185 skipped, exit 0 both times). Zero residue is NOT met and this finding is why",
+  "status": "open",
+  "fix_plan_ref": null,
+  "discovered_at": "2026-09-21T12:06:08+00:00"
  }
 ]

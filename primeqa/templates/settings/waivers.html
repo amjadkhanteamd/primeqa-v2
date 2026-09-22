@@ -13,36 +13,88 @@
     <p class="text-sm text-gray-400" data-testid="unavailable">The waiver register is unavailable right now.</p>
   {% else %}
   {% if waivers %}
-  <table class="min-w-full divide-y divide-gray-200 text-sm bg-white shadow rounded-lg overflow-hidden">
-    <thead class="bg-gray-50"><tr class="text-left text-xs font-medium text-gray-500 uppercase">
-      <th class="px-4 py-2">Item</th><th class="px-4 py-2">Axis</th><th class="px-4 py-2">Release</th>
-      <th class="px-4 py-2">Reviewer</th><th class="px-4 py-2">Reason</th>
-      <th class="px-4 py-2">Until</th><th class="px-4 py-2">State</th><th class="px-4 py-2 text-right">Act</th></tr></thead>
-    <tbody class="divide-y divide-gray-100">
-      {% for w in waivers %}
-      <tr data-testid="waiver-row" data-state="{{ w.state }}">
-        <td class="px-4 py-2"><span class="font-mono text-xs">{{ w.item_ref[:26] }}</span>
-          <span class="text-xs text-gray-400">{{ w.item_kind }}</span></td>
-        <td class="px-4 py-2 text-xs">{{ w.axis | replace('_', ' ') }}</td>
-        <td class="px-4 py-2 text-xs text-gray-500">{% if w.release_id %}<a href="/releases/{{ w.release_id }}?tab=decision" class="text-indigo-700 hover:underline">#{{ w.release_id }}</a>{% else %}tenant-wide{% endif %}</td>
-        <td class="px-4 py-2 text-xs">{{ w.reviewer_name }}</td>
-        <td class="px-4 py-2 text-xs text-gray-700">{{ w.reason }}</td>
-        <td class="px-4 py-2 text-xs">{{ w.expires_at[:10] }}</td>
-        <td class="px-4 py-2"><span class="inline-flex px-1.5 py-0.5 rounded text-[11px] font-medium
-          {% if w.state == 'active' %}bg-green-100 text-green-800
-          {% elif w.state == 'expired' %}bg-gray-100 text-gray-600
-          {% else %}bg-slate-200 text-slate-700{% endif %}">{{ w.state }}{% if w.state == 'expired' %} · not counted{% endif %}</span></td>
-        <td class="px-4 py-2 text-right">
-          {% if w.state == 'active' %}
-          <form method="POST" action="/settings/waivers/{{ w.id }}/revoke" class="inline" data-testid="revoke-waiver">
-            {{ csrf_input | safe }}<input type="hidden" name="reason" value="">
-            <button type="submit" class="text-xs text-rose-700 hover:underline">Revoke</button>
-          </form>
-          {% endif %}
-        </td></tr>
-      {% endfor %}
-    </tbody>
-  </table>
+  {# AUD-015: three sections. An expired acceptance is a FACT (who accepted what, until when,
+     and that it lapsed) — never an absence; a revoked one keeps its reason. #}
+  <section data-testid="waivers-active">
+    <h2 class="text-sm font-semibold text-gray-700 mb-2">Active <span class="text-gray-400 font-normal">({{ groups.active | length }})</span></h2>
+    {% if groups.active %}
+    <table class="min-w-full divide-y divide-gray-200 text-sm bg-white shadow rounded-lg overflow-hidden">
+      <thead class="bg-gray-50"><tr class="text-left text-xs font-medium text-gray-500 uppercase">
+        <th class="px-4 py-2">Item</th><th class="px-4 py-2">Axis</th><th class="px-4 py-2">Release</th>
+        <th class="px-4 py-2">Accepted by</th><th class="px-4 py-2">Reason</th>
+        <th class="px-4 py-2">Until</th><th class="px-4 py-2 text-right">Act</th></tr></thead>
+      <tbody class="divide-y divide-gray-100">
+        {% for w in groups.active %}
+        <tr data-testid="waiver-row" data-state="active">
+          <td class="px-4 py-2"><span class="font-mono text-xs">{{ w.item_ref[:26] }}</span>
+            <span class="text-xs text-gray-400">{{ w.item_kind }}</span></td>
+          <td class="px-4 py-2 text-xs">{{ w.axis | replace('_', ' ') }}</td>
+          <td class="px-4 py-2 text-xs text-gray-500">{% if w.release_id %}<a href="/releases/{{ w.release_id }}?tab=decision" class="text-indigo-700 hover:underline">#{{ w.release_id }}</a>{% else %}tenant-wide{% endif %}</td>
+          <td class="px-4 py-2 text-xs">{{ w.reviewer_name }} <span class="text-gray-400">&middot; recorded by {{ w.created_by_name }}</span></td>
+          <td class="px-4 py-2 text-xs text-gray-700">{{ w.reason }}</td>
+          <td class="px-4 py-2 text-xs">{{ w.expires_at[:10] }}</td>
+          <td class="px-4 py-2 text-right">
+            {# a revocation carries its reason (AUD-020, D-497) — the field is the form's, never a hidden blank #}
+            <form method="POST" action="/settings/waivers/{{ w.id }}/revoke" class="inline-flex items-center gap-1" data-testid="revoke-waiver">
+              {{ csrf_input | safe }}
+              <input type="text" name="reason" required minlength="3" placeholder="why it no longer holds" aria-label="Reason for revoking" class="w-40 rounded-md border border-gray-300 px-2 py-1 text-xs">
+              <button type="submit" class="text-xs text-rose-700 hover:underline">Revoke</button>
+            </form>
+          </td></tr>
+        {% endfor %}
+      </tbody>
+    </table>
+    {% else %}
+    <p class="text-sm text-gray-500" data-testid="no-active-waivers">No active waiver.</p>
+    {% endif %}
+  </section>
+
+  {% if groups.expired %}
+  <section data-testid="waivers-expired">
+    <h2 class="text-sm font-semibold text-gray-700 mb-2">Lapsed <span class="text-gray-400 font-normal">({{ groups.expired | length }})</span></h2>
+    <p class="text-xs text-gray-500 mb-2">An acceptance that reached its date. The item is no longer accepted; the acceptance and who gave it remain on record.</p>
+    <table class="min-w-full divide-y divide-gray-200 text-sm bg-white shadow rounded-lg overflow-hidden">
+      <thead class="bg-gray-50"><tr class="text-left text-xs font-medium text-gray-500 uppercase">
+        <th class="px-4 py-2">Item</th><th class="px-4 py-2">Axis</th><th class="px-4 py-2">Release</th>
+        <th class="px-4 py-2">Accepted by</th><th class="px-4 py-2">Reason</th>
+        <th class="px-4 py-2">Lapsed on</th></tr></thead>
+      <tbody class="divide-y divide-gray-100">
+        {% for w in groups.expired %}
+        <tr data-testid="waiver-row" data-state="expired" class="text-gray-500">
+          <td class="px-4 py-2"><span class="font-mono text-xs">{{ w.item_ref[:26] }}</span>
+            <span class="text-xs text-gray-400">{{ w.item_kind }}</span></td>
+          <td class="px-4 py-2 text-xs">{{ w.axis | replace('_', ' ') }}</td>
+          <td class="px-4 py-2 text-xs">{% if w.release_id %}<a href="/releases/{{ w.release_id }}?tab=decision" class="text-indigo-700 hover:underline">#{{ w.release_id }}</a>{% else %}tenant-wide{% endif %}</td>
+          <td class="px-4 py-2 text-xs">{{ w.reviewer_name }} <span class="text-gray-400">&middot; recorded by {{ w.created_by_name }} on {{ w.created_at[:10] }}</span></td>
+          <td class="px-4 py-2 text-xs">{{ w.reason }}</td>
+          <td class="px-4 py-2 text-xs"><span class="inline-flex px-1.5 py-0.5 rounded text-[11px] font-medium bg-gray-100 text-gray-600">{{ w.expires_at[:10] }} &middot; not counted</span></td></tr>
+        {% endfor %}
+      </tbody>
+    </table>
+  </section>
+  {% endif %}
+
+  {% if groups.revoked %}
+  <section data-testid="waivers-revoked">
+    <h2 class="text-sm font-semibold text-gray-700 mb-2">Revoked <span class="text-gray-400 font-normal">({{ groups.revoked | length }})</span></h2>
+    <table class="min-w-full divide-y divide-gray-200 text-sm bg-white shadow rounded-lg overflow-hidden">
+      <thead class="bg-gray-50"><tr class="text-left text-xs font-medium text-gray-500 uppercase">
+        <th class="px-4 py-2">Item</th><th class="px-4 py-2">Axis</th><th class="px-4 py-2">Release</th>
+        <th class="px-4 py-2">Accepted by</th><th class="px-4 py-2">Revoked</th></tr></thead>
+      <tbody class="divide-y divide-gray-100">
+        {% for w in groups.revoked %}
+        <tr data-testid="waiver-row" data-state="revoked" class="text-gray-500">
+          <td class="px-4 py-2"><span class="font-mono text-xs">{{ w.item_ref[:26] }}</span>
+            <span class="text-xs text-gray-400">{{ w.item_kind }}</span></td>
+          <td class="px-4 py-2 text-xs">{{ w.axis | replace('_', ' ') }}</td>
+          <td class="px-4 py-2 text-xs">{% if w.release_id %}<a href="/releases/{{ w.release_id }}?tab=decision" class="text-indigo-700 hover:underline">#{{ w.release_id }}</a>{% else %}tenant-wide{% endif %}</td>
+          <td class="px-4 py-2 text-xs">{{ w.reviewer_name }}</td>
+          <td class="px-4 py-2 text-xs">by {{ w.revoked_by_name }} on {{ (w.revoked_at or '')[:10] }}{% if w.revocation_reason %} &mdash; {{ w.revocation_reason }}{% endif %}</td></tr>
+        {% endfor %}
+      </tbody>
+    </table>
+  </section>
+  {% endif %}
   {% else %}
   <p class="text-sm text-gray-500" data-testid="no-waivers">No waiver has been recorded.</p>
   {% endif %}

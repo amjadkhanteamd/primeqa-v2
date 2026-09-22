@@ -53,6 +53,52 @@ FIELD = re.compile(r"""(?:request\.form|request\.values|request\.json|data|paylo
 
 # --- the world -------------------------------------------------------------------------
 
+def _sweep_markers():
+    """Round 3, part C: remove anything an EARLIER aborted run of this module
+    left behind, before planting. A fixture whose setup raises never reaches its
+    remover, and the leftovers then collide with the next run's plant
+    (uq_requirements_tenant_external_key) — a red that re-creates itself and
+    made the whole tree unrunnable in one process. The markers are this
+    module's own; nothing else writes them."""
+    from sqlalchemy import create_engine
+    auto = create_engine(DB, isolation_level="AUTOCOMMIT")
+    with auto.connect() as c:
+        c.execute(text("SET session_replication_role = replica"))
+        c.execute(text("SET search_path TO tenant_1, public"))
+        for sql in (
+            "DELETE FROM quality_waivers WHERE reason = 'gate'",
+            "DELETE FROM requirement_surface_link_claims WHERE link_id IN (SELECT id FROM requirement_surface_links WHERE requirement_key = 'GATE-BOUNDARY')",
+            "DELETE FROM requirement_surface_links WHERE requirement_key = 'GATE-BOUNDARY'",
+            "DELETE FROM test_requirement_links WHERE external_key = 'GATE-BOUNDARY'",
+            "DELETE FROM requirement_identities WHERE external_key = 'GATE-BOUNDARY'",
+            "DELETE FROM repair_proposals WHERE proposal_kind = 'gate'",
+            "DELETE FROM quality_policies WHERE name = 'gate-boundary'",
+            "DELETE FROM public.shared_dashboard_links WHERE environment_id IN (SELECT id FROM public.environments WHERE name LIKE 'gate-boundary%')",
+            "DELETE FROM public.release_decisions WHERE release_id IN (SELECT id FROM public.releases WHERE name LIKE 'gate-boundary%' OR name LIKE 'GATE-BOUNDARY%')",
+            "DELETE FROM public.release_requirements WHERE release_id IN (SELECT id FROM public.releases WHERE name LIKE 'gate-boundary%' OR name LIKE 'GATE-BOUNDARY%')",
+            "DELETE FROM release_targets WHERE release_id IN (SELECT id FROM public.releases WHERE name LIKE 'gate-boundary%' OR name LIKE 'GATE-BOUNDARY%')",
+            "DELETE FROM public.releases WHERE name LIKE 'gate-boundary%' OR name LIKE 'GATE-BOUNDARY%'",
+            "DELETE FROM public.requirements WHERE external_key = 'GATE-BOUNDARY'",
+            "DELETE FROM public.requirements WHERE section_id IN (SELECT id FROM public.sections WHERE name = 'gate-boundary')",
+            "DELETE FROM public.sections WHERE name = 'gate-boundary'",
+            "DELETE FROM s4_run_schedules WHERE environment_id IN (SELECT id FROM public.environments WHERE name LIKE 'gate-boundary%')",
+            "DELETE FROM public.environment_credentials WHERE environment_id IN (SELECT id FROM public.environments WHERE name LIKE 'gate-boundary%')",
+            "DELETE FROM public.environments WHERE name LIKE 'gate-boundary%'",
+            "DELETE FROM public.group_environments WHERE group_id IN (SELECT id FROM public.groups WHERE name LIKE 'gate-boundary%')",
+            "DELETE FROM public.group_members WHERE group_id IN (SELECT id FROM public.groups WHERE name LIKE 'gate-boundary%')",
+            "DELETE FROM public.groups WHERE name LIKE 'gate-boundary%'",
+            "DELETE FROM public.connections WHERE name LIKE 'gate-boundary%'",
+            "DELETE FROM public.milestones WHERE name LIKE 'GATE-BOUNDARY%'",
+            "DELETE FROM public.refresh_tokens WHERE user_id IN (SELECT id FROM public.users WHERE email = 'gate-boundary@audit')",
+            "DELETE FROM public.activity_log WHERE user_id IN (SELECT id FROM public.users WHERE email = 'gate-boundary@audit')",
+            "DELETE FROM public.users WHERE email = 'gate-boundary@audit'",
+        ):
+            try:
+                c.execute(text(sql))
+            except Exception as exc:  # noqa: BLE001 — named, never silent
+                print("pre-plant sweep: %s -> %s" % (sql[:60], type(exc).__name__))
+
+
 @pytest.fixture(scope="module")
 def world():
     """Disposable rows in tenant 1, all owned by the audit admin, so every id a
@@ -65,6 +111,7 @@ def world():
     from tests.integration.test_representation._fixtures import empty_conditions, make_value_claim
 
     key = "GATE-BOUNDARY"
+    _sweep_markers()                       # round 3: start from a clean slate
     eng = create_engine(DB)
     ids = {"tenant_id": T, "user_id": None}
     with eng.begin() as c:

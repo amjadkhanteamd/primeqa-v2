@@ -23,6 +23,12 @@ from sqlalchemy import create_engine, text
 from sqlalchemy.exc import OperationalError
 
 DEFAULT_TEST_DB_URL = "postgresql://localhost/primeqa_test_governance"
+#: The process-global DB binding as it was BEFORE this suite loaded (round 3,
+#: part C). This suite borrows ``DATABASE_URL`` and the cached tenant engine for
+#: the duration of one test and gives them back, so the whole integration tree
+#: can be run in ONE process.
+_AMBIENT_DATABASE_URL = os.environ.get("DATABASE_URL")
+
 TEST_TENANT_ID = 1
 _REPO_ROOT = Path(__file__).resolve().parents[3]
 
@@ -85,6 +91,15 @@ def db_setup(test_db_url: str):
                     allow_module_level=True)
 
     db_name = test_db_url.rsplit("/", 1)[-1]
+    # Round 3, part C: this suite re-points the PROCESS-GLOBAL ``DATABASE_URL``
+    # and the cached tenant engine. Remember what they were, so the tree can be
+    # run in ONE process: without this, every module collected after this suite
+    # ran against a database this fixture had just dropped (143 reds in one
+    # process against zero file by file).
+    _prev_database_url = os.environ.get("DATABASE_URL")
+    from primeqa.semantic import connection as _conn_mod
+    _prev_engine = _conn_mod._engine
+
     admin = create_engine(admin_url, isolation_level="AUTOCOMMIT")
     with admin.connect() as c:
         if not c.execute(text("SELECT 1 FROM pg_database WHERE datname=:n"),
@@ -122,6 +137,13 @@ def db_setup(test_db_url: str):
             c.execute(text(f'DROP DATABASE IF EXISTS "{db_name}"'))
         admin.dispose()
 
+    # Round 3, part C: give the process back the binding it had.
+    _conn_mod._engine = _prev_engine
+    if _prev_database_url is None:
+        os.environ.pop("DATABASE_URL", None)
+    else:
+        os.environ["DATABASE_URL"] = _prev_database_url
+
 
 @pytest.fixture(autouse=True)
 def _rebind_production_engine(db_setup, test_db_url):
@@ -129,12 +151,32 @@ def _rebind_production_engine(db_setup, test_db_url):
     cross-suite co-running (mirrors the generation suite's guard). No-op when the
     binding is already correct."""
     from primeqa.semantic import connection as _conn
+    # Round 3, part C: the binding is this suite's for the duration of ONE test
+    # and is handed back after it. It used to be re-asserted before every test
+    # and never withdrawn, so once this suite had run, every module collected
+    # after it read a database without their rows (or, after db_setup's
+    # teardown, a dropped one) — the reason the tree could not be run in one
+    # process. Restoring here makes the suite a borrower, not an owner.
     os.environ["DATABASE_URL"] = test_db_url
     want_db = test_db_url.rsplit("/", 1)[-1]
     if _conn._engine is not None and _conn._engine.url.database != want_db:
         _conn._engine.dispose()
         _conn._engine = None
-    yield
+    try:
+        yield
+    finally:
+        # Hand the process back the binding it had BEFORE this suite existed —
+        # _AMBIENT_DATABASE_URL, captured at conftest import, never the value
+        # db_setup left behind. The cached engine is dropped rather than
+        # restored, so the next caller rebuilds it from the ambient URL and
+        # cannot inherit a disposed or dropped-database engine.
+        if _conn._engine is not None:
+            _conn._engine.dispose()
+        _conn._engine = None
+        if _AMBIENT_DATABASE_URL is None:
+            os.environ.pop("DATABASE_URL", None)
+        else:
+            os.environ["DATABASE_URL"] = _AMBIENT_DATABASE_URL
 
 
 @pytest.fixture(autouse=True)

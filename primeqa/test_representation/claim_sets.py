@@ -220,9 +220,10 @@ def approve_claim_set(
             f"claim_set {claim_set_id} is already approved by user "
             f"{row[1]} at {row[2]} — approval is a recorded human act, "
             f"not repeatable")
-    if row[0] == "revoked":
-        raise ClaimSetError(
-            f"claim_set {claim_set_id} is revoked and cannot be approved")
+    # AUD-018: no product act writes status 'revoked' on a SET (members are
+    # revoked one by one through revoke_member, which deprecates the claim);
+    # the dead read that refused a 'revoked' set is deleted — a status the
+    # product reads must be one the product writes (tests/unit/test_status_vocabulary.py).
 
     members = session.execute(text("""
         SELECT test_id FROM claim_set_members

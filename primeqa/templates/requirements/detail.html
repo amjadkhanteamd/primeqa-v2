@@ -335,7 +335,7 @@
   <details open class="bg-white shadow rounded-lg group" data-collapse-key="req-panel-plan">
     <summary class="px-4 py-3 border-b cursor-pointer select-none flex items-center justify-between">
       <h3 class="text-sm font-semibold text-gray-700">Test plan
-        <span class="text-gray-500 font-normal">({{ (s2_claims.claims | length) if s2_claims else 0 }} test{{ '' if (s2_claims and s2_claims.claims | length == 1) else 's' }})</span>
+        <span class="text-gray-500 font-normal">({{ (s2_claims.claims | length) if s2_claims else 0 }} test{{ '' if (s2_claims and s2_claims.claims | length == 1) else 's' }}{% if s2_claims and s2_claims.deprecated %} &middot; <span data-testid="deprecated-count" title="retired test cases — kept for lineage, never graded">{{ s2_claims.deprecated }} deprecated</span>{% endif %})</span>
         {% if quarantined_count %}
         <span class="ml-1 inline-flex items-center px-2 py-0.5 rounded-full text-xs font-medium bg-rose-100 text-rose-800"
               title="Quarantined tests don't count toward the release pass-rate">{{ quarantined_count }} quarantined</span>
@@ -416,7 +416,12 @@
       </ul>
     {% else %}
     <div class="px-6 py-8 text-sm text-gray-500">
+      {% if s2_claims.deprecated %}
+      {# AUD-022: all-retired is a fact, not an absence #}
+      <span data-testid="all-deprecated">No live test case &middot; {{ s2_claims.deprecated }} deprecated (retired from the plan; each keeps its lineage on its own page).</span>
+      {% else %}
       No test plan yet.
+      {% endif %}
       {% if user.role in ['admin', 'tester', 'superadmin'] and environments and not req.deleted_at %}
       Use <strong>Generate test plan</strong> above — Plimsol generates test cases (grounded in your synced org model) that cover the requirement.
       {% endif %}

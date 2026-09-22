@@ -43,12 +43,51 @@ def test(name, fn):
         return False
 
 
+#: users this module planted because the database held none of that role —
+#: removed by :func:`_remove_planted_users` at teardown (round 3, part C: a
+#: suite depends on no ambient row it did not create, and cleans what it plants).
+_PLANTED_USERS: list = []
+
+
+def _plant_user(db, role: str):
+    """A user of ``role`` in the first tenant that has one, so a database
+    without (say) a superadmin still exercises the superadmin surfaces."""
+    tenant_id = db.query(User.tenant_id).order_by(User.tenant_id).first()[0]
+    u = User(tenant_id=tenant_id, email=f"llm-arch-{role}@test.local",
+             password_hash="x", full_name=f"llm arch {role}", role=role, is_active=True)
+    db.add(u)
+    db.commit()
+    db.refresh(u)
+    _PLANTED_USERS.append(u.id)
+    return u
+
+
+def _remove_planted_users():
+    """Remove them and the audit rows they wrote — the tier-change surfaces log
+    to activity_log, whose foreign key would otherwise keep the user alive."""
+    if not _PLANTED_USERS:
+        return
+    db = SessionLocal()
+    try:
+        ids = list(_PLANTED_USERS)
+        db.query(ActivityLog).filter(ActivityLog.user_id.in_(ids)).delete(synchronize_session=False)
+        db.query(User).filter(User.id.in_(ids)).delete(synchronize_session=False)
+        db.commit()
+    except Exception as exc:  # noqa: BLE001 — named, never silent
+        db.rollback()
+        print(f"planted-user teardown failed: {type(exc).__name__}: {exc}")
+        raise
+    finally:
+        db.close()
+        _PLANTED_USERS.clear()
+
+
 def _mint_jwt(role: str):
     db = SessionLocal()
     try:
         u = db.query(User).filter(User.role == role).first()
         if u is None:
-            raise RuntimeError(f"No user with role={role} in DB")
+            u = _plant_user(db, role)
         token = jwt.encode({
             "sub": str(u.id), "tenant_id": u.tenant_id, "email": u.email,
             "role": u.role, "full_name": u.full_name or u.email,
@@ -86,6 +125,16 @@ def _csrf_client(jwt_token):
 
 
 # ---- tier module -----------------------------------------------------------
+
+import pytest
+
+
+@pytest.fixture(scope="module", autouse=True)
+def _clean_planted_users():
+    """Round 3, part C: whatever this module planted, it removes."""
+    yield
+    _remove_planted_users()
+
 
 def test_tier_presets_have_all_four():
     from primeqa.intelligence.llm import tiers

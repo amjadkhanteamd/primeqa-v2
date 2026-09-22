@@ -187,9 +187,15 @@
                             {% if sc.get('draft') %}
                             <span class="inline-flex items-center px-2 py-0.5 rounded text-xs font-medium bg-gray-100 text-gray-700" title="{{ sc['draft'] }} draft test case(s) — not yet approved to run">{{ sc['draft'] }} draft</span>
                             {% endif %}
-                            {% for k, v in sc.items() if k not in ('approved', 'draft', 'total') %}
+                            {% for k, v in sc.items() if k not in ('approved', 'draft', 'total', 'deprecated') %}
                             <span class="inline-flex items-center px-2 py-0.5 rounded text-xs font-medium bg-amber-100 text-amber-800" title="{{ v }} test case(s) in {{ k }}">{{ v }} {{ k }}</span>
                             {% endfor %}
+                            {% if sc.get('deprecated') %}
+                            <span class="inline-flex items-center px-2 py-0.5 rounded text-xs font-medium bg-gray-100 text-gray-500" data-testid="deprecated-chip" title="{{ sc['deprecated'] }} retired test case(s) — kept for lineage, never graded">{{ sc['deprecated'] }} deprecated</span>
+                            {% endif %}
+                            {% elif req.status_counts.get('deprecated') %}
+                            {# AUD-022: all-retired is a fact, not an absence — never "no tests yet" #}
+                            <span class="text-xs text-gray-500" data-testid="all-deprecated" title="Every test case of this requirement was retired; nothing live is graded">no live test case &middot; {{ req.status_counts['deprecated'] }} deprecated</span>
                             {% else %}
                             <span class="text-xs text-gray-400">no tests yet</span>
                             {% endif %}

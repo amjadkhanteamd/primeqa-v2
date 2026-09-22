@@ -47,10 +47,17 @@
         </a>
         <a href="/runs/substrate" class="block overflow-hidden rounded-lg bg-white px-4 py-5 shadow sm:p-6 hover:ring-2 hover:ring-indigo-200">
             <dt class="truncate text-sm font-medium text-gray-500">Pass Rate</dt>
-            <dd class="mt-1 text-3xl font-semibold {% if stats.pass_rate >= 80 %}text-green-600{% elif stats.pass_rate >= 50 %}text-yellow-600{% else %}text-red-600{% endif %}">{{ stats.pass_rate }}%</dd>
+            {% if stats.pass_rate is none %}
+            {# AUD-007: a tenant with no run has no pass rate — an empty state, never a number and never a 500 #}
+            <dd class="mt-1 text-3xl font-semibold text-gray-300" data-testid="pass-rate-empty">&mdash;</dd>
+            <p class="mt-1 text-xs text-gray-400">no run yet &middot; the rate appears after the first run</p>
+            {% else %}
+            <dd class="mt-1 text-3xl font-semibold {% if stats.pass_rate >= 80 %}text-green-600{% elif stats.pass_rate >= 50 %}text-yellow-600{% else %}text-red-600{% endif %}" data-testid="pass-rate">{{ stats.pass_rate }}%</dd>
             <p class="mt-1 text-xs text-gray-400">latest run per test</p>
+            {% endif %}
         </a>
-        <a href="/claims/inbox" class="block overflow-hidden rounded-lg bg-white px-4 py-5 shadow sm:p-6 hover:ring-2 hover:ring-indigo-200">
+        {# AUD-044: the v1 review inbox was retired; the reviews live on the Requirements "Needs review" tab (6a) #}
+        <a href="/requirements?tab=needs-review" class="block overflow-hidden rounded-lg bg-white px-4 py-5 shadow sm:p-6 hover:ring-2 hover:ring-indigo-200">
             <dt class="truncate text-sm font-medium text-gray-500">Pending Reviews</dt>
             <dd class="mt-1 text-3xl font-semibold text-orange-600">{{ stats.pending_reviews }}</dd>
             <p class="mt-1 text-xs text-gray-400">open your review inbox &rarr;</p>
@@ -60,7 +67,7 @@
     {% if user.role in ['ba', 'admin', 'superadmin'] and stats.pending_reviews > 0 %}
     <div class="rounded-md bg-orange-50 border border-orange-200 p-4">
         <p class="text-sm text-orange-800">You have <strong>{{ stats.pending_reviews }}</strong> pending reviews.
-            <a href="/claims/inbox" class="font-medium underline">Review now</a></p>
+            <a href="/requirements?tab=needs-review" class="font-medium underline">Review now</a></p>
     </div>
     {% endif %}
 

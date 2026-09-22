@@ -5157,12 +5157,14 @@ def settings_waivers():
     tid = request.user["tenant_id"]
 
     def _read(s):
-        rows = qp.waivers_for_release(s, None)
+        rows = qp.all_waivers(s)                       # AUD-015: every scope, every state
         names = _user_names(s, tid, {r["reviewer_user_id"] for r in rows}
-                            | {r["created_by"] for r in rows})
+                            | {r["created_by"] for r in rows}
+                            | {r["revoked_by"] for r in rows if r.get("revoked_by")})
         for r in rows:
             r["reviewer_name"] = names.get(r["reviewer_user_id"], f"user {r['reviewer_user_id']}")
             r["created_by_name"] = names.get(r["created_by"], f"user {r['created_by']}")
+            r["revoked_by_name"] = names.get(r["revoked_by"], f"user {r['revoked_by']}") if r.get("revoked_by") else None
         return rows
     try:
         waivers = _with_session(tid, None, _read)
@@ -5176,9 +5178,12 @@ def settings_waivers():
                     for r in ReleaseRepository(db).list_releases(tid, None)]
     finally:
         db.close()
+    groups = {"active": [w for w in waivers if w["state"] == "active"],
+              "expired": [w for w in waivers if w["state"] == "expired"],
+              "revoked": [w for w in waivers if w["state"] == "revoked"]}
     return render_template("settings/waivers.html", **ctx(
         active_page="settings", settings_page="waivers", breadcrumb_item="Waivers",
-        waivers=waivers, available=available, releases=releases,
+        waivers=waivers, groups=groups, available=available, releases=releases,
         today=datetime.now(timezone.utc).date().isoformat()))
 
 

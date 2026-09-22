@@ -47,10 +47,21 @@ REPO = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 ATTRS = ("href", "action", "formaction", "hx-get", "hx-post", "hx-put", "hx-patch", "hx-delete",
          "data-url", "data-href", "data-confirm-form")
 ATTR_RX = re.compile(r'\b(' + "|".join(re.escape(a) for a in ATTRS) + r')\s*=\s*"([^"]*)"')
+#: ANY data-* attribute whose value is a path. Round 3, part E: the graph named
+#: three data attributes by hand, so a URL parked in a fourth (a script reads
+#: `el.dataset.whatever` and fetches it) was invisible — the audit found its two
+#: JS-built cases by eye, which is not a graph. A path in a data attribute is a
+#: target; the attribute's name does not matter.
+DATA_ATTR_RX = re.compile(r'\b(data-[a-z][a-z0-9-]*)\s*=\s*"(/[^"]*)"')
 # what each attribute submits with; href/data-* follow as GET, the verbs as themselves
 ATTR_METHOD = {"hx-post": "POST", "hx-put": "PUT", "hx-patch": "PATCH", "hx-delete": "DELETE"}
 FORM_METHOD_RX = re.compile(r'\bmethod\s*=\s*"([A-Za-z]+)"')
 JS_RX = re.compile(r"""(?:fetch|open|location\.href\s*=|window\.location\s*=|location\.assign)\s*\(?\s*['"`](/[^'"`]*)['"`]""")
+#: htmx's programmatic call: htmx.ajax('GET', '/claims/' + id + '/panel', ...).
+#: The drawer uses exactly this, and the audit found it by hand (AUD-025 noted
+#: /claims/<id>/panel as "reached by a JS-built URL and not an orphan") — found
+#: by eye, not by the graph. The verb is the method.
+HTMX_AJAX_RX = re.compile(r"""htmx\.ajax\s*\(\s*['"]([A-Za-z]+)['"]\s*,\s*['"`](/[^'"`]*)['"`]""")
 JS_METHOD_RX = re.compile(r"""method\s*:\s*['"]([A-Za-z]+)['"]""")
 URL_FOR_RX = re.compile(r"""url_for\(\s*['"]([A-Za-z0-9_.]+)['"]\s*(?:,\s*([^)]*))?\)""")
 KWARG_RX = re.compile(r"\b([A-Za-z_][A-Za-z0-9_]*)\s*=")
@@ -129,6 +140,12 @@ def collect(templates_dir: str, static_dir: str | None) -> list:
                 for value in JS_RX.findall(line):
                     m = JS_METHOD_RX.search(line)
                     out.append(Target("js", value, f"{rel}:{i + 1}", (m.group(1).upper() if m else "GET")))
+                for verb, value in HTMX_AJAX_RX.findall(line):
+                    out.append(Target("htmx-ajax", value, f"{rel}:{i + 1}", verb.upper()))
+                for attr, value in DATA_ATTR_RX.findall(line):
+                    if attr in ATTRS or URL_FOR_RX.search(value):
+                        continue                  # already collected above
+                    out.append(Target(attr, value, f"{rel}:{i + 1}", "GET"))
     if static_dir and os.path.isdir(static_dir):
         for root, _, files in os.walk(static_dir):
             for f in sorted(files):
@@ -140,6 +157,8 @@ def collect(templates_dir: str, static_dir: str | None) -> list:
                     for value in JS_RX.findall(line):
                         m = JS_METHOD_RX.search(line)
                         out.append(Target("js", value, f"{rel}:{i + 1}", (m.group(1).upper() if m else "GET")))
+                    for verb, value in HTMX_AJAX_RX.findall(line):
+                        out.append(Target("htmx-ajax", value, f"{rel}:{i + 1}", verb.upper()))
     return out
 
 
@@ -168,9 +187,47 @@ def _normalise(target: str) -> str:
     return (t.rstrip("/") or "/") if t != "/" else "/"
 
 
-def _rule_regex(rule: str):
-    parts = re.split(r"<[^>]+>", rule)
-    return re.compile("^" + "[^/]+".join(re.escape(p) for p in parts) + "$")
+#: What each Flask converter accepts at the router, as a per-SEGMENT test.
+#: AUD-044 (round 3): the first form replaced every ``<...>`` with ``[^/]+``,
+#: so a literal segment a converter refuses — ``inbox`` against
+#: ``<uuid:test_id>`` — matched a rule the live router 404s on, and the sweep
+#: called a dead link alive. The converter decides now.
+_CONVERTER_RX = {
+    "int": re.compile(r"^-?\d+$"),
+    "float": re.compile(r"^-?\d+(?:\.\d+)?$"),
+    "uuid": re.compile(r"^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$"),
+    "string": re.compile(r"^[^/]+$"),
+    "any": re.compile(r"^[^/]+$"),
+}
+_PARAM_RX = re.compile(r"^<(?:([a-z]+)(?:\([^)]*\))?:)?([^>]+)>$")
+
+
+def _rule_segments(rule: str) -> tuple:
+    """``([(kind, value), ...], has_path_tail)`` — ``kind`` is 'lit' for a
+    literal segment or the converter name for a parameter."""
+    segs, tail = [], False
+    for seg in (rule.rstrip("/") or "/").split("/"):
+        m = _PARAM_RX.match(seg)
+        if m is None:
+            segs.append(("lit", seg))
+            continue
+        conv = m.group(1) or "string"
+        if conv == "path":
+            tail = True
+        segs.append((conv, m.group(2)))
+    return segs, tail
+
+
+def _segment_ok(kind: str, value: str, seg: str) -> bool:
+    """Does the target's segment satisfy this rule segment? A Jinja wildcard
+    segment stands for a value the template renders, so it satisfies any
+    parameter and (conservatively, never crying wolf) any literal too."""
+    if seg == WILD:
+        return True
+    if kind == "lit":
+        return seg == value
+    rx = _CONVERTER_RX.get(kind)
+    return True if rx is None else bool(rx.match(seg))
 
 
 class Resolver:
@@ -182,13 +239,30 @@ class Resolver:
         for r in url_map.iter_rules():
             rule = str(r.rule)
             methods = {m for m in (r.methods or set()) if m not in ("HEAD", "OPTIONS")}
-            self.rules.append((_rule_regex(rule.rstrip("/") or "/"), rule, methods))
+            segs, tail = _rule_segments(rule)
+            self.rules.append((segs, tail, rule, methods))
             self.endpoints.setdefault(r.endpoint, []).append(set(r.arguments))
+
+    def _hits(self, path: str):
+        """Every rule whose segments accept this target path (AUD-044)."""
+        want = (path.rstrip("/") or "/").split("/")
+        out = []
+        for segs, tail, rule, methods in self.rules:
+            if tail:
+                if len(want) < len(segs):
+                    continue
+                pairs = list(zip(segs, want[:len(segs) - 1] + ["/".join(want[len(segs) - 1:])]))
+            else:
+                if len(want) != len(segs):
+                    continue
+                pairs = list(zip(segs, want))
+            if all(_segment_ok(k, v, seg) for (k, v), seg in pairs):
+                out.append((rule, methods))
+        return out
 
     def _match(self, path: str, method: str) -> str | None:
         """None when alive; else the reason."""
-        probe = path.replace(WILD, "1")
-        hit = [(rule, methods) for rx, rule, methods in self.rules if rx.match(probe)]
+        hit = self._hits(path)
         if not hit:
             return "no route matches"
         if any(method in methods for _, methods in hit):
@@ -222,7 +296,7 @@ class Resolver:
                 # every segment is Jinja — nothing literal to resolve against
                 return "unresolvable", "every segment is dynamic"
             why = self._match(path, t.method)
-            if why and t.kind == "js" and raw.rstrip("?#").endswith("/"):
+            if why and t.kind in ("js", "htmx-ajax") and raw.rstrip("?#").endswith("/"):
                 # a JS literal ending in "/" is a PREFIX the code appends an id
                 # to (fetch('/api/x/' + id)): judge it with one more segment
                 why = self._match(path + "/" + WILD, t.method)
