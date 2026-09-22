@@ -467,10 +467,13 @@
   "expected": "every page either has a way in or is retired; a route kept only for bookmarks says so in code",
   "observed": "the sections page is live and unreachable from the nav; the tenant-wide plan can only be recorded by hand-crafting a POST (and, per AUD-021, from an empty one)",
   "proposed_fix": "link /sections from Settings or retire it; retire POST /plans or give it a form; keep the five aliases but mark them as redirect-only in the inventory",
-  "status": "open",
+  "status": "closed",
   "fix_plan_ref": null,
   "discovered_at": "2026-09-15T12:10:36+00:00",
-  "note": "round 3 part D: traced/measured read-only and written up with options and a defended lean in docs/audit/DECISION_MEMO.md — AK decides."
+  "note": "round 3 part D: traced/measured read-only and written up with options and a defended lean in docs/audit/DECISION_MEMO.md — AK decides.",
+  "closed_at": "2026-09-22T00:00:00+00:00",
+  "closed_by": "round4 part D, 2026-09-22",
+  "closure": "the five bookmark aliases (/results, /results/<int>, /suites, /suites/<int>, /tickets) are KEPT and declared REDIRECT_ONLY in tests/unit/test_route_authority_table.py with their successors; a unit proof shows each answers a redirect to its successor for a signed-in viewer; the miss sweep reads the id-taking ones from that one source. They are not orphans: the inventory reads this set."
  },
  {
   "id": "AUD-026",
@@ -577,10 +580,13 @@
   "expected": "a page users can reach from the product, or a page retired with its acts",
   "observed": "a working page with admin acts (rename/delete/purge) that only a remembered URL reaches — AUD-004's dead 'View TCs' lived on it unseen",
   "proposed_fix": "link it from Settings (it manages the requirement tree) or retire it",
-  "status": "open",
+  "status": "closed",
   "fix_plan_ref": null,
   "discovered_at": "2026-09-19T08:57:45+00:00",
-  "note": "round 3 part D: traced/measured read-only and written up with options and a defended lean in docs/audit/DECISION_MEMO.md — AK decides."
+  "note": "round 3 part D: traced/measured read-only and written up with options and a defended lean in docs/audit/DECISION_MEMO.md — AK decides.",
+  "closed_at": "2026-09-22T00:00:00+00:00",
+  "closed_by": "round4 part D, 2026-09-22",
+  "closure": "/sections is linked from the Settings sidebar (settings/base.html, a 'Sections' item after Groups, for every signed-in user; its acts are gated inside the page). Screenshot-gated."
  },
  {
   "id": "AUD-032",
@@ -613,10 +619,13 @@
   "expected": "an act is either reachable from a page or retired",
   "observed": "live acts reachable only by crafted requests — the run-substrate one refuses (D-494); the tenant-wide plan CREATES a plan for whoever posts",
   "proposed_fix": "retire both, or give the tenant-wide plan its surface",
-  "status": "open",
+  "status": "closed",
   "fix_plan_ref": null,
   "discovered_at": "2026-09-19T08:57:45+00:00",
-  "note": "round 3 part D: traced/measured read-only and written up with options and a defended lean in docs/audit/DECISION_MEMO.md — AK decides."
+  "note": "round 3 part D: traced/measured read-only and written up with options and a defended lean in docs/audit/DECISION_MEMO.md — AK decides.",
+  "closed_at": "2026-09-22T00:00:00+00:00",
+  "closed_by": "round4 part D, 2026-09-22",
+  "closure": "POST /plans and POST /requirements/<id>/run-substrate answer 410 Gone with one line naming the successor (views.RETIRED_ROUTE_NOTE: the release plan / the schedule; the requirement plan), for every signed-in caller alike; an anonymous caller still meets the login redirect. The authority table's two rows read RETIRED; the gate tests/unit/test_retired_routes_410.py is RED on main (6 of 8)."
  },
  {
   "id": "AUD-034",
@@ -630,10 +639,13 @@
   "expected": "an API surface with a named consumer, or retired with a 410",
   "observed": "71 endpoints kept alive for an unnamed consumer, each a gate to keep honest (AUD-012, AUD-036 live here)",
   "proposed_fix": "name the consumer (CI? a future SDK?) and prune the rest — or freeze the list as the public contract and gate-test it as a table",
-  "status": "open",
+  "status": "closed",
   "fix_plan_ref": null,
   "discovered_at": "2026-09-19T08:57:45+00:00",
-  "note": "round 3 part D: traced/measured read-only and written up with options and a defended lean in docs/audit/DECISION_MEMO.md — AK decides."
+  "note": "round 3 part D: traced/measured read-only and written up with options and a defended lean in docs/audit/DECISION_MEMO.md — AK decides.",
+  "closed_at": "2026-09-22T00:00:00+00:00",
+  "closed_by": "round4 part D, 2026-09-22",
+  "closure": "every /api request is recorded (migrations/074_api_request_log.sql, primeqa/shared/request_log.py): the time, tenant/user/role from the token the gate read, the caller kind (anonymous / cookie / bearer / webhook), method, the url_map RULE (never the path), endpoint, status, duration, and the rule's declared minimum tier (primeqa/core/authz_gates.min_tier_by_rule — the oracle's walk, moved into the package). Never a body, query string, header or token (asserted). Written by a bounded queue flushed every 2 s as one INSERT on a daemon thread and at exit, so no request pays the write; the disclosed loss is at most one flush window on a hard kill, drops are counted. Kept 30 days: the scheduler's api_request_log_prune_tick deletes older rows daily. NO route is pruned on this evidence yet (the memo's ruling)."
  },
  {
   "id": "AUD-035",
@@ -781,10 +793,13 @@
   "expected": "₹ and · rendered",
   "observed": "the entity source text rendered",
   "proposed_fix": "unescape the org's message once at the read (html.unescape) and build the flaky sequence with the character, never the entity; a template test over a message carrying an entity",
-  "status": "open",
+  "status": "closed",
   "fix_plan_ref": null,
   "discovered_at": "2026-09-21T09:08:36+00:00",
-  "note": "round 3 part E: reproduced OFF production — the shape is planted in the hostile tenant and the truth asserted, marked xfail(strict) against this finding, so it cannot pass quietly while the defect stands and cannot stay marked once it is fixed (tests/unit/test_template_escaping.py, tests/integration/test_round3_pages.py)"
+  "note": "round 3 part E: reproduced OFF production — the shape is planted in the hostile tenant and the truth asserted, marked xfail(strict) against this finding, so it cannot pass quietly while the defect stands and cannot stay marked once it is fixed (tests/unit/test_template_escaping.py, tests/integration/test_round3_pages.py)",
+  "closed_at": "2026-09-22T00:00:00+00:00",
+  "closed_by": "round4 part C, 2026-09-22",
+  "closure": "the org's message is unescaped ONCE at the read (claim_presentation.org_rejection_message, html.unescape on both return sites); the flaky list joins with the character '·' in markup terms; the escaping gate (tests/unit/test_template_escaping.py) is the gate now — safe-marked expressions exempt — and the round-3 strict marker is gone; production's '&amp;#8377;' becomes '₹' (tests/unit/test_org_message_unescaped_once.py)."
  },
  {
   "id": "AUD-043",
@@ -798,10 +813,13 @@
   "expected": "a rendered value ('run date + 5 days')",
   "observed": "the dict's repr",
   "proposed_fix": "render $relative_date values in the title phrasing (the anchor and the offset in words); a unit test over a relative-date asserted value",
-  "status": "open",
+  "status": "closed",
   "fix_plan_ref": null,
   "discovered_at": "2026-09-21T09:08:36+00:00",
-  "note": "round 3 part E: reproduced OFF production — the shape is planted in the hostile tenant and the truth asserted, marked xfail(strict) against this finding, so it cannot pass quietly while the defect stands and cannot stay marked once it is fixed (tests/unit/test_template_escaping.py, tests/integration/test_round3_pages.py)"
+  "note": "round 3 part E: reproduced OFF production — the shape is planted in the hostile tenant and the truth asserted, marked xfail(strict) against this finding, so it cannot pass quietly while the defect stands and cannot stay marked once it is fixed (tests/unit/test_template_escaping.py, tests/integration/test_round3_pages.py)",
+  "closed_at": "2026-09-22T00:00:00+00:00",
+  "closed_by": "round4 part C, 2026-09-22",
+  "closure": "a RelativeDate asserted value reads in words wherever a claim's value is rendered — 'the run date', '5 days after the run date', '1 day before the run date' (claim_presentation.relative_date_in_words, used by _literal before and inside a LiteralValue); the round-3 strict marker on the planted hostile-tenant page is gone and the page test passes; unit tests/unit/test_relative_date_in_words.py."
  },
  {
   "id": "AUD-044",
@@ -968,9 +986,12 @@
   "observed": "each of the six plants an inventory, a claim set and its claims through the real services and removes only its S5 rules",
   "proposed_fix": "a remover per suite (or one shared marker-based remover), mindful that some of these tables carry never-delete triggers by design — where a trigger refuses, the suite should plant inside a transaction it rolls back instead",
   "note": "round 3 part C proved the OTHER half: the whole tree run twice in one process gives identical results (1055 passed, 185 skipped, exit 0 both times). Zero residue is NOT met and this finding is why",
-  "status": "open",
+  "status": "closed",
   "fix_plan_ref": null,
-  "discovered_at": "2026-09-21T12:06:08+00:00"
+  "discovered_at": "2026-09-21T12:06:08+00:00",
+  "closed_at": "2026-09-22T00:00:00+00:00",
+  "closed_by": "round4 part C, 2026-09-22",
+  "closure": "every suite cleans up what it plants: one remover (tests/integration/_ui_world.py::remove_claim_set_world) takes a UI claim-set world down from the leaves up — comparison transitions and runs, verdicts, processing runs, inspection results and jobs, manifests by payload->>'claim_set_id', schedules, link claims, members and their claims across every test-id-keyed table, the sets, the inventory members and inventories, the materialised surface entities, and the materialisation's logical version (named by the inventory NUMBER, which is MAX+1 and reused — the row had to go with the inventory, and so did any entity that version still owned). test_3a4/test_phase7 remove by the ids their world holds; test_3a5/test_prod_vault use a 'new since the test began' teardown (the services they drive commit); test_ui_schedules removes its module's set; test_tenant_isolation had been SWALLOWING its own cleanup failure (`except Exception: rollback()`) and now fails loudly; the authority-triage world sweeps its own shape at setup (five TRIAGE-SURF worlds from crashed runs were on scratch); the boundary-gate and repair-gate worlds plant the run their proposal names (the round-4 key). Measured per suite in its own process: before +1 / +72 / +144 / +144 / +1 release / +1 set → after 0 for every one. THE PROOF, both halves: the whole tests/integration tree twice in ONE process — 1,255 passed / 15 skipped / exit 0 both times (identical), and every residue count identical before and after (claims 23,359, sets 448, inventories 392, entities 528, releases 4, requirements 0, users 6, environments 3, groups 3, connections 0, waivers 0, policies 1, proposals 0). Scratch was swept once of what earlier measurements and fifteen past tenant-isolation runs had left."
  },
  {
   "id": "AUD-053",
@@ -984,9 +1005,29 @@
   "expected": "a removal / an unlink with a reason a human types (the AUD-041 shape: a required reason input beside the button)",
   "observed": "two buttons that always fail with the service's refusal flashed",
   "proposed_fix": "a required reason field on both forms, the AUD-041 pattern; a form test that fails on a hidden reason input on ANY form whose action route requires a reason (the class guard AUD-041 did not add)",
-  "status": "open",
+  "status": "closed",
   "fix_plan_ref": null,
   "discovered_at": "2026-09-22T02:20:00+00:00",
-  "note": "found while proving AUD-041's window on the deployed tree; recorded, not fixed — a UI change lands only after AK sees it (the standing rule), and the approved round-3 screens did not include these pages. Both buttons render only for MEMBER+ and only when a target / a link exists; production holds none of either."
+  "note": "found while proving AUD-041's window on the deployed tree; recorded, not fixed — a UI change lands only after AK sees it (the standing rule), and the approved round-3 screens did not include these pages. Both buttons render only for MEMBER+ and only when a target / a link exists; production holds none of either.",
+  "closed_at": "2026-09-22T00:00:00+00:00",
+  "closed_by": "round4 part C, 2026-09-22",
+  "closure": "the Remove-target form (releases/detail.html) and the Unlink-surface form (requirements/_conformance_surfaces.html) carry a required reason input (minlength 3) — the AUD-041 shape. CLASS GUARD tests/unit/test_no_hidden_empty_reason.py: a template sweep that fails on ANY hidden input named reason with an empty value, in any template — RED on main naming exactly the two forms, shown able to fail on a planted one while ignoring a visible reason field and a prefilled hidden one. Both pages are in the screenshot gate."
+ },
+ {
+  "id": "AUD-054",
+  "title": "the release-run route's body after its D-494 refusal is dead code: the SEC-4 production branch (Admin-only, explicit confirmation) is unreachable from this route",
+  "class": "dead code behind a ruling (the AUD-005 class)",
+  "severity": "low",
+  "pass": "round4-part-C",
+  "surface": "primeqa/views.py release_run: `flash(PlanRequiredError.REASON); return redirect(...)` precedes the environment checks and the SEC-4 branch, which can never run",
+  "reproduction": "read the route: every POST returns before the code below; tests/integration/test_release_run_prod_gate.py now asserts the refusal for every caller",
+  "evidence": "the route body; the round-4 rewrite of the SEC-4 suite",
+  "expected": "a route body that ends where its behaviour ends; SEC-4 enforced at the dispatch chokepoint (it is: _authorize_dispatch, tests/unit/test_authz_dispatch_gate.py)",
+  "observed": "~30 unreachable lines",
+  "proposed_fix": "delete the dead branch (no behaviour change); or, if AK wants the route to run a plan, that is a new slice",
+  "status": "open",
+  "fix_plan_ref": null,
+  "discovered_at": "2026-09-22T00:00:00+00:00",
+  "note": "recorded while moving the SEC-4 suite's expectation (AUD-051); not deleted in round 4 — a change to a route body is not a test fix"
  }
 ]

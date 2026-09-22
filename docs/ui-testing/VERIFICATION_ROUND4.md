@@ -141,3 +141,116 @@ a quarantined test and marks it, never as the gate.
 Recorded, not fixed: the release-run route's code after its D-494 refusal is
 dead (`views.py`, the SEC-4 branch is unreachable); five `TRIAGE-SURF-*`
 requirements from the round-2 authority world are residue on scratch (AUD-052).
+
+## Part C — first-screen defects, dead buttons, the rest of quarantine
+
+| finding | what changed | proof |
+|---|---|---|
+| AUD-042 | the org's message is unescaped ONCE at the read (`org_rejection_message`, both return sites); the landing page's flaky list joins with the character `·` in markup terms | `test_org_message_unescaped_once.py` (production's `&amp;#8377;` becomes `₹`; unescaped once, never twice); the escaping gate is a gate now (safe-marked expressions exempt), the round-3 strict marker gone |
+| AUD-043 | a `RelativeDate` value reads in words — "the run date", "5 days after the run date", "1 day before the run date" — wherever a claim's asserted value renders (`relative_date_in_words`, before and inside a LiteralValue) | `test_relative_date_in_words.py`; the planted hostile-tenant page test passes, its strict marker gone |
+| AUD-053 | the Remove-target and Unlink-surface forms carry a required reason input (the AUD-041 shape) | CLASS GUARD `test_no_hidden_empty_reason.py`: any hidden `reason` input with an empty value, in any template — **RED on main naming exactly the two forms**; shown able to fail on a planted one and to ignore a visible or prefilled reason |
+| AUD-046/048/050/051 | see Part C's quarantine table above | every suite green in its own process; the registry is EMPTY |
+
+**AUD-052 — every suite cleans up what it plants.** One remover
+(`tests/integration/_ui_world.py::remove_claim_set_world`) removes a UI
+claim-set world from the leaves up, keyed by the ids a suite captured (the
+comparison transitions and runs, verdicts, processing runs, inspection results
+and jobs, manifests by `payload->>'claim_set_id'`, schedules, link claims,
+members and their claims across every test-id-keyed table, the sets, the
+inventory members and inventories, the materialised surface entities, and the
+materialisation's logical version — whose name is the inventory NUMBER, which
+is `MAX+1` and reused, so it had to go with the inventory). Two suites use a
+"new since the test began" teardown (the services they drive commit), two
+remove by the ids their world holds, one removes its module's set, the
+tenant-isolation suite stops swallowing its own cleanup failure (the
+mechanism of its leak), and the authority-triage world sweeps its own shape
+at setup (five `TRIAGE-SURF-*` requirements from crashed runs were on
+scratch). Measured per suite, each in its own process, before and after:
+
+| suite | before (claims / sets / inventories / entities / releases / manifests) | after |
+|---|---|---|
+| test_3a4_processor | +1 / +1 / +1 / 0 / 0 / +1 | 0 |
+| test_3a5_entities | +72 / +1 / +1 / +2 / 0 / +1 | 0 |
+| test_phase7_comparison | +144 / +2 / +2 / +4 / 0 / +7 | 0 |
+| test_prod_vault | +144 / +2 / +2 / +2 / 0 / +3 | 0 |
+| test_tenant_isolation | 0 / 0 / 0 / 0 / +1 (+1 requirement, +1 tenant, +1 section) | 0 |
+| test_ui_schedules | 0 / +1 / 0 / 0 / 0 / +3 | 0 |
+| test_authority_triage (REPORT_PAGES) | five TRIAGE-SURF worlds on scratch | 0 |
+
+Scratch was then swept once of what earlier measurements (and fifteen past
+tenant-isolation runs) had left, back to the morning's counts.
+
+THE ONE-PROCESS-TWICE PROOF: see the closing section.
+
+## Part D — the decision memo, as ruled
+
+| ruling | what changed | proof |
+|---|---|---|
+| AUD-034 log requests | `migrations/074_api_request_log.sql` (ADDITIVE, dumpless) + `primeqa/shared/request_log.py`: every `/api` request → the time, tenant/user/role from the token the gate read, caller kind (anonymous / cookie / bearer / webhook), method, the url_map RULE (never the path), endpoint, status, duration, the rule's declared minimum tier (`primeqa/core/authz_gates.min_tier_by_rule`, the oracle's walk moved into the package). Never a body, query string, header or token. A bounded queue flushed every 2 s as one INSERT on a daemon thread and at exit (no request pays the write; the disclosed loss is one flush window on a hard kill; drops counted). Kept 30 days: the scheduler's `api_request_log_prune_tick`. NO route pruned. | `tests/unit/test_api_request_log.py` (9: only /api; rule not path; no token/body/query; caller kinds; flush as one INSERT and never raising; the bounded queue; every live rule's tier known; the prune window) + `tests/integration/test_api_request_log.py` (DB-real on scratch: rows land through the real engine; the prune keeps 30 days) |
+| AUD-031 link /sections | a "Sections" item in the Settings sidebar after Groups, for every signed-in user | screenshot-gated (below); the dead-link sweep and navigation gates green |
+| AUD-033 retire two routes | `POST /plans` and `POST /requirements/<id>/run-substrate` answer 410 with one line naming the successor (`views.RETIRED_ROUTE_NOTE`); the authority table's rows read RETIRED | `tests/unit/test_retired_routes_410.py` — **RED on main (6 of 8)**: every signed-in tier gets the 410 and the successor; an anonymous caller still meets the login redirect |
+| AUD-025 keep the redirects | `REDIRECT_ONLY` in `tests/unit/test_route_authority_table.py` — the five bookmark aliases and their successors; the miss sweep reads the id-taking ones from that one source | the unit proof: each answers a redirect to its successor for a signed-in viewer |
+
+## The one-process-twice proof (AUD-052), both halves
+
+The whole `tests/integration` tree, twice in ONE Python process, with the
+residue counts read before and after:
+
+```
+RUN 1: 1255 passed, 15 skipped, 26 deselected in 158.86s   exit 0
+RUN 2: 1255 passed, 15 skipped, 26 deselected in 145.03s   exit 0
+before: requirements 0 | releases 4 | sections 1 | users 6 | environments 3 | groups 3 | connections 0 | shared_links 0 | claims 23359 | claim_sets 448 | s4_runs 3 | run_plans 4 | waivers 0 | surface_links 0 | inventories 392 | policies 1 | repair_proposals 0 | entities 528
+after:  identical, every count
+```
+
+**Identical results: yes. Zero residue: yes.** (Round 3 had met the first half
+only.) The first attempt of this run had shown 47 reds and one-row residue in
+seven public tables — Part A's new key refusing the boundary-gate and
+repair-gate worlds' proposals (they plant their run now), and a helper my
+route retirement had sliced out of `views.py` (restored; the undefined-names
+gate caught it). Both fixed at root before the proof above.
+
+## Guards, each proven red first
+
+| guard | red where |
+|---|---|
+| `test_running_rows_invisible` (4) | main: 39 readers named |
+| `test_run_row_before_provisioning` (7) | main: ImportError (the mechanism does not exist) |
+| the three census gates in `test_constraints_triage` | main: the keys absent |
+| `test_no_hidden_empty_reason` (2) | main: both AUD-053 forms named |
+| `test_retired_routes_410` (8) | main: 6 of 8 |
+| `test_api_request_log` (9) + the DB-real test | main: ImportError |
+| `test_relative_date_in_words` (6) | main: ImportError |
+| `test_org_message_unescaped_once` (3) | main: 3 failed |
+| `test_template_escaping` (2, the gate now) | the strict marker of round 3 flipped |
+| `REDIRECT_ONLY` proof (5) | new in the authority table; the aliases had been counted as orphans |
+| `test_quarantine_registry` at 0 | holds the list empty; a new entry is a decision |
+
+## Migration classifications
+
+| migration | class | at the merge |
+|---|---|---|
+| tenant `20260922_0010` (run row before provisioning: enum label, nullable finished_at + CHECK, three keys) | REJECTING | dump-first: `s4_execution_runs`, `s4_created_records`, `repair_proposals`, `s6_reinterpretations`; apply; read back the keys' validity and the CHECK; prove the NOT VALID key refuses a new orphan in a rolled-back transaction |
+| public `074_api_request_log.sql` | ADDITIVE | dumpless (a new table) |
+| the data act (four July proposals withdrawn) | DATA, gated | AK's GO; dump `repair_proposals` first; `withdraw_july.py --go --actor=<AK's user id>` |
+
+## The screens AK is being asked to approve (`round4-fixtures/`)
+
+Fixture screenshots (scratch, a planted world, an admin):
+
+| screen | file |
+|---|---|
+| Settings sidebar with the new **Sections** item after Groups (AUD-031) | `settings_sidebar_sections.png` |
+| Release decision tab: a declared target with the **Remove** form and its reason field (AUD-053) | `release_decision_remove_target_with_reason.png` |
+| Requirement page: a declared conformance surface with the **Unlink** form and its reason field at the foot of the page (AUD-053) | `requirement_unlink_surface_with_reason.png` (full page; the panel is the last block) |
+
+Production-data renders (D-487; a local server over the production database,
+read-only at the server side, AK's own user):
+
+| screen | what it shows | file |
+|---|---|---|
+| Settings sidebar | the Sections item on production data | `PRODUCTION_settings_sidebar_sections.png` |
+| Release 16 decision tab | unchanged shape — production holds no declared target, so no Remove form renders; the form is the fixture's | `PRODUCTION_release_16_decision.png` |
+| Requirement 320 | unchanged shape — production holds no declared surface link, so no Unlink form renders; the form is the fixture's | `PRODUCTION_requirement_320_surfaces.png` |
+
+The merge is gated on **"screens approved"**.
