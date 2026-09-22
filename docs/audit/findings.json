@@ -950,5 +950,22 @@
   "status": "open",
   "fix_plan_ref": null,
   "discovered_at": "2026-09-21T12:06:08+00:00"
+ },
+ {
+  "id": "AUD-053",
+  "title": "the Remove-target button (release page) and the Unlink-surface button (requirement page) have been dead since D-497: both forms send a hidden EMPTY reason, which the planner (AUD-023) and the surface-link service (AUD-037) refuse before any write — no target can be removed and no surface unlinked from the product",
+  "class": "a control that cannot be used (the D-497 rule closed the service; the forms were never taught the reason)",
+  "severity": "medium",
+  "pass": "round3-merge",
+  "surface": "primeqa/templates/releases/detail.html:124 (<input type=\"hidden\" name=\"reason\" value=\"\"> on the /releases/<id>/targets/<env>/remove form) and primeqa/templates/requirements/_conformance_surfaces.html:87 (the same on the /requirements/<id>/surfaces/<link>/unlink form); views release_target_remove → planner.remove_target raises TargetAuthorityError('a removal carries its reason …'); requirement_surface_unlink → surface_links.unlink raises SurfaceLinkError(REASON_NO_REASON)",
+  "reproduction": "read at the round-3 merge pre-flight (2026-09-22): the window grep for hidden empty reason inputs showed 4 on origin/main and 2 remaining after AUD-041's fix — these two; the services' refusals read in the code (planner.py remove_target, surface_links.py unlink). Not yet reproduced by submitting the forms.",
+  "evidence": "the two rendered forms; the two service refusals; production read-only: release_targets 0 rows, requirement_surface_links 0 rows, no activity_log act naming a target removal or an unlink in 30 days — nothing has ever been removed or unlinked through the product, so the dead buttons have had no caller yet",
+  "expected": "a removal / an unlink with a reason a human types (the AUD-041 shape: a required reason input beside the button)",
+  "observed": "two buttons that always fail with the service's refusal flashed",
+  "proposed_fix": "a required reason field on both forms, the AUD-041 pattern; a form test that fails on a hidden reason input on ANY form whose action route requires a reason (the class guard AUD-041 did not add)",
+  "status": "open",
+  "fix_plan_ref": null,
+  "discovered_at": "2026-09-22T02:20:00+00:00",
+  "note": "found while proving AUD-041's window on the deployed tree; recorded, not fixed — a UI change lands only after AK sees it (the standing rule), and the approved round-3 screens did not include these pages. Both buttons render only for MEMBER+ and only when a target / a link exists; production holds none of either."
  }
 ]

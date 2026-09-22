@@ -137,3 +137,10 @@ asserted, marked `xfail(strict=True)` against AUD-042 and AUD-043.
 Nine fixture screenshots and six production-data renders, all in
 `docs/ui-testing/round3-fixtures/`, listed in Part A's two tables above. The
 merge is gated on **"screens approved"**.
+
+## Merged
+
+**Screens approved by AK 2026-09-22.** Merge `cae88ca` (--no-ff, WRITE-FREE,
+no migration) pushed 02:27:51Z; four services SUCCESS on cae88ca by 02:31:46Z;
+the deployed proof and the unchanged production baselines are recorded in
+`docs/audit/AUDIT_2026-09.md` (post-merge transcript, round 3) and D-501.
