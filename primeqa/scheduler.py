@@ -87,6 +87,7 @@ def scheduler_tick(ctx):
         s1_sync_enqueuer_tick,        # D-153 (substrate-1 sync cadence)
         s1_sync_reaper_tick,          # D-153 (substrate-1 sync queue)
         llm_catalog_refresh_tick,     # migrations 060/061 (daily; self-gated)
+        api_request_log_prune_tick,   # round 4 (AUD-034): rows older than 30 days go, daily
     )
     for tick in ticks:
         try:
@@ -124,6 +125,30 @@ def s3_reaper_tick(ctx):
 # per process (the tick loop fires every REAPER_INTERVAL seconds). A restart
 # re-runs it once — desirable: a fresh check right after each deploy.
 _catalog_refresh_last_date = None
+
+
+_request_log_prune_last_date = None
+
+
+def api_request_log_prune_tick(ctx):
+    """Round 4 (AUD-034): delete api_request_log rows older than 30 days, once
+    a day. Best-effort — a failure logs and skips, never crashes the loop."""
+    global _request_log_prune_last_date
+    from datetime import datetime, timezone
+    today = datetime.now(timezone.utc).date()
+    if _request_log_prune_last_date == today:
+        return
+    _request_log_prune_last_date = today
+    try:
+        from primeqa import db as dbmod
+        from primeqa.shared.request_log import RETENTION_DAYS, prune
+        if dbmod.engine is None:
+            return
+        with dbmod.engine.begin() as conn:
+            n = prune(conn, days=RETENTION_DAYS)
+        log.info("api_request_log prune: %d row(s) older than %d days removed", n, RETENTION_DAYS)
+    except Exception as exc:  # noqa: BLE001
+        log.warning("api_request_log prune failed: %s", exc)
 
 
 def llm_catalog_refresh_tick(ctx):

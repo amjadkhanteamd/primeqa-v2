@@ -36,11 +36,12 @@ NOT_A_LOOKUP = {
 }
 # retired v1 id spaces: the id names a dropped table; the path redirects to its
 # live successor (AUD-032's shape) — asserted below to land on a 200
-RETIRED_REDIRECTS = {
-    "/results/<int:run_id>": "/runs/substrate",
-    "/runs/<int:run_id>": "/runs/substrate",
-    "/suites/<int:suite_id>": "/requirements",
-}
+# Round 4 (AUD-025): the id-taking bookmark aliases come from the authority
+# table's REDIRECT_ONLY (one source); /runs/<int> is the round-2 redirect.
+from tests.unit.test_route_authority_table import REDIRECT_ONLY  # noqa: E402
+
+RETIRED_REDIRECTS = {rule: succ for rule, succ in REDIRECT_ONLY.items() if "<int:" in rule}
+RETIRED_REDIRECTS["/runs/<int:run_id>"] = "/runs/substrate"
 ERROR_PAGE = ("Something went wrong", "Traceback (most recent call last)")
 
 

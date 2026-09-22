@@ -39,6 +39,11 @@
               Groups
             </a>
             {% endif %}
+            {# Round 4 (AUD-031): the requirement tree's only management surface, linked from Settings #}
+            <a href="/sections" data-settings-item="Sections" class="{% if settings_page == 'sections' %}bg-indigo-50 text-indigo-700 border-indigo-600{% else %}text-gray-600 hover:bg-gray-50 border-transparent{% endif %} group flex items-center px-3 py-2 text-sm font-medium rounded-md border-l-2">
+              <svg class="mr-3 h-4 w-4 {% if settings_page == 'sections' %}text-indigo-500{% else %}text-gray-400{% endif %}" fill="none" viewBox="0 0 24 24" stroke-width="1.5" stroke="currentColor"><path stroke-linecap="round" stroke-linejoin="round" d="M2.25 12.75V12A2.25 2.25 0 014.5 9.75h15A2.25 2.25 0 0121.75 12v.75m-8.69-6.44l-2.12-2.12a1.5 1.5 0 00-1.061-.44H4.5A2.25 2.25 0 002.25 6v12a2.25 2.25 0 002.25 2.25h15A2.25 2.25 0 0021.75 18V9a2.25 2.25 0 00-2.25-2.25h-5.379a1.5 1.5 0 01-1.06-.44z" /></svg>
+              Sections
+            </a>
             {% if has_permission('manage_users') %}
             <a href="/settings/users" data-settings-item="Users" class="{% if settings_page == 'users' %}bg-indigo-50 text-indigo-700 border-indigo-600{% else %}text-gray-600 hover:bg-gray-50 border-transparent{% endif %} group flex items-center px-3 py-2 text-sm font-medium rounded-md border-l-2">
               <svg class="mr-3 h-4 w-4 {% if settings_page == 'users' %}text-indigo-500{% else %}text-gray-400{% endif %}" fill="none" viewBox="0 0 24 24" stroke-width="1.5" stroke="currentColor"><path stroke-linecap="round" stroke-linejoin="round" d="M12 6.75a5.25 5.25 0 100 10.5 5.25 5.25 0 000-10.5z" /></svg>
