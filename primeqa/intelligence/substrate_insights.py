@@ -52,6 +52,7 @@ _RECENT_RUNS_SQL = (
     "i.cause_kind, i.vr_name "
     "FROM s4_execution_runs r LEFT JOIN s6_interpretations i ON i.run_id = r.run_id "
     "WHERE (CAST(:env AS int) IS NULL OR r.environment_id = :env) "
+    "AND r.finished_at IS NOT NULL "
     "ORDER BY r.finished_at DESC LIMIT :limit")
 
 

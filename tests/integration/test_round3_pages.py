@@ -342,8 +342,8 @@ def relative_date_claim(world):
     return str(cr.test_id)
 
 
-@pytest.mark.xfail(strict=True, reason="AUD-043 is open: a $relative_date value renders as its Python repr")
 def test_aud_043_a_relative_date_value_renders_as_a_date_not_a_dict(relative_date_claim):
+    """Round 4: the marker is gone — a RelativeDate value reads in words."""
     status, html = _get(MEMBER, "tester", f"/claims/{relative_date_claim}")
     assert status == 200
     assert "$relative_date" not in html and "offset_days" not in html, \

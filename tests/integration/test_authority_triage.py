@@ -50,6 +50,24 @@ def _flash(c, location: str) -> str:
     return (m.group(1) if m else "").encode().decode("unicode_escape")
 
 
+def _sweep_triage_surface_worlds(eng):
+    """Remove every requirement/link/identity/share this suite's world shape
+    left behind (the marker is the key prefix and the share token prefix)."""
+    from sqlalchemy import create_engine
+    with create_engine(DB, isolation_level="AUTOCOMMIT").connect() as c:
+        c.execute(text("SET session_replication_role = replica"))
+        c.execute(text("SET search_path TO tenant_1, public"))
+        for sql in ("DELETE FROM requirement_surface_link_claims WHERE link_id IN (SELECT id FROM requirement_surface_links WHERE requirement_key LIKE 'TRIAGE-SURF-%')",
+                    "DELETE FROM requirement_surface_links WHERE requirement_key LIKE 'TRIAGE-SURF-%'",
+                    "DELETE FROM requirement_identities WHERE external_key LIKE 'TRIAGE-SURF-%'",
+                    "DELETE FROM public.shared_dashboard_links WHERE token LIKE 'triage-%'",
+                    "DELETE FROM public.release_requirements WHERE requirement_id IN (SELECT id FROM public.requirements WHERE external_key LIKE 'TRIAGE-SURF-%')",
+                    "DELETE FROM public.requirements WHERE external_key LIKE 'TRIAGE-SURF-%'"):
+            c.execute(text(sql))
+        c.execute(text("SET session_replication_role = origin"))
+
+
+
 @pytest.fixture(scope="module")
 def world():
     from sqlalchemy import create_engine
@@ -172,6 +190,10 @@ def world2(world):
     from primeqa.intelligence.requirement_surface_console import declare_surface
     eng = create_engine(DB)
     key = f"TRIAGE-SURF-{uuid4().hex[:6]}"
+    # Round 4 (AUD-052): self-healing — a run that died before its teardown
+    # left its TRIAGE-SURF world behind (five on scratch); the next run sweeps
+    # every world of this suite's shape before planting its own.
+    _sweep_triage_surface_worlds(eng)
     with eng.begin() as c:
         req = c.execute(text("INSERT INTO requirements (tenant_id, section_id, source, created_by, jira_summary, external_key) "
                              "VALUES (1, (SELECT id FROM sections WHERE tenant_id = 1 ORDER BY id LIMIT 1), 'manual', :u, 'triage surface owner', :k) RETURNING id"),

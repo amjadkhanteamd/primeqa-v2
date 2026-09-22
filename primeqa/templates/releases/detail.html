@@ -120,8 +120,10 @@
             <span><span class="font-medium text-gray-900">{{ env_names.get(t.environment_id, 'env ' ~ t.environment_id) }}</span>
               <span class="text-xs text-gray-500">&middot; declared by {{ t.declared_by_name }} &middot; {{ t.declared_at[:10] if t.declared_at else '' }}</span></span>
             {% if user.role in ['ba', 'tester', 'admin', 'superadmin'] %}
-            <form method="POST" action="/releases/{{ release.id }}/targets/{{ t.environment_id }}/remove" class="inline">
-              {{ csrf_input | safe }}<input type="hidden" name="reason" value="">
+            <form method="POST" action="/releases/{{ release.id }}/targets/{{ t.environment_id }}/remove" class="inline-flex items-center gap-1">
+              {{ csrf_input | safe }}
+              {# round 4 (AUD-053): a removal carries its reason — the service refuses an empty one (AUD-023, D-497) #}
+              <input type="text" name="reason" required minlength="3" placeholder="why it is no longer a target" aria-label="Reason for removing this target" class="w-44 rounded-md border border-gray-300 px-2 py-1 text-xs">
               <button type="submit" class="text-xs text-rose-700 hover:underline" data-testid="remove-target">Remove</button>
             </form>
             {% endif %}

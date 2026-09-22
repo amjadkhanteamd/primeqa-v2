@@ -25,6 +25,7 @@ import os
 
 import pytest
 from sqlalchemy import text
+from tests.integration._ui_world import remove_claim_set_world
 
 DB = os.environ.get("S3A3_TEST_DATABASE_URL")
 def _s2_org(session):
@@ -263,10 +264,23 @@ def world():
         {"id": third[0], "nodes": [{"html": "<div x>", "target": ["div"]}]}])
     process_job(s, job_id=uuid.UUID(jobs["E"])); s.commit()
 
+    extra = {"sets": [], "invs": []}                  # what a test plants beyond the world
     yield {"s": s, "jobs": jobs, "cs_id": cs_id, "inv": inv,
            "dev": dev, "site": site, "imgalt_rule": imgalt_rule,
            "label_rule": label_rule, "third_rule": third[1],
-           "snap1": snap1}
+           "snap1": snap1, "extra": extra}
+    # round 4 (AUD-052): everything this world planted goes — sets, claims, inventories, manifests, verdicts
+    s.rollback()
+    remove_claim_set_world(s.connection(), claim_set_ids=[cs_id, *extra["sets"]],
+                           inventory_versions=[inv, *extra["invs"]])
+    # and the org this world synced into (its bundle entities, versions, snapshots)
+    for sql in ("DELETE FROM edges WHERE source_entity_id IN (SELECT id FROM entities WHERE CAST(connected_org_id AS text) = :o) "
+                "OR target_entity_id IN (SELECT id FROM entities WHERE CAST(connected_org_id AS text) = :o)",
+                "DELETE FROM entities WHERE CAST(connected_org_id AS text) = :o",
+                "DELETE FROM logical_versions WHERE CAST(connected_org_id AS text) = :o",
+                "DELETE FROM connected_orgs WHERE CAST(id AS text) = :o"):
+        s.execute(text(sql), {"o": org_id})
+    s.commit()
     s.close()
 
 
@@ -369,6 +383,7 @@ def test_cross_inventory_refused_and_idempotent_recompare(world):
     res2 = enumerate_claims(s, catalogue_release_id=2,
                             inventory_version=inv2, persona_scope="p7",
                             created_by=USER_ID)
+    world["extra"]["invs"].append(inv2); world["extra"]["sets"].append(str(res2["claim_set_id"]))
     approve_claim_set(s, claim_set_id=res2["claim_set_id"],
                       user_id=USER_ID, tenant_id=1)
     s.commit()

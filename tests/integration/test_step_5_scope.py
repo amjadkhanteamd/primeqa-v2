@@ -127,6 +127,17 @@ def test_release_scope_records_policy_version_plan_and_the_final_decision_beside
                             grade_release(s, tenant_id=tenant_id, release_id=release_id, keys=keys)))
     monkeypatch.setattr("primeqa.intelligence.substrate_decision.get_release_substrate_decision",
                         lambda tenant_id, keys, criteria=None: {"available": False, "applicable": False, "claim_count": 0})
+    # Round 4 (AUD-050): the composer reads its two pre-conditions (scope,
+    # readiness) over its OWN tenant session (D-492/D-496) — a world this suite
+    # plants inside a rolled-back transaction is invisible there, so the act
+    # refused scope_empty. The pre-condition read is pointed at the suite's
+    # session; the composer's logic is untouched.
+    def _resolve_over_the_suite_session(tenant_id, release_id, keys):
+        from primeqa.intelligence.quality_evidence import release_scope
+        from primeqa.intelligence.substrate_decision import release_scope_readiness
+        return (release_scope(s, tenant_id=tenant_id, release_id=release_id, keys=keys),
+                release_scope_readiness(tenant_id, keys, session=s), None)
+    monkeypatch.setattr(dc, "_resolve_scope_and_readiness", _resolve_over_the_suite_session)
     repo = ReleaseRepository(s)
     release = repo.get_release(w["release"], TENANT)
     env = dc.evaluate_and_record(s, release, TENANT, release_repo=repo)

@@ -104,9 +104,13 @@ def test_trigger_rejects_missing_instance_url():
 def _seed_entity(conn, org_id, version_seq, *, etype="Field",
                  api="Acme__c.X__c", valid_to=None):
     return conn.execute(text(
+        # Round 4 (AUD-046): the console's counters and the org-status compute
+        # scope an org's entities by ``connected_org_id`` (the per-org
+        # restructure, D-323..D-325); the suite had set the older
+        # last_synced_from_org_id only, so its rows were never THIS org's.
         "INSERT INTO entities (entity_type, sf_api_name, valid_from_seq, "
-        "valid_to_seq, last_synced_at, last_synced_from_org_id) "
-        "VALUES (:t, :a, :s, :vt, NOW(), CAST(:o AS uuid)) RETURNING id"),
+        "valid_to_seq, last_synced_at, last_synced_from_org_id, connected_org_id) "
+        "VALUES (:t, :a, :s, :vt, NOW(), CAST(:o AS uuid), CAST(:o AS uuid)) RETURNING id"),
         {"t": etype, "a": api, "s": version_seq, "vt": valid_to,
          "o": str(org_id)}).scalar()
 

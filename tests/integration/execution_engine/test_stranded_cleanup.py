@@ -5,6 +5,16 @@ the crash-recovery reaper, against the governance DB (the migrated
 The sink writes/marks in its own committed transactions; the reaper finds
 stranded rows, deletes via an injected client, and marks them cleaned. The live
 Salesforce client is injected (a fake) — no creds, no real org.
+
+Round 4 (AUD-049): the suite had drifted from the reaper's predicate in two
+ways and read 0 where it expected 1 and 2. (1) The D-245 Phase 4 reaper GUARD
+reads the env's run policy from ``public.environments`` and reaps only a
+``full``, non-production env — the suite planted records for env ids 7/9/42
+that had no row at all, so every record was SKIPPED (the guard working, the
+suite blind to it). (2) Round 4's write-ahead rule: a created record names a
+run that EXISTS (``fk_s4_created_records_run``), so every seed plants its run.
+The reaper is not broken; the world it was shown was. The guard is now
+asserted by name: a read_only env and a production env are never reaped.
 """
 from __future__ import annotations
 
@@ -24,11 +34,59 @@ from tests.integration.generation.conftest import TEST_TENANT_ID
 pytestmark = pytest.mark.usefixtures("db_setup")
 
 
+ENV_FULL, ENV_FULL_2, ENV_RO, ENV_PROD, ENV_SINK = 7, 9, 8, 6, 42
+
+
+def _plant_envs():
+    """The environments the reaper's guard reads (D-245 Phase 4): two full
+    sandboxes, one read_only env, one production env, and the sink's env."""
+    with get_tenant_connection(TEST_TENANT_ID) as conn:
+        # The governance harness database carries the TENANT schema only — the
+        # product's public tables are not migrated into it. The reaper's guard
+        # reads public.environments, so the harness gets the columns it reads
+        # (a shim of the product table, created only when the table is absent;
+        # scratch and production have the real one).
+        conn.execute(text(
+            "CREATE TABLE IF NOT EXISTS public.environments ("
+            " id INTEGER PRIMARY KEY, tenant_id INTEGER NOT NULL, name TEXT NOT NULL,"
+            " env_type TEXT NOT NULL, sf_instance_url TEXT NOT NULL, sf_api_version TEXT NOT NULL,"
+            " execution_policy TEXT NOT NULL DEFAULT 'full', is_production BOOLEAN NOT NULL DEFAULT false,"
+            " is_active BOOLEAN NOT NULL DEFAULT true)"))
+        for env_id, policy, prod in ((ENV_FULL, "full", False), (ENV_FULL_2, "full", False),
+                                     (ENV_RO, "read_only", False), (ENV_PROD, "full", True),
+                                     (ENV_SINK, "full", False)):
+            conn.execute(text(
+                "INSERT INTO public.environments (id, tenant_id, name, env_type, sf_instance_url, "
+                "sf_api_version, execution_policy, is_production, is_active) "
+                "VALUES (:id, :t, :n, 'sandbox', 'https://stranded.test', 'v60.0', :p, :prod, true) "
+                "ON CONFLICT (id) DO UPDATE SET execution_policy = EXCLUDED.execution_policy, "
+                "is_production = EXCLUDED.is_production"),
+                {"id": env_id, "t": TEST_TENANT_ID, "n": f"stranded-suite env {env_id}", "p": policy, "prod": prod})
+
+
 @pytest.fixture(autouse=True)
 def _clean():
+    _plant_envs()
     with get_tenant_connection(TEST_TENANT_ID) as conn:
         conn.execute(text("DELETE FROM s4_created_records"))
     yield
+    with get_tenant_connection(TEST_TENANT_ID) as conn:
+        conn.execute(text("DELETE FROM s4_created_records"))
+        conn.execute(text("DELETE FROM s4_execution_runs WHERE recipe_version_seq = -49"))
+        conn.execute(text("DELETE FROM public.environments WHERE id = ANY(:ids) AND name LIKE 'stranded-suite env %'"),
+                     {"ids": [ENV_FULL, ENV_FULL_2, ENV_RO, ENV_PROD, ENV_SINK]})
+
+
+def _plant_run(run_id, env):
+    """Round 4: a created record names a run that EXISTS — plant a finalized
+    run for the record (recipe_version_seq -49 marks the suite's rows)."""
+    with get_tenant_connection(TEST_TENANT_ID) as conn:
+        conn.execute(text(
+            "INSERT INTO s4_execution_runs (run_id, recipe_id, recipe_version_seq, claim_test_id, "
+            "claim_version_seq, environment_id, outcome, started_at, finished_at, evidence) "
+            "VALUES (CAST(:r AS uuid), gen_random_uuid(), -49, gen_random_uuid(), NULL, :e, "
+            "'errored', now() - interval '2 hours', now() - interval '2 hours', '{}'::jsonb) "
+            "ON CONFLICT (run_id) DO NOTHING"), {"r": str(run_id), "e": env})
 
 
 class _FakeClient:
@@ -52,6 +110,7 @@ def _rows():
 
 
 def _seed(run_id, sobject, record_id, *, env=7, cleaned=False, age_minutes=60):
+    _plant_run(run_id, env)
     with get_tenant_connection(TEST_TENANT_ID) as conn:
         conn.execute(text(
             "INSERT INTO s4_created_records "
@@ -66,7 +125,7 @@ def _seed(run_id, sobject, record_id, *, env=7, cleaned=False, age_minutes=60):
 # ---------------------------------------------------------------------------
 
 def test_sink_writes_row_uncleaned_with_environment():
-    run_id = uuid4()
+    run_id = uuid4(); _plant_run(run_id, ENV_SINK)
     sink = StrandedRecordSink(TEST_TENANT_ID, environment_id=42)
     sink.created(run_id, "Case", "500AAA", 0)
     rows = _rows()
@@ -77,7 +136,7 @@ def test_sink_writes_row_uncleaned_with_environment():
 
 
 def test_sink_marks_cleaned():
-    run_id = uuid4()
+    run_id = uuid4(); _plant_run(run_id, ENV_SINK)
     sink = StrandedRecordSink(TEST_TENANT_ID, environment_id=42)
     sink.created(run_id, "Case", "500AAA", 0)
     sink.cleaned(run_id, "500AAA")
@@ -109,12 +168,13 @@ def test_reaper_skips_recent_cleaned_and_null_env():
     _seed(uuid4(), "Case", "RECENT", env=7, age_minutes=1)        # too fresh
     _seed(uuid4(), "Case", "ALREADY", env=7, cleaned=True, age_minutes=60)
     # NULL env (a pre-D-230 finalize-written row) — seed with explicit NULL
+    noenv = uuid4(); _plant_run(noenv, ENV_FULL)
     with get_tenant_connection(TEST_TENANT_ID) as conn:
         conn.execute(text(
             "INSERT INTO s4_created_records (run_id, sobject, record_id, created_seq, "
             "cleaned, environment_id, created_at) VALUES "
             "(CAST(:r AS uuid), 'Case', 'NOENV', 0, false, NULL, NOW() - INTERVAL '60 minutes')"
-        ), {"r": str(uuid4())})
+        ), {"r": str(noenv)})
     client = _FakeClient()
     n = reap_stranded_records(
         TEST_TENANT_ID, stale_minutes=15,
@@ -226,3 +286,24 @@ def test_reaper_gives_up_on_rows_past_the_7day_window():
     assert n == 0
     assert client.deleted == []
     assert _rows()[0]["cleaned"] is False               # left, but not retried
+
+
+# ---------------------------------------------------------------------------
+# Round 4 (AUD-049): the D-245 Phase 4 guard — a policy-protected env is never
+# reaped, and an env the tenant does not have is not reaped either
+# ---------------------------------------------------------------------------
+
+def test_reaper_never_reaps_a_read_only_or_production_env_nor_an_unknown_one():
+    _seed(uuid4(), "Case", "RO", env=ENV_RO, age_minutes=60)
+    _seed(uuid4(), "Case", "PROD", env=ENV_PROD, age_minutes=60)
+    _seed(uuid4(), "Case", "OK", env=ENV_FULL, age_minutes=60)
+    with get_tenant_connection(TEST_TENANT_ID) as conn:      # an env id with NO row (the pre-round-4 suite's world)
+        conn.execute(text("DELETE FROM public.environments WHERE id = 9"))
+    _seed(uuid4(), "Case", "UNKNOWN", env=9, age_minutes=60)
+    client = _FakeClient()
+    n = reap_stranded_records(TEST_TENANT_ID, stale_minutes=15,
+                              client_resolver=lambda session, env_id: client)
+    assert n == 1
+    assert client.deleted == [("Case", "OK")]
+    assert {r["record_id"]: r["cleaned"] for r in _rows()} == {
+        "RO": False, "PROD": False, "OK": True, "UNKNOWN": False}

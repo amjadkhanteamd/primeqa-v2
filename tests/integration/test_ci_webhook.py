@@ -142,12 +142,13 @@ def test_ci_webhook_hmac_and_tenant_guard():
             f"cross-tenant env expected 404, got {r.status_code}: {r.data[:200]}"
 
         # (4) valid HMAC + same-tenant non-prod env -> passes HMAC + A5 + the SEC-7
-        #     prod gate and reaches the enqueue path (this release has no
-        #     requirements, so it lands on the 'no substrate claims' 400, proving
-        #     every security gate was cleared).
+        #     prod gate and reaches the enqueue path, which since D-494 (AUD-013)
+        #     refuses FIRST with the plan requirement: 409 PLAN_REQUIRED (the
+        #     webhook refuses until it is taught to plan — the fork AK ruled).
+        #     Reaching that refusal proves every security gate before it cleared.
         r = _post_webhook({"release_id": rid, "environment_id": sbx_eid})
-        assert r.status_code == 400 and b"No substrate claims" in r.data, \
-            f"a valid same-tenant request did not reach the enqueue path: {r.status_code} {r.data[:200]}"
+        assert r.status_code == 409 and b"PLAN_REQUIRED" in r.data, \
+            f"a valid same-tenant request did not reach the plan gate: {r.status_code} {r.data[:200]}"
     finally:
         if prev is None:
             os.environ.pop("WEBHOOK_SECRET", None)

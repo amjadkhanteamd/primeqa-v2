@@ -398,6 +398,13 @@ def _plant_proposal(claim, run_id, *, kind="recipe_edit", verdict, grounding,
                     status="proposed", confidence=None, field_changes=None,
                     auto_applied=False, payload=None):
     with _conn() as conn:
+        # round 4 (AUD-028): a proposal names a run that EXISTS (fk_repair_proposals_run);
+        # a caller that minted a bare run id gets a minimal finalized run for it
+        conn.execute(text(
+            "INSERT INTO s4_execution_runs (run_id, recipe_id, recipe_version_seq, claim_test_id, environment_id, "
+            "outcome, started_at, finished_at, evidence) VALUES (CAST(:r AS uuid), gen_random_uuid(), 1, CAST(:c AS uuid), :e, "
+            "'failed', now(), now(), '{}'::jsonb) ON CONFLICT (run_id) DO NOTHING"),
+            {"r": str(run_id), "c": str(claim), "e": ENV})
         if status in ("applied", "approved"):
             # planted HISTORY (a July-shaped row applied before the gate existed):
             # the table's apply guard (migration 20260919_0010) refuses such an

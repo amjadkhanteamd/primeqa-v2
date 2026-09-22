@@ -981,6 +981,11 @@ def run_all_recipes_execution(
                         record_sink=record_sink, field_overrides=field_overrides,
                         caller_tier=caller_tier, coordinator=coord)
                 except Exception as exc:               # execute failed → errored probe
+                    closed = (record_sink.pop_last_closed()
+                              if hasattr(record_sink, "pop_last_closed") else None)
+                    if closed is not None:             # round 4: the closed row IS the probe
+                        probes.append(ProbeRun(recipe.recipe_id, closed, "errored"))
+                        continue
                     evidence = _synthesize_errored_evidence(recipe, environment_id, exc)
                 finalize_run(session, evidence, coordinator=coord,
                              batch_id=batch_id, source=_RUNALL_SOURCE,
@@ -1079,6 +1084,14 @@ def run_all_recipes_execution_async(
                     null_asserted_fields=null_asserted,
                     teardown_client=td_client, org_stamp=org_stamp)
             except Exception as exc:
+                # Round 4 (AUD-028): a probe that raised out of an OPENED run
+                # already has its row closed as errored by the executor's
+                # interrupt-close — count that row; synthesize only when
+                # nothing was opened (a raise before the write-ahead).
+                closed = sink.pop_last_closed() if hasattr(sink, "pop_last_closed") else None
+                if closed is not None:
+                    probes.append(ProbeRun(recipe.recipe_id, closed, "errored"))
+                    continue
                 evidence = _stamp_evidence(
                     _synthesize_errored_evidence(recipe, environment_id, exc),
                     org_stamp)

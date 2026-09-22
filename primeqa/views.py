@@ -30,6 +30,15 @@ from primeqa.release.service import ReleaseService
 
 views_bp = Blueprint("views", __name__, template_folder="templates")
 
+#: Round 4 (AUD-033): routes retired with a 410 and one line naming the successor.
+RETIRED_ROUTE_NOTE = {
+    "/plans": ("This action was retired: a tenant-wide plan is no longer recorded here. "
+               "Plan a release from its decision tab (/releases/<id>/plan), or let the schedule plan."),
+    "/requirements/<int:req_id>/run-substrate": (
+        "This action was retired: a requirement is no longer run from here. "
+        "Plan it first (/requirements/<id>/plan), then run that plan."),
+}
+
 
 def get_current_user():
     """Audit fix C-4 (2026-04-19): tolerate a JWT that's missing the
@@ -2814,25 +2823,15 @@ def requirement_plan(req_id):
 
 
 @views_bp.route("/plans", methods=["POST"])
-@require_tier(Tier.MEMBER)
 @login_required
 def plan_tenant_wide():
-    """The honest successor of "Run all approved": a tenant-wide plan on one
-    environment a person must look at first."""
-    from flask import flash
-
-    from primeqa.intelligence.run_plan_console import create_plan
-    env_id = request.form.get("environment_id", type=int)
-    if _plan_env_or_flash(env_id, "/runs/substrate") is None:
-        return redirect("/runs/substrate")
-    res = create_plan(request.user["tenant_id"],
-                      scope={"scope_kind": "tenant", "environment_id": env_id,
-                             "include_hidden": request.form.get("include_hidden") == "1"},
-                      user_id=request.user["id"], user_role=request.user["role"])
-    if not res.get("ok"):
-        flash(res.get("sentence") or "Could not plan.", "error")
-        return redirect("/runs/substrate")
-    return redirect(f"/plans/{res['plan_id']}")
+    """RETIRED (round 4, AUD-033, the decision memo's ruling): a tenant-wide
+    plan was never recorded on production (run_plans by scope: schedule 12,
+    release 5, tenant 0) and the route was reachable only by a crafted POST.
+    Its successors are the release plan (``/releases/<id>/plan``, the decision
+    tab) and the schedule, which plans on its own. Answers 410 Gone with the
+    successor named — for every authenticated caller alike."""
+    return RETIRED_ROUTE_NOTE["/plans"], 410
 
 
 @views_bp.route("/plans/<uuid:plan_id>")
@@ -3116,91 +3115,14 @@ def requirements_generate_substrate(req_id):
 
 
 @views_bp.route("/requirements/<int:req_id>/run-substrate", methods=["POST"])
-@require_tier(Tier.MEMBER)
 @login_required
 def requirements_run_substrate(req_id):
-    """Run this requirement's approved test cases — the detail-page counterpart
-    of the /run picker's per-requirement enqueue. Same gating as /run: env must
-    be in the caller's accessible set (D-245 Phase 3) and non-production; the
-    execution chokepoint (intake's gate_enqueue) still gates every claim.
-
-    D-317 slice 6: an htmx submit stays ON the page — the response is the
-    live-chips poller fragment (+ a toast); refusals toast instead of flash.
-    The no-JS form keeps the classic flash + redirect behavior."""
-    import json
-    from flask import flash
-    is_hx = bool(request.headers.get("HX-Request"))
-
-    def _hx_notice(message, kind="error"):
-        # The htmx response must still satisfy the #test-plan-status swap —
-        # return the (idle or live) fragment with the message as a toast.
-        status_ctx = _test_plan_status_context(req_id) or {
-            "req_id": req_id, "tests": [], "any_active": False,
-            "active_count": 0}
-        resp = make_response(render_template(
-            "requirements/_test_plan_status.html", **ctx(**status_ctx)))
-        resp.headers["HX-Trigger"] = json.dumps(
-            {"toast": {"message": message, "kind": kind}})
-        return resp
-
-    from primeqa.execution_engine.errors import PlanRequiredError
-    if is_hx:                                              # AUD-013: the page's Plan is the exit
-        return _hx_notice(PlanRequiredError.REASON)
-    flash(PlanRequiredError.REASON, "error")
-    return redirect(f"/requirements/{req_id}")
-    env_id = request.form.get("environment_id", type=int)
-    db = next(get_db())
-    try:
-        from primeqa.test_management.repository import RequirementRepository
-        tid = request.user["tenant_id"]
-        req = RequirementRepository(db).get_requirement(req_id, tid)
-        if not req:
-            if is_hx:
-                return _hx_notice("Requirement not found.")
-            flash("Requirement not found", "error")
-            return redirect("/requirements")
-        repo = EnvironmentRepository(db)
-        if not (env_id and repo.is_environment_accessible(
-                tid, request.user["id"], request.user["role"], env_id)):
-            if is_hx:
-                return _hx_notice("Pick an environment you have access to.")
-            flash("Pick an environment you have access to.", "error")
-            return redirect(f"/requirements/{req_id}")
-        env = repo.get_environment(env_id, tid)
-        if env.is_production:
-            msg = ("Substrate runs are sandbox-only — production "
-                   "environments cannot be targeted here.")
-            if is_hx:
-                return _hx_notice(msg)
-            flash(msg, "error")
-            return redirect(f"/requirements/{req_id}")
-        from primeqa.intelligence.s3_enqueue import _requirement_to_ref
-        req_key = _requirement_to_ref(req)["key"]
-    finally:
-        db.close()
-
-    from primeqa.execution_engine.intake import enqueue_claims_for_requirements
-    result = enqueue_claims_for_requirements(
-        tenant_id=tid, external_keys=[req_key], environment_id=env_id,
-        created_by=request.user["id"])
-    count = result["enqueued"]
-    skipped = result.get("skipped_unexecutable") or 0
-    if count == 0:
-        if is_hx:
-            return _hx_notice("No approved test cases to run for this "
-                              "requirement.")
-        flash("No approved test cases to run for this requirement.", "error")
-        return redirect(f"/requirements/{req_id}")
-    if is_hx:
-        return _hx_notice(
-            f"{count} run{'s' if count != 1 else ''} queued"
-            + (f" — {skipped} skipped (not yet executable)" if skipped else "")
-            + " — watching live.", kind="success")
-    flash(f"{count} substrate run{'s' if count != 1 else ''} queued"
-          + (f" — {skipped} test case{'s' if skipped != 1 else ''} skipped "
-             f"(not yet executable)" if skipped else ""),
-          "success")
-    return redirect("/runs/substrate")
+    """RETIRED (round 4, AUD-033, the decision memo's ruling): the pre-D-486
+    per-requirement enqueue. Jobs without a plan stop on 2026-09-09, the day
+    D-486 landed; since D-494 the route refused every call. Its successor is
+    the requirement plan (``/requirements/<id>/plan``): plan, then run THAT
+    plan. Answers 410 Gone with the successor named."""
+    return RETIRED_ROUTE_NOTE["/requirements/<int:req_id>/run-substrate"], 410
 
 
 def _test_plan_status_context(req_id):

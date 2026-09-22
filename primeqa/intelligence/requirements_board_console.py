@@ -92,13 +92,13 @@ def _read(s, tenant_id: int, keys: list) -> dict:
             SELECT DISTINCT ON (r.claim_test_id) CAST(r.claim_test_id AS text),
                    r.outcome::text, r.environment_id
             FROM s4_execution_runs r
-            WHERE CAST(r.claim_test_id AS text) = ANY(:ids)
-            ORDER BY r.claim_test_id, r.finished_at DESC NULLS LAST
+            WHERE CAST(r.claim_test_id AS text) = ANY(:ids) AND r.finished_at IS NOT NULL
+            ORDER BY r.claim_test_id, r.finished_at DESC
         """), {"ids": all_functional}).fetchall():
             latest[tid] = {"outcome": outcome, "environment_id": env}
         for tid, env in s.execute(text("""
             SELECT DISTINCT CAST(claim_test_id AS text), environment_id
-            FROM s4_execution_runs WHERE CAST(claim_test_id AS text) = ANY(:ids)
+            FROM s4_execution_runs WHERE CAST(claim_test_id AS text) = ANY(:ids) AND finished_at IS NOT NULL
         """), {"ids": all_functional}).fetchall():
             envs_by_claim.setdefault(tid, set()).add(env)
 

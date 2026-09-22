@@ -832,7 +832,11 @@ def test_absence_with_effect_field_refuses(seeded):
                              expected_absence=True),
              expect_emit=False)
     assert r.outcome.outcome_kind == OutcomeKind.REFUSAL
-    assert "field-conditional" in r.outcome.refusals[0].payload["detail"]
+    # Round 4 (AUD-045): the absence lane refuses EARLIER now — an absence case
+    # needs at least one verified trigger (field, value) pair before the
+    # field-conditional question is reached (the D-337-era absence rule); the
+    # refusal is still the right kind, its first reason moved.
+    assert "verified trigger" in r.outcome.refusals[0].payload["detail"]
 
 
 def test_absence_recipe_projects_through_the_s4_bridge(seeded):
@@ -1128,7 +1132,11 @@ def test_formula_placeholder_expected_value_refuses(seeded):
              expect_emit=False)
     assert r.outcome.outcome_kind == OutcomeKind.REFUSAL
     d = r.outcome.refusals[0].payload["detail"]
-    assert "<computed>" in d and "currency" in d
+    # Round 4 (AUD-045): a placeholder expected value is refused as a
+    # non-verifiable effect ("no transform, relative-date, or classification")
+    # BEFORE the numeric-vs-currency check runs — the D-268 placeholder class
+    # is caught one gate earlier; the refusal is the same kind.
+    assert "verifiable effect" in d
 
 
 def test_formula_pre_update_expected_value_refuses_naming_final(seeded):

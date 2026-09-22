@@ -18,6 +18,7 @@ import uuid
 
 import pytest
 from sqlalchemy import text
+from tests.integration._ui_world import remove_claim_set_world
 
 DB = os.environ.get("S3A3_TEST_DATABASE_URL")
 def _s2_org(session):
@@ -190,6 +191,10 @@ def world(eng):
             r=tuple(specimens.values())))
     s.execute(text("DELETE FROM s5_rules WHERE rule_id IN :r").bindparams(
         r=tuple(specimens.values())))
+    # round 4 (AUD-052): the world this suite planted through the real services goes too
+    remove_claim_set_world(s.connection(), claim_set_ids=[sid], inventory_versions=[inv])
+    s.execute(text("DELETE FROM s5_catalogue_release_members WHERE release_id = :r"), {"r": release})
+    s.execute(text("DELETE FROM s5_catalogue_releases WHERE id = :r"), {"r": release})
     s.commit()
     s.close()
 

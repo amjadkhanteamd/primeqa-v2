@@ -39,6 +39,19 @@ PUBLIC, VIEWER, MEMBER, ADMIN, SUPERADMIN = "PUBLIC", Tier.VIEWER, Tier.MEMBER, 
 ROLE_AT = {VIEWER: "viewer", MEMBER: "tester", ADMIN: "admin", SUPERADMIN: "superadmin"}
 BELOW = {MEMBER: "viewer", ADMIN: "tester", SUPERADMIN: "admin"}
 
+# Round 4 (AUD-025, the decision memo's ruling): the bookmark aliases of retired
+# v1 surfaces are KEPT and are REDIRECT-ONLY — each answers a redirect to a live
+# successor and nothing else. Not orphans: the inventory reads this set. The
+# miss sweep (tests/integration/test_miss_is_404.py) reads the id-taking ones
+# from here and asserts each lands on a 200.
+REDIRECT_ONLY = {
+    "/results": "/runs/substrate",
+    "/results/<int:run_id>": "/runs/substrate",
+    "/suites": "/requirements",
+    "/suites/<int:suite_id>": "/requirements",
+    "/tickets": "/requirements",
+}
+
 # (method, rule) -> (minimum tier, owner rule). The rule IS the entry; the test is its proof.
 AUTHORITY = {
     # --- auth and the public edge ---------------------------------------------------
@@ -112,7 +125,7 @@ AUTHORITY = {
     ("POST", "/requirements/<int:req_id>/approve-drafts"): (MEMBER, "shared"),
     ("POST", "/requirements/<int:req_id>/generate-substrate"): (MEMBER, "shared"),
     ("POST", "/requirements/<int:req_id>/plan"): (MEMBER, "shared — the plan records its planner"),
-    ("POST", "/requirements/<int:req_id>/run-substrate"): (MEMBER, "refuses without a plan (D-494)"),
+    ("POST", "/requirements/<int:req_id>/run-substrate"): (VIEWER, "RETIRED 410 (AUD-033, round 4): names its successor, the requirement plan"),
     ("POST", "/requirements/<int:req_id>/surfaces"): (MEMBER, "shared — the link records its declarer"),
     ("POST", "/requirements/<int:req_id>/surfaces/<uuid:link_id>/unlink"): (MEMBER, "declarer-or-admin, with a reason (AUD-037; the service + the table)"),
     ("POST", "/api/sections"): (ADMIN, "shared"),
@@ -127,7 +140,7 @@ AUTHORITY = {
     ("POST", "/claims/<uuid:test_id>/run"): (MEMBER, "refuses without a plan (D-494)"),
     ("POST", "/claims/<uuid:test_id>/run-async"): (MEMBER, "refuses without a plan (D-494)"),
     ("POST", "/claim-sets/<claim_set_id>/approve"): (MEMBER, "state-gated (a revoked set is refused)"),
-    ("POST", "/plans"): (MEMBER, "the plan records its planner; environment required (AUD-021)"),
+    ("POST", "/plans"): (VIEWER, "RETIRED 410 (AUD-033, round 4): names its successors, the release plan and the schedule"),
     ("POST", "/plans/<uuid:plan_id>/run"): (MEMBER, "any member executes a recorded plan; once (D-486)"),
     ("POST", "/api/s3-generation-jobs"): (MEMBER, "shared"),
     ("POST", "/api/s3-generation-jobs/<int:job_id>/cancel"): (VIEWER, "creator-or-admin, judged in the route body"),
@@ -278,3 +291,15 @@ def test_a_stale_entry_fails_the_gate(monkeypatch):
     monkeypatch.setattr("tests.unit.test_route_authority_table.AUTHORITY", extended)
     with pytest.raises(AssertionError, match="no live route"):
         test_every_entry_names_a_live_route()
+
+
+@pytest.mark.parametrize("rule, successor", sorted(REDIRECT_ONLY.items()))
+def test_a_redirect_only_alias_answers_a_redirect_to_its_successor(rule, successor):
+    """Round 4 (AUD-025): each kept alias redirects a signed-in viewer to its
+    successor — and does nothing else (no page of its own)."""
+    from primeqa.app import app
+    assert any(r.rule == rule for r in app.url_map.iter_rules()), f"{rule} is not a live rule"
+    c, _ = _client(VIEWER)
+    r = c.get(rule.replace("<int:run_id>", "7").replace("<int:suite_id>", "7"))
+    assert r.status_code in (301, 302, 303), (rule, r.status_code)
+    assert r.headers.get("Location", "").split("?")[0].rstrip("/").endswith(successor), (rule, r.headers.get("Location"))

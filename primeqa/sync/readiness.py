@@ -734,6 +734,7 @@ def _latest_run(session, claim_test_id, environment_id):
         "       COALESCE(finished_at, started_at) AS run_at "
         "FROM s4_execution_runs "
         "WHERE claim_test_id = CAST(:c AS uuid) AND environment_id = :e "
+        "AND finished_at IS NOT NULL "
         "ORDER BY finished_at DESC LIMIT 1"),
         {"c": str(claim_test_id), "e": int(environment_id)}).mappings().first()
 
@@ -795,6 +796,7 @@ _BULK_LATEST_RUN_SQL = """
            COALESCE(r.finished_at, r.started_at) AS run_at
     FROM s4_execution_runs r
     JOIN pairs p ON p.claim = r.claim_test_id AND p.env = r.environment_id
+    WHERE r.finished_at IS NOT NULL
     ORDER BY r.claim_test_id, r.environment_id, r.finished_at DESC
 """
 """The single-pair read's ``ORDER BY finished_at DESC LIMIT 1``, set-based and

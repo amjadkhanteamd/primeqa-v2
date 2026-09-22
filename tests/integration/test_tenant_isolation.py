@@ -240,16 +240,22 @@ def test_add_requirement_tenant_scoped():
                 ReleaseRequirement.requirement_id == own_req.id).first()
             assert linked is not None, "same-tenant requirement failed to link"
     finally:
+        # Round 4 (AUD-052): the cleanup used to swallow its own failure
+        # (`except Exception: rollback()`), so a refused delete left the
+        # release, the foreign requirement, its section and the throwaway
+        # tenant behind on every run. It removes them in dependency order and
+        # a failure is a failure.
         try:
             db.query(ReleaseRequirement).filter(
                 ReleaseRequirement.release_id == rel.id).delete()
             db.delete(rel)
+            db.flush()
             db.delete(foreign_req)
+            db.flush()
             db.delete(sec2)
+            db.flush()
             db.delete(t2)
             db.commit()
-        except Exception:
-            db.rollback()
         finally:
             db.close()
 

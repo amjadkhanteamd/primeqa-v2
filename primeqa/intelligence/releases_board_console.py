@@ -120,7 +120,7 @@ def _tenant_reads(tenant_id, ids, keys_by_release, decisions, rows, session) -> 
                 SELECT DISTINCT ON (CAST(claim_test_id AS text), environment_id)
                        CAST(claim_test_id AS text), environment_id, finished_at
                 FROM s4_execution_runs
-                WHERE CAST(claim_test_id AS text) = ANY(:ids)
+                WHERE CAST(claim_test_id AS text) = ANY(:ids) AND finished_at IS NOT NULL
                 ORDER BY CAST(claim_test_id AS text), environment_id, finished_at DESC
             """), {"ids": functional_all}).fetchall():
                 if (tid, int(env)) not in env_ok:

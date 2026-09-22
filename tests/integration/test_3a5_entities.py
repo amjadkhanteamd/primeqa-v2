@@ -12,6 +12,7 @@ import uuid
 
 import pytest
 from sqlalchemy import text
+from tests.integration._ui_world import remove_claim_set_world
 
 DB = os.environ.get("S3A3_TEST_DATABASE_URL")
 def _s2_org(session):
@@ -43,8 +44,20 @@ def session():
     eng = create_engine(DB, pool_pre_ping=True, connect_args={
         "options": "-csearch_path=tenant_1,public -capp.tenant_id=1"})
     s = Session(bind=eng)
+    # round 4 (AUD-052): the services this suite drives COMMIT their inventories,
+    # claim sets and materialised surface entities, so the fixture's rollback
+    # never undid them. What is NEW since the test began is the test's — and
+    # goes at teardown, whether the test passed or not.
+    before_sets = {str(r[0]) for r in s.execute(text("SELECT id FROM claim_sets"))}
+    before_inv = s.execute(text("SELECT COALESCE(max(inventory_version), 0) FROM ui_surface_inventories")).scalar()
+    s.rollback()
     yield s
     s.rollback()
+    new_sets = [str(r[0]) for r in s.execute(text("SELECT id FROM claim_sets")) if str(r[0]) not in before_sets]
+    new_invs = [r[0] for r in s.execute(text(
+        "SELECT inventory_version FROM ui_surface_inventories WHERE inventory_version > :m"), {"m": before_inv})]
+    remove_claim_set_world(s.connection(), claim_set_ids=new_sets, inventory_versions=new_invs)
+    s.commit()
     s.close()
 
 
@@ -121,6 +134,15 @@ def sync_world(session):
             tenant_schema="tenant_1", logical_version_seq=seq)
 
     yield {"ctx": ctx, "org_id": org_id, "session": session}
+    # round 4 (AUD-052): the org this world synced into, and everything under it, goes
+    session.rollback()
+    for sql in ("DELETE FROM edges WHERE source_entity_id IN (SELECT id FROM entities WHERE CAST(connected_org_id AS text) = :o) "
+                "OR target_entity_id IN (SELECT id FROM entities WHERE CAST(connected_org_id AS text) = :o)",
+                "DELETE FROM entities WHERE CAST(connected_org_id AS text) = :o",
+                "DELETE FROM logical_versions WHERE CAST(connected_org_id AS text) = :o",
+                "DELETE FROM connected_orgs WHERE CAST(id AS text) = :o"):
+        session.execute(text(sql), {"o": org_id})
+    session.commit()
 
 
 def _versions(session, dev):

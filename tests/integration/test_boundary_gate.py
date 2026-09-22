@@ -71,7 +71,8 @@ def _sweep_markers():
             "DELETE FROM requirement_surface_links WHERE requirement_key = 'GATE-BOUNDARY'",
             "DELETE FROM test_requirement_links WHERE external_key = 'GATE-BOUNDARY'",
             "DELETE FROM requirement_identities WHERE external_key = 'GATE-BOUNDARY'",
-            "DELETE FROM repair_proposals WHERE proposal_kind = 'gate'",
+            "WITH g AS (DELETE FROM repair_proposals WHERE proposal_kind = 'gate' RETURNING run_id) "
+            "DELETE FROM s4_execution_runs WHERE run_id IN (SELECT run_id FROM g)",
             "DELETE FROM quality_policies WHERE name = 'gate-boundary'",
             "DELETE FROM public.shared_dashboard_links WHERE environment_id IN (SELECT id FROM public.environments WHERE name LIKE 'gate-boundary%')",
             "DELETE FROM public.release_decisions WHERE release_id IN (SELECT id FROM public.releases WHERE name LIKE 'gate-boundary%' OR name LIKE 'GATE-BOUNDARY%')",
@@ -148,10 +149,16 @@ def world():
         ids["schedule_id"] = conn.execute(text(
             "INSERT INTO s4_run_schedules (environment_id, cron_expr, enabled, created_by) VALUES (:e, '0 6 * * *', false, :u) RETURNING id"),
             {"e": ids["env_id"], "u": ADMIN}).scalar()
+        # round 4 (AUD-028): a proposal names a run that EXISTS (fk_repair_proposals_run) — plant the run first
+        ids["run_id"] = str(uuid.uuid4())
+        conn.execute(text(
+            "INSERT INTO s4_execution_runs (run_id, recipe_id, recipe_version_seq, claim_test_id, claim_version_seq, environment_id, "
+            "outcome, started_at, finished_at, evidence) VALUES (CAST(:r AS uuid), gen_random_uuid(), 1, CAST(:c AS uuid), NULL, :e, "
+            "'failed', now(), now(), '{}'::jsonb)"), {"r": ids["run_id"], "c": ids["test_id"], "e": ids["env_id"]})
         ids["proposal_id"] = conn.execute(text(
             "INSERT INTO repair_proposals (run_id, claim_test_id, environment_id, verdict, proposal_kind, payload, status, proposed_payload, auto_applied) "
             "VALUES (CAST(:r AS uuid), CAST(:c AS uuid), :e, 'failed', 'gate', '{}'::jsonb, 'proposed', '{}'::jsonb, false) RETURNING id"),
-            {"r": str(uuid.uuid4()), "c": ids["test_id"], "e": ids["env_id"]}).scalar()
+            {"r": ids["run_id"], "c": ids["test_id"], "e": ids["env_id"]}).scalar()
         ids["policy_id"] = conn.execute(text("INSERT INTO quality_policies (name, version, status, note) VALUES ('gate-boundary', 1, 'draft', 'gate') RETURNING CAST(id AS text)")).scalar()
         # a declared surface link (the unlink route's id): an established identity + an active-inventory member
         from primeqa.test_representation.identity import establish_for_key
@@ -180,6 +187,7 @@ def world():
             ("DELETE FROM release_targets WHERE release_id = :r", {"r": ids["release_id"]}),
             ("DELETE FROM s4_run_schedules WHERE id = :s", {"s": ids["schedule_id"]}),
             ("DELETE FROM repair_proposals WHERE id = :p", {"p": ids["proposal_id"]}),
+            ("DELETE FROM s4_execution_runs WHERE CAST(run_id AS text) = :r", {"r": ids.get("run_id", "")}),
             ("DELETE FROM requirement_surface_link_claims WHERE link_id IN (SELECT id FROM requirement_surface_links WHERE requirement_key = :k)", {"k": key}),
             ("DELETE FROM requirement_surface_links WHERE requirement_key = :k", {"k": key}),
             ("DELETE FROM test_requirement_links WHERE external_key = :k", {"k": key}),
@@ -477,7 +485,8 @@ def test_aud_021_a_release_with_nothing_to_target_records_no_plan(world):
     assert "target environment" in page, "the refusal sentence is not on the page"
     r2 = c.post("/plans", data={"csrf_token": "gate-csrf-token"}, headers={"X-CSRF-Token": "gate-csrf-token"})
     r3 = c.post(f"/requirements/{world['req_id']}/plan", data={"csrf_token": "gate-csrf-token"}, headers={"X-CSRF-Token": "gate-csrf-token"})
-    assert r2.status_code == 302 and r2.headers["Location"].endswith("/runs/substrate")
+    # round 4 (AUD-033): the tenant-wide plan route is RETIRED — 410, no row, the successor named
+    assert r2.status_code == 410 and "retired" in r2.get_data(as_text=True).lower()
     assert r3.status_code == 302 and r3.headers["Location"].endswith(f"/requirements/{world['req_id']}")
     with get_tenant_connection(T) as conn:
         after = conn.execute(text("SELECT count(*) FROM run_plans")).scalar()

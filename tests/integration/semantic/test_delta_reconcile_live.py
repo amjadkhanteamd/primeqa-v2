@@ -39,7 +39,12 @@ def _make_org(conn) -> str:
 
 def _scope_to_org(conn, org_id: str, entity_ids: list) -> None:
     conn.execute(text(
-        "UPDATE entities SET last_synced_from_org_id = CAST(:o AS uuid) "
+        # Round 4 (AUD-046): the reconcile scopes an org's rows by
+        # ``connected_org_id`` (the per-org restructure, D-323..D-325); the
+        # suite had scoped them by the older last_synced_from_org_id only, so
+        # no row was ever THIS org's and nothing closed. Both are set now.
+        "UPDATE entities SET last_synced_from_org_id = CAST(:o AS uuid), "
+        "connected_org_id = CAST(:o AS uuid) "
         "WHERE id = ANY(CAST(:ids AS uuid[]))"
     ), {"o": org_id, "ids": [str(e) for e in entity_ids]})
 

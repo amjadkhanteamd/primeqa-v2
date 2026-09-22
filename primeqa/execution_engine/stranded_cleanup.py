@@ -39,6 +39,7 @@ across Salesforce I/O.
 from __future__ import annotations
 
 import logging
+from typing import Optional
 
 from sqlalchemy import text
 
@@ -64,6 +65,65 @@ class StrandedRecordSink:
     def __init__(self, tenant_id: int, environment_id: int):
         self._tenant_id = tenant_id
         self._environment_id = environment_id
+        # Round 4 (AUD-028): the run this sink has OPENED and not yet seen
+        # returned or closed — the identity the interrupt-close writes from.
+        self._open: Optional[dict] = None
+        self._last_closed = None
+
+    # -- Round 4 (AUD-028): the run row BEFORE provisioning -------------------
+
+    def run_opened(self, *, run_id, recipe_id, recipe_version_seq, claim_test_id,
+                   claim_version_seq, started_at) -> None:
+        """Write the run's row in the ``running`` state, in its own committed
+        transaction, BEFORE the executor's first Salesforce create. FAIL-LOUD —
+        unlike ``created``: a run that cannot record itself must not provision
+        (a raise here reaches the executor before any create, so nothing is
+        left in the org and nothing can be orphaned)."""
+        from primeqa.execution_engine.result_store import open_running_run
+        from primeqa.semantic.connection import get_tenant_connection
+        opened = {"run_id": run_id, "recipe_id": recipe_id,
+                  "recipe_version_seq": recipe_version_seq,
+                  "claim_test_id": claim_test_id, "claim_version_seq": claim_version_seq,
+                  "environment_id": self._environment_id, "started_at": started_at}
+        with get_tenant_connection(self._tenant_id) as conn:
+            open_running_run(conn, **opened)
+        self._open = opened
+
+    def run_returned(self, run_id) -> None:
+        """The executor produced evidence for the opened run — finalize will
+        complete the row; nothing is left for the interrupt-close."""
+        if self._open is not None and self._open["run_id"] == run_id:
+            self._open = None
+
+    def close_interrupted(self, exc: BaseException):
+        """The executor RAISED out of an opened run (the worker's SIGTERM →
+        KeyboardInterrupt, or a fault): close the row as ``errored`` with the
+        interruption on its error surface, in its own committed transaction, so
+        an interrupted run leaves a FAILED RUN, never an orphan. Best-effort
+        about the write (the stale-run reaper closes what this cannot); returns
+        the closed run_id, or None when no run was open."""
+        if self._open is None:
+            return None
+        opened, self._open = self._open, None
+        try:
+            from sqlalchemy.orm import Session
+            from primeqa.execution_engine.result_store import (
+                interrupted_evidence, persist_run_evidence)
+            from primeqa.semantic.connection import get_tenant_connection
+            with get_tenant_connection(self._tenant_id) as conn:
+                persist_run_evidence(Session(bind=conn), interrupted_evidence(opened, exc))
+        except Exception as write_exc:  # the reaper closes it at the timeout
+            log.warning("StrandedRecordSink.close_interrupted failed (tenant %s run %s): %s",
+                        self._tenant_id, opened["run_id"], write_exc)
+        self._last_closed = opened["run_id"]
+        return opened["run_id"]
+
+    def pop_last_closed(self):
+        """The run_id the last ``close_interrupted`` closed, once (the run-all
+        loop reads it so an interrupted probe is counted from its closed row,
+        not synthesized a second time)."""
+        rid, self._last_closed = self._last_closed, None
+        return rid
 
     def created(self, run_id, sobject: str, record_id: str, created_seq: int) -> None:
         """Persist one created record (``cleaned=false``) in its own transaction,

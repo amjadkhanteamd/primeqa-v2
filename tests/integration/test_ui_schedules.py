@@ -13,6 +13,7 @@ from datetime import datetime, timedelta, timezone
 import pytest
 from sqlalchemy import create_engine, text
 from sqlalchemy.orm import Session
+from tests.integration._ui_world import remove_claim_set_world
 
 DB = os.environ.get("S3A3_TEST_DATABASE_URL")
 pytestmark = [
@@ -34,6 +35,15 @@ _SETS: dict = {}
 
 @pytest.fixture(scope="module")
 def approved_set():
+    yield _approved_set()
+    # round 4 (AUD-052): the set this module enumerated and approved goes (inventory 1 is not ours)
+    if "approved" in _SETS:
+        eng = create_engine(DB, connect_args={"options": "-csearch_path=tenant_1,public -capp.tenant_id=1"})
+        with eng.begin() as conn:
+            remove_claim_set_world(conn, claim_set_ids=[_SETS.pop("approved")])
+
+
+def _approved_set():
     if "approved" in _SETS:
         return _SETS["approved"]
     from primeqa.generation.enumeration import enumerate_claims

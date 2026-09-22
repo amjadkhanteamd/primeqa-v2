@@ -17,6 +17,7 @@ the existing *active* job for ``(test_id, environment_id)`` or creates a fresh
 """
 from __future__ import annotations
 
+import logging
 from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
 from typing import Optional
@@ -25,6 +26,8 @@ from uuid import uuid4
 from sqlalchemy import text
 
 from primeqa.semantic.connection import get_tenant_connection
+
+log = logging.getLogger(__name__)
 
 # Read-back column list for s4_execution_jobs (one source of truth).
 _JOB_COLS = (
@@ -250,6 +253,15 @@ class ExecutionJobStore:
             self.fail(jid, error_code="stale_timeout",
                       error_message="Execution timed out — the worker may have "
                                     "crashed mid-run. Re-enqueue to retry.")
+        # Round 4 (AUD-028): a run row still 'running' past the same timeout
+        # belongs to a worker that died without its SIGTERM handler; close it as
+        # errored (stale_timeout) so no run stays running forever.
+        from primeqa.execution_engine.result_store import close_stale_running_runs
+        with get_tenant_connection(self._tenant_id) as conn:
+            closed = close_stale_running_runs(conn, stale_minutes=stale_minutes)
+        if closed:
+            log.info("s4 reaper: tenant %s closed %d run row(s) left running past "
+                     "%d min", self._tenant_id, closed, stale_minutes)
         return len(stale_ids)
 
     # -- Reads ------------------------------------------------------------

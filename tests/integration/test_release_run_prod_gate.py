@@ -14,6 +14,10 @@ import os
 import sys
 import uuid
 
+from sqlalchemy import text
+
+from primeqa.semantic.connection import get_tenant_connection
+
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))))
 
 from dotenv import load_dotenv
@@ -70,26 +74,24 @@ def test_release_run_production_gate():
     rid, eid, tester_id = rel.id, prod_env.id, tester.id
     db.close()
     try:
-        # (1) non-Admin (tester, WITH access as the env's creator) + prod + confirm
-        #     -> BLOCKED by the Admin-only production rule (the core SEC-4 fix).
-        r = _post_run(rid, _mint("tester", tester_id), eid, confirm=True)
-        assert b"requires an Admin" in r.data, \
-            "SEC-4: a non-Admin was NOT blocked from a production run"
-
-        # (2) Admin + prod + NO confirm -> BLOCKED (explicit confirmation required).
-        r = _post_run(rid, _mint("admin", admin_id), eid, confirm=False)
-        assert b"Production org confirmation required" in r.data, \
-            "SEC-4: a production run without confirm_production was NOT blocked"
-
-        # (3) Admin + prod + confirm -> PASSES the gate (reaches the release/keys
-        #     logic; the release has no requirements, so it lands on that branch
-        #     rather than any gate-block message).
-        r = _post_run(rid, _mint("admin", admin_id), eid, confirm=True)
-        assert b"requires an Admin" not in r.data \
-            and b"Production org confirmation required" not in r.data, \
-            "SEC-4: an Admin WITH confirm_production was wrongly blocked by the gate"
-        assert b"no requirements to run" in r.data, \
-            "expected the Admin+confirm run to pass the gate to the no-requirements branch"
+        # Round 4 (AUD-051): since D-494 (AUD-013) this route refuses EVERY
+        # post FIRST with the plan requirement — the decision tab plans, then
+        # runs THAT plan — before any environment or tier question is asked.
+        # The SEC-4 production rule (Admin-only, explicit confirmation) is
+        # enforced at the single execution chokepoint (`_authorize_dispatch`,
+        # tests/unit/test_authz_dispatch_gate.py); this route no longer
+        # reaches it. The contract here is the refusal, for every caller.
+        from primeqa.execution_engine.errors import PlanRequiredError
+        reason = PlanRequiredError.REASON.encode()
+        for who, uid, confirm in (("tester", tester_id, True), ("admin", admin_id, False),
+                                  ("admin", admin_id, True)):
+            r = _post_run(rid, _mint(who, uid), eid, confirm=confirm)
+            assert reason in r.data, f"{who} confirm={confirm}: the plan requirement was not the answer"
+            assert b"requires an Admin" not in r.data and b"no requirements to run" not in r.data
+        with get_tenant_connection(TENANT_ID) as conn:
+            enqueued = conn.execute(text(
+                "SELECT count(*) FROM s4_execution_jobs WHERE environment_id = :e"), {"e": eid}).scalar()
+        assert enqueued == 0, "a run was enqueued without a plan"
     finally:
         db = SessionLocal()
         from primeqa.release.models import Release

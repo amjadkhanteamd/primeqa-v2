@@ -73,6 +73,9 @@ def create_app():
 
     # Install request-timing + slow-query hooks after blueprints/engine are ready
     obs.install(application)
+    # round 4 (AUD-034): every /api request is recorded — rule, tier, caller kind — kept 30 days
+    from primeqa.shared import request_log as _request_log
+    _request_log.install(application)
 
     # Install CSRF protection (double-submit cookie). See primeqa.core.csrf.
     # Skips /api/* requests that carry Bearer auth; enforced on every other

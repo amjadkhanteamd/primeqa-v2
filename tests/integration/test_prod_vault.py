@@ -12,6 +12,7 @@ import uuid
 import pytest
 from cryptography.fernet import Fernet
 from sqlalchemy import text
+from tests.integration._ui_world import remove_claim_set_world
 
 DB = os.environ.get("S3A3_TEST_DATABASE_URL")
 def _s2_org(session):
@@ -51,7 +52,32 @@ def session():
         "options": "-csearch_path=tenant_1,public -capp.tenant_id=1"})
     s = Session(bind=eng)
     s.info["tenant_schema"] = "tenant_1"
+    # round 4 (AUD-052): the services this suite drives COMMIT their inventories,
+    # claim sets and manifests; what is NEW since the test began is the test's
+    # and goes at teardown, pass or fail.
+    before_sets = {str(r[0]) for r in s.execute(text("SELECT id FROM claim_sets"))}
+    before_inv = s.execute(text("SELECT COALESCE(max(inventory_version), 0) FROM ui_surface_inventories")).scalar()
+    before_manifests = {str(r[0]) for r in s.execute(text("SELECT id FROM s4_ui_run_manifests"))}
+    s.rollback()
     yield s
+    s.rollback()
+    new_sets = [str(r[0]) for r in s.execute(text("SELECT id FROM claim_sets")) if str(r[0]) not in before_sets]
+    new_invs = [r[0] for r in s.execute(text(
+        "SELECT inventory_version FROM ui_surface_inventories WHERE inventory_version > :m"), {"m": before_inv})]
+    remove_claim_set_world(s.connection(), claim_set_ids=new_sets, inventory_versions=new_invs)
+    # a manifest enqueued directly (the loop-mechanics test) carries no claim set: it goes by id
+    new_manifests = [str(r[0]) for r in s.execute(text("SELECT id FROM s4_ui_run_manifests")) if str(r[0]) not in before_manifests]
+    if new_manifests:
+        jobs = [str(r[0]) for r in s.execute(text(
+            "SELECT id FROM s4_ui_inspection_jobs WHERE CAST(manifest_id AS text) = ANY(:m)"), {"m": new_manifests})]
+        for sql, params in (
+            ("DELETE FROM s6_ui_verdicts WHERE CAST(job_id AS text) = ANY(:j)", {"j": jobs}),
+            ("DELETE FROM s6_ui_processing_runs WHERE CAST(job_id AS text) = ANY(:j)", {"j": jobs}),
+            ("DELETE FROM s4_ui_inspection_results WHERE CAST(job_id AS text) = ANY(:j)", {"j": jobs}),
+            ("DELETE FROM s4_ui_inspection_jobs WHERE CAST(id AS text) = ANY(:j)", {"j": jobs}),
+            ("DELETE FROM s4_ui_run_manifests WHERE CAST(id AS text) = ANY(:m)", {"m": new_manifests})):
+            s.execute(text(sql), params)
+    s.commit()
     s.rollback()
     s.close()
 
