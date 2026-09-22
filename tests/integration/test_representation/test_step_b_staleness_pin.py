@@ -85,6 +85,14 @@ def _decide(session, keys):
 
 # ---- 1a. the false STALE ------------------------------------------------
 
+
+def _hours_ago(h: int) -> str:
+    """Round 4 (AUD-048): the decision's freshness check (window 168h) reads a
+    run's age from NOW, so a fixed calendar date rots into CONDITIONAL_GO
+    ('Newest run is 382h old'); the fixture dates are now-relative, order kept."""
+    from datetime import datetime, timedelta, timezone
+    return (datetime.now(timezone.utc) - timedelta(hours=h)).isoformat()
+
 def test_1a_false_stale_old_pin_is_b_new_resolver_is_a(session):
     _tenant(session)
     org_a = _org(session, ENV_A, "A")
@@ -99,7 +107,7 @@ def test_1a_false_stale_old_pin_is_b_new_resolver_is_a(session):
         version_seq=cr.version_seq, evaluated_at_version_seq=seq_a,
         validity=_gv(overall="intact"))                # current for A
     _seed_run(session, claim_test_id=cr.test_id, outcome="passed",
-              finished_at="2026-09-06T10:00:00+00:00",
+              finished_at=_hours_ago(1),
               claim_version_seq=cr.version_seq, environment_id=ENV_A,
               connected_org_id=org_a, org_version_seq=seq_a)     # Step 2: stamped
     session.flush()
@@ -134,7 +142,7 @@ def test_1b_never_synced_org_is_cannot_determine_not_a_silent_go(session):
         version_seq=cr.version_seq, evaluated_at_version_seq=5,
         validity=_gv(overall="intact"))
     _seed_run(session, claim_test_id=cr.test_id, outcome="passed",
-              finished_at="2026-09-06T10:00:00+00:00",
+              finished_at=_hours_ago(1),
               claim_version_seq=cr.version_seq, environment_id=ENV_A)
     session.flush()
 
@@ -187,7 +195,7 @@ def test_1c_the_real_wrong_go_cross_org_latest_verdict_uuid_tiebreak(session):
         version_seq=cr.version_seq, evaluated_at_version_seq=1,
         validity=_gv(overall="broken", claim_verdict="broken"))
     _seed_run(session, claim_test_id=cr.test_id, outcome="passed",
-              finished_at="2026-09-06T10:00:00+00:00",
+              finished_at=_hours_ago(1),
               claim_version_seq=cr.version_seq, environment_id=ENV_B,
               connected_org_id=org_low, org_version_seq=1)       # Step 2: stamped
     session.flush()
@@ -251,7 +259,7 @@ def test_3_org_unbound_is_cannot_determine_never_go_never_no_go(session):
     # (ii) one env with NO connected_orgs row
     c1 = _approved_claim(session, coord, key="SB-3-ONE")
     _seed_run(session, claim_test_id=c1.test_id, outcome="passed",
-              finished_at="2026-09-06T10:00:00+00:00",
+              finished_at=_hours_ago(1),
               claim_version_seq=c1.version_seq, environment_id=9001)
     session.flush()
     out1 = _decide(session, ["SB-3-ONE"])
@@ -271,7 +279,7 @@ def test_3_org_unbound_is_cannot_determine_never_go_never_no_go(session):
         validity=_gv(overall="intact"))
     for env in (ENV_A, 9002):
         _seed_run(session, claim_test_id=c2.test_id, outcome="passed",
-                  finished_at="2026-09-06T10:00:00+00:00",
+                  finished_at=_hours_ago(1),
                   claim_version_seq=c2.version_seq, environment_id=env,
                   connected_org_id=(org_a if env == ENV_A else None),
                   org_version_seq=(seq_a3 if env == ENV_A else None))
@@ -302,14 +310,14 @@ def test_4_two_env_branch_is_byte_identical_to_the_per_env_compute(session):
                 version_seq=c.version_seq, evaluated_at_version_seq=seqs[env],
                 validity=_gv(overall="intact"))
     _seed_run(session, claim_test_id=c1.test_id, outcome="passed",
-              finished_at="2026-09-01T10:00:00+00:00",
+              finished_at=_hours_ago(121),
               claim_version_seq=c1.version_seq, environment_id=ENV_A)
     _seed_run(session, claim_test_id=c1.test_id, outcome="failed",
-              finished_at="2026-09-02T10:00:00+00:00",
+              finished_at=_hours_ago(97),
               claim_version_seq=c1.version_seq, environment_id=ENV_B)
     for env in (ENV_A, ENV_B):
         _seed_run(session, claim_test_id=c2.test_id, outcome="passed",
-                  finished_at="2026-09-03T10:00:00+00:00",
+                  finished_at=_hours_ago(73),
                   claim_version_seq=c2.version_seq, environment_id=env)
     session.flush()
 

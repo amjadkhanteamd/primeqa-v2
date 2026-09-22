@@ -12,10 +12,8 @@ Jinja/HTML content — use the actual UTF-8 character or &#NNNN;"); this is the
 same rule for the other direction: an entity belongs in the TEMPLATE's markup,
 never inside an expression the template will escape.
 
-The finding is open and AK triages it, so the assertion is marked
-``xfail(strict=True)``: it does not pass today, it does not pretend to, and the
-day someone fixes it the strict marker turns the unexpected pass into a
-failure that says "remove this marker".
+Round 4 closed the finding: the message is unescaped once at the read and the
+flaky list joins with the character; the assertion is the gate now.
 """
 from __future__ import annotations
 
@@ -33,25 +31,29 @@ TEMPLATES = pathlib.Path(__file__).resolve().parents[2] / "primeqa" / "templates
 ENTITY_IN_EXPRESSION = re.compile(r"\{\{[^}]*&(?:[a-zA-Z][a-zA-Z0-9]+|#\d+);[^}]*\}\}")
 
 
-def _hits():
+def _hits(root):
     out = []
-    for path in sorted(TEMPLATES.rglob("*.html")):
+    for path in sorted(root.rglob("*.html")):
         for i, line in enumerate(path.read_text().splitlines(), 1):
             for m in ENTITY_IN_EXPRESSION.finditer(line):
-                out.append(f"{path.relative_to(TEMPLATES)}:{i}: {m.group(0)[:80]}")
+                if re.search(r"\|\s*safe\b", m.group(0)):
+                    continue                     # marked safe: rendered as markup on purpose
+                out.append(f"{path.relative_to(root)}:{i}: {m.group(0)[:80]}")
     return out
 
 
-@pytest.mark.xfail(strict=True, reason="AUD-042 is open: the flaky list joins with ' &middot; ' inside an expression")
 def test_no_template_puts_an_html_entity_inside_a_jinja_expression():
-    hits = _hits()
+    """Round 4 (AUD-042): the flaky list joins with the character now; the
+    strict marker is gone and this is the gate."""
+    hits = _hits(TEMPLATES)
     assert hits == [], "an entity inside an expression is escaped and shown as source:\n  " + "\n  ".join(hits)
 
 
-def test_the_check_finds_the_known_case_and_nothing_else():
-    """The gate is shown to work: it names the case the production render
-    showed, and it does not fire on an entity in ordinary markup."""
-    hits = _hits()
-    assert any("dashboard.html" in h and "middot" in h for h in hits), hits
-    # an entity in markup (outside {{ }}) is correct and must NOT be reported
-    assert not any(re.search(r"^\S+:\d+: [^{]", h) for h in hits), hits
+def test_the_check_finds_a_planted_case_and_not_an_entity_in_markup(tmp_path):
+    """The gate is shown able to fail: an entity inside {{ }} is reported; an
+    entity in ordinary markup (outside any expression) is not."""
+    (tmp_path / "bad.html").write_text("<span>{{ items|join(' &middot; ') }}</span>\n")
+    (tmp_path / "good.html").write_text("<p>approved &middot; open &rarr;</p><b>{{ n }}&#8377;</b>\n"
+                                        "{{ btn('&#9654; Run' | safe) }} {{ x or '&mdash;' | safe }}\n")
+    hits = _hits(tmp_path)
+    assert hits == ["bad.html:1: {{ items|join(' &middot; ') }}"], hits

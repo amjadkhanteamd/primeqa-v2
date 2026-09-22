@@ -45,7 +45,10 @@ from .test_substrate_decision_evidence import _approved_claim, _gv, _seed_run
 ENV_A, ENV_PROD = 59, 78
 ENVS = {ENV_A: P.EnvInfo(59, "Sandbox", True, False, "full"),
         ENV_PROD: P.EnvInfo(78, "Prod1", False, True, "read_only")}
-NOW = datetime(2026, 9, 10, 12, 0, tzinfo=timezone.utc)
+# Round 4 (AUD-050): the suite's 'now' is NOW — a fixed calendar date rotted
+# (a waiver planted at NOW + 7 days fell into the past and the service
+# refused it, rightly: 'a waiver's expiry lies in the future').
+NOW = datetime.now(timezone.utc).replace(microsecond=0)
 
 
 def _env(e):
@@ -360,6 +363,7 @@ def test_conformance_level_a_blocks_level_aa_conditions_and_needs_human_reviews(
     d4 = _grade(session, [w["key"]], rule_levels=LEVELS)["decision"]
     assert d4["recommendation"] == "go"
     h4 = _line(d4, "human_reviews")
-    assert h4["observed"].startswith("0 pending, waived by user 4 until 2026-09-13") and "resolved" not in h4["observed"]
+    until = (NOW + timedelta(days=3)).date().isoformat()          # round 4: derived from NOW, never a calendar literal
+    assert h4["observed"].startswith(f"0 pending, waived by user 4 until {until}") and "resolved" not in h4["observed"]
     assert h4["rule"] == "no rule triggered"
     assert _line(d4, "waivers")["observed"].startswith("2 active waiver(s), 2 applied")

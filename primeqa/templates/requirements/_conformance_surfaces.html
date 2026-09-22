@@ -84,7 +84,8 @@
           <form method="POST" action="/requirements/{{ req.id }}/surfaces/{{ d.link_id }}/unlink"
                 id="unlink-{{ d.link_id }}" class="mt-2">
             {{ csrf_input | safe }}
-            <input type="hidden" name="reason" value="">
+            {# round 4 (AUD-053): an unlink carries its reason — the service refuses an empty one (AUD-037, D-500) #}
+            <input type="text" name="reason" required minlength="3" placeholder="why this surface no longer verifies it" aria-label="Reason for unlinking this surface" class="mb-1 w-full rounded-md border border-gray-300 px-2 py-1 text-xs">
             <button type="button"
                     data-confirm
                     data-confirm-title="Unlink {{ d.display_name }}?"

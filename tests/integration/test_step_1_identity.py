@@ -185,7 +185,17 @@ def test_1b_every_row_key_equals_the_pre_072_derivation(_bootstrap):
             "WHERE tenant_id = :t AND deleted_at IS NULL"), {"t": TENANT}).mappings().all()
     finally:
         pub.close()
+    # Round 4 (AUD-051): a key DECLARED through the identity service (a
+    # requirement_identities row established for it — Step 1, D-48x) is not
+    # the 072 backfill's derivation and is legitimate; the derivation is
+    # asserted on every row that carries no declared identity.
+    from primeqa.semantic.connection import get_tenant_connection
+    with get_tenant_connection(TENANT) as conn:
+        declared = {r[0] for r in conn.execute(text(
+            "SELECT external_key FROM requirement_identities WHERE external_system = 'jira'"))}
     for r in rows:
+        if r["external_key"] in declared and r["external_key"] != (r["jira_key"] or f"req-{r['id']}"):
+            continue
         assert r["external_key"] == (r["jira_key"] or f"req-{r['id']}"), r["id"]
 
 

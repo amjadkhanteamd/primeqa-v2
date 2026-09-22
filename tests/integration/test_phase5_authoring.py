@@ -57,7 +57,11 @@ def test_a_tenant_isolation_and_the_namespace_checks(session):
         schema = session.execute(text("""
             SELECT string_agg(table_schema, ',') FROM information_schema.tables
             WHERE table_name = :t"""), {"t": t}).scalar()
-        assert schema == "tenant_1", f"{t} found in: {schema}"
+        # Round 4 (AUD-051): scratch carries tenant_2 since the audit planted
+        # it; the contract is "a tenant schema, never public", for every tenant
+        schemas = set((schema or "").split(","))
+        assert schemas and all(x.startswith("tenant_") for x in schemas) and "public" not in schemas, \
+            f"{t} found in: {schema}"
     # the public CHECK widened ONCE (ruled §g): A11Y@3 or CUST@5, nothing else
     for bad in ("PLM-CUST-001", "PLM-CUST-000001", "PLM-XYZ-001"):
         with pytest.raises(Exception, match="s5_rules_id_shape_v2"):

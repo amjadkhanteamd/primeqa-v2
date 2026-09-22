@@ -22,6 +22,8 @@ presentation must never break a page.
 """
 from __future__ import annotations
 
+import html
+
 import re
 from typing import Any, Optional
 
@@ -78,9 +80,31 @@ def _object_label_of(field_key: Any, labels) -> Optional[str]:
 
 
 def _literal(value: Any) -> str:
+    words = relative_date_in_words(value)        # round 4 (AUD-043): never the dict's repr
+    if words is not None:
+        return words
     if isinstance(value, dict):                  # LiteralValue {value: ...}
         value = value.get("value")
+        words = relative_date_in_words(value)
+        if words is not None:
+            return words
     return f'"{value}"' if isinstance(value, str) else str(value)
+
+
+def relative_date_in_words(value: Any) -> Optional[str]:
+    """A test-design ``RelativeDate`` value (``{"$relative_date": {"anchor":
+    "RUN_DATE", "offset_days": N}}``, S2 ``temporal``) in words — "the run
+    date", "5 days after the run date", "1 day before the run date" — or
+    ``None`` for any other value. Round 4 (AUD-043): the landing page and the
+    claim page had shown the object's Python repr."""
+    from primeqa.test_representation.temporal import is_relative_date, relative_date_offset
+    if not is_relative_date(value):
+        return None
+    n = relative_date_offset(value)
+    if n == 0:
+        return "the run date"
+    unit = "day" if abs(n) == 1 else "days"
+    return f"{abs(n)} {unit} {'after' if n > 0 else 'before'} the run date"
 
 
 def _expected_value(ev: Any) -> str:
@@ -687,14 +711,18 @@ def org_rejection_message(steps: Any) -> Optional[str]:
                 continue
             if s.get("success") is not False and not s.get("error"):
                 continue                       # accepted (or not a failure)
+            # Round 4 (AUD-042): the org's message may carry HTML entities of
+            # its own (a validation rule written as "Loans over &#8377;50,00,000
+            # …"); it is unescaped ONCE here, at the read, so the template's
+            # escaping shows the character and never the entity's source.
             msg = s.get("message")
             if isinstance(msg, str) and msg.strip():
-                return msg.strip()
+                return html.unescape(msg.strip())
             body = s.get("rejection_body")
             if isinstance(body, (list, tuple)) and body and isinstance(body[0], dict):
                 m = body[0].get("message")
                 if isinstance(m, str) and m.strip():
-                    return m.strip()
+                    return html.unescape(m.strip())
     except Exception:
         pass
     return None

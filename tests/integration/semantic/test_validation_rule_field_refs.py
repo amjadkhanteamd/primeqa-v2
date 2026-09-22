@@ -117,7 +117,10 @@ def test_isnew_no_edge_status_complete(seed, conn):
 
 
 def test_unparsed_no_edge_status_unparsed(seed, conn):
-    f = 'REGEX(Name, "[0-9]+")'
+    # Round 4 (AUD-046): REGEX(...) is PARSED now (a read reference to Name —
+    # the D-384 matches_pattern arc taught the formula grammar the function),
+    # so it can no longer stand for "unparsed"; an unknown function still does.
+    f = 'FOO(Name)'
     vr, _, resolve = _seed_vr(seed, conn, f)
     assert write_field_refs(conn, vr_entity_id=vr, formula_text=f,
                             parent_object_api="Opportunity", resolve=resolve) == "unparsed"
