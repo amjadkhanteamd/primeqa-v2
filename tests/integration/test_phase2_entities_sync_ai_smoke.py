@@ -44,9 +44,9 @@ def cleanup_phase2_entities_smoke(conn_factory):
         )
 
 
-def _make_vec_1536(first_value: float = 1.0, fill: float = 0.0) -> str:
-    """Build a 1536-dim vector literal string for pgvector parsing."""
-    parts = [str(float(first_value))] + [str(float(fill))] * 1535
+def _make_vec_1024(first_value: float = 1.0, fill: float = 0.0) -> str:
+    """Build a 1024-dim (voyage-3, D-049 / migration 20260514_0010; the suite once built 1536, the schema's first shape) vector literal string for pgvector parsing."""
+    parts = [str(float(first_value))] + [str(float(fill))] * 1023
     return "[" + ",".join(parts) + "]"
 
 
@@ -305,7 +305,7 @@ class TestAIPrimitivesRoundtrip:
     def test_full_ai_columns_roundtrip(
         self, conn_factory, cleanup_phase2_entities_smoke,
     ):
-        vec_str = _make_vec_1536(first_value=0.5, fill=0.0)
+        vec_str = _make_vec_1024(first_value=0.5, fill=0.0)
         with conn_factory() as conn:
             row_id = _insert_entity(
                 conn,
@@ -313,7 +313,7 @@ class TestAIPrimitivesRoundtrip:
                 entity_origin="sync",
                 semantic_text="test text for embedding",
                 embedding=vec_str,
-                embedding_model="openai/text-embedding-3-small",
+                embedding_model="voyage-3",
                 embedding_generated_at="NOW()",
             )
 
@@ -325,7 +325,7 @@ class TestAIPrimitivesRoundtrip:
                 FROM entities WHERE id = :r
             """), {"r": row_id, "vec": vec_str}).fetchone()
             assert row[0] == "test text for embedding"
-            assert row[1] == "openai/text-embedding-3-small"
+            assert row[1] == "voyage-3"
             assert row[2] is not None
             assert row[3] is False  # embedding column populated
             # Cosine distance to self is ~0 (allowing small float tolerance)
@@ -339,9 +339,9 @@ class TestVectorSimilarityQuery:
     def test_similarity_query_returns_result(
         self, conn_factory, cleanup_phase2_entities_smoke,
     ):
-        vec_a = _make_vec_1536(first_value=1.0, fill=0.0)
-        vec_b = _make_vec_1536(first_value=0.0, fill=1.0 / 1536)
-        query_vec = _make_vec_1536(first_value=0.99, fill=0.01)
+        vec_a = _make_vec_1024(first_value=1.0, fill=0.0)
+        vec_b = _make_vec_1024(first_value=0.0, fill=1.0 / 1024)
+        query_vec = _make_vec_1024(first_value=0.99, fill=0.01)
 
         with conn_factory() as conn:
             id_a = _insert_entity(

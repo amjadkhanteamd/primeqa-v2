@@ -318,12 +318,26 @@ def seeded(db_setup) -> dict:
             "field_type, is_nillable) VALUES (CAST(:f AS uuid), "
             "CAST(:o AS uuid), 'string', FALSE)"),
             {"f": order_req, "o": order})
-        order_flow = _entity(conn, "Flow", "Stamp_Order_Status", v1)
+        # Round 4 (AUD-045): since D-318 the state-transition and automation-
+        # effect resolvers bind a Flow by the EFFECT its parsed Metadata
+        # produces (``_flows_producing_effect``: recordUpdates assignments /
+        # recordCreates objects) — a Flow with no Metadata produces nothing and
+        # the claim refuses EMISSION_DEFERRED ("no org automation produces …").
+        # The D-210 seed predated that rule; the Flows now carry the effects the
+        # vertical asserts: Status__c = 'Activated' on the record, and an
+        # Order_Log__c create.
+        _stamp_md = {"Metadata": {
+            "recordUpdates": [{"inputAssignments": [
+                {"field": "Status__c", "value": {"stringValue": "Activated"}}]}],
+            "recordCreates": [{"object": "Order_Log__c"}]}}
+        order_flow = _entity(conn, "Flow", "Stamp_Order_Status", v1, attrs=_stamp_md)
         _edge(conn, order_flow, order, "TRIGGERS_ON", "BEHAVIOR", v1)
         # D-299: a SECOND Flow TRIGGERS_ON Order__c — the multi-flow fixture that
         # proves a requirement-NAMED automation binds THAT flow, not the
         # first-encountered one (env-59's Opportunity has three flows).
-        order_flow2 = _entity(conn, "Flow", "Escalate_Order", v1)
+        order_flow2 = _entity(conn, "Flow", "Escalate_Order", v1, attrs={"Metadata": {
+            "recordUpdates": [{"inputAssignments": [
+                {"field": "Status__c", "value": {"stringValue": "Activated"}}]}]}})
         _edge(conn, order_flow2, order, "TRIGGERS_ON", "BEHAVIOR", v1)
         order_log = _entity(conn, "Object", "Order_Log__c", v1)
         log_lookup = _entity(conn, "Field", "Order_Log__c.Order__c", v1)
@@ -333,7 +347,23 @@ def seeded(db_setup) -> dict:
         # D-227: a Flow TRIGGERS_ON Order_Log__c — the parent-stamp vertical's
         # grounding (the trigger record's own lookup Order__c points at the
         # effect parent Order__c).
-        log_flow = _entity(conn, "Flow", "Log_Effects", v1)
+        # Round 4 (AUD-045): the parent-stamp Flow carries the Metadata the
+        # Flow Behaviour IR parses into an ``update_records`` effect op on the
+        # parent (a filtered recordUpdates reached from start) — the shape
+        # ``_flows_producing_effect`` binds a cross-object stamp on since the
+        # Completion E2 slice.
+        log_flow = _entity(conn, "Flow", "Log_Effects", v1, attrs={"Metadata": {
+            "processType": "AutoLaunchedFlow", "status": "Active",
+            "start": {"object": "Order_Log__c", "triggerType": "RecordAfterSave",
+                      "recordTriggerType": "Create", "filterLogic": "and", "filters": [],
+                      "doesRequireRecordChangedToMeetCriteria": False,
+                      "connector": {"targetReference": "Stamp_Parent"}},
+            "recordUpdates": [{"name": "Stamp_Parent", "object": "Order__c",
+                               "filterLogic": "and",
+                               "filters": [{"field": "Id", "operator": "EqualTo",
+                                            "value": {"elementReference": "$Record.Order__c"}}],
+                               "inputAssignments": [{"field": "Status__c",
+                                                     "value": {"stringValue": "Logged"}}]}]}})
         _edge(conn, log_flow, order_log, "TRIGGERS_ON", "BEHAVIOR", v1)
         # D-308: an ACTIVE approval process on Order__c (the same TRIGGERS_ON
         # rail) + an INACTIVE one (the D-301 law: never grounds) + the

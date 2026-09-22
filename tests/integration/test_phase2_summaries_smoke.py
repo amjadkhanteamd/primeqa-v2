@@ -21,13 +21,13 @@ ENTITIES_PREFIX = "_test_phase2_summary_"
 ORGS_PREFIX = "_test_co_summary_"
 
 
-def make_vec_1536(first_value: float = 0.1, fill: float = 0.0) -> str:
-    """Construct a 1536-dim vector literal string for pgvector.
+def make_vec_1024(first_value: float = 0.1, fill: float = 0.0) -> str:
+    """Construct a 1024-dim (voyage-3, D-049 / migration 20260514_0010; the suite once built 1536, the schema's first shape) vector literal string for pgvector.
 
     Salesforce-relevant note: real embeddings are dense; this synthetic
     sparse pattern is fine for write-roundtrip and operator smoke tests.
     """
-    parts = [str(first_value)] + [str(fill)] * 1535
+    parts = [str(first_value)] + [str(fill)] * 1023
     return "[" + ",".join(parts) + "]"
 
 
@@ -155,7 +155,7 @@ class TestValidationRuleSummaryColumns:
 
     def test_full_summary_roundtrip(self, conn_factory, cleanup_summary_test_data):
         """Scenario A2: insert with all 5 columns set; verify roundtrip."""
-        emb = make_vec_1536(0.1, 0.0)
+        emb = make_vec_1024(0.1, 0.0)
         with conn_factory() as conn:
             seq = _max_version_seq(conn)
             org_id = _create_org(conn, "vr_full")
@@ -191,8 +191,8 @@ class TestValidationRuleSummaryColumns:
     def test_similarity_query_executes(self, conn_factory, cleanup_summary_test_data):
         """Scenario A3: insert two rows with different summary_embeddings;
         verify <=> similarity ORDER BY runs without error."""
-        emb_a = make_vec_1536(0.9, 0.0)  # near (1,0,...,0)
-        emb_b = make_vec_1536(0.0, 0.0)  # far from (1,0,...,0)
+        emb_a = make_vec_1024(0.9, 0.0)  # near (1,0,...,0)
+        emb_b = make_vec_1024(0.0, 0.0)  # far from (1,0,...,0)
         with conn_factory() as conn:
             seq = _max_version_seq(conn)
             org_id = _create_org(conn, "vr_sim")
@@ -211,7 +211,7 @@ class TestValidationRuleSummaryColumns:
             """), {"r": vr_b, "o": obj_id, "e": emb_b})
 
         with conn_factory() as conn:
-            query_vec = make_vec_1536(1.0, 0.0)
+            query_vec = make_vec_1024(1.0, 0.0)
             result = conn.execute(text("""
                 SELECT entity_id
                 FROM validation_rule_details
@@ -253,7 +253,7 @@ class TestFlowSummaryColumns:
 
     def test_full_summary_roundtrip(self, conn_factory, cleanup_summary_test_data):
         """Scenario B2: full-summary roundtrip on flow_details."""
-        emb = make_vec_1536(0.5, 0.0)
+        emb = make_vec_1024(0.5, 0.0)
         with conn_factory() as conn:
             seq = _max_version_seq(conn)
             org_id = _create_org(conn, "fl_full")
@@ -287,8 +287,8 @@ class TestFlowSummaryColumns:
 
     def test_similarity_query_executes(self, conn_factory, cleanup_summary_test_data):
         """Scenario B3: <=> similarity query on flow_details."""
-        emb_a = make_vec_1536(0.9, 0.0)
-        emb_b = make_vec_1536(0.0, 0.0)
+        emb_a = make_vec_1024(0.9, 0.0)
+        emb_b = make_vec_1024(0.0, 0.0)
         with conn_factory() as conn:
             seq = _max_version_seq(conn)
             org_id = _create_org(conn, "fl_sim")
@@ -306,7 +306,7 @@ class TestFlowSummaryColumns:
             """), {"f": flow_b, "e": emb_b})
 
         with conn_factory() as conn:
-            query_vec = make_vec_1536(1.0, 0.0)
+            query_vec = make_vec_1024(1.0, 0.0)
             result = conn.execute(text("""
                 SELECT entity_id
                 FROM flow_details

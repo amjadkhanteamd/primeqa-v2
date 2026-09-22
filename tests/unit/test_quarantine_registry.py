@@ -35,7 +35,7 @@ sys.path.insert(0, str(REPO))
 from tests.integration.conftest import QUARANTINE  # noqa: E402
 
 #: What the list holds today (round 3, part C). Raising this is a decision.
-EXPECTED_ENTRIES = 18
+EXPECTED_ENTRIES = 0   # round 4: every quarantined suite was fixed at root or moved to its ruling
 FINDINGS = json.loads((REPO / "docs" / "audit" / "findings.json").read_text())
 BY_ID = {f["id"]: f for f in FINDINGS}
 
@@ -54,7 +54,8 @@ def test_every_entry_names_an_open_finding():
 
 
 def test_every_quarantine_finding_names_at_least_one_entry():
-    claimed = {f["id"] for f in FINDINGS if "quarantine" in (f.get("class") or "").lower()}
+    claimed = {f["id"] for f in FINDINGS
+               if "quarantine" in (f.get("class") or "").lower() and f["status"].startswith("open")}
     listed = {q[0] for q in QUARANTINE.values()}
     assert claimed <= listed, f"findings claim a quarantine with no entry: {claimed - listed}"
 
