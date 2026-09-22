@@ -308,7 +308,7 @@ def _evidence_envs_unfiltered(session: Session, test_ids: list) -> list[int]:
         return []
     rows = session.execute(text(
         "SELECT DISTINCT environment_id FROM s4_execution_runs "
-        "WHERE CAST(claim_test_id AS text) = ANY(:tids) ORDER BY environment_id"),
+        "WHERE CAST(claim_test_id AS text) = ANY(:tids) AND finished_at IS NOT NULL ORDER BY environment_id"),
         {"tids": [str(t) for t in test_ids]}).all()
     return [r[0] for r in rows]
 

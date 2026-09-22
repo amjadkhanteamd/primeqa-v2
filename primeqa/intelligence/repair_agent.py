@@ -149,14 +149,14 @@ _WARNED_DISABLED: set = set()
 
 def _recipe_id_for_run(conn, run_id):
     return conn.execute(text(
-        "SELECT recipe_id FROM s4_execution_runs WHERE run_id = CAST(:r AS uuid)"),
+        "SELECT recipe_id FROM s4_execution_runs WHERE run_id = CAST(:r AS uuid) AND finished_at IS NOT NULL"),
         {"r": str(run_id)}).scalar()
 
 
 def _error_evidence_for_run(conn, run_id) -> dict:
     """The failed create step's error surface from the run's evidence JSONB."""
     ev = conn.execute(text(
-        "SELECT evidence FROM s4_execution_runs WHERE run_id = CAST(:r AS uuid)"),
+        "SELECT evidence FROM s4_execution_runs WHERE run_id = CAST(:r AS uuid) AND finished_at IS NOT NULL"),
         {"r": str(run_id)}).scalar() or {}
     for s in (ev.get("steps") or []):
         if isinstance(s, dict) and s.get("kind") == "create" and not s.get("success", True):
@@ -280,7 +280,7 @@ def triage_new_failures(tenant_id: int, *, limit: int = 50,
                 "SELECT i.run_id, i.claim_test_id, i.outcome::text AS outcome, "
                 "       i.verdict, i.cause_kind, r.environment_id "
                 "FROM s6_interpretations i "
-                "JOIN s4_execution_runs r ON r.run_id = i.run_id "
+                "JOIN s4_execution_runs r ON r.run_id = i.run_id AND r.finished_at IS NOT NULL "
                 "WHERE i.outcome IN ('failed', 'errored') "
                 "  AND NOT EXISTS (SELECT 1 FROM repair_proposals p "
                 "                  WHERE p.run_id = i.run_id) "
@@ -369,7 +369,7 @@ def list_proposals(tenant_id: int, *, statuses=("proposed", "approved"),
                 "FROM repair_proposals p "
                 "LEFT JOIN test_claims c ON c.test_id = p.claim_test_id "
                 "     AND c.valid_to IS NULL "
-                "LEFT JOIN s4_execution_runs r ON r.run_id = p.run_id "
+                "LEFT JOIN s4_execution_runs r ON r.run_id = p.run_id AND r.finished_at IS NOT NULL "
                 "LEFT JOIN test_recipes cur ON cur.recipe_id = r.recipe_id "
                 "     AND cur.valid_to IS NULL "
                 "WHERE p.status = ANY(:st) "
@@ -561,7 +561,7 @@ def _applicability(conn, row) -> dict:
             out["claim_status"] = claim.status if claim is not None else None
             run = conn.execute(text(
                 "SELECT recipe_id, recipe_version_seq FROM s4_execution_runs "
-                "WHERE run_id = CAST(:r AS uuid)"),
+                "WHERE run_id = CAST(:r AS uuid) AND finished_at IS NOT NULL"),
                 {"r": str(row["run_id"])}).mappings().first()
             if run is not None and run["recipe_id"] is not None:
                 cur = coord.get_recipe_latest(session, run["recipe_id"])

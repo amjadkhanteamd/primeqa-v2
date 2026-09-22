@@ -77,7 +77,7 @@ def plan_of_run(tenant_id: int, run_id) -> Optional[str]:
     with get_tenant_connection(tenant_id) as conn:
         row = conn.execute(text(
             "SELECT CAST(plan_id AS text) FROM s4_execution_runs "
-            "WHERE run_id = CAST(:r AS uuid)"), {"r": str(run_id)}).first()
+            "WHERE run_id = CAST(:r AS uuid) AND finished_at IS NOT NULL"), {"r": str(run_id)}).first()
     return row[0] if row and row[0] else None
 
 

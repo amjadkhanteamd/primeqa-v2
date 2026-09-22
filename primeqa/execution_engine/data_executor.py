@@ -193,30 +193,21 @@ def execute_data_recipe(
     flagged = next(
         (s for s in plan.steps
          if getattr(s, "expect_rejection", None) is not None), None)
-    if flagged is not None and isinstance(flagged, PlannedCreate):
-        # 1-step create-rejected (D-110.2) — no world to construct.
-        ev = _execute_negative(
-            plan, client=client, environment_id=environment_id,
-            teardown_client=td)
-    elif s1 is None and world_plans is None:
-        raise PlanTranslationError(
-            "a data-recipe with an ordinary (setup) create needs its operational "
-            "world resolved — a live S1 requiredness reader (s1=) or a pre-resolved "
-            "world_plans map (D-230.2); neither was injected",
-            recipe_id=plan.recipe_id)
-    elif flagged is not None:
-        # 2-step setup create -> rejected update/delete (D-203).
-        ev = _run_negative_with_setup(
-            plan, client=client, environment_id=environment_id, s1=s1,
+    try:
+        ev = _dispatch_data_recipe(
+            plan, flagged, client=client, environment_id=environment_id, s1=s1,
             world_plans=world_plans, record_sink=record_sink,
-            field_overrides=field_overrides, null_asserted_fields=nulls,
-            teardown_client=td)
-    else:
-        ev = _run_positive(
-            plan, client=client, environment_id=environment_id, s1=s1,
-            world_plans=world_plans, record_sink=record_sink,
-            field_overrides=field_overrides, null_asserted_fields=nulls,
-            teardown_client=td)
+            field_overrides=field_overrides, nulls=nulls, td=td)
+    except BaseException as exc:
+        # Round 4 (AUD-028): a raise out of an OPENED run (the worker's SIGTERM
+        # → KeyboardInterrupt, D-341; or a fault) closes its row as errored
+        # with the reason BEFORE propagating — the interrupted run is a failed
+        # run, never an orphan. Paths that opened nothing close nothing.
+        if record_sink is not None and hasattr(record_sink, "close_interrupted"):
+            record_sink.close_interrupted(exc)
+        raise
+    if record_sink is not None and hasattr(record_sink, "run_returned"):
+        record_sink.run_returned(ev.run_id)
     # D-419: stamp the run-as identity once, at the envelope — absence stays
     # absence (a non-identity run's evidence is byte-identical to before).
     if executing_identity is not None:
@@ -338,6 +329,36 @@ def plan_data_recipe_world(plan: DataRecipePlan, s1,
     return plans
 
 
+def _dispatch_data_recipe(plan, flagged, *, client, environment_id, s1, world_plans,
+                          record_sink, field_overrides, nulls, td) -> RunEvidence:
+    """The kind dispatch of :func:`execute_data_recipe` (unchanged), hoisted so
+    the caller brackets it with the round-4 interrupt-close."""
+    if flagged is not None and isinstance(flagged, PlannedCreate):
+        # 1-step create-rejected (D-110.2) — no world to construct.
+        return _execute_negative(
+            plan, client=client, environment_id=environment_id,
+            teardown_client=td)
+    elif s1 is None and world_plans is None:
+        raise PlanTranslationError(
+            "a data-recipe with an ordinary (setup) create needs its operational "
+            "world resolved — a live S1 requiredness reader (s1=) or a pre-resolved "
+            "world_plans map (D-230.2); neither was injected",
+            recipe_id=plan.recipe_id)
+    elif flagged is not None:
+        # 2-step setup create -> rejected update/delete (D-203).
+        return _run_negative_with_setup(
+            plan, client=client, environment_id=environment_id, s1=s1,
+            world_plans=world_plans, record_sink=record_sink,
+            field_overrides=field_overrides, null_asserted_fields=nulls,
+            teardown_client=td)
+    else:
+        return _run_positive(
+            plan, client=client, environment_id=environment_id, s1=s1,
+            world_plans=world_plans, record_sink=record_sink,
+            field_overrides=field_overrides, null_asserted_fields=nulls,
+            teardown_client=td)
+
+
 def _execute_negative(
     plan: DataRecipePlan, *, client, environment_id: int, teardown_client=None,
 ) -> RunEvidence:
@@ -410,6 +431,14 @@ def _run_negative_with_setup(
     #    D-230.2: live S1 read (sync) or a pre-resolved WorldPlan (async).
     at_seq = s1.current_version_seq() if s1 is not None else None
     tracker = CreatedRecordTracker(run_id=run_id, sink=record_sink)
+    # Round 4 (AUD-028): the run row exists BEFORE the first record is
+    # provisioned — an interrupted run leaves a failed run, never an orphan.
+    if record_sink is not None and hasattr(record_sink, "run_opened"):
+        record_sink.run_opened(
+            run_id=run_id, recipe_id=plan.recipe_id,
+            recipe_version_seq=plan.recipe_version_seq,
+            claim_test_id=plan.claim_test_id,
+            claim_version_seq=plan.claim_version_seq, started_at=started)
     # D-418: teardown (and only teardown) runs on the admin client.
     td = teardown_client if teardown_client is not None else client
     try:
@@ -913,6 +942,14 @@ def _run_positive(plan: DataRecipePlan, *, client, environment_id: int, s1=None,
     # D-230.2: live S1 read (sync) or pre-resolved WorldPlans (async, world_plans).
     at_seq = s1.current_version_seq() if s1 is not None else None
     tracker = CreatedRecordTracker(run_id=run_id, sink=record_sink)
+    # Round 4 (AUD-028): the run row exists BEFORE the first record is
+    # provisioned — an interrupted run leaves a failed run, never an orphan.
+    if record_sink is not None and hasattr(record_sink, "run_opened"):
+        record_sink.run_opened(
+            run_id=run_id, recipe_id=plan.recipe_id,
+            recipe_version_seq=plan.recipe_version_seq,
+            claim_test_id=plan.claim_test_id,
+            claim_version_seq=plan.claim_version_seq, started_at=started)
     state: dict[str, dict] = {}
     create_evs: list = []
     record_ids: list = []           # parallel to create_evs (None = not created)

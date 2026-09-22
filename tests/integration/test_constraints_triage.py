@@ -34,9 +34,26 @@ SCHEMA = "tenant_1"
 # fails the gate.
 RUN_ID_WITHOUT_FK = {
     "s4_execution_runs": "the parent: run_id is its primary key",
-    "s4_created_records": "AUD-026 sibling — cleanup ledger of records a run created; FK deferred (3,382 rows on production, zero orphans not yet proven); findings.json",
-    "s6_reinterpretations": "AUD-026 sibling — re-interpretations of a run; FK deferred (50 rows on production); findings.json",
-    "repair_proposals": "AUD-026 sibling — the proposal's originating run; FK deferred (140 rows on production); findings.json",
+}
+
+# Round 4 (AUD-028, D-502): every other run_id column IS a foreign key now. Two
+# of the keys are NOT VALID — permanently. Production holds seven rows whose
+# run_id names no run: the only surviving evidence of two incidents (a deploy
+# that cut two runs off between provisioning and finalize; a July deletion that
+# did not cascade). VALIDATE CONSTRAINT would need them deleted or rewritten,
+# and both destroy evidence — so the keys bind every NEW row and these seven
+# are NAMED here. The gate below holds the orphan set to exactly this ledger:
+# a new orphan fails the day it appears, a named one that vanishes fails too.
+NOT_VALID_KEYS = {"fk_s4_created_records_run", "fk_repair_proposals_run"}
+VALID_KEYS = {"fk_s6_reinterpretations_run"}
+NAMED_ORPHANS = {
+    # table, run_id prefix (the first 8 hex characters), the incident
+    ("s4_created_records", "71c0e78a"): "job 721, worker_shutdown 2026-09-09 02:11:48 — provisioned, interrupted by the deploy, never finalized (PLS_BM_Deal__c, cleaned)",
+    ("s4_created_records", "d89c2336"): "job 778, worker_shutdown 2026-09-09 02:19:45/46 — two rows (Case, Case_SLA__c), both cleaned",
+    ("repair_proposals", "8c09fc83"): "2026-07-10 05:55 — rerun proposal; its claim and run were deleted without a cascade",
+    ("repair_proposals", "cff08d72"): "2026-07-10 08:33 — rerun proposal; same July deletion",
+    ("repair_proposals", "f95f9b3b"): "2026-07-10 10:42 — rerun proposal; same July deletion",
+    ("repair_proposals", "f7ef9417"): "2026-07-10 13:17 — regenerate_from_current_org proposal; same July deletion",
 }
 
 
@@ -125,6 +142,52 @@ def test_every_run_id_column_is_a_foreign_key_or_ledgered(eng):
     assert unclassified == [], (f"run_id columns with no FK to s4_execution_runs and no ledger entry: {unclassified} — "
                                 "add the foreign key, or add the table to RUN_ID_WITHOUT_FK with the reason")
     assert ledgered_but_fk == [], f"ledger entries that now carry the FK (remove them): {ledgered_but_fk}"
+
+
+def test_the_keys_are_not_valid_where_evidence_lives_and_valid_elsewhere(eng):
+    """The two keys stay NOT VALID permanently (AK's ruling); the third is
+    valid. A VALIDATE CONSTRAINT run by anyone — which needs the named orphans
+    gone — flips this test red."""
+    with eng.connect() as c:
+        rows = c.execute(text("""
+            SELECT c.conname, c.convalidated FROM pg_constraint c
+            JOIN pg_class t ON t.oid = c.conrelid JOIN pg_namespace n ON n.oid = t.relnamespace
+            WHERE n.nspname = :s AND c.contype = 'f' AND c.confrelid = CAST(:p AS regclass)
+        """), {"s": SCHEMA, "p": f"{SCHEMA}.s4_execution_runs"}).fetchall()
+    state = {name: validated for name, validated in rows}
+    assert set(state) >= NOT_VALID_KEYS | VALID_KEYS, f"keys missing: {(NOT_VALID_KEYS | VALID_KEYS) - set(state)}"
+    assert {k for k in NOT_VALID_KEYS if state[k]} == set(), "a NOT VALID key was validated — the named orphans were deleted or rewritten"
+    assert {k for k in VALID_KEYS if not state[k]} == set()
+
+
+def test_the_orphans_are_exactly_the_named_ones(eng):
+    """Every run_id in the two NOT VALID tables that names no run must be in
+    NAMED_ORPHANS (a new orphan is a new incident); on a database that holds
+    none, the set is empty and the ledger stands for production."""
+    with eng.connect() as c:
+        c.execute(text(f"SET search_path TO {SCHEMA}, public"))
+        found = set()
+        for table in ("s4_created_records", "repair_proposals"):
+            for (rid,) in c.execute(text(f"""
+                SELECT DISTINCT LEFT(CAST(t.run_id AS text), 8) FROM {table} t
+                WHERE NOT EXISTS (SELECT 1 FROM s4_execution_runs r WHERE r.run_id = t.run_id)""")):
+                found.add((table, rid))
+    unnamed = found - set(NAMED_ORPHANS)
+    assert unnamed == set(), f"orphan run_ids not in the ledger — a new incident: {sorted(unnamed)}"
+
+
+def test_a_new_row_naming_no_run_is_refused_by_the_not_valid_key(eng, fx):
+    """NOT VALID binds every NEW row: an s4_created_records row and a
+    repair_proposals row whose run_id names nothing are refused at the table."""
+    ghost = str(uuid.uuid4())
+    assert _attempt(eng, "INSERT INTO s4_created_records (run_id, sobject, record_id, created_seq, cleaned, environment_id) "
+                         "VALUES (CAST(:r AS uuid), 'Case', '500x', 0, true, :e)", {"r": ghost, "e": fx["env"]}) == "ForeignKeyViolation"
+    assert _attempt(eng, *fx["prop"](990001, "DERIVED", status="proposed")[:1],
+                    dict(fx["prop"](990001, "DERIVED")[1], r=ghost)) == "ForeignKeyViolation"
+    # and the same rows naming a REAL run are accepted (the proof is not a broken fixture)
+    assert _attempt(eng, "INSERT INTO s4_created_records (run_id, sobject, record_id, created_seq, cleaned, environment_id) "
+                         "VALUES (CAST(:r AS uuid), 'Case', '500x', 0, true, :e)", {"r": fx["run_id"], "e": fx["env"]},
+                    setup=(fx["RUN"],)) is None
 
 
 def test_the_ledger_names_only_real_tables(eng):

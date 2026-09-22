@@ -771,7 +771,7 @@ def _list_claims(conn, *, limit: int, offset: int, q=None, status=None,
         # last-run chip below is then that env's latest, not any org's.
         clause += (" AND EXISTS (SELECT 1 FROM s4_execution_runs er "
                    "WHERE er.claim_test_id = c.test_id "
-                   "AND er.environment_id = :envf)")
+                   "AND er.environment_id = :envf AND er.finished_at IS NOT NULL)")
     # The lastrun LATERAL always names :envf (None = any org's latest), so the
     # bind must always be present; the COUNT statement ignores the extra key.
     qp["envf"] = environment_id
@@ -813,6 +813,7 @@ def _list_claims(conn, *, limit: int, offset: int, q=None, status=None,
         "  FROM s4_execution_runs lr "
         "  WHERE lr.claim_test_id = c.test_id "
         "  AND (CAST(:envf AS int) IS NULL OR lr.environment_id = :envf) "
+        "  AND lr.finished_at IS NOT NULL "
         "  ORDER BY lr.finished_at DESC LIMIT 1) lastrun ON true "
         f"WHERE c.valid_to IS NULL{clause} "
         "ORDER BY c.updated_at DESC, c.test_id LIMIT :limit OFFSET :offset"),

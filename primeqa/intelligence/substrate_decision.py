@@ -64,6 +64,7 @@ _COUNTED_RUNS_BULK_SQL = (
     "JOIN unnest(CAST(:tids AS uuid[]), CAST(:seqs AS int[])) "
     "AS t(tid, seq) ON r.claim_test_id = t.tid "
     "WHERE (CAST(:env AS int) IS NULL OR r.environment_id = :env) "
+    "AND r.finished_at IS NOT NULL "
     "AND (t.seq IS NULL "
     "     OR r.claim_version_seq IS NULL OR r.claim_version_seq = t.seq) "
     f") w WHERE rn <= {_RAW_RUN_WINDOW} ORDER BY tid, rn")
@@ -225,6 +226,7 @@ _NEWER_SUPERSEDED_BULK_SQL = (
     "CAST(:cutoffs AS timestamptz[])) AS t(tid, seq, cutoff) "
     "ON r.claim_test_id = t.tid "
     "WHERE (CAST(:env AS int) IS NULL OR r.environment_id = :env) "
+    "AND r.finished_at IS NOT NULL "
     "AND r.claim_version_seq IS NOT NULL AND r.claim_version_seq != t.seq "
     "AND r.finished_at > COALESCE(t.cutoff, '-infinity')")
 
@@ -304,7 +306,7 @@ def _claim_test_ids_uncached(session, external_keys):
 # decision loop's activation read (>= 2 ⇒ one verdict per env).
 _ENVS_WITH_EVIDENCE_SQL = (
     "SELECT DISTINCT environment_id FROM s4_execution_runs "
-    "WHERE CAST(claim_test_id AS text) = ANY(:tids) "
+    "WHERE CAST(claim_test_id AS text) = ANY(:tids) AND finished_at IS NOT NULL "
     "ORDER BY environment_id")
 
 # Step 3 (LLD_STEP_3 §d — the release-scope interim): the scope's
@@ -317,19 +319,19 @@ _ENVS_WITH_EVIDENCE_SQL = (
 _ACTIVE_ENVS_WITH_EVIDENCE_SQL = (
     "SELECT DISTINCT r.environment_id FROM s4_execution_runs r "
     "JOIN public.environments e ON e.id = r.environment_id "
-    "WHERE CAST(r.claim_test_id AS text) = ANY(:tids) "
+    "WHERE CAST(r.claim_test_id AS text) = ANY(:tids) AND r.finished_at IS NOT NULL "
     "  AND e.tenant_id = :tenant_id AND e.is_active "
     "ORDER BY r.environment_id")
 
 
 _ENVS_WITH_EVIDENCE_BY_CLAIM_SQL = (
     "SELECT DISTINCT CAST(claim_test_id AS text), environment_id FROM s4_execution_runs "
-    "WHERE CAST(claim_test_id AS text) = ANY(:tids) "
+    "WHERE CAST(claim_test_id AS text) = ANY(:tids) AND finished_at IS NOT NULL "
     "ORDER BY 1, 2")
 _ACTIVE_ENVS_WITH_EVIDENCE_BY_CLAIM_SQL = (
     "SELECT DISTINCT CAST(r.claim_test_id AS text), r.environment_id FROM s4_execution_runs r "
     "JOIN public.environments e ON e.id = r.environment_id "
-    "WHERE CAST(r.claim_test_id AS text) = ANY(:tids) "
+    "WHERE CAST(r.claim_test_id AS text) = ANY(:tids) AND r.finished_at IS NOT NULL "
     "  AND e.tenant_id = :tenant_id AND e.is_active "
     "ORDER BY 1, 2")
 

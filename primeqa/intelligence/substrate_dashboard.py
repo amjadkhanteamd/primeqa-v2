@@ -163,7 +163,7 @@ def _trends(session, environment_id: int) -> list[dict]:
         "SELECT date(finished_at) AS day, "
         "       COUNT(*) FILTER (WHERE outcome = 'passed') AS passed, "
         "       COUNT(*) AS total "
-        "FROM s4_execution_runs WHERE environment_id = :eid "
+        "FROM s4_execution_runs WHERE environment_id = :eid AND finished_at IS NOT NULL "
         "GROUP BY date(finished_at) ORDER BY day DESC LIMIT 5"
     ), {"eid": environment_id}).mappings().all()
     out = [{"label": r["day"].strftime("%m-%d"),
@@ -318,7 +318,7 @@ def get_landing_substrate_stats(tenant_id: int, environment_id=None) -> dict:
                 )).mappings().one()
                 runs_today = session.execute(text(
                     "SELECT COUNT(*) FROM s4_execution_runs "
-                    "WHERE finished_at >= date_trunc('day', now()) "
+                    "WHERE finished_at IS NOT NULL AND finished_at >= date_trunc('day', now()) "
                     "AND (CAST(:env AS int) IS NULL OR environment_id = :env)"
                 ), {"env": environment_id}).scalar() or 0
                 recent = session.execute(text(
@@ -326,6 +326,7 @@ def get_landing_substrate_stats(tenant_id: int, environment_id=None) -> dict:
                     "FROM s4_execution_runs r "
                     "LEFT JOIN s6_interpretations i ON i.run_id = r.run_id "
                     "WHERE (CAST(:env AS int) IS NULL OR r.environment_id = :env) "
+                    "AND r.finished_at IS NOT NULL "
                     "ORDER BY r.finished_at DESC LIMIT 10"
                 ), {"env": environment_id}).mappings().all()
                 org_id = None

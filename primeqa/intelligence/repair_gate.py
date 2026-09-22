@@ -397,7 +397,7 @@ def gather_inputs(conn, tenant_id: int, row, field_changes: Optional[dict],
     run = conn.execute(text(
         "SELECT recipe_id, recipe_version_seq, claim_version_seq, outcome, "
         "       failure_category, evidence "
-        "FROM s4_execution_runs WHERE run_id = CAST(:r AS uuid)"),
+        "FROM s4_execution_runs WHERE run_id = CAST(:r AS uuid) AND finished_at IS NOT NULL"),
         {"r": str(row["run_id"])}).mappings().first()
     if run is not None:
         inp.outcome = inp.outcome or run["outcome"]

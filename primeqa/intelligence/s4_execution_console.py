@@ -113,7 +113,7 @@ _CLAIM_RUNS_SQL = (
     "i.verdict::text AS verdict "
     "FROM s4_execution_runs r "
     "LEFT JOIN s6_interpretations i ON i.run_id = r.run_id "
-    "WHERE r.claim_test_id = CAST(:tid AS uuid) "
+    "WHERE r.claim_test_id = CAST(:tid AS uuid) AND r.finished_at IS NOT NULL "
     # run_id breaks a tie on finished_at. Two runs of one claim finishing at
     # the same instant had an arbitrary relative order, and the callers read
     # runs[0]; the bulk form cannot be proven equal to an unspecified order.
@@ -132,7 +132,7 @@ _CLAIM_RUNS_BULK_SQL = (
     "                                ORDER BY r.finished_at DESC, r.run_id DESC) AS rn "
     "      FROM s4_execution_runs r "
     "      LEFT JOIN s6_interpretations i ON i.run_id = r.run_id "
-    "      WHERE r.claim_test_id = ANY(CAST(:tids AS uuid[]))) u "
+    "      WHERE r.claim_test_id = ANY(CAST(:tids AS uuid[])) AND r.finished_at IS NOT NULL) u "
     "WHERE u.rn <= :limit "
     "ORDER BY u.claim_test_id, u.rn")
 """``_CLAIM_RUNS_SQL`` for many claims in ONE query. The window is partitioned
@@ -217,7 +217,7 @@ _RUN_DETAIL_SQL = (
     "  SELECT l.external_key FROM test_requirement_links l "
     "  WHERE l.test_id = r.claim_test_id AND l.link_kind = 'generated_from' "
     "  ORDER BY l.linked_at DESC LIMIT 1) req ON true "
-    "WHERE r.run_id = CAST(:rid AS uuid)")
+    "WHERE r.run_id = CAST(:rid AS uuid) AND r.finished_at IS NOT NULL")
 
 
 def _read_run_detail(session, run_id) -> dict | None:
@@ -349,7 +349,8 @@ def read_run_detail(tenant_id: int, run_id) -> dict:
 # LATERAL by LIMIT 1, the claim join by the one-current-version SCD invariant (valid_to
 # IS NULL) — so they do NOT change row cardinality and total/page parity holds. The
 # base s6_interpretations LEFT JOIN is likewise 1:0-or-1 (one S6 reading per run).
-_RUNS_FROM = ("FROM s4_execution_runs r "
+# Round 4 (AUD-028): the finalized-rows-only source — a running row is invisible.
+_RUNS_FROM = ("FROM (SELECT * FROM s4_execution_runs WHERE finished_at IS NOT NULL) r "
               "LEFT JOIN s6_interpretations i ON i.run_id = r.run_id")
 
 # The run_outcome enum surface — the caller validates against this before passing
@@ -474,7 +475,7 @@ _SCOPED_LATEST_SQL = (
     "    r.claim_test_id, CAST(r.run_id AS text) AS run_id, "
     "    r.outcome::text AS outcome, r.finished_at, r.duration_ms, r.environment_id, "
     "    i.verdict::text AS verdict, i.cause_kind "
-    "  FROM s4_execution_runs r "
+    "  FROM (SELECT * FROM s4_execution_runs WHERE finished_at IS NOT NULL) r "
     "  LEFT JOIN s6_interpretations i ON i.run_id = r.run_id "
     "  {where} "
     "  ORDER BY r.claim_test_id, r.finished_at DESC) "
@@ -683,7 +684,7 @@ _LATEST_RUN_FOR_SQL = (
     "r.failure_category, r.finished_at, i.verdict::text AS verdict "
     "FROM s4_execution_runs r "
     "LEFT JOIN s6_interpretations i ON i.run_id = r.run_id "
-    "WHERE r.claim_test_id = CAST(:tid AS uuid) "
+    "WHERE r.claim_test_id = CAST(:tid AS uuid) AND r.finished_at IS NOT NULL "
     "AND r.environment_id = :eid "
     "AND (CAST(:since AS timestamptz) IS NULL OR r.started_at >= CAST(:since AS timestamptz)) "
     "ORDER BY r.finished_at DESC LIMIT 1")
@@ -952,7 +953,7 @@ def _requirement_health_rows(conn, keys):
         "LEFT JOIN LATERAL ("
         "  SELECT r.outcome::text AS outcome, r.finished_at "
         "  FROM s4_execution_runs r "
-        "  WHERE r.claim_test_id = l.test_id "
+        "  WHERE r.claim_test_id = l.test_id AND r.finished_at IS NOT NULL "
         "  ORDER BY r.finished_at DESC LIMIT 1) lastrun ON true "
         "WHERE l.link_kind = 'generated_from' AND l.external_key IN :keys"
     ).bindparams(bindparam("keys", expanding=True))
@@ -1015,6 +1016,7 @@ def _latest_run_rows_by_test(conn, test_ids, environment_id=None):
         "FROM s4_execution_runs "
         "WHERE CAST(claim_test_id AS text) IN :ids "
         "AND (CAST(:env AS int) IS NULL OR environment_id = :env) "
+        "AND finished_at IS NOT NULL "
         "ORDER BY claim_test_id, finished_at DESC"
     ).bindparams(bindparam("ids", expanding=True))
     return conn.execute(stmt, {"ids": list(test_ids),
@@ -1065,7 +1067,7 @@ _RESULT_DIFF_SQL = (
     "  CAST(claim_test_id AS text) AS claim_test_id, environment_id, "
     "  outcome::text AS outcome, finished_at "
     "FROM s4_execution_runs "
-    "WHERE environment_id IN (:env_a, :env_b) "
+    "WHERE environment_id IN (:env_a, :env_b) AND finished_at IS NOT NULL "
     "ORDER BY claim_test_id, environment_id, finished_at DESC")
 
 

@@ -65,7 +65,7 @@ class BatchCompleteness:
 _MOST_RECENT_BATCH_SQL = text(
     "SELECT batch_id, max(finished_at) AS last_at "
     "FROM s4_execution_runs "
-    "WHERE claim_test_id = :tid AND source = :src AND batch_id IS NOT NULL "
+    "WHERE claim_test_id = :tid AND source = :src AND batch_id IS NOT NULL AND finished_at IS NOT NULL "
     "GROUP BY batch_id ORDER BY last_at DESC LIMIT 1")
 
 _MANIFEST_SQL = text(
@@ -83,7 +83,7 @@ _BATCH_ROWS_SQL = text(
     "LEFT JOIN test_recipes rec "
     "  ON rec.recipe_id = r.recipe_id AND rec.version_seq = r.recipe_version_seq "
     "LEFT JOIN s6_interpretations i ON i.run_id = r.run_id "
-    "WHERE r.batch_id = :bid AND r.source = :src AND r.claim_test_id = :tid")
+    "WHERE r.batch_id = :bid AND r.source = :src AND r.claim_test_id = :tid AND r.finished_at IS NOT NULL")
 
 
 def select_most_recent_batch(session, claim_test_id) -> Optional[UUID]:

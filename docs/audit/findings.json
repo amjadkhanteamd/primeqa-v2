@@ -525,7 +525,7 @@
   "status": "open",
   "fix_plan_ref": null,
   "discovered_at": "2026-09-19T06:35:37+00:00",
-  "note": "named in the run_id census ledger (tests/integration/test_constraints_triage.py::RUN_ID_WITHOUT_FK) so the gate stays honest until they are closed | round 3 part D: traced/measured read-only and written up with options and a defended lean in docs/audit/DECISION_MEMO.md — AK decides."
+  "note": "named in the run_id census ledger (tests/integration/test_constraints_triage.py::RUN_ID_WITHOUT_FK) so the gate stays honest until they are closed | round 3 part D: traced/measured read-only and written up with options and a defended lean in docs/audit/DECISION_MEMO.md — AK decides. | round 4 part A (2026-09-22): the write order is fixed at the root (the run row exists before any record is provisioned; an interrupted run closes as errored with the shutdown reason — proven on scratch with SIGTERM between two provisioning steps: zero orphans, one failed run), the three keys are added (two NOT VALID, permanently, by AK's ruling), the seven rows are named exceptions in the census ledger; the four July proposals' withdrawal is the GATED data act — AK's GO at the HOLD. Status stays open until that act is recorded."
  },
  {
   "id": "AUD-029",
@@ -834,9 +834,12 @@
   "expected": "either the seed grounds what the governance core now demands, or the refusals are correct and the expectations are stale",
   "observed": "every archetype refuses",
   "proposed_fix": "AK's call: re-seed the vertical, or accept the refusals and rewrite the expectations against the current grounding rules",
-  "status": "open",
+  "status": "closed",
   "fix_plan_ref": null,
-  "discovered_at": "2026-09-21T12:06:08+00:00"
+  "discovered_at": "2026-09-21T12:06:08+00:00",
+  "closed_at": "2026-09-22T00:00:00+00:00",
+  "closed_by": "round4 part B, 2026-09-22",
+  "closure": "SEED STALE, generation right. Since D-318 the state-transition and automation-effect resolvers bind a Flow by the EFFECT its parsed Metadata produces (recordUpdates assignments / recordCreates / the IR's update_records op); the D-210 seed's Flows carried no Metadata, so every claim refused EMISSION_DEFERRED 'no org automation produces Order__c.Status__c=Activated on create'. The seed's three Flows now carry the effects the vertical asserts (Stamp_Order_Status: Status__c=Activated + an Order_Log__c create; Escalate_Order: the same-record effect; Log_Effects: a filtered update_records on the parent reached from start). 24 of the 26 flipped to DRAFT on the seed alone; two refusal-text expectations moved to the current (earlier, stricter) reasons: the absence lane's 'verified trigger pair' and the placeholder value's 'verifiable effect'. The repair-agent round trip had two more product rules its world never showed — the repair gate SWITCH (tenant_agent_settings.repair_gate_apply_enabled, a public table the harness never carried) and AUD-013's plan on the re-run — both planted now. A REAL LLM generation on scratch was NOT possible: scratch holds zero connections (no LLM credential) and no production-shaped S1 (one seeded entity per org); reported as such. Vertical 68 passed, generation tree 215 passed."
  },
  {
   "id": "AUD-046",
@@ -850,9 +853,12 @@
   "expected": "expectations that match the schema and seed as they are",
   "observed": "three drifts of the same kind",
   "proposed_fix": "re-derive each expectation from the current behaviour, or fix the behaviour where the expectation is the contract",
-  "status": "open",
+  "status": "closed",
   "fix_plan_ref": null,
-  "discovered_at": "2026-09-21T12:06:08+00:00"
+  "discovered_at": "2026-09-21T12:06:08+00:00",
+  "closed_at": "2026-09-22T00:00:00+00:00",
+  "closed_by": "round4 part C, 2026-09-22",
+  "closure": "EXPECTATIONS STALE, product right: all three suites scoped their planted rows by the pre-per-org column last_synced_from_org_id while the reconcile, the enrichment counters and the org-status compute read connected_org_id (D-323..D-325); rows were never 'this org's', so nothing closed and nothing counted. The plants set connected_org_id now (44 passed). The parse-state case: REGEX(...) is PARSED since the D-384 arc (a read reference to Name), so it cannot stand for 'unparsed'; an unknown function (FOO(Name)) does."
  },
  {
   "id": "AUD-047",
@@ -866,9 +872,12 @@
   "expected": "one dimension across the column, the model and the fixtures",
   "observed": "two",
   "proposed_fix": "read PRODUCTION's vector dimension first (read-only): if production is 1536 this is a scratch-fidelity gap and scratch's column is repaired; if production is 1024 the embedding model changed under the schema and that is a product defect",
-  "status": "open",
+  "status": "closed",
   "fix_plan_ref": null,
-  "discovered_at": "2026-09-21T12:06:08+00:00"
+  "discovered_at": "2026-09-21T12:06:08+00:00",
+  "closed_at": "2026-09-22T00:00:00+00:00",
+  "closed_by": "round4 part B, 2026-09-22",
+  "closure": "SCRATCH RIGHT, suites stale. Production read-only: every vector column is vector(1024) and every stored vector is 1024 (entities 31,943 non-null, flow_details 73, validation_rule_details 125; pgvector 0.8.2); scratch is 1024 too; the product embedder is voyage-3 at 1024 (intelligence/embeddings.py). The two suites hand-built 1536-dim literals tagged openai/text-embedding-3-small — the schema's FIRST shape, replaced by migration 20260514_0010 (D-049). They build 1024 and name voyage-3 now: 19 passed. No product defect."
  },
  {
   "id": "AUD-048",
@@ -882,9 +891,12 @@
   "expected": "the suite asserts the recommendation the current policy produces",
   "observed": "the recommendation the policy produced before D-488/D-496",
   "proposed_fix": "confirm CONDITIONAL_GO is right for the planted shape, then move the expectation",
-  "status": "open",
+  "status": "closed",
   "fix_plan_ref": null,
-  "discovered_at": "2026-09-21T12:06:08+00:00"
+  "discovered_at": "2026-09-21T12:06:08+00:00",
+  "closed_at": "2026-09-22T00:00:00+00:00",
+  "closed_by": "round4 part C, 2026-09-22",
+  "closure": "CONDITIONAL_GO WAS RIGHT for what the suite planted: the decision's freshness check (window 168h) read the fixture runs at 382h old ('Newest run is 382h old') — fixed calendar dates that rotted. The fixture dates are now-relative with their order kept; the suite's GO expectations hold (6 passed)."
  },
  {
   "id": "AUD-049",
@@ -898,9 +910,12 @@
   "expected": "the cleanup reclaims what the suite plants",
   "observed": "it reclaims nothing — either the planted shape no longer matches the reaper's predicate, or the reaper stopped working",
   "proposed_fix": "decide which, in that order; a reaper that reclaims nothing is a product question",
-  "status": "open",
+  "status": "closed",
   "fix_plan_ref": null,
-  "discovered_at": "2026-09-21T12:06:08+00:00"
+  "discovered_at": "2026-09-21T12:06:08+00:00",
+  "closed_at": "2026-09-22T00:00:00+00:00",
+  "closed_by": "round4 part B, 2026-09-22",
+  "closure": "THE REAPER IS NOT BROKEN; the world it was shown was. (1) The D-245 Phase 4 guard reads the env's run policy from public.environments and reaps only a full, non-production env — the governance harness carries the tenant schema only, so the guard's SELECT failed, every env was 'unresolvable' and 0 was reaped (the guard working, the suite blind to it). (2) Round 4's write-ahead rule: a created record names a run that exists. The suite shims the guard's table (created only when absent), plants its runs and its environments, and asserts the guard by name: a read_only env, a production env and an env the tenant does not have are never reaped (13 passed). Production read-only: see the round-4 transcript for the stranded backlog by env."
  },
  {
   "id": "AUD-050",
@@ -914,9 +929,12 @@
   "expected": "a suite owns the policy it exercises",
   "observed": "both borrowed the migration's seed",
   "proposed_fix": "round 3 gave test_step_5_scope its own DRAFT version (it now reaches the composer, where recommendation is None instead of no_go — one step from green); test_step_5_policy needs the same treatment plus a waiver whose expiry the service accepts",
-  "status": "open",
+  "status": "closed",
   "fix_plan_ref": null,
-  "discovered_at": "2026-09-21T12:06:08+00:00"
+  "discovered_at": "2026-09-21T12:06:08+00:00",
+  "closed_at": "2026-09-22T00:00:00+00:00",
+  "closed_by": "round4 part C, 2026-09-22",
+  "closure": "CALENDAR ROT + a transactional-world seam. The policy suite's NOW was a fixed date (2026-09-10): a waiver planted at NOW+7d fell into the past and the service refused it, rightly; NOW is live and the one calendar literal in an assertion is derived. The scope suite reached the composer, which reads its two pre-conditions over its OWN tenant session (D-492/D-496) — invisible to a world planted inside the suite's rolled-back transaction, hence scope_empty; the test points that read at its session, the composer's logic untouched (8 passed)."
  },
  {
   "id": "AUD-051",
@@ -930,9 +948,12 @@
   "expected": "each expectation matches the product as it is",
   "observed": "each predates a ruling that changed it",
   "proposed_fix": "one small slice: move the four stale expectations, convert the two custom runners to pytest so they can say what failed, and page or scope the report-slice read",
-  "status": "open",
+  "status": "closed",
   "fix_plan_ref": null,
-  "discovered_at": "2026-09-21T12:06:08+00:00"
+  "discovered_at": "2026-09-21T12:06:08+00:00",
+  "closed_at": "2026-09-22T00:00:00+00:00",
+  "closed_by": "round4 part C, 2026-09-22",
+  "closure": "seven stale expectations moved to the rulings that changed them: the release-run route refuses EVERY post with the plan requirement since D-494 (SEC-4 is enforced at the dispatch chokepoint; the route's code after the refusal is dead — recorded); the webhook's valid request reaches 409 PLAN_REQUIRED (the fork AK ruled); the cust store is asserted in a tenant schema, never public, for every tenant; the report listing's contracts are 'available, newest-first' and a run reads by its own id (the 50-row window was never a contract); a DECLARED identity key is admitted by the derivation test. The two custom runners are plain pytest now and NAMED their reds at once: R2 needed a superadmin (scratch's seed admin is an admin) and two checks whose module retired with v1 (primeqa.runs.cost); auth met TENANT_CAP because a crashed run's 15 fixture users filled the cap — the suite sweeps its own fixture shape at setup (15 passed, residue 0)."
  },
  {
   "id": "AUD-052",

@@ -65,7 +65,7 @@ def cluster_recurring_causes(
         "SELECT cause_kind, COUNT(*) AS n, "
         "       array_agg(s6_interpretations.run_id ORDER BY s6_interpretations.run_id) AS run_ids "
         "FROM s6_interpretations "
-        + ("JOIN s4_execution_runs r ON r.run_id = s6_interpretations.run_id "
+        + ("JOIN s4_execution_runs r ON r.run_id = s6_interpretations.run_id AND r.finished_at IS NOT NULL "
            "AND r.environment_id = :env " if environment_id is not None else "")
         + "WHERE cause_kind IS NOT NULL "
         + ("AND s6_interpretations.recipe_id = CAST(:recipe_id AS uuid) "
@@ -99,7 +99,7 @@ def cluster_by_vr(
         "       array_agg(DISTINCT s6_interpretations.outcome::text ORDER BY s6_interpretations.outcome::text) AS outcomes, "
         "       array_agg(s6_interpretations.run_id ORDER BY s6_interpretations.run_id) AS run_ids "
         "FROM s6_interpretations "
-        + ("JOIN s4_execution_runs r ON r.run_id = s6_interpretations.run_id "
+        + ("JOIN s4_execution_runs r ON r.run_id = s6_interpretations.run_id AND r.finished_at IS NOT NULL "
            "AND r.environment_id = :env " if environment_id is not None else "")
         + "WHERE vr_name IS NOT NULL "
         + ("AND s6_interpretations.recipe_id = CAST(:recipe_id AS uuid) "
@@ -139,7 +139,7 @@ def cluster_flapping(
         "       array_agg(DISTINCT s6_interpretations.outcome::text ORDER BY s6_interpretations.outcome::text) AS outcomes, "
         "       array_agg(s6_interpretations.run_id ORDER BY s6_interpretations.run_id) AS run_ids "
         "FROM s6_interpretations "
-        + ("JOIN s4_execution_runs r ON r.run_id = s6_interpretations.run_id "
+        + ("JOIN s4_execution_runs r ON r.run_id = s6_interpretations.run_id AND r.finished_at IS NOT NULL "
            if environment_id is not None else "")
         + ("WHERE " + " AND ".join(conditions) + " " if conditions else "")
         + "GROUP BY s6_interpretations.claim_test_id "
