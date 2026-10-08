@@ -164,3 +164,10 @@ Ordering with the cache markers: `tool_turn` applies `_messages_with_cache` BEFO
 - Screens for AK (standing rule): the Models panel fixture screenshot needs the app on scratch (same dependency); the production-data render follows the deploy.
 
 **Observed live, read-only, during the build:** production's `llm_models` has no capability column yet (migration 075 unapplied), and the app boots with the warning path described above.
+
+## 9. Deploy record (2026-10-08) — see D-505
+
+- 10:27:14Z migration 075 on production, one transaction; columns + four seeds read back as designed.
+- 10:27:34Z push 6155b235 → 10:31:20Z all four services CRASHED: `No module named 'psycopg'` — SQLAlchemy 2.1.4 pulled through the open `sqlalchemy>=2.0` pin (the proven venv: 2.0.49); health 502; the 09-22 deployment already removed.
+- Restore: c222b341 `sqlalchemy>=2.0,<2.1`, b82c5847 `anthropic>=0.102,<1.0` (the image had also pulled the Anthropic SDK 1.12.1 through `anthropic>=0.25`; proven venv 0.102.0). The working tree had been moved to a branch `spike/2.2-session-bridge` at 10:31:38Z by a checkout this session did not run; pushed as `HEAD:main` 10:36:03Z. Four services SUCCESS 10:39:48Z, health 200, no error-class log lines; the image carries sqlalchemy 2.0.54 / anthropic 0.125.0 / psycopg2-binary 2.9.13.
+- Proof still owed: the production Models-panel render (AK's eyes — a minted token was refused by the permission classifier), the shaped generation re-run (a spend, AK's GO), the scratch integration file + fixture screenshot (scratch address needed).
