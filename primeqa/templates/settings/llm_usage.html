@@ -246,12 +246,26 @@
       </ul>
     </div>
     {% endif %}
+    {# D-504: a model whose forced-tool-choice fact is unknown is refused by the
+       gateway before any spend — name the tenants pinned to one and the act
+       that resolves it (Refresh probes every unknown active row). #}
+    {% if unknown_pinned %}
+    <div class="mb-3 rounded border border-amber-300 bg-amber-50 p-2 text-xs text-amber-800" data-testid="unknown-pinned">
+      <strong>Action needed:</strong> tenants are pinned to models whose tool-call driving shape is unknown &mdash; their AI work is refused until you click <em>Refresh models</em>.
+      <ul class="mt-1 list-disc pl-4">
+        {% for mid, tenants in unknown_pinned.items() %}
+        <li><span class="font-mono">{{ mid }}</span> &rarr; {% for tid in tenants %}tenant #{{ tid }}{% if not loop.last %}, {% endif %}{% endfor %}</li>
+        {% endfor %}
+      </ul>
+    </div>
+    {% endif %}
 
     <table class="min-w-full text-xs">
       <thead><tr class="text-left text-gray-500 border-b">
         <th class="py-1">Model</th>
         <th class="py-1">Source</th>
         <th class="py-1">Status</th>
+        <th class="py-1" title="Whether the model accepts a forced tool call (tool_choice tool/any). A model that does not is driven by instruction: the gateway sends tool_choice auto, at most one call per turn, and a per-turn instruction naming the tool. Unknown = not yet probed; Refresh probes it for free.">Forced tool call</th>
         <th class="py-1 text-right">In $/MTok</th>
         <th class="py-1 text-right">Out $/MTok</th>
         <th class="py-1 text-right">Last seen upstream</th>
@@ -265,6 +279,11 @@
             {% if m.status == 'retired' %}<span class="text-red-600 font-medium">retired</span>
             {% elif m.reappeared %}<span class="text-amber-600 font-medium" title="This retired model is available upstream again. Re-enable it deliberately via the Enable form (models are never silently resurrected).">retired (reappeared)</span>
             {% else %}<span class="text-green-700">active</span>{% endif %}
+          </td>
+          <td class="py-1.5" data-testid="forced-tool-choice-{{ m.model_id }}">
+            {% if m.forced_tool_choice is true %}<span class="text-gray-700">yes</span>
+            {% elif m.forced_tool_choice is false %}<span class="text-gray-700">no</span> <span class="text-gray-400">&mdash; driven by instruction</span>
+            {% else %}<span class="text-amber-600 font-medium">unknown</span> <span class="text-gray-400">&mdash; refresh</span>{% endif %}
           </td>
           <td class="py-1.5 text-right">{% if m.input_rate is not none %}{{ '%.2f' | format(m.input_rate) }}{% else %}<span class="text-gray-400">&mdash;</span>{% endif %}</td>
           <td class="py-1.5 text-right">{% if m.output_rate is not none %}{{ '%.2f' | format(m.output_rate) }}{% else %}<span class="text-gray-400">&mdash;</span>{% endif %}</td>

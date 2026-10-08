@@ -246,6 +246,14 @@ class LlmModel(Base):
     output_usd_per_mtok = Column(Float)
     last_seen_upstream_at = Column(DateTime(timezone=True))
     enabled_by = Column(Integer, ForeignKey("users.id"))
+    # Migration 075 (D-504): does the model accept a forced tool_choice
+    # ({"type":"tool"} / {"type":"any"})? TRUE / FALSE = a probed FACT
+    # (catalog.probe_forced_tool_choice, a free count_tokens call); NULL = not
+    # yet probed — the gateway refuses such a model pre-spend and the picker
+    # refuses the pick. The built-in code models carry their fact in
+    # router.FORCED_TOOL_CHOICE_CODE.
+    forced_tool_choice = Column(Boolean)
+    forced_tool_choice_probed_at = Column(DateTime(timezone=True))
     created_at = Column(DateTime(timezone=True), nullable=False, server_default=func.now())
     updated_at = Column(DateTime(timezone=True), nullable=False, server_default=func.now())
 

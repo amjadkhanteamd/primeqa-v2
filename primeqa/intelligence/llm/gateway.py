@@ -28,7 +28,9 @@ from primeqa.intelligence.llm.provider import (
     ProviderResponse,
 )
 from primeqa.intelligence.llm.prompts import get_prompt
-from primeqa.intelligence.llm.router import select_chain, TenantPolicy
+from primeqa.intelligence.llm.router import (
+    select_chain, TenantPolicy, ModelConfigError, forced_tool_choice_supported,
+)
 
 log = logging.getLogger(__name__)
 
@@ -326,6 +328,62 @@ class _InvokeResult:
     error: Optional[ProviderError]
 
 
+# ---- Forced tool choice shaping (D-504) -------------------------------------
+# The Claude 5.5 models and Fable 5.1 reject tool_choice {"type":"tool"} /
+# {"type":"any"} with a 400. The substrate still names the tool it wants each
+# turn (D-085's intent); on a model that rejects forcing, the SAME request is
+# shaped into tool_choice auto + at most one call per turn + a TRAILING
+# role:system message naming the tool — the API's mid-conversation operator
+# channel, placed after the moving cache breakpoint so the cached prefix is
+# untouched, and never part of the caller's stored history (the caller's
+# lists are copied, not mutated). An UNKNOWN capability is refused pre-spend
+# with ModelConfigError (the S3 consumer already classifies it as
+# model_config_error). Proven live on claude-sonnet-5-5, 2026-10-08
+# (docs/design/LLD_TOOL_CHOICE_CAPABILITY.md section 2).
+FORCED_TOOL_INSTRUCTION = (
+    "For this turn you must call the tool {name}. Open your response with that "
+    "call and make no other tool call."
+)
+ANY_TOOL_INSTRUCTION = (
+    "For this turn you must call exactly one of the provided tools. Open your "
+    "response with that call."
+)
+_FORCING_TYPES = ("tool", "any")
+
+
+def _shape_tool_choice(model: str, tool_choice, messages):
+    """Return ``(tool_choice, messages, shape)`` for ``model``.
+
+    ``shape`` is ``None`` (nothing to shape), ``"forced"`` (the model accepts
+    the forced choice; request unchanged) or ``"auto+instruction"`` (shaped as
+    described above). Pure: never mutates the caller's objects."""
+    if not tool_choice or tool_choice.get("type") not in _FORCING_TYPES:
+        return tool_choice, messages, None
+    supported = forced_tool_choice_supported(model)
+    if supported is True:
+        return tool_choice, messages, "forced"
+    if supported is None:
+        raise ModelConfigError(
+            f"model {model!r}: forced tool choice capability is UNKNOWN — the "
+            f"gateway cannot drive it; click 'Refresh models' on "
+            f"/settings/llm-usage to probe it, then retry")
+    if not messages or messages[-1].get("role") != "user":
+        # The API's placement rule for a mid-conversation system message; every
+        # caller today ends on a user turn (an opening message or a tool_result).
+        raise LLMError(
+            "content_error",
+            f"model {model!r} rejects a forced tool choice and the request cannot "
+            f"carry the instruction: the last message must be a user turn "
+            f"(got {messages[-1].get('role') if messages else 'no messages'!r})")
+    if tool_choice.get("type") == "tool":
+        instruction = FORCED_TOOL_INSTRUCTION.format(name=tool_choice.get("name"))
+    else:
+        instruction = ANY_TOOL_INSTRUCTION
+    shaped_choice = {"type": "auto", "disable_parallel_tool_use": True}
+    shaped_messages = list(messages) + [{"role": "system", "content": instruction}]
+    return shaped_choice, shaped_messages, "auto+instruction"
+
+
 def _invoke_and_record(
     *, api_key: str, model: str, messages, system, max_tokens: int,
     tools, tool_choice, task: str, tenant_id: int, user_id: Optional[int],
@@ -335,8 +393,16 @@ def _invoke_and_record(
     """One provider call + cost computation + usage.record (the ok row, or the
     error row on ProviderError). Routes by model id. Never raises for
     ProviderError — returns it in .error so llm_call can escalate and tool_turn
-    can one-shot. Shared by both (D-095.2)."""
+    can one-shot. Shared by both (D-095.2).
+
+    D-504: a forced tool choice is shaped for the resolved model here — the ONE
+    place both entry points pass through — and the usage row's context records
+    the shape (``tool_choice``: ``forced`` / ``auto+instruction``). An unknown
+    capability raises ModelConfigError BEFORE any provider call (no usage row)."""
     from primeqa.intelligence.llm.providers import get_provider_for_model
+    tool_choice, messages, shape = _shape_tool_choice(model, tool_choice, messages)
+    if shape is not None:
+        context_for_log = {**(context_for_log or {}), "tool_choice": shape}
     try:
         provider = get_provider_for_model(model)
         resp = provider.invoke(

@@ -87,11 +87,26 @@ SONNET_5 = "claude-sonnet-5"
 # model has correct cost tracking (catalog rows carry their own pricing).
 SELECTABLE_MODELS = frozenset({OPUS, SONNET, HAIKU, SONNET_5})
 
+# ---- Forced tool choice capability (D-504) ----------------------------------
+# Does the model accept tool_choice {"type":"tool"} / {"type":"any"}? The
+# Claude 5.5 models and Fable 5.1 reject it with a 400, so the gateway must
+# know BEFORE it calls. For the built-in CODE models the fact lives here
+# (every id proven by a free count_tokens probe on 2026-10-08); for catalog
+# models it lives on llm_models.forced_tool_choice (migration 075), probed at
+# enable/refresh. forced_tool_choice_supported() resolves the two; None means
+# UNKNOWN, which the gateway refuses pre-spend and the picker refuses to save.
+# A unit test pins set(FORCED_TOOL_CHOICE_CODE) == SELECTABLE_MODELS.
+FORCED_TOOL_CHOICE_CODE: Dict[str, bool] = {
+    OPUS: True, SONNET: True, HAIKU: True, SONNET_5: True,
+}
+
 # In-process cache for the catalog read: selectable_model_ids() sits on
 # resolution paths (route_model per batch, select_chain per call), so the
 # overlay is re-read at most every _SELECTABLE_TTL_S seconds per process.
+# One read serves both facts: (expires_at, selectable ids, {model_id: bool}
+# for every catalog row whose forced_tool_choice is recorded).
 _SELECTABLE_TTL_S = 60.0
-_selectable_cache: Optional[tuple[float, frozenset]] = None
+_selectable_cache: Optional[tuple[float, frozenset, Dict[str, bool]]] = None
 
 
 class ModelConfigError(RuntimeError):
@@ -125,7 +140,7 @@ def selectable_model_ids(db=None, *, refresh: bool = False) -> frozenset:
     global _selectable_cache
     import time
     if not refresh and _selectable_cache is not None:
-        expires_at, cached = _selectable_cache
+        expires_at, cached, _facts = _selectable_cache
         if time.monotonic() < expires_at:
             return cached
     try:
@@ -136,7 +151,24 @@ def selectable_model_ids(db=None, *, refresh: bool = False) -> frozenset:
         owns_session = db is None
         sess = db if db is not None else Session(bind=engine)
         try:
-            rows = sess.query(LlmModel.model_id, LlmModel.status).all()
+            try:
+                rows = sess.query(LlmModel.model_id, LlmModel.status,
+                                  LlmModel.forced_tool_choice).all()
+                facts = {r.model_id: bool(r.forced_tool_choice)
+                         for r in rows if r.forced_tool_choice is not None}
+            except Exception as e:
+                # D-504: the capability column (migration 075) is not there
+                # yet — the selectable set must still be the catalog's, not
+                # the code set's (a tenant pinned to a catalog model would
+                # otherwise fail the boot gate). The facts stay empty, so
+                # every catalog model is UNKNOWN and refused pre-spend.
+                import logging
+                logging.getLogger(__name__).warning(
+                    "selectable_model_ids: capability column unreadable (%s) — "
+                    "apply migration 075; catalog facts treated as unknown", e)
+                sess.rollback()
+                rows = sess.query(LlmModel.model_id, LlmModel.status).all()
+                facts = {}
         finally:
             if owns_session:
                 sess.close()
@@ -147,8 +179,35 @@ def selectable_model_ids(db=None, *, refresh: bool = False) -> frozenset:
             "selectable_model_ids: catalog read failed (%s) — "
             "falling back to the code set", e)
         return SELECTABLE_MODELS
-    _selectable_cache = (time.monotonic() + _SELECTABLE_TTL_S, result)
+    _selectable_cache = (time.monotonic() + _SELECTABLE_TTL_S, result, facts)
     return result
+
+
+def catalog_forced_tool_choice_facts(*, refresh: bool = False) -> Dict[str, bool]:
+    """``{model_id: bool}`` for every catalog row whose forced-tool-choice fact
+    is recorded (D-504) — served from the same cached read as
+    ``selectable_model_ids`` (one query, one TTL). Empty when the catalog
+    cannot be read: the code table still answers for the built-in models and
+    every other model resolves to UNKNOWN (refused pre-spend)."""
+    selectable_model_ids(refresh=refresh)
+    if _selectable_cache is None:
+        return {}
+    return dict(_selectable_cache[2])
+
+
+def forced_tool_choice_supported(model_id: str, *,
+                                 catalog: Optional[Dict[str, bool]] = None) -> Optional[bool]:
+    """Does ``model_id`` accept a forced ``tool_choice``? (D-504)
+
+    ``True`` / ``False`` are recorded facts; ``None`` is UNKNOWN. A catalog
+    fact wins over the code table (a re-probe can correct a built-in id); the
+    code table answers for the built-in models; anything else is unknown.
+    Pass ``catalog=`` for a pure, deterministic check (unit tests / a
+    pre-fetched map); the default consults the cached catalog read."""
+    facts = catalog if catalog is not None else catalog_forced_tool_choice_facts()
+    if model_id in facts:
+        return facts[model_id]
+    return FORCED_TOOL_CHOICE_CODE.get(model_id)
 
 
 def resolve_tenant_model(model_id: str, *, tenant_id=None,
@@ -204,6 +263,19 @@ def validate_tenant_model_overrides() -> None:
             f"tenant llm_model_override values are not selectable: {detail}. "
             f"Allowed: {sorted(allowed)}. Re-point these tenants on "
             f"/settings/llm-usage before deploying.")
+    # D-504 (fork F2, AK's ruling: WARN): a selectable override whose
+    # forced-tool-choice capability is unknown does not block boot — the
+    # gateway refuses it pre-spend at the chokepoint — but it is named here so
+    # the operator sees it before the first job does.
+    facts = catalog_forced_tool_choice_facts()
+    unknown = [(tid, mid) for tid, mid in rows
+               if mid in allowed and forced_tool_choice_supported(mid, catalog=facts) is None]
+    if unknown:
+        detail = "; ".join(f"tenant {tid} -> {mid!r}" for tid, mid in unknown)
+        log.warning(
+            "validate_tenant_model_overrides: forced-tool-choice capability "
+            "UNKNOWN for %s — the gateway refuses these pre-spend; click "
+            "'Refresh models' on /settings/llm-usage to probe them", detail)
 
 
 # ---- Configurable summary model (Phase-1 close-out #5) ---------------------

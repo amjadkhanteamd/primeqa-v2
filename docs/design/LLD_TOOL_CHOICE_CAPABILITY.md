@@ -147,3 +147,20 @@ Ordering with the cache markers: `tool_turn` applies `_messages_with_cache` BEFO
 ## 7. Proposed ledger entry (append on GO — not written yet)
 
 **D-504 — Forced tool choice is a per-model capability, recorded as a fact and shaped at the gateway chokepoint.** The Claude 5.5 models and Fable 5.1 reject `tool_choice` `tool`/`any`; tenant 1's 2026-10-08 switch to Sonnet 5.5 failed every generation at the API (usage rows 1136/1137). The fact lives on `llm_models.forced_tool_choice` (migration 075, probed by a free `count_tokens` call at enable and refresh, seeded for the four catalog rows proven by probe) with a code table for the built-in set; `_invoke_and_record` shapes a forced choice into `auto` + `disable_parallel_tool_use` + a trailing `role:system` instruction naming the tool on models that reject forcing, and refuses pre-spend (`ModelConfigError`) when the capability is unknown; the picker refuses an unknown-capability override at save time and the Models panel shows the fact. D-085's intent (the substrate names the tool each turn) is kept; its realisation becomes model-aware. The S3 runtime, prompt versions and tool schemas are unchanged; `strict` is ledgered. Live proof: two turns on Sonnet 5.5 with the runtime's thinking-free replay, both answered by the named tool.
+
+---
+
+## 8. Build record (2026-10-08, after AK's GO on the design and the leans)
+
+**Design commit** 79026223 (the LLD + D-504 appended). **Implementation:** the six parts of section 4, plus one fallback the build found necessary:
+
+- **The deploy window.** With the code deployed BEFORE migration 075, the widened catalog read (`model_id, status, forced_tool_choice`) fails on the missing column; the old fail-open path would then return the CODE set only, and the boot gate would RAISE for tenant 1 (pinned to the catalog model `claude-sonnet-5-5`) — every service down. Observed, not assumed: the unit file `tests/unit/test_api_request_log.py` boots the app against the `.env` database (production, read-only) and went red exactly so. Root fix in `selectable_model_ids`: when the capability column is unreadable, re-read `(model_id, status)` on the same session (facts empty) and warn naming migration 075. The selectable set stays the catalog's; every catalog model is UNKNOWN (refused pre-spend, boot gate warns). Proven on the same boot: the warning line, the boot-gate warning for tenant 1, no raise. The deploy order stays migration-first regardless.
+
+**Gates run:**
+- RED on main first, both new unit files on the design-only tree in a temporary worktree: `test_tool_choice_shaping.py` 15 errors, `test_forced_tool_choice_capability.py` a collection error — the new names do not exist there.
+- Unit: the two new files + `test_model_control.py` + `test_gateway_shared.py` + `test_routing.py` + `test_api_request_log.py` green (62 in the last targeted run); the whole `tests/unit` tree — see the HOLD message for the count.
+- The Models panel fragment rendered with planted facts (no DB): `yes` / `no` / `unknown` per row and the pinned-unknown band present; the template compiles.
+- Integration (`tests/integration/test_tool_choice_capability_pages.py`, 7 tests, DB-real on scratch through the real routes): WRITTEN, NOT YET RUN — the scratch database address (`S3A3_TEST_DATABASE_URL`) is not available to this session (not in `.env`, the login shell, a Railway service, Docker, or memory). It runs, with migration 075 applied to scratch first, once AK provides the address.
+- Screens for AK (standing rule): the Models panel fixture screenshot needs the app on scratch (same dependency); the production-data render follows the deploy.
+
+**Observed live, read-only, during the build:** production's `llm_models` has no capability column yet (migration 075 unapplied), and the app boots with the warning path described above.

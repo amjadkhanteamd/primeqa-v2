@@ -45,6 +45,69 @@ class CatalogRefreshError(RuntimeError):
     The refresh made NO writes; callers log/flash and move on."""
 
 
+class CatalogProbeError(RuntimeError):
+    """The forced-tool-choice probe (D-504) could not establish the fact —
+    no key, transport failure, an unexpected status, an unknown model id. The
+    fact stays UNKNOWN; an enable is refused, a refresh logs and leaves NULL."""
+
+
+# ---- Forced tool choice probe (D-504) ---------------------------------------
+# The exact rejection text the API returns on a model that does not accept
+# tool_choice {"type":"tool"} / {"type":"any"} (Claude 5.5 models, Fable 5.1).
+# count_tokens validates the request shape exactly as messages.create does and
+# is FREE, so it is a truthful, no-spend capability probe (proven on seven
+# models 2026-10-08, docs/design/LLD_TOOL_CHOICE_CAPABILITY.md section 2).
+FORCED_TOOL_CHOICE_REJECTION = 'tool_choice: type "tool" and "any" are not supported'
+_PROBE_TOOL = {
+    "name": "probe_tool",
+    "description": "Capability probe (never executed).",
+    "input_schema": {"type": "object",
+                     "properties": {"x": {"type": "string"}},
+                     "required": ["x"], "additionalProperties": False},
+}
+
+
+def classify_probe_outcome(exc: Optional[BaseException]) -> bool:
+    """Pure classification of a probe attempt: ``None`` (the call succeeded)
+    → True; an error carrying ``status_code == 400`` whose text contains
+    :data:`FORCED_TOOL_CHOICE_REJECTION` → False; anything else →
+    :class:`CatalogProbeError` (the fact stays unknown — never guessed)."""
+    if exc is None:
+        return True
+    status = getattr(exc, "status_code", None)
+    # The SDK renders the error body as a Python repr (single-quoted, the
+    # inner double quotes literal); a JSON rendering escapes them. Accept both.
+    text = str(exc).replace('\\"', '"')
+    if status == 400 and FORCED_TOOL_CHOICE_REJECTION in text:
+        return False
+    raise CatalogProbeError(
+        f"forced-tool-choice probe failed ({type(exc).__name__}"
+        f"{f' {status}' if status else ''}): {str(exc)[:200]}") from exc
+
+
+def probe_forced_tool_choice(api_key: str, model_id: str, *, client=None) -> bool:
+    """Ask the API, for free, whether ``model_id`` accepts a forced
+    ``tool_choice``: one ``count_tokens`` call with a forced one-field tool.
+    Returns the FACT (True/False); raises :class:`CatalogProbeError` when it
+    cannot be established. ``client=`` injects a fake (unit tests)."""
+    if client is None:
+        if not api_key:
+            raise CatalogProbeError(
+                "no Anthropic API key available to probe (no active LLM connection?)")
+        import anthropic
+        client = anthropic.Anthropic(api_key=api_key, timeout=_TIMEOUT_S)
+    try:
+        client.messages.count_tokens(
+            model=model_id,
+            messages=[{"role": "user", "content": "Call probe_tool with x='a'."}],
+            tools=[_PROBE_TOOL],
+            tool_choice={"type": "tool", "name": "probe_tool"},
+        )
+    except Exception as exc:  # noqa: BLE001 — classified, never swallowed
+        return classify_probe_outcome(exc)
+    return classify_probe_outcome(None)
+
+
 @dataclass
 class RefreshResult:
     seen: int = 0
@@ -52,6 +115,8 @@ class RefreshResult:
     new: List[dict] = field(default_factory=list)         # [{id, display_name}]
     reappeared: List[str] = field(default_factory=list)   # retired but seen again
     affected: Dict[str, List[int]] = field(default_factory=dict)  # expired id -> pinned tenants
+    probed: Dict[str, bool] = field(default_factory=dict)         # D-504: id -> fact recorded this pass
+    probe_failed: List[str] = field(default_factory=list)         # D-504: ids left UNKNOWN
 
 
 def fetch_upstream_models(api_key: str) -> List[dict]:
@@ -145,11 +210,17 @@ def classify_refresh(upstream: List[dict], *, code_set: frozenset,
 
 
 def refresh_model_catalog(api_key: str, *, actor_user_id: Optional[int] = None,
-                          actor_tenant_id: Optional[int] = None) -> RefreshResult:
+                          actor_tenant_id: Optional[int] = None,
+                          probe=None) -> RefreshResult:
     """One refresh pass. Writes: retired upserts + last-seen stamps +
     activity_log rows (per pinned tenant, when there is an actor context) —
     and busts the router's selectable cache. NEW models are returned, not
-    written (pricing must be entered at enable time)."""
+    written (pricing must be entered at enable time).
+
+    D-504: every ACTIVE row whose ``forced_tool_choice`` is NULL is then
+    probed (``probe(model_id) -> bool``, default :func:`probe_forced_tool_choice`
+    with this key) and the fact recorded; a per-row :class:`CatalogProbeError`
+    is logged, the row stays NULL, and the refresh itself still succeeds."""
     from sqlalchemy import text
     from sqlalchemy.orm import Session
     from primeqa.db import engine
@@ -218,19 +289,73 @@ def refresh_model_catalog(api_key: str, *, actor_user_id: Optional[int] = None,
         from primeqa.shared.notifications import notify_model_retired
         notify_model_retired(result.expired, result.affected)
 
+    # D-504: record the forced-tool-choice fact for active rows that lack it.
+    _probe_unknown_active_rows(api_key, result, probe=probe)
+
     # The selectable set changed (or its staleness did) — re-read next call.
     router.selectable_model_ids(refresh=True)
     return result
 
 
+def _probe_unknown_active_rows(api_key: str, result: RefreshResult, *, probe=None) -> None:
+    """D-504: probe every ACTIVE catalog row whose forced_tool_choice is NULL
+    and stamp the fact. One short session per row so a late failure never
+    loses an earlier fact. Errors are named in ``result.probe_failed`` and the
+    python log; nothing raises out of a refresh for a probe."""
+    from sqlalchemy import text
+    from sqlalchemy.orm import Session
+    from primeqa.db import engine
+    from primeqa.core.models import LlmModel
+
+    if probe is None:
+        probe = lambda mid: probe_forced_tool_choice(api_key, mid)  # noqa: E731
+
+    sess = Session(bind=engine)
+    try:
+        pending = [r.model_id for r in sess.query(LlmModel).filter(
+            LlmModel.status == "active",
+            LlmModel.forced_tool_choice.is_(None)).order_by(LlmModel.model_id).all()]
+    finally:
+        sess.close()
+
+    for mid in pending:
+        try:
+            fact = bool(probe(mid))
+        except CatalogProbeError as e:
+            log.warning("forced-tool-choice probe for %s failed, fact stays UNKNOWN: %s", mid, e)
+            result.probe_failed.append(mid)
+            continue
+        sess = Session(bind=engine)
+        try:
+            row = sess.query(LlmModel).filter(LlmModel.model_id == mid).first()
+            if row is not None:
+                row.forced_tool_choice = fact
+                row.forced_tool_choice_probed_at = sess.execute(text("SELECT NOW()")).scalar()
+                sess.commit()
+                result.probed[mid] = fact
+        except Exception:
+            sess.rollback()
+            raise
+        finally:
+            sess.close()
+
+
 def enable_model(model_id: str, *, display_name: Optional[str],
                  input_usd_per_mtok: float, output_usd_per_mtok: float,
-                 actor_user_id: int, actor_tenant_id: int) -> None:
+                 actor_user_id: int, actor_tenant_id: int,
+                 api_key: Optional[str] = None, probe=None) -> None:
     """Enable a model from the refresh panel: upsert ``status='active'`` with
     the superadmin-entered rates (NOT NULL by table CHECK — "selectable ⇒
     correctly priced" holds by construction), audit-log it, and bust the
     selectable + rates caches so the picker updates immediately. Also the
-    manual un-retire path for a reappeared model (same upsert)."""
+    manual un-retire path for a reappeared model (same upsert).
+
+    D-504: the forced-tool-choice fact is probed BEFORE the upsert
+    (``probe(model_id) -> bool``; default :func:`probe_forced_tool_choice`
+    with ``api_key`` or the platform key) and written with the row —
+    "selectable ⇒ priced AND its driving shape known". A
+    :class:`CatalogProbeError` refuses the enable: nothing is written."""
+    from sqlalchemy import text
     from sqlalchemy.orm import Session
     from primeqa.db import engine
     from primeqa.core.models import ActivityLog, LlmModel
@@ -238,6 +363,12 @@ def enable_model(model_id: str, *, display_name: Optional[str],
 
     if not model_id or input_usd_per_mtok <= 0 or output_usd_per_mtok <= 0:
         raise ValueError("model id and positive input/output rates are required")
+
+    if probe is None:
+        key = api_key or resolve_platform_api_key()
+        fact = probe_forced_tool_choice(key, model_id)
+    else:
+        fact = bool(probe(model_id))
 
     sess = Session(bind=engine)
     try:
@@ -251,13 +382,16 @@ def enable_model(model_id: str, *, display_name: Optional[str],
         row.status = "active"
         row.input_usd_per_mtok = input_usd_per_mtok
         row.output_usd_per_mtok = output_usd_per_mtok
+        row.forced_tool_choice = fact
+        row.forced_tool_choice_probed_at = sess.execute(text("SELECT NOW()")).scalar()
         sess.add(ActivityLog(
             tenant_id=actor_tenant_id, user_id=actor_user_id,
             action="update" if old_status else "create",
             entity_type="llm_model_enabled",
             details={"model_id": model_id, "old_status": old_status,
                      "input_usd_per_mtok": input_usd_per_mtok,
-                     "output_usd_per_mtok": output_usd_per_mtok}))
+                     "output_usd_per_mtok": output_usd_per_mtok,
+                     "forced_tool_choice": fact}))
         sess.commit()
     except Exception:
         sess.rollback()

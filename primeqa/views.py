@@ -1942,6 +1942,7 @@ def settings_llm_usage():
         # failure renders the page without the panel data.
         from flask import session as _session
         selectable_models, catalog_models, retired_pinned = [], [], {}
+        unknown_pinned = {}
         try:
             from sqlalchemy import text as _sql
             from primeqa.intelligence.llm import router as _router
@@ -1949,6 +1950,10 @@ def settings_llm_usage():
             from primeqa.core.models import LlmModel
             rows = db.query(LlmModel).order_by(LlmModel.model_id).all()
             row_by_id = {r.model_id: r for r in rows}
+            # D-504: the forced-tool-choice fact per model (catalog row wins,
+            # then the code table, else unknown) — read ONCE from these rows.
+            facts = {r.model_id: bool(r.forced_tool_choice)
+                     for r in rows if r.forced_tool_choice is not None}
             upstream_new = _session.get("llm_catalog_new_models") or []
             reappeared_ids = {m["id"] for m in upstream_new if m.get("reappeared")}
             for mid in sorted(_router.SELECTABLE_MODELS | set(row_by_id)):
@@ -1959,6 +1964,8 @@ def settings_llm_usage():
                     "source": "built-in" if mid in _router.SELECTABLE_MODELS else "enabled",
                     "status": (r.status if r else "active"),
                     "reappeared": mid in reappeared_ids,
+                    "forced_tool_choice": _router.forced_tool_choice_supported(
+                        mid, catalog=facts),
                     "input_rate": (float(r.input_usd_per_mtok)
                                    if r and r.input_usd_per_mtok is not None else None),
                     "output_rate": (float(r.output_usd_per_mtok)
@@ -1974,6 +1981,18 @@ def settings_llm_usage():
                     {"ids": sorted(retired)}).fetchall()
                 for tid, mid in pins:
                     retired_pinned.setdefault(mid, []).append(tid)
+            # D-504: tenants pinned to a SELECTABLE model whose capability is
+            # unknown — their AI work is refused pre-spend until a Refresh.
+            unknown = {m["model_id"] for m in catalog_models
+                       if m["forced_tool_choice"] is None
+                       and m["model_id"] in selectable_models}
+            if unknown:
+                pins = db.execute(_sql(
+                    "SELECT tenant_id, llm_model_override FROM tenant_agent_settings "
+                    "WHERE llm_model_override = ANY(:ids)"),
+                    {"ids": sorted(unknown)}).fetchall()
+                for tid, mid in pins:
+                    unknown_pinned.setdefault(mid, []).append(tid)
         except Exception as exc:
             db.rollback()
             import logging
@@ -1991,6 +2010,7 @@ def settings_llm_usage():
             selectable_models=selectable_models,
             catalog_models=catalog_models,
             retired_pinned=retired_pinned,
+            unknown_pinned=unknown_pinned,
             new_upstream_models=new_upstream_models,
         ))
     finally:
@@ -2087,11 +2107,20 @@ def settings_change_tenant_tier(tenant_id):
     # runtime fail-loud path is reachable only via post-save retirement.
     # Empty ⇒ NULL (tier default). Clearing back to a retired id is also
     # blocked (the picker offers it only as the flagged current value).
-    from primeqa.intelligence.llm.router import selectable_model_ids
+    from primeqa.intelligence.llm.router import (
+        selectable_model_ids, forced_tool_choice_supported)
     new_model = (request.form.get("llm_model_override") or "").strip() or None
     if new_model and new_model not in selectable_model_ids(refresh=True):
         flash(f"Model {new_model!r} is not selectable (retired or unknown). "
               f"Refresh the Models panel or pick another.", "error")
+        return redirect("/settings/llm-usage")
+    # D-504: a model whose forced-tool-choice capability is UNKNOWN cannot be
+    # driven by the gateway (it refuses pre-spend) — refuse the pick here, at
+    # save time, with the act that resolves it. True AND False are savable: a
+    # False model is driven by instruction.
+    if new_model and forced_tool_choice_supported(new_model) is None:
+        flash(f"Model {new_model!r}: its tool-call driving shape is unknown. "
+              f"Click \"Refresh models\" on this page, then pick it again.", "error")
         return redirect("/settings/llm-usage")
 
     # Checkbox semantics: HTML only submits the field when checked.
@@ -2239,18 +2268,26 @@ def settings_llm_models_enable():
     (Anthropic's Models API publishes no prices — the two rates are the one
     manual step). Instantly selectable in every tenant picker afterwards."""
     from flask import flash
-    from primeqa.intelligence.llm.catalog import enable_model
+    from primeqa.intelligence.llm.catalog import (
+        CatalogProbeError, enable_model, resolve_platform_api_key)
 
     model_id = (request.form.get("model_id") or "").strip()
     display_name = (request.form.get("display_name") or "").strip() or None
     try:
         input_rate = float(request.form.get("input_usd_per_mtok") or 0)
         output_rate = float(request.form.get("output_usd_per_mtok") or 0)
+        # D-504: the forced-tool-choice fact is probed (free) before the row
+        # is written; a probe that cannot establish it refuses the enable.
         enable_model(model_id, display_name=display_name,
                      input_usd_per_mtok=input_rate,
                      output_usd_per_mtok=output_rate,
                      actor_user_id=request.user["id"],
-                     actor_tenant_id=request.user["tenant_id"])
+                     actor_tenant_id=request.user["tenant_id"],
+                     api_key=resolve_platform_api_key())
+    except CatalogProbeError as e:
+        flash(f"Could not enable {model_id!r}: its tool-call driving shape could "
+              f"not be established ({e}). Nothing was written.", "error")
+        return redirect("/settings/llm-usage")
     except (ValueError, TypeError) as e:
         flash(f"Could not enable {model_id!r}: {e}", "error")
         return redirect("/settings/llm-usage")
